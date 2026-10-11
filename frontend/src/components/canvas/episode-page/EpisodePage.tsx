@@ -61,6 +61,11 @@ function hasEpisodeDraft(meta: EpisodeMeta | undefined): boolean {
   return meta?.script_status === "segmented" || meta?.script_status === "generated";
 }
 
+/** 本集已有分镜图或视频产物：改剧本内容会让它们过期，界面据此提示。 */
+function hasEpisodeArtifacts(meta: EpisodeMeta | undefined): boolean {
+  return (meta?.storyboards?.available ?? 0) + (meta?.videos?.available ?? 0) > 0;
+}
+
 /**
  * 脚本规划视图呈现集原文：已选集，但正式剧本与中间稿都没有。
  * 广告/短片恒单集、演示项目没有源文可切，走各自画布。
@@ -120,6 +125,9 @@ function EpisodePageContent({
   const grid = gridStoryboardEnabled(projectData);
   const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
   const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
+  // 剧本视图要的集账本与产物计数：随项目数据走 memo，避免在 JSX 里现算新数组/对象。
+  const ledger = useMemo(() => projectData?.episodes ?? [], [projectData?.episodes]);
+  const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
   // 规划产物态取工作流计划（页头的制作进度面板驱动刷新）：短剧导入的集据此藏掉规划页签。
   const planState = useWorkflowStore((s) =>
     s.planKey === workflowPlanKey(projectName, episode) ? s.plan?.status.artifacts.script_plan?.state : undefined,
@@ -225,7 +233,15 @@ function EpisodePageContent({
     // 其余集就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
     body =
       shortDrama && script?.content_mode === "drama" ? (
-        <DramaScriptContentView script={script} />
+        <DramaScriptContentView
+          script={script}
+          projectName={projectName}
+          episode={episode}
+          scriptFile={meta?.script_file ?? ""}
+          episodes={ledger}
+          readOnly={demo}
+          hasArtifacts={hasArtifacts}
+        />
       ) : (
         <EpisodeViewFactsProvider value={facts}>
           <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} sourceOnly />
@@ -272,6 +288,8 @@ function EpisodePageContent({
           view={view}
           onViewChange={changeView}
           boardLabel={t(route === "reference_video" ? "episode_view_units" : "episode_view_board")}
+          // 短剧工厂导入的集没有集原文，这一页是剧本内容，页签据此改称「剧本」。
+          sourceLabel={shortDrama ? t("episode_view_script") : undefined}
           onActionsSlot={setActionsSlot}
         />
         {!demo && (

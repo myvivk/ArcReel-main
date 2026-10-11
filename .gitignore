@@ -79,6 +79,8 @@ coverage-pg.xml
 
 # File locks (project_manager 原子写产物)
 **/*.lock
+# 包管理器 lockfile 不应被忽略
+!uv.lock
 
 # Docker runtime data
 claude_data/

@@ -285,7 +285,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                 <>
                   <div className="flex flex-col gap-1.5 sm:w-1/2">
                     <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
-                    <GenreField
+                    <SuggestField
                       id={`${fieldId}-genre`}
                       value={genre}
                       onChange={setGenre}
@@ -310,7 +310,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                 <>
                   <div className="flex flex-col gap-1.5 sm:w-1/2">
                     <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
-                    <GenreField
+                    <SuggestField
                       id={`${fieldId}-genre`}
                       value={genre}
                       onChange={setGenre}

@@ -333,6 +333,27 @@ def _split_into_scenes(
     return scenes
 
 
+def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
+    """转换结果里引用到的角色 / 场景 / 道具名，按类型去重保序。
+
+    短剧导入不走「内容确认」，原生流程在那里登记的新增资产这路上没人做，资产表会一直是空的，
+    后面资产图与生成入口会因"引用了未登记的名字"拒绝。导入侧据此把引用到的名字补登记。
+    """
+    collected: dict[str, list[str]] = {"character": [], "scene": [], "prop": []}
+    fields = (("character", "characters_in_scene"), ("scene", "scenes"), ("prop", "props"))
+    for scene in script.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for asset_type, field in fields:
+            names = scene.get(field)
+            if not isinstance(names, list):
+                continue
+            for name in names:
+                if isinstance(name, str) and name and name not in collected[asset_type]:
+                    collected[asset_type].append(name)
+    return collected
+
+
 def convert_to_drama_script(
     parsed: ParsedEpisode, episode: int, supported_durations: list[int] | None = None
 ) -> dict[str, Any]:

@@ -324,6 +324,52 @@ def ensure_project_asset_name_available(
         raise ProjectAssetNameConflictError(name, existing, requested_asset_type)
 
 
+def register_missing_assets(
+    project: dict[str, Any],
+    names_by_type: Mapping[str, Iterable[str]],
+    *,
+    description: str = "",
+) -> tuple[dict[str, list[str]], list[dict[str, str]]]:
+    """把还没登记的名字补进项目资产表，返回 ``(本次登记, 冲突)``。
+
+    已登记的名字（判等键命中）一律不动——描述与资产图是用户资产，批量导入不该覆盖；
+    名字被别的资产类型占着时跳过并记入冲突，由调用方如实回执，不中断导入。
+    """
+    registered: dict[str, list[str]] = {}
+    conflicts: list[dict[str, str]] = []
+    for asset_type, names in names_by_type.items():
+        spec = ASSET_SPECS.get(asset_type)
+        if spec is None:
+            continue
+        bucket = project.setdefault(spec.bucket_key, {})
+        if not isinstance(bucket, dict):
+            continue
+        for raw_name in names or ():
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                continue
+            try:
+                name = validate_asset_name(raw_name)
+            except ValueError as exc:
+                conflicts.append({"name": raw_name, "asset_type": asset_type, "reason": str(exc)})
+                continue
+            if resolve_asset_key(bucket, name) is not None:
+                continue  # 已登记：保留原条目与描述
+            try:
+                ensure_project_asset_name_available(project, name, requested_asset_type=asset_type)
+            except ProjectAssetNameConflictError as exc:
+                conflicts.append(
+                    {
+                        "name": name,
+                        "asset_type": asset_type,
+                        "reason": f"名字已被{exc.existing.asset_type}占用",
+                    }
+                )
+                continue
+            bucket[name] = build_asset_entry(asset_type, description)
+            registered.setdefault(asset_type, []).append(name)
+    return registered, conflicts
+
+
 def project_asset_name_conflicts(project: object) -> list[tuple[ProjectAssetNameMatch, ProjectAssetNameMatch]]:
     """返回项目共享名称空间里的所有重名对，顺序稳定可复现。"""
     if not isinstance(project, dict):

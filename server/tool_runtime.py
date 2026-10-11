@@ -1037,6 +1037,37 @@ class ImportShortDramaScriptRequest(BaseModel):
     )
 
 
+async def _register_short_drama_assets(
+    project_name: str,
+    services: Services,
+    script: dict,
+) -> dict[str, Any]:
+    """把本集引用的角色 / 场景 / 道具补登记进项目资产表，回执本次登记与冲突。
+
+    短剧导入不走「内容确认」，原生流程在那里登记新增资产的环节这路上没人做——资产表会一直是
+    空的，后面资产图与生成入口会因"引用了未登记的名字"拒绝。这里补上，已登记的条目不动
+    （描述与资产图是用户资产），跨类型重名跳过并如实回报，登记失败也不推翻已落盘的剧本。
+    """
+    from lib.project.asset_types import register_missing_assets
+    from lib.script.short_drama_import import referenced_asset_names
+
+    names = referenced_asset_names(script)
+    if not any(names.values()):
+        return {}
+    outcome: dict[str, Any] = {}
+
+    def _mutate(project: dict) -> None:
+        registered, conflicts = register_missing_assets(project, names)
+        outcome["registered_assets"] = registered
+        outcome["asset_conflicts"] = conflicts
+
+    try:
+        await asyncio.to_thread(services.projects.update_project, project_name, _mutate)
+    except Exception as exc:  # 登记失败不推翻剧本：回执里如实说明，资产可后续再补
+        return {"asset_registration_failed": str(exc)}
+    return {key: value for key, value in outcome.items() if value}
+
+
 def _duration_shortfall(parsed: Any, script: dict) -> dict[str, Any]:
     """本集声明时长与落盘实得时长对不上时的回执字段；对得上时返回空 dict。
 
@@ -1147,10 +1178,12 @@ async def import_short_drama_script(
         )
     except Exception as exc:
         return ToolOutcome(problem=ToolProblem("short_drama_save_failed", f"剧本落盘失败: {exc}"))
+    assets = await _register_short_drama_assets(scope.project_name, services, script)
     return ToolOutcome(
         value={
             "episode": request.value.episode_id,
             "scenes": len(script["scenes"]),
+            **assets,
             **_duration_shortfall(parsed, script),
         }
     )

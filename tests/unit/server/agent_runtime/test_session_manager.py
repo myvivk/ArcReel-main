@@ -1,0 +1,1524 @@
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from lib.infra.data_root_layout import DataRootLayout
+from server.agent_runtime import session_manager as sm_mod
+from server.agent_runtime.agent_access_policy import AgentAccessPolicy
+from server.agent_runtime.models import Heartbeat, LiveMessage, SubscriptionReady
+from server.agent_runtime.session_actor import SessionActor
+from server.agent_runtime.session_manager import ManagedSession
+from server.agent_runtime.session_store import SessionMetaStore
+from tests.fakes import (
+    FakeSDKClient,
+    assistant_frame,
+    empty_sdk_response_stream,
+    result_frame,
+    session_state_message,
+    system_frame,
+)
+
+
+class _FakeOptions:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _FakeClaudeClient:
+    """Minimal ClaudeSDKClient stand-in used by SessionActor.
+
+    Implements the async-context-manager protocol plus the narrow surface the
+    actor touches: ``query`` / ``interrupt`` / the raw frame stream
+    ``_query.receive_messages()`` (empty: the CLI exits at once). ``connect``
+    is kept for the legacy get_or_connect path-check assertion.
+    """
+
+    def __init__(self, options):
+        self.options = options
+        self.connected = False
+        self._query = SimpleNamespace(receive_messages=empty_sdk_response_stream)
+
+    async def __aenter__(self):
+        self.connected = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def connect(self):
+        self.connected = True
+
+    async def query(self, prompt, session_id: str = "default"):
+        pass
+
+    async def interrupt(self):
+        pass
+
+
+def _user_message(text: str, uuid: str) -> dict:
+    return {"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None, "uuid": uuid}
+
+
+def _dummy_actor() -> SessionActor:
+    """Build an un-started actor with a no-op FakeSDKClient — for tests that
+    never touch actor IO but need a non-None ``actor`` field."""
+    dummy_client = FakeSDKClient()
+
+    @asynccontextmanager
+    async def _factory():
+        async with dummy_client as c:
+            yield c
+
+    return SessionActor(client_factory=_factory, on_message=lambda msg: None)
+
+
+@asynccontextmanager
+async def _cold_revival_clients(session_manager, monkeypatch):
+    """Patch the SDK symbols so a non-resident session revives against a fake
+    client, and yield the list capturing every constructed client. Each client's
+    ``options.kwargs["system_prompt"]["append"]`` carries the rendered prompt, so
+    tests can assert which locale the language regulation was rendered with."""
+
+    async def _fake_env():
+        return {}
+
+    monkeypatch.setattr("server.agent_runtime.options_assembler.load_provider_env_overrides", _fake_env)
+
+    created_clients: list[_FakeClaudeClient] = []
+
+    def _track_client(*, options):
+        c = _FakeClaudeClient(options=options)
+        created_clients.append(c)
+        return c
+
+    with monkeypatch.context() as m:
+        m.setattr(sm_mod, "SDK_AVAILABLE", True)
+        m.setattr("server.agent_runtime.options_assembler.SDK_AVAILABLE", True)
+        m.setattr("server.agent_runtime.options_assembler.ClaudeAgentOptions", _FakeOptions)
+        m.setattr(sm_mod, "ClaudeSDKClient", _track_client)
+        yield created_clients
+
+
+class _FakeAllow:
+    def __init__(self, updated_input):
+        self.updated_input = updated_input
+
+
+class _FakeDeny:
+    def __init__(self, message, interrupt=False):
+        self.message = message
+        self.interrupt = interrupt
+
+
+class TestSessionManager:
+    def test_managed_session_broadcast_and_queue_overflow(self):
+        managed = ManagedSession(session_id="s1", actor=None)
+
+        # 会话通道把消息广播给订阅者。
+        queue = managed.channel.subscribe()
+        managed.channel.broadcast({"type": "result", "uuid": "r1"})
+        assert queue.get_nowait()["type"] == "result"
+
+        # 订阅者彻底跟不上（队列填满关键消息、无可逐出）→ 按会话流溢出策略移除。
+        for i in range(120):
+            managed.channel.broadcast({"type": "result", "uuid": f"m{i}"})
+        assert not managed.channel.has_subscribers
+
+    @pytest.mark.asyncio
+    async def test_pending_question_lifecycle(self):
+        managed = ManagedSession(session_id="s1", actor=None)
+        pending = managed.add_pending_question({"type": "ask_user_question", "questions": []})
+        assert pending.question_id
+        assert managed.resolve_pending_question(pending.question_id, {"Q": "A"})
+        assert await pending.answer_future == {"Q": "A"}
+        assert not managed.resolve_pending_question("missing", {})
+
+        pending2 = managed.add_pending_question({"type": "ask_user_question"})
+        managed.cancel_pending_questions("closed")
+        with pytest.raises(RuntimeError):
+            await pending2.answer_future
+        assert managed.get_pending_question_payloads() == []
+
+    @pytest.mark.asyncio
+    async def test_build_options_and_connect_paths(self, session_manager, meta_store, monkeypatch):
+        async def _fake_env():
+            return {}
+
+        monkeypatch.setattr("server.agent_runtime.options_assembler.load_provider_env_overrides", _fake_env)
+
+        with monkeypatch.context() as m:
+            m.setattr("server.agent_runtime.options_assembler.SDK_AVAILABLE", False)
+            with pytest.raises(RuntimeError):
+                await session_manager._build_options("demo")
+
+        projects_demo = session_manager.layout.projects_dir / "demo"
+        projects_demo.mkdir(parents=True)
+        meta = await meta_store.create("demo", "sdk-build-opts")
+
+        created_clients: list[_FakeClaudeClient] = []
+
+        def _track_client(*, options):
+            c = _FakeClaudeClient(options=options)
+            created_clients.append(c)
+            return c
+
+        with monkeypatch.context() as m:
+            m.setattr(sm_mod, "SDK_AVAILABLE", True)
+            m.setattr("server.agent_runtime.options_assembler.SDK_AVAILABLE", True)
+            m.setattr("server.agent_runtime.options_assembler.ClaudeAgentOptions", _FakeOptions)
+            m.setattr(sm_mod, "ClaudeSDKClient", _track_client)
+            managed = await session_manager.get_or_connect(meta.id)
+            # Let the actor enter the async-context (connect).
+            await asyncio.sleep(0)
+            assert created_clients
+            assert created_clients[0].connected
+            # 替身的 CLI 立即退出：再次连接丢弃 actor 已退出的旧会话，重建连接
+            await managed.actor.wait()
+            revived = await session_manager.get_or_connect(meta.id)
+            assert revived is not managed
+            assert len(created_clients) == 2
+            # Graceful teardown so the actor task doesn't leak.
+            await session_manager.close_session(meta.id)
+
+        assert await session_manager._options_assembler._keep_stream_open_hook({}, None, None) == {"continue_": True}
+
+    @pytest.mark.asyncio
+    async def test_get_or_connect_threads_locale_into_system_prompt(self, session_manager, meta_store, monkeypatch):
+        """Revival renders the language regulation from the caller's locale instead
+        of the default zh, and pins the system prompt as a session snapshot: a
+        resumed session keeps its first-turn prompt, a fresh one records this."""
+
+        (session_manager.layout.projects_dir / "demo").mkdir(parents=True)
+        meta = await meta_store.create("demo", "sdk-locale-vi")
+
+        async with _cold_revival_clients(session_manager, monkeypatch) as created_clients:
+            await session_manager.get_or_connect(meta.id, locale="vi")
+            await asyncio.sleep(0)
+            assert created_clients
+            system_prompt = created_clients[0].options.kwargs["system_prompt"]
+            assert "Tiếng Việt" in system_prompt["append"]
+            assert "中文" not in system_prompt["append"]
+            assert system_prompt["snapshot"] is True
+            await session_manager.close_session(meta.id)
+
+    @pytest.mark.asyncio
+    async def test_stream_messages_waits_across_eviction_and_revival(self, session_manager, meta_store, monkeypatch):
+        """订阅不复活冷会话；会话之后复活、被驱逐、再复活，同一订阅都照常收到广播。"""
+        (session_manager.layout.projects_dir / "demo").mkdir(parents=True)
+        meta = await meta_store.create("demo", "sdk-stream-survives-eviction")
+
+        async with _cold_revival_clients(session_manager, monkeypatch) as created_clients:
+            async with session_manager.stream_messages(meta.id, idle_timeout=5) as stream:
+                assert isinstance(await anext(stream), SubscriptionReady)
+                assert created_clients == []
+                assert meta.id not in session_manager.sessions
+
+                for round_no in range(2):
+                    managed = await session_manager.get_or_connect(meta.id)
+                    managed.channel.broadcast({"type": "log_entry", "uuid": f"round-{round_no}"})
+                    live = await anext(stream)
+                    assert isinstance(live, LiveMessage)
+                    assert live.message["uuid"] == f"round-{round_no}"
+                    await session_manager.close_session(meta.id)
+
+            assert session_manager._channels == {}
+
+    @pytest.mark.asyncio
+    async def test_resolve_project_scope_and_status_helpers(self, session_manager, tmp_path, meta_store):
+        (tmp_path / "projects").mkdir(parents=True, exist_ok=True)
+        with pytest.raises(ValueError, match=r"invalid project name"):
+            session_manager._resolve_project_cwd("../evil")
+
+        assert await session_manager.get_status("missing") is None
+        meta = await meta_store.create("demo", "sdk-resolve-status")
+        assert await session_manager.get_status(meta.id) == "idle"
+
+    @pytest.mark.asyncio
+    async def test_send_message_and_interrupt_branches(self, session_manager, meta_store):
+        from tests.fakes import build_managed_with_actor
+
+        meta = await meta_store.create("demo", "sdk-send-msg")
+
+        # Build a client whose query explodes — verify send_message flips status to error.
+        client = FakeSDKClient()
+
+        async def _boom(prompt, session_id: str = "default"):
+            raise RuntimeError("query failed")
+
+        client.query = _boom
+
+        @asynccontextmanager
+        async def _boom_factory():
+            async with client as c:
+                yield c
+
+        actor = SessionActor(client_factory=_boom_factory, on_message=lambda m: None)
+        managed = ManagedSession(session_id=meta.id, actor=actor, status="idle", project_name="demo")
+        await actor.start()
+        session_manager.sessions[meta.id] = managed
+        try:
+            with pytest.raises(RuntimeError):
+                await session_manager.send_message(meta.id, "hello")
+            assert managed.status == "error"
+            assert (await meta_store.get(meta.id)).status == "error"
+        finally:
+            # send_query failure raised inside actor → actor task already done.
+            session_manager.sessions.pop(meta.id, None)
+
+        with pytest.raises(FileNotFoundError):
+            await session_manager.interrupt_session("missing")
+
+        meta2 = await meta_store.create("demo", "sdk-interrupt-1")
+        await meta_store.update_status(meta2.id, "running")
+        assert await session_manager.interrupt_session(meta2.id) == "interrupted"
+        assert (await meta_store.get(meta2.id)).status == "interrupted"
+
+        meta3 = await meta_store.create("demo", "sdk-interrupt-2")
+        assert await session_manager.interrupt_session(meta3.id) == "idle"
+
+        managed_idle, _, _ = await build_managed_with_actor(
+            session_id=meta3.id,
+            project_name="demo",
+            status="completed",
+        )
+        session_manager.sessions[meta3.id] = managed_idle
+        try:
+            assert await session_manager.interrupt_session(meta3.id) == "completed"
+        finally:
+            await session_manager.close_session(meta3.id)
+
+    @pytest.mark.asyncio
+    async def test_process_inbox_cancel_marks_interrupted_when_running(self, session_manager, meta_store):
+        """Cancel on a running session → _mark_session_terminal("interrupted")."""
+        meta = await meta_store.create("demo", "sdk-cancel-1")
+        managed = ManagedSession(
+            session_id=meta.id,
+            actor=_dummy_actor(),
+            status="running",
+            project_name="demo",
+        )
+        session_manager.sessions[meta.id] = managed
+        await meta_store.update_status(meta.id, "running")
+
+        task = asyncio.create_task(session_manager._process_inbox(managed))
+        await asyncio.sleep(0)  # let the coroutine start and block on inbox
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert managed.status == "interrupted"
+        assert (await meta_store.get(meta.id)).status == "interrupted"
+
+    async def test_autonomous_turn_survives_failed_running_persist(self, session_manager, meta_store, monkeypatch):
+        """自主轮次开头写 running 失败：inbox 照常处理到 CLI 报 idle，会话仍能收尾。"""
+        meta = await meta_store.create("demo", "sdk-autonomous-persist")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="idle", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        real_update = meta_store.update_status
+
+        async def _flaky_update(session_id, status):
+            if status == "running":
+                raise RuntimeError("db unavailable")
+            return await real_update(session_id, status)
+
+        monkeypatch.setattr(meta_store, "update_status", _flaky_update)
+        on_message = session_manager._make_actor_message_callback([managed])
+
+        on_message(session_state_message("running"))
+        on_message({"type": "assistant", "content": [], "parent_tool_use_id": None})
+        on_message({"type": "result", "subtype": "success", "is_error": False})
+        on_message(session_state_message("idle"))
+        managed._inbox.put_nowait(None)
+        await session_manager._process_inbox(managed)
+
+        assert managed.status == "completed"
+        assert (await meta_store.get(meta.id)).status == "completed"
+
+    async def test_autonomous_turn_resumes_running_when_read_and_broadcasts_it(
+        self, session_manager, meta_store, monkeypatch
+    ):
+        """idle 会话读到主线程 assistant 帧（CLI 未先报 running 就开启的一轮）：读到即回到 running，
+        inbox 随后持久化、在会话通道广播 running 并通知监听方。"""
+        meta = await meta_store.create("demo", "sdk-autonomous-1")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="idle", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        resumed: list[tuple[str, str]] = []
+        session_manager.set_autonomous_turn_listener(lambda project, sid: resumed.append((project, sid)))
+        broadcasts: list[dict] = []
+        monkeypatch.setattr(managed.channel, "broadcast", broadcasts.append)
+        on_message = session_manager._make_actor_message_callback([managed])
+
+        on_message({"type": "assistant", "content": [], "parent_tool_use_id": None})
+        assert managed.status == "running"
+
+        managed._inbox.put_nowait(None)
+        await session_manager._process_inbox(managed)
+
+        assert (await meta_store.get(meta.id)).status == "running"
+        assert {"type": "runtime_status", "status": "running", "reason": "cli resumed"} in broadcasts
+        assert resumed == [("demo", meta.id)]
+
+    async def test_turn_read_after_idle_without_running_frame_makes_that_idle_stale(
+        self, session_manager, meta_store, monkeypatch
+    ):
+        """CLI 报 idle 后未先报 running 就开启新一轮：读出时已登记的 idle 过时，会话不落终态。"""
+        meta = await meta_store.create("demo", "sdk-autonomous-stale-idle")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="running", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        written: list[str] = []
+        real_update = meta_store.update_status
+
+        async def _record_update(session_id, status):
+            written.append(status)
+            return await real_update(session_id, status)
+
+        monkeypatch.setattr(meta_store, "update_status", _record_update)
+        on_message = session_manager._make_actor_message_callback([managed])
+
+        on_message({"type": "result", "subtype": "success", "is_error": False})
+        on_message(session_state_message("idle"))
+        on_message({"type": "assistant", "content": [], "parent_tool_use_id": None})
+        managed._inbox.put_nowait(None)
+        await session_manager._process_inbox(managed)
+
+        assert managed.status == "running"
+        assert "completed" not in written
+
+    async def test_cli_work_read_while_idle_persists_does_not_broadcast_the_stale_terminal(
+        self, session_manager, meta_store, monkeypatch
+    ):
+        """idle 落库期间读到 CLI 开始工作：会话回到 running，不向订阅者广播过时的终态。"""
+        meta = await meta_store.create("demo", "sdk-idle-persist-race")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="running", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        broadcasts: list[dict] = []
+        monkeypatch.setattr(managed.channel, "broadcast", broadcasts.append)
+        on_message = session_manager._make_actor_message_callback([managed])
+        real_update = meta_store.update_status
+
+        async def _update_then_cli_resumes(session_id, status):
+            await real_update(session_id, status)
+            if status == "completed":
+                on_message(session_state_message("running"))
+                managed._inbox.put_nowait(None)
+
+        monkeypatch.setattr(meta_store, "update_status", _update_then_cli_resumes)
+
+        on_message({"type": "result", "subtype": "success", "is_error": False})
+        on_message(session_state_message("idle"))
+        await asyncio.wait_for(session_manager._process_inbox(managed), timeout=5)
+
+        assert managed.status == "running"
+        assert (await meta_store.get(meta.id)).status == "running"
+        assert [m["status"] for m in broadcasts if m.get("type") == "runtime_status"] == ["running"]
+
+    async def test_send_accepted_while_idle_persists_leaves_running_persisted(
+        self, session_manager, meta_store, monkeypatch
+    ):
+        """idle 落库期间新消息送达、且它的 running 先落库：会话最终持久化为 running，而不是过时的终态。"""
+        meta = await meta_store.create("demo", "sdk-idle-send-race")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="running", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        on_message = session_manager._make_actor_message_callback([managed])
+        real_update = meta_store.update_status
+
+        async def _send_lands_first(session_id, status):
+            if status == "completed":
+                # 发送路径看到非 running 后受理：先写 running，再送达 CLI
+                await real_update(session_id, "running")
+                managed.enter_running()
+            await real_update(session_id, status)
+
+        monkeypatch.setattr(meta_store, "update_status", _send_lands_first)
+
+        on_message({"type": "result", "subtype": "success", "is_error": False})
+        on_message(session_state_message("idle"))
+        managed._inbox.put_nowait(None)
+        await session_manager._process_inbox(managed)
+
+        assert managed.status == "running"
+        assert (await meta_store.get(meta.id)).status == "running"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"type": "assistant", "content": [], "parent_tool_use_id": "toolu_subagent"},
+            {"type": "system", "subtype": "session_state_changed", "state": "idle"},
+        ],
+        ids=["subagent-message", "trailing-system-frame"],
+    )
+    async def test_process_inbox_keeps_idle_on_non_turn_message(self, session_manager, meta_store, message):
+        meta = await meta_store.create("demo", "sdk-autonomous-2")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="idle", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        resumed: list[tuple[str, str]] = []
+        session_manager.set_autonomous_turn_listener(lambda project, sid: resumed.append((project, sid)))
+
+        managed._inbox.put_nowait(message)
+        managed._inbox.put_nowait(None)
+        await session_manager._process_inbox(managed)
+
+        assert managed.status == "idle"
+        assert resumed == []
+
+    @pytest.mark.parametrize(
+        "frames_read",
+        [
+            [session_state_message("running")],
+            [session_state_message("requires_action")],
+            [session_state_message("running"), {"type": "result", "subtype": "success", "is_error": False}],
+        ],
+        ids=["cli-running", "cli-requires-action", "result-before-idle"],
+    )
+    async def test_cli_work_read_keeps_the_session_running_until_cli_idle(
+        self, session_manager, meta_store, frames_read
+    ):
+        """CLI 报告开始工作的帧一读出就切入 running，不必等 inbox；result 不让它离开 running。"""
+        meta = await meta_store.create("demo", "sdk-autonomous-busy")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="idle", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        on_message = session_manager._make_actor_message_callback([managed])
+
+        for frame in frames_read:
+            on_message(frame)
+
+        assert managed.status == "running"
+
+    async def test_interrupt_reaches_autonomous_turn_before_inbox_runs(self, session_manager, meta_store):
+        from tests.fakes import build_managed_with_actor
+
+        meta = await meta_store.create("demo", "sdk-autonomous-interrupt")
+        read = asyncio.Event()
+        callbacks: list = []
+
+        def _on_read(managed: ManagedSession, msg: dict) -> None:
+            if not callbacks:
+                callbacks.append(session_manager._make_actor_message_callback([managed]))
+            callbacks[0](msg)
+            if msg.get("type") == "assistant":
+                read.set()
+
+        managed, _actor, client = await build_managed_with_actor(
+            session_id=meta.id, project_name="demo", status="idle", on_message_hook=_on_read
+        )
+        session_manager.sessions[meta.id] = managed
+        try:
+            client.push_frame(system_frame("session_state_changed", state="running"))
+            client.push_frame(assistant_frame())
+            await asyncio.wait_for(read.wait(), timeout=1.0)
+
+            await session_manager.interrupt_session(meta.id)
+
+            assert client.interrupted
+        finally:
+            await session_manager.close_session(meta.id)
+
+    async def test_cli_work_read_after_the_inbox_stopped_does_not_protect_the_session(
+        self, session_manager, meta_store
+    ):
+        """finalize 失败后 inbox 不再处理帧：读到 CLI 开始工作仍切 running 的话，再也没人收尾，会话一直受保护。"""
+        meta = await meta_store.create("demo", "sdk-inbox-stopped")
+        managed = ManagedSession(session_id=meta.id, actor=_dummy_actor(), status="idle", project_name="demo")
+        managed.resolved_sdk_id = meta.id
+        session_manager.sessions[meta.id] = managed
+        on_message = session_manager._make_actor_message_callback([managed])
+
+        async def _broken_finalize(*_args, **_kwargs):
+            raise RuntimeError("finalize failed")
+
+        session_manager._finalize_turn = _broken_finalize
+        on_message(session_state_message("running"))
+        on_message({"type": "result", "subtype": "success", "session_id": meta.id})
+        await asyncio.wait_for(session_manager._process_inbox(managed), timeout=1.0)
+        if managed._cleanup_task is not None:
+            managed._cleanup_task.cancel()
+
+        on_message(session_state_message("running"))
+
+        assert managed.status == "error"
+
+    async def test_question_is_answerable_before_the_cli_running_frame_is_read(self, session_manager):
+        """提问经 SDK 控制请求到达，可能先于 actor 读到 CLI 报告 running 的帧。"""
+        managed = ManagedSession(session_id="s1", actor=_dummy_actor(), status="idle", project_name="demo")
+        session_manager.sessions["s1"] = managed
+        pending = managed.add_pending_question({"questions": []})
+
+        await session_manager.answer_user_question("s1", pending.question_id, {"Q": "A"})
+
+        assert pending.answer_future.result() == {"Q": "A"}
+
+    @pytest.mark.asyncio
+    async def test_can_use_tool_callback_branches(self, session_manager, monkeypatch):
+        monkeypatch.setattr(sm_mod, "PermissionResultAllow", _FakeAllow)
+        monkeypatch.setattr(sm_mod, "PermissionResultDeny", _FakeDeny)
+
+        allow_cb = await session_manager._build_can_use_tool_callback("unknown-session")
+        # Non-AskUserQuestion tools should be denied (whitelist fallback)
+        result = await allow_cb("Read", {"x": 1}, None)
+        assert isinstance(result, _FakeDeny)
+        assert "未授权" in result.message
+        # AskUserQuestion still handled
+        result2 = await allow_cb("AskUserQuestion", {"questions": []}, None)
+        assert result2.updated_input == {"questions": []}
+
+        managed = ManagedSession(session_id="s1", actor=_dummy_actor(), status="running", project_name="demo")
+        session_manager.sessions["s1"] = managed
+        ask_cb = await session_manager._build_can_use_tool_callback("s1")
+
+        task = asyncio.create_task(ask_cb("AskUserQuestion", {"questions": [{"question": "Q"}]}, None))
+        await asyncio.sleep(0)
+        assert managed.pending_questions
+        managed.cancel_pending_questions("user interrupted")
+        deny = await task
+        assert deny.interrupt is True
+        assert "user interrupted" in deny.message
+
+    def test_misc_helpers_and_serialization(self, session_manager):
+        msg = {}
+        raw = SimpleNamespace(session_id="sdk-1")
+        assert session_manager._extract_sdk_session_id(raw, msg) == "sdk-1"
+        assert session_manager._extract_sdk_session_id(raw, {"sessionId": "sdk-2"}) == "sdk-2"
+
+        assert session_manager._resolve_result_status({"subtype": "error_timeout"}) == "error"
+        assert (
+            session_manager._resolve_result_status(
+                {"subtype": "success", "is_error": False},
+                interrupt_requested=True,
+            )
+            == "completed"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscribe_and_shutdown(self, session_manager, meta_store):
+        from tests.fakes import build_managed_with_actor
+
+        assert await session_manager.get_pending_questions_snapshot("missing") == []
+        with pytest.raises(ValueError, match=r"会话未运行或无待回答问题"):
+            await session_manager.answer_user_question("missing", "q", {"a": "b"})
+
+        meta = await meta_store.create("demo", "sdk-buffer-snap")
+        managed, _actor, client = await build_managed_with_actor(
+            session_id=meta.id,
+            project_name="demo",
+            status="running",
+        )
+        session_manager.sessions[meta.id] = managed
+
+        channel, queue = session_manager._subscribe(meta.id)
+        assert queue.empty()
+        await session_manager._unsubscribe(channel, meta.id, queue)
+        assert not managed.channel.has_subscribers
+
+        await session_manager.shutdown_gracefully()
+        assert client.disconnected is True
+        assert session_manager.sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_stream_messages_event_sequence(self, session_manager, meta_store):
+        """事件序列：订阅屏障 → 逐条直播 → 心跳 → 溢出以流结束表达。"""
+        from tests.fakes import build_managed_with_actor
+
+        meta = await meta_store.create("demo", "sdk-stream-seq")
+        managed, _actor, _client = await build_managed_with_actor(
+            session_id=meta.id,
+            project_name="demo",
+            status="running",
+        )
+        session_manager.sessions[meta.id] = managed
+
+        async with session_manager.stream_messages(meta.id, idle_timeout=0.05) as stream:
+            first = await anext(stream)
+            assert isinstance(first, SubscriptionReady)
+            managed.channel.broadcast({"type": "assistant", "uuid": "live-1"})
+            live = await anext(stream)
+            assert isinstance(live, LiveMessage)
+            assert live.message["uuid"] == "live-1"
+            # idle_timeout 内无消息 → 心跳事件
+            assert isinstance(await anext(stream), Heartbeat)
+            # 挤爆订阅者队列：critical 消息填满 + 无可驱逐 → 队列被清空，流结束。
+            for i in range(120):
+                managed.channel.broadcast({"type": "result", "uuid": f"m{i}"})
+            tail = [event async for event in stream]
+            assert tail == []
+        # 正常退出后订阅者被移除
+        assert not managed.channel.has_subscribers
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exit_mode", ["break", "exception"])
+    async def test_stream_messages_unsubscribes_on_every_exit(self, session_manager, meta_store, exit_mode):
+        from tests.fakes import build_managed_with_actor
+
+        meta = await meta_store.create("demo", f"sdk-exit-{exit_mode}")
+        managed, _actor, _client = await build_managed_with_actor(
+            session_id=meta.id,
+            project_name="demo",
+            status="running",
+        )
+        session_manager.sessions[meta.id] = managed
+
+        async def consume():
+            async with session_manager.stream_messages(meta.id, idle_timeout=0.02) as stream:
+                assert managed.channel.subscriber_count == 1
+                async for event in stream:
+                    if isinstance(event, SubscriptionReady):
+                        continue
+                    if exit_mode == "exception":
+                        raise RuntimeError("boom")
+                    break  # break 退出路径
+
+        if exit_mode == "exception":
+            with pytest.raises(RuntimeError):
+                await consume()
+        else:
+            await consume()
+        # break / 异常退出路径同样确定性移除订阅者
+        assert not managed.channel.has_subscribers
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_allows_read_within_project_root(self, tmp_path, meta_store):
+        """Hook allows Read within cwd and cwd-external (non-projects) paths;
+        cross-project read is denied per new sandbox policy."""
+        projects_dir = DataRootLayout(tmp_path / "projects").projects_dir
+        own_project = projects_dir / "alpha"
+        own_project.mkdir(parents=True)
+        other_project = projects_dir / "beta"
+        other_project.mkdir(parents=True)
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir(parents=True)
+
+        mgr = sm_mod.SessionManager(
+            project_root=tmp_path,
+            meta_store=meta_store,
+        )
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+
+        # Read own project file — allowed (within project_cwd)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(own_project / "script.json")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Read other project file — denied (跨项目隔离)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(other_project / "script.json")}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+        # Read docs dir — allowed (cwd 外且不在 projects/ 下，作为参考资料)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(docs_dir / "guide.md")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_blocks_write_to_readonly_dir(self, tmp_path, meta_store):
+        """Hook denies Write to lib/, allows own project."""
+        own_project = tmp_path / "projects" / "alpha"
+        own_project.mkdir(parents=True)
+        lib_dir = tmp_path / "lib"
+        lib_dir.mkdir(parents=True)
+
+        mgr = sm_mod.SessionManager(
+            project_root=tmp_path,
+            meta_store=meta_store,
+        )
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+
+        # Write own project file — allowed
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "output.txt")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write to lib/ (readonly) — denied
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(lib_dir / "hack.py")}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_allows_bash_without_path_check(self, tmp_path, meta_store):
+        """Hook skips Bash (not in PATH_TOOLS)."""
+        own_project = tmp_path / "projects" / "alpha"
+        own_project.mkdir(parents=True)
+
+        mgr = sm_mod.SessionManager(
+            project_root=tmp_path,
+            meta_store=meta_store,
+        )
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+
+        # Bash — not a path tool, hook continues
+        result = await hook(
+            {"tool_name": "Bash", "tool_input": {"command": "ls /etc"}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_blocks_write_non_whitelisted_ext(self, tmp_path, meta_store):
+        """Hook denies Write/Edit for forbidden code extensions in project dir.
+
+        New policy: blacklist of code extensions (.py/.js/.ts/.tsx/.sh/.yaml/.yml/.toml)
+        instead of data-file whitelist; non-code files (Makefile, .html, .csv) allowed.
+        """
+        own_project = tmp_path / "projects" / "alpha"
+        own_project.mkdir(parents=True)
+
+        mgr = sm_mod.SessionManager(
+            project_root=tmp_path,
+            meta_store=meta_store,
+        )
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+
+        # Write .py in project dir — denied (code extension)
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "helper.py")}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert ".py" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+        # Edit .sh in project dir — denied (code extension)
+        result = await hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(own_project / "run.sh")}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+        # Write 普通 .json — allowed（project.json / scripts/*.json 另由专门 deny 覆盖）
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "notes.json")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write .md — allowed
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "notes.md")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write .txt — allowed
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "episode.txt")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Read .py — allowed (only write is restricted)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(own_project / "helper.py")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write file without extension (e.g. Makefile) — allowed (not in code blacklist)
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "Makefile")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write .JSON (uppercase) — allowed (case-insensitive check)
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(own_project / "data.JSON")}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_allows_read_agent_profile(self, tmp_path, meta_store, monkeypatch):
+        """Hook allows Read for agent_runtime_profile/ files."""
+        own_project = tmp_path / "projects" / "alpha"
+        own_project.mkdir(parents=True)
+        profile_md = tmp_path / "agent_runtime_profile" / "CLAUDE.md"
+        monkeypatch.setenv("ARCREEL_PROFILE_DIR", str(profile_md.parent))
+        profile_md.parent.mkdir(parents=True, exist_ok=True)
+        profile_md.write_text("# Agent instructions")
+
+        mgr = sm_mod.SessionManager(
+            project_root=tmp_path,
+            meta_store=meta_store,
+        )
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+
+        # Read agent_runtime_profile/CLAUDE.md — allowed (readonly dir)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(profile_md)}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+    async def _make_sdk_hook_env(self, tmp_path, meta_store):
+        """Create a SessionManager + hook with SDK dir outside project_root."""
+        app_root = tmp_path / "app"
+        own_project = DataRootLayout(app_root / "projects").projects_dir / "alpha"
+        own_project.mkdir(parents=True)
+
+        claude_home = tmp_path / "claude_home" / "projects"
+        claude_home.mkdir(parents=True)
+
+        mgr = sm_mod.SessionManager(
+            project_root=app_root,
+            meta_store=meta_store,
+        )
+        # SDK 会话数据基准目录是 policy 的构造参数：换新 policy 即注入测试位置
+        mgr.access_policy = replace(mgr.access_policy, claude_projects_dir=claude_home)
+
+        hook = mgr._options_assembler._build_file_access_hook(own_project)
+        return hook, own_project, claude_home
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_allows_read_sdk_tool_results(self, tmp_path, meta_store):
+        """Hook allows Read for SDK tool-results of the CURRENT project.
+
+        New policy: cwd-external non-projects paths (含 SDK 目录) 默认放行；
+        Write 仍受 cwd 内限制约束。
+        """
+        hook, own_project, claude_home = await self._make_sdk_hook_env(tmp_path, meta_store)
+
+        encoded = AgentAccessPolicy.encode_sdk_project_path(own_project)
+        tool_results_dir = claude_home / encoded / "abc-session" / "tool-results"
+        tool_results_dir.mkdir(parents=True)
+        result_file = tool_results_dir / "toolu_01Abc.txt"
+        result_file.write_text("full bash output here")
+
+        # Read own project's SDK tool-results — allowed
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(result_file)}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write to SDK tool-results — still denied (write tools only allow project_cwd)
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(result_file)}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_denies_read_other_project_dir(self, tmp_path, meta_store):
+        """Hook denies Read for ANOTHER project's directory under projects/.
+
+        New policy: 跨项目隔离基于 project_root/projects/<other>/ 的物理位置，
+        而非 SDK 编码路径。
+        """
+        hook, _, _ = await self._make_sdk_hook_env(tmp_path, meta_store)
+
+        other_project = DataRootLayout(tmp_path / "app" / "projects").projects_dir / "beta"
+        other_project.mkdir(parents=True)
+        other_file = other_project / "secret.json"
+        other_file.write_text("{}")
+
+        # Read OTHER project directly — denied (cross-project isolation)
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": str(other_file)}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_denies_write_outside_cwd(self, tmp_path, meta_store):
+        """Hook denies Write to any path outside project_cwd.
+
+        New policy: 写工具一律拒绝 cwd 外路径；Read 已放宽至 cwd 外非 projects/ 路径。
+        """
+        hook, _, _ = await self._make_sdk_hook_env(tmp_path, meta_store)
+
+        # Write outside cwd — denied
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": "/tmp/escape.json"}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_file_access_hook_allows_read_sdk_task_output(self, tmp_path, meta_store):
+        """Hook allows Read for SDK task output files under /tmp/claude-*.
+
+        New policy: cwd-external non-projects 路径默认放行（含 SDK 后台任务输出），
+        写工具仍受 cwd 内限制约束。
+        """
+        hook, _, _ = await self._make_sdk_hook_env(tmp_path, meta_store)
+
+        # SDK task output path pattern: /tmp/claude-{N}/{encoded}/tasks/{id}.output
+        task_output = "/tmp/claude-0/-app-projects-alpha-abc123/tasks/bdgaof0ba.output"
+        result = await hook(
+            {"tool_name": "Read", "tool_input": {"file_path": task_output}},
+            None,
+            None,
+        )
+        assert result.get("continue_") is True
+
+        # Write to task output — denied (write tools only allow project_cwd)
+        result = await hook(
+            {"tool_name": "Write", "tool_input": {"file_path": task_output}},
+            None,
+            None,
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+class TestJsonValidationHook:
+    """Tests for the PreToolUse JSON validation hook."""
+
+    def _make_manager(self, tmp_path):
+        """Build a SessionManager with minimal fakes (SDK not required)."""
+        from server.agent_runtime.session_manager import SessionManager
+
+        return SessionManager(
+            project_root=tmp_path,
+            meta_store=SessionMetaStore(),
+        )
+
+    async def _call_hook(
+        self,
+        manager,
+        tool_input: dict,
+        tool_name: str = "Edit",
+        project_cwd=None,
+    ):
+        """Helper: invoke the JSON validation hook callback directly."""
+        from pathlib import Path
+
+        hook_fn = manager._options_assembler._build_json_validation_hook(
+            Path(project_cwd) if project_cwd else Path("/tmp"),
+        )
+        input_data = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+        return await hook_fn(input_data, None, None)
+
+    # --- Edit: valid replacement keeps JSON valid → allow ---
+
+    async def test_edit_valid_replacement_returns_empty(self, tmp_path):
+        """Edit that keeps JSON valid is allowed."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"title": "old"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": '"old"',
+                "new_string": '"new"',
+            },
+        )
+        assert result == {}
+
+    # --- Edit: replacement breaks JSON → deny ---
+
+    async def test_edit_breaking_replacement_denies(self, tmp_path):
+        """Edit that would produce invalid JSON is denied."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"title": "old value"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": '"old value"',
+                "new_string": '"has "quotes" inside"',  # unescaped quotes
+            },
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert (
+            "无效 JSON" in result["hookSpecificOutput"]["permissionDecisionReason"]
+            or "JSON" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    # --- Edit: replace_all ---
+
+    async def test_edit_replace_all_breaking_denies(self, tmp_path):
+        """Edit with replace_all that breaks JSON is denied."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"a": "x", "b": "x"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": '"x"',
+                "new_string": '"y",',  # trailing comma on last occurrence
+                "replace_all": True,
+            },
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # --- Write: valid content → allow ---
+
+    async def test_write_valid_json_returns_empty(self, tmp_path):
+        """Write with valid JSON content is allowed."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(tmp_path / "new.json"),
+                "content": '{"segments": []}',
+            },
+            tool_name="Write",
+        )
+        assert result == {}
+
+    # --- Write: invalid content → deny ---
+
+    async def test_write_invalid_json_denies(self, tmp_path):
+        """Write with invalid JSON content is denied."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(tmp_path / "bad.json"),
+                "content": '{"a": 1,,}',
+            },
+            tool_name="Write",
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    # --- Non-.json file → skip ---
+
+    async def test_non_json_file_returns_empty(self, tmp_path):
+        """Hook ignores non-.json files."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(tmp_path / "notes.md"),
+                "content": "not json {{{{",
+            },
+            tool_name="Write",
+        )
+        assert result == {}
+
+    # --- Edit: file not found → skip (let Edit handle the error) ---
+
+    async def test_edit_missing_file_returns_empty(self, tmp_path):
+        """Hook skips if the target file doesn't exist yet."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(tmp_path / "ghost.json"),
+                "old_string": "x",
+                "new_string": "y",
+            },
+        )
+        assert result == {}
+
+    # --- Non-Write/Edit tool → skip ---
+
+    async def test_non_write_edit_tool_returns_empty(self, tmp_path):
+        """Hook ignores tools other than Write/Edit."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": "/some/file.json",
+            },
+            tool_name="Read",
+        )
+        assert result == {}
+
+    # --- Edit: old_string not in file → skip (Edit will fail on its own) ---
+
+    async def test_edit_old_string_not_found_returns_empty(self, tmp_path):
+        """Hook skips if old_string is not in the file."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"title": "hello"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": "not found",
+                "new_string": "replacement",
+            },
+        )
+        assert result == {}
+
+    # --- Edit: curly/smart quotes in new_string → deny ---
+
+    async def test_edit_curly_quotes_in_new_string_denies(self, tmp_path):
+        """Edit whose new_string contains curly quotes is denied even when
+        old_string doesn't exactly match the file (Claude Code may normalise
+        quotes internally, bypassing the hook's str.replace simulation)."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"segment_break": true, "title": "test"}')
+        manager = self._make_manager(tmp_path)
+
+        # old_string uses curly quotes (won't match file via Python str `in`),
+        # but new_string also has curly quotes → must be blocked.
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": "\u201csegment_break\u201d: true",
+                "new_string": "\u201csegment_break\u201d: false",
+            },
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "弯引号" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    async def test_edit_curly_quotes_old_only_is_allowed(self, tmp_path):
+        """If only old_string has curly quotes but new_string is clean,
+        don't block (edit will likely fail on its own)."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"segment_break": true}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": "\u201csegment_break\u201d: true",
+                "new_string": '"segment_break": false',
+            },
+        )
+        # old_string not in file → hook skips → allowed
+        assert result == {}
+
+    async def test_edit_curly_quotes_in_new_string_straight_old_denies(self, tmp_path):
+        """Edit with straight-quote old_string that matches file but
+        curly-quote new_string is denied via the early curly-quote check."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"segment_break": true, "title": "test"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+                "old_string": '"segment_break": true',
+                "new_string": "\u201csegment_break\u201d: false",
+            },
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "弯引号" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+class TestJsonPostValidationHook:
+    """Tests for the PostToolUse JSON validation hook (safety net)."""
+
+    def _make_manager(self, tmp_path):
+        from server.agent_runtime.session_manager import SessionManager
+
+        return SessionManager(
+            project_root=tmp_path,
+            meta_store=SessionMetaStore(),
+        )
+
+    async def _call_post_hook(
+        self,
+        manager,
+        tool_input: dict,
+        tool_name: str = "Edit",
+        project_cwd=None,
+        json_backups=None,
+    ):
+        from pathlib import Path
+
+        hook_fn = manager._options_assembler._build_json_post_validation_hook(
+            Path(project_cwd) if project_cwd else Path("/tmp"),
+            json_backups if json_backups is not None else {},
+        )
+        input_data = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+        return await hook_fn(input_data, "test-tool-use-id", None)
+
+    # --- Valid JSON after edit → pass ---
+
+    async def test_valid_json_after_edit_returns_empty(self, tmp_path):
+        """PostToolUse returns empty when file is valid JSON after edit."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"title": "new"}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_post_hook(
+            manager,
+            {
+                "file_path": str(json_file),
+            },
+            project_cwd=str(tmp_path),
+        )
+        assert result == {}
+
+    # --- Invalid JSON after edit with backup → restore + additionalContext ---
+
+    async def test_invalid_json_restores_backup(self, tmp_path):
+        """PostToolUse restores backup when file is invalid JSON after edit."""
+        json_file = tmp_path / "ep.json"
+        original_content = '{"title": "original"}'
+
+        # Simulate: file was corrupted by edit
+        json_file.write_text('{"title": "broken",,}')
+        manager = self._make_manager(tmp_path)
+
+        # Provide backup
+        backups: dict = {
+            "test-tool-use-id": (json_file, original_content),
+        }
+
+        result = await self._call_post_hook(
+            manager,
+            {"file_path": str(json_file)},
+            project_cwd=str(tmp_path),
+            json_backups=backups,
+        )
+
+        # Should report the issue via additionalContext
+        assert "additionalContext" in result.get("hookSpecificOutput", {})
+        assert "回滚" in result["hookSpecificOutput"]["additionalContext"]
+
+        # File should be restored
+        assert json_file.read_text() == original_content
+
+        # Backup should be consumed (popped)
+        assert "test-tool-use-id" not in backups
+
+    # --- Invalid JSON after edit without backup → report only ---
+
+    async def test_invalid_json_no_backup_reports_error(self, tmp_path):
+        """PostToolUse reports error when file is corrupt and no backup exists."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"broken":,}')
+        manager = self._make_manager(tmp_path)
+
+        result = await self._call_post_hook(
+            manager,
+            {"file_path": str(json_file)},
+            project_cwd=str(tmp_path),
+            json_backups={},
+        )
+
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "无法恢复" in ctx
+        assert "回滚" not in ctx
+
+    # --- Non-.json file → skip ---
+
+    async def test_non_json_file_returns_empty(self, tmp_path):
+        """PostToolUse ignores non-.json files."""
+        manager = self._make_manager(tmp_path)
+        result = await self._call_post_hook(
+            manager,
+            {
+                "file_path": str(tmp_path / "notes.md"),
+            },
+            project_cwd=str(tmp_path),
+        )
+        assert result == {}
+
+    # --- Backup is consumed even on success ---
+
+    async def test_backup_consumed_on_success(self, tmp_path):
+        """PostToolUse pops backup even when validation succeeds."""
+        json_file = tmp_path / "ep.json"
+        json_file.write_text('{"title": "ok"}')
+        manager = self._make_manager(tmp_path)
+
+        backups: dict = {
+            "test-tool-use-id": (json_file, '{"title": "old"}'),
+        }
+
+        result = await self._call_post_hook(
+            manager,
+            {"file_path": str(json_file)},
+            project_cwd=str(tmp_path),
+            json_backups=backups,
+        )
+
+        assert result == {}
+        # Backup should be consumed to prevent memory leaks
+        assert "test-tool-use-id" not in backups
+
+
+# --- ManagedSession 状态机（Session Actor 重构）-----------------------------
+
+
+def _make_managed_for_state_test():
+    """构造一个 ManagedSession 用于状态机测试，actor 字段用 None 占位。"""
+    from server.agent_runtime.session_manager import ManagedSession
+
+    return ManagedSession(
+        session_id="test",
+        actor=None,  # 状态机测试不触及 actor
+        status="running",
+        project_name="demo",
+    )
+
+
+def test_interrupt_marker_applies_only_to_the_first_result_after_it(session_manager):
+    """被中断那一轮的 result 记为中断；排队消息开启的下一轮在收尾之前结束，也按自身结果判定。"""
+    managed = _make_managed_for_state_test()
+    managed.interrupt_requested = True
+    interrupted = result_frame("error_during_execution", is_error=True)
+    failed = result_frame("error_during_execution", is_error=True)
+
+    session_manager._handle_special_message(managed, interrupted)
+    session_manager._handle_special_message(managed, failed)
+
+    assert interrupted["session_status"] == "interrupted"
+    assert failed["session_status"] == "error"
+
+
+def test_on_actor_message_result_does_not_change_status():
+    """P1 race 防护：sync 回调不再改 status；由 _finalize_turn 统一设置。"""
+    for subtype in ("success", "error_during_execution", "error_max_turns"):
+        managed = _make_managed_for_state_test()
+        managed.status = "running"
+        managed._on_actor_message({"type": "result", "subtype": subtype})
+        assert managed.status == "running", f"subtype={subtype}"
+
+
+def test_on_actor_message_non_result_message_preserves_status():
+    managed = _make_managed_for_state_test()
+    managed.status = "running"
+    managed._on_actor_message({"type": "assistant", "content": "hi"})
+    assert managed.status == "running"
+
+
+def test_on_actor_message_broadcasts_to_subscribers():
+    managed = _make_managed_for_state_test()
+    queue = managed.channel.subscribe()
+    managed._on_actor_message({"type": "assistant", "content": "hi"})
+    assert queue.get_nowait()["type"] == "assistant"
+
+
+# --- ManagedSession 对 actor 的代理 -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_query_sets_running_and_awaits_done():
+    from server.agent_runtime.session_actor import SessionActor
+    from server.agent_runtime.session_manager import ManagedSession
+    from tests.fakes import FakeSDKClient
+
+    client = FakeSDKClient(frames=[result_frame()])
+    managed_ref: list = []
+
+    def on_message(msg):
+        managed_ref[0]._on_actor_message(msg)
+
+    actor = SessionActor(client_factory=lambda: client, on_message=on_message)
+    managed = ManagedSession(session_id="t", actor=actor, status="idle", project_name="p")
+    managed_ref.append(managed)
+
+    await actor.start()
+    await managed.send_query(_user_message("hi", "u-1"))
+    assert [m["uuid"] for m in client.sent_messages] == ["u-1"]
+    # send_query 在消息写给 CLI 后即返回；离开 running 以 CLI 报 idle 为准（此单元测试没挂 inbox）
+    assert managed.status == "running"
+
+    # 收尾
+    await managed.send_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_send_query_raises_on_cmd_error():
+    from server.agent_runtime.session_actor import SessionActor
+    from server.agent_runtime.session_manager import ManagedSession
+
+    client = FakeSDKClient()
+
+    async def _explode(prompt, session_id: str = "default"):
+        raise RuntimeError("boom")
+
+    client.query = _explode
+    actor = SessionActor(client_factory=lambda: client, on_message=lambda m: None)
+    managed = ManagedSession(session_id="t", actor=actor, status="idle", project_name="p")
+    await actor.start()
+    with pytest.raises(RuntimeError, match="boom"):
+        await managed.send_query(_user_message("hi", "u-1"))
+    assert managed.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_send_interrupt_is_idempotent_via_flag():
+    """_interrupting 标志防止重入。"""
+    from server.agent_runtime.session_actor import SessionActor, SessionCommand
+    from server.agent_runtime.session_manager import ManagedSession
+    from tests.fakes import FakeSDKClient
+
+    client = FakeSDKClient(interrupt_frame=result_frame("error_during_execution", is_error=True))
+    actor = SessionActor(client_factory=lambda: client, on_message=lambda m: None)
+    managed = ManagedSession(session_id="t", actor=actor, status="running", project_name="p")
+    await actor.start()
+
+    # 发一个 query 让这一轮开始
+    q = SessionCommand(type="query", message=_user_message("x", "u-x"))
+    await actor.enqueue(q)
+    await q.done.wait()
+
+    # 并发两次 send_interrupt；第二次应走 _interrupting fast-return
+    await asyncio.gather(managed.send_interrupt(), managed.send_interrupt())
+    # client.interrupt 至少被调一次（具体次数视 asyncio 调度，允许 1 或 2）
+    assert client.interrupted
+
+    await managed.send_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_send_disconnect_waits_actor_task_done():
+    from server.agent_runtime.session_actor import SessionActor
+    from server.agent_runtime.session_manager import ManagedSession
+    from tests.fakes import FakeSDKClient
+
+    client = FakeSDKClient()
+    actor = SessionActor(client_factory=lambda: client, on_message=lambda m: None)
+    managed = ManagedSession(session_id="t", actor=actor, status="idle", project_name="p")
+    await actor.start()
+    await managed.send_disconnect()
+    assert managed.status == "closed"
+    assert actor._task is not None
+    assert actor._task.done()
+    assert client.disconnected

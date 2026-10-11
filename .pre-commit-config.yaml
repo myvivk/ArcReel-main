@@ -1,0 +1,45 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (python staged)
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: ruff-format
+        name: ruff format (python staged)
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: basedpyright
+        name: basedpyright (full project type check)
+        entry: uv run basedpyright --warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: frontend-eslint
+        name: eslint (frontend staged)
+        entry: bash -c 'files=(); for f in "$@"; do files+=("${f#frontend/}"); done; cd frontend && ./node_modules/.bin/eslint --fix "${files[@]}"' --
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: true
+
+  # workflow 闸门的本地对应物；两个 rev 须与 .github/workflows/test.yml 的
+  # workflow-static job 同步升级（scripts/audit_conventions.py 校验）
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.29.0
+    hooks:
+      - id: zizmor
+        args: [--no-progress, --offline, --min-severity, medium]
+        exclude: ^\.agents/  # vendored skill 自带的上游 CI 不在本仓库运行

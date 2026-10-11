@@ -1,0 +1,871 @@
+"""测试连接：真实提交一次生成并轮询到终态，会产生费用。
+
+视频与图像两类端点共用这一条路径：差别只在构造哪种生成请求、记哪种 ``call_type``、产物落成哪个
+文件名，而「提交、轮询、取件、记账、写盘、取消」这六件事与产的是图还是片无关。
+
+跑的是生产那一条路——同一个 backend 类、同一个 ``poll_with_retry``（视频侧全局
+``video_poll_timeout_seconds``、连续失败预算、退避与 ``Retry-After``）、同一个下载路径。只有承载
+不同：进程内 asyncio 任务，不走 tasks/worker 队列，产物不进项目也不进资产库。这样「测试连接通过」
+才等价于「这个模型行真的能用」，而不是等价于「另一条只在测试里存在的路径能用」。
+
+状态只在内存里活到终态，终态一到写盘（``DataRootLayout.trial_runs_dir/{id}/``）并从内存移除，读接口
+一律读盘；24 小时后整目录清掉。取消停的是本地轮询，记账按失败结算——远端叫不叫得停由 backend 自己在
+它的取消路径上决定，与结算无关：钱可能已经花了，账本不能因为用户点了取消就假装没发生。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import re
+import shutil
+import time
+import uuid
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+from arcreel_market_core.endpoint_definition import definition_media_type
+from arcreel_market_core.video_backend_contract import (
+    ProviderResponseStage,
+    VideoCapabilities,
+    VideoCapabilityError,
+    VideoGenerationRequest,
+)
+from lib.backends.container_sniff import CONTAINER_HEAD_BYTES, sniff_container
+from lib.backends.image_backends.base import (
+    ImageCapability,
+    ImageCapabilityError,
+    ImageGenerationRequest,
+    ReferenceImage,
+)
+from lib.backends.providers import CALL_TYPE_IMAGE, CALL_TYPE_VIDEO, CallPurpose
+from lib.backends.video_frame_slots import resolve_first_frame_aspect_ratio, resolve_video_capabilities
+from lib.billing.ledger import Ledger
+from lib.config.resolver import ConfigResolver
+from lib.custom_provider.comfyui.failures import ComfyuiError
+from lib.custom_provider.declarative_backend import DeclarativeRuntimeError, DeclarativeVideoBackend
+from lib.custom_provider.declarative_image_backend import DeclarativeImageBackend
+from lib.db.base import DEFAULT_USER_ID
+from lib.db.repositories.usage_repo import bound_provider_response
+from lib.generation.task_failure import encode_failure
+from lib.infra.data_root_layout import DataRootLayout
+
+from .check import STAGES, check_response, stage_report_payload
+from .inputs import EndpointTestCredentials, EndpointTestParameters
+from .modes import EndpointTestMode, supports_test_mode
+
+logger = logging.getLogger(__name__)
+
+#: 结果目录的存活时长。清理时机是进程启动与每次新建，不挂定时器。
+TRIAL_RUN_TTL_SECONDS = 24 * 3600
+
+#: 结果体里保留的轮询响应条数。
+MAX_POLL_RESPONSES = 20
+
+#: 结果体给出的四段状态点：前三段是运行时留痕的三个阶段，第四段是产物落盘。
+TRIAL_RUN_STAGES = ("submit", "poll", "result", "artifact")
+
+_RESULT_FILE = "result.json"
+
+#: ``media_type`` → 产物落盘的文件名。扩展名不是装饰：读接口按落盘字节声明 MIME 之外，两类产物
+#: 在同一个结果目录里也要分得开。
+_ARTIFACT_FILE_BY_MEDIA_TYPE: Mapping[str, str] = {"video": "artifact.mp4", "image": "artifact.png"}
+
+#: ``start`` 生成的 run_id 形状（``uuid4().hex``）。
+_RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
+
+
+class TrialRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class TrialRunBusyError(Exception):
+    """该用户已有一个测试连接在跑。"""
+
+
+@dataclass(frozen=True)
+class TrialRunTarget:
+    """一次测试连接的目标：记账身份 + backend 构造方式。
+
+    内联定义与模型行两条入口在这里汇合成同一个值对象，之后的记账、轮询、写盘与取消对两者完全
+    一致——「内置与自定义同一资源、同一结果体、同一记账」就是这个汇合点的直接结果。
+    ``definition`` 在目标是声明式端点（内联定义，或模型行挂着自定义 / 内置声明式端点）时才有，
+    它决定结果体里能不能给出渲染后的请求与逐阶段提取；Python 实现的端点两段为空。
+    """
+
+    provider: str
+    model: str
+    build_backend: Callable[[], Awaitable[Any]]
+    definition: Mapping[str, Any] | None = None
+    #: 这个端点产的是视频还是图像：决定构造哪种生成请求、记哪种 call_type、产物落成哪个文件名。
+    #: 声明式与 ComfyUI 端点都由定义自己声明，经 ``definition_media_type`` 读取。
+    media_type: str = "video"
+    #: 提交前跑不跑生产那道能力闸。付费通道一律跑（声明的违约在付费前拒绝）；ComfyUI 端点费用
+    #: 固定 0，且能力由节点绑定推导而内联定义这条入口拿不到推导结果，跑闸只会把「绑定漏了首帧」
+    #: 说成一条能力拒绝——而用户点测试连接正是为了看 ComfyUI 自己怎么说。
+    gate_capabilities: bool = True
+
+
+def _as_float(value: object) -> float | None:
+    """读盘字段按声明类型收口：坏值抛出后由 ``get`` 归入受控失败路径（读接口 404，不是 500）。"""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise TypeError(f"不是数值：{value!r}")
+    return float(value)
+
+
+def _as_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise TypeError(f"不是整数：{value!r}")
+    return int(value)
+
+
+def _as_str(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise TypeError(f"不是字符串：{value!r}")
+
+
+@dataclass
+class TrialRun:
+    """一次测试连接的完整结果体。运行中只有前几个字段有值。"""
+
+    id: str
+    status: TrialRunStatus
+    provider: str
+    model: str
+    created_at: float
+    #: 这一笔产的是视频还是图像。读侧据此决定产物按播放器还是按图展示。
+    media_type: str = "video"
+    finished_at: float | None = None
+    api_call_id: int | None = None
+    #: 供应商给这笔调用的 id（ComfyUI 的 ``prompt_id``、声明式端点的 ``task_id``）。
+    provider_job_id: str | None = None
+    #: 渲染并脱敏后的提交请求；无定义可渲（Python 实现的端点、ComfyUI 端点）为 None。
+    request: dict[str, Any] | None = None
+    submit_response: object | None = None
+    poll_responses: list[object] = field(default_factory=list)
+    result_response: object | None = None
+    #: 逐阶段提取，键取自 :data:`check.STAGES`；无定义可读（Python 实现的端点）为空。
+    extractions: dict[str, Any] = field(default_factory=dict)
+    video_url: str | None = None
+    duration_seconds: int | None = None
+    error: str | None = None
+    has_artifact: bool = False
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "status": self.status.value,
+            "provider": self.provider,
+            "model": self.model,
+            "media_type": self.media_type,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "api_call_id": self.api_call_id,
+            "provider_job_id": self.provider_job_id,
+            "stages": self.stage_states(),
+            "request": self.request,
+            "submit_response": self.submit_response,
+            "poll_responses": self.poll_responses,
+            "result_response": self.result_response,
+            "extractions": self.extractions,
+            "video_url": self.video_url,
+            "duration_seconds": self.duration_seconds,
+            "error": self.error,
+            "has_artifact": self.has_artifact,
+        }
+
+    def stage_states(self) -> dict[str, str]:
+        """四段状态点：到达过的段 ``done``，没到达的段终态上是 ``skipped``、运行中是 ``pending``。
+
+        不猜「失败落在哪一段」。提交被拒时留痕里已经有一条提交响应，按「第一个没到达的段」标红
+        会把错指到轮询上；哪一段失败由 ``error`` 的失败码自己说。
+
+        由 ``to_payload`` 现算而不是存字段：四段的依据全在同一个结果体上，存一份只会多出一处
+        可能与它不一致的副本，读盘回来的老结果也能照当前口径重算。
+        """
+        reached = {
+            "submit": self.submit_response is not None,
+            "poll": bool(self.poll_responses),
+            "result": self.result_response is not None,
+            "artifact": self.has_artifact,
+        }
+        settled = self.status in (TrialRunStatus.SUCCEEDED, TrialRunStatus.FAILED)
+        return {
+            stage: "done" if reached[stage] else ("skipped" if settled else "pending") for stage in TRIAL_RUN_STAGES
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> TrialRun:
+        return cls(
+            id=str(payload["id"]),
+            status=TrialRunStatus(payload["status"]),
+            provider=str(payload.get("provider", "")),
+            model=str(payload.get("model", "")),
+            media_type=str(payload.get("media_type") or "video"),
+            created_at=_as_float(payload.get("created_at")) or 0.0,
+            finished_at=_as_float(payload.get("finished_at")),
+            api_call_id=_as_int(payload.get("api_call_id")),
+            provider_job_id=_as_str(payload.get("provider_job_id")),
+            request=payload.get("request"),
+            submit_response=payload.get("submit_response"),
+            poll_responses=list(payload.get("poll_responses") or []),
+            result_response=payload.get("result_response"),
+            extractions=dict(payload.get("extractions") or {}),
+            video_url=_as_str(payload.get("video_url")),
+            duration_seconds=_as_int(payload.get("duration_seconds")),
+            error=_as_str(payload.get("error")),
+            has_artifact=bool(payload.get("has_artifact")),
+        )
+
+
+class _ResponseCapture:
+    """按运行时标记的阶段收供应商响应，每条按账本诊断列的 64 KiB 上限收口。"""
+
+    def __init__(self) -> None:
+        self.submit: object | None = None
+        self.polls: deque[object] = deque(maxlen=MAX_POLL_RESPONSES)
+        self.result: object | None = None
+
+    def add(self, stage: ProviderResponseStage, body: object) -> None:
+        bounded = bound_provider_response(body)
+        if stage == "submit":
+            self.submit = bounded
+        elif stage == "poll":
+            self.polls.append(bounded)
+        else:
+            self.result = bounded
+
+
+class TrialRunManager:
+    """进程内测试连接的登记处：并发闸、后台任务、终态写盘与 TTL 清理。"""
+
+    def __init__(
+        self,
+        *,
+        root: Path | None = None,
+        ledger: Ledger | None = None,
+        read_poll_timeout: Callable[[], Awaitable[int]] | None = None,
+    ) -> None:
+        self._root = root
+        self._ledger = ledger or Ledger()
+        self._read_poll_timeout = read_poll_timeout
+        self._runs: dict[str, TrialRun] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._owners: dict[str, str] = {}  # run_id -> user_id
+        self._staging: dict[str, Path] = {}  # run_id -> 素材临时目录
+        self._response_writes: dict[str, set[asyncio.Task[None]]] = {}  # run_id -> 在途诊断写入
+
+    @property
+    def root(self) -> Path:
+        root = self._root or DataRootLayout.current().trial_runs_dir
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def purge_expired(self, *, now: float | None = None) -> int:
+        """清掉过了 TTL 的结果目录，返回清理条数。进程启动与每次新建各扫一遍。"""
+        moment = now if now is not None else time.time()
+        removed = 0
+        for entry in self.root.iterdir():
+            if not entry.is_dir() or entry.name in self._runs:
+                continue
+            try:
+                if not _expired(entry, moment):
+                    continue
+                _remove_tree(entry)
+            except OSError:
+                logger.warning("测试连接结果目录清理失败：%s", entry.name, exc_info=True)
+                continue
+            removed += 1
+        return removed
+
+    def _expired(self, run_id: str) -> bool:
+        """结果是否过了 TTL。清理与读取共用这一条判定。
+
+        清理只在进程启动与每次新建时扫，读接口自己判：一台长时间没有新 run 的服务器上，
+        「24 小时后结果不可读」不能取决于恰好有没有人再发一次测试连接。
+        """
+        try:
+            return _expired(self.root / run_id, time.time())
+        except OSError:
+            return False
+
+    async def start(
+        self,
+        target: TrialRunTarget,
+        parameters: EndpointTestParameters,
+        *,
+        user_id: str = DEFAULT_USER_ID,
+        assets: Mapping[str, Path | list[Path] | None] | None = None,
+        staging: Path | None = None,
+        request_preview: dict[str, Any] | None = None,
+    ) -> TrialRun:
+        """派发一次测试连接。同一用户已有在跑的 run 时拒绝。
+
+        Raises:
+            TrialRunBusyError: 该用户已有一个测试连接在跑。
+        """
+        if user_id in self._owners.values():
+            raise TrialRunBusyError(user_id)
+        self.purge_expired()
+        run_id = uuid.uuid4().hex
+        run = TrialRun(
+            id=run_id,
+            status=TrialRunStatus.QUEUED,
+            provider=target.provider,
+            model=target.model,
+            media_type=target.media_type,
+            created_at=time.time(),
+            request=request_preview,
+        )
+        self._runs[run_id] = run
+        self._owners[run_id] = user_id
+        if staging is not None:
+            self._staging[run_id] = staging
+        # 名额与素材目录先占后建目录：建目录失败（盘满、只读挂载）时占位不还，后续测试永远
+        # 被拒成 busy，而取消又因 task 尚未登记而 404——与结算失败那条路同一种死锁。
+        try:
+            (self.root / run_id).mkdir(parents=True, exist_ok=True)
+            task = asyncio.create_task(self._execute(run, target, parameters, assets or {}))
+        except Exception:
+            self._release(run_id)
+            _remove_tree(self.root / run_id)
+            raise
+        self._tasks[run_id] = task
+        task.add_done_callback(lambda _task: self._tasks.pop(run_id, None))
+        return run
+
+    def get(self, run_id: str) -> TrialRun | None:
+        """读一次 run：运行中读内存，终态读盘。取消或重启中断的 run 没有结果文件。"""
+        if run_id in self._runs:
+            return self._runs[run_id]
+        # run_id 是调用方传入的路径段，读盘前先按生成格式校验，防 ".."（Windows 上还有反斜杠）越出 root。
+        if _RUN_ID_PATTERN.fullmatch(run_id) is None:
+            return None
+        if self._expired(run_id):
+            return None
+        path = self.root / run_id / _RESULT_FILE
+        try:
+            # 反序列化与读盘同属一条受控失败路径：读不出一个可用的 run 一律 None。
+            return TrialRun.from_payload(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
+
+    async def wait(self, run_id: str) -> TrialRun | None:
+        """等一次 run 停下并返回它的终态。已经终态或不存在的 run 立即返回。
+
+        产品路径靠 ``GET`` 轮询，不靠这里；它服务的是「必须等这一笔跑完」的场合——进程关停前
+        排空、以及测试。
+        """
+        task = self._tasks.get(run_id)
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        return self.get(run_id)
+
+    def artifact_path(self, run_id: str) -> Path | None:
+        """这次 run 落盘的产物；两类各有自己的文件名，读接口不必先读一遍结果体才知道找哪个。"""
+        if _RUN_ID_PATTERN.fullmatch(run_id) is None:
+            return None
+        if self._expired(run_id):
+            return None
+        for name in _ARTIFACT_FILE_BY_MEDIA_TYPE.values():
+            path = self.root / run_id / name
+            if path.is_file():
+                return path
+        return None
+
+    async def cancel(self, run_id: str) -> bool:
+        """停本地轮询并按取消结算。
+
+        远端叫不叫得停不在这一层：backend 的生成路径自己接住这次取消（ComfyUI 据 ``prompt_id``
+        叫停一次），而停不下来的通道远端任务照跑、钱照花，故结算一律按取消走。
+        """
+        task = self._tasks.get(run_id)
+        run = self._runs.get(run_id)
+        if task is None or run is None:
+            return False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # 被 shield 保护的诊断写入在任务停下后可能还在跑：结算前等它写完，否则 resume_cancelled
+        # 会与它并发写同一行，关停路径还可能在写入未完时就关库。
+        for write in list(self._response_writes.get(run_id, ())):
+            with contextlib.suppress(Exception):
+                await write
+        # 记账括号自己会把取消结算成 cancelled，这里是它没结算成（写入失败、循环已关停）时的
+        # 兜底：``resume_cancelled`` 带 ``status='pending'`` 守卫，已结算的行不会被改写。pending 行
+        # 绝不能留给一笔用户已经放弃的调用。
+        # 结算抛错也要把名额与盘上目录还掉——任务已经停了，占位留下去会把后续测试永远拒成 busy，
+        # 而重试取消又因 task 已移除而 404，死锁只能重启解。
+        try:
+            if run.api_call_id is not None:
+                await self._ledger.resume_cancelled(call_id=run.api_call_id)
+        finally:
+            self._release(run_id)
+            _remove_tree(self.root / run_id)
+        return True
+
+    async def _execute(
+        self,
+        run: TrialRun,
+        target: TrialRunTarget,
+        parameters: EndpointTestParameters,
+        assets: Mapping[str, Path | list[Path] | None],
+    ) -> None:
+        capture = _ResponseCapture()
+        run.status = TrialRunStatus.RUNNING
+        try:
+            poll_timeout = await self._poll_timeout()
+            # backend 先装配再开账：装配失败（模型行不存在、供应商配错）时一个字节都没发出去，
+            # 记一笔 pending 再翻成 failed 会让账本上多一条根本没打过的调用。
+            backend = await target.build_backend()
+            is_video = target.media_type == "video"
+            # 能力闸与比例覆盖共用一份按本次请求档位解析的能力，与生产同源：声明了
+            # ``video_capabilities_for_tier`` 的端点按分辨率收窄，读未收窄的属性会比生产放得更宽。
+            # 测试请求不带 ``service_tier``，下发的就是请求缺省档，解析也取缺省档。
+            video_caps = resolve_video_capabilities(backend, resolution=parameters.resolution) if is_video else None
+            # 生产路径在记账括号前跑同一道能力闸（声明的违约在付费前拒绝，不发给供应商）；
+            # 测试连接跑的是生产那条路，闸也一致。免闸的目标见 ``TrialRunTarget.gate_capabilities``。
+            if target.gate_capabilities:
+                if video_caps is None:
+                    _gate_trial_image_request(backend, target, assets)
+                else:
+                    await _gate_trial_video_request(video_caps, target, parameters, assets)
+            # 声明 first_frame_ratio_adaptive_only 的端点在带首帧的请求上只接受 adaptive；
+            # 下发值与记账值分离，账本记的仍是用户填的比例意图（与生产同一分工）。
+            request_aspect_ratio = resolve_first_frame_aspect_ratio(
+                caps=video_caps,
+                aspect_ratio=parameters.aspect_ratio,
+                has_first_frame=_single(assets.get("start_image")) is not None,
+            )
+            async with self._ledger.record(
+                project_name="",
+                call_type=CALL_TYPE_VIDEO if is_video else CALL_TYPE_IMAGE,
+                model=target.model,
+                provider=target.provider,
+                prompt=parameters.prompt,
+                resolution=parameters.resolution,
+                # 时长与成片音轨是视频这一维的事，图像这一笔按「没有」记：记一个 5 秒会让用量页上
+                # 出现一个不存在的时长，而图像请求的形状里根本没有音轨这一维（``ImageGenerationRequest``
+                # 不带它），照抄表单上那个视频开关只会让这一行说自己出了声。
+                duration_seconds=parameters.duration_seconds if is_video else None,
+                aspect_ratio=parameters.aspect_ratio,
+                generate_audio=parameters.generate_audio if is_video else False,
+                purpose=CallPurpose.ENDPOINT_TRIAL,
+            ) as call:
+                run.api_call_id = call.call_id
+                on_response = self._response_writer(run, capture, call.call_id)
+                request = (
+                    self._video_request(
+                        run,
+                        parameters,
+                        assets,
+                        poll_timeout,
+                        aspect_ratio=request_aspect_ratio,
+                        on_provider_response=on_response,
+                    )
+                    if is_video
+                    else self._image_request(
+                        run, parameters, assets, aspect_ratio=request_aspect_ratio, on_provider_response=on_response
+                    )
+                )
+                result = await backend.generate(request)
+                call.success(result)
+                run.provider_job_id = getattr(result, "task_id", None)
+                # 产物在供应商那儿的地址：两类结果各叫一个名字，落进同一格。
+                run.video_url = getattr(result, "video_uri", None) or getattr(result, "image_uri", None)
+                run.duration_seconds = getattr(result, "duration_seconds", None)
+                run.has_artifact = self._artifact_file(run.id, target.media_type).is_file()
+            self._finish(run, target, capture, TrialRunStatus.SUCCEEDED)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 两种运行时与两道能力闸的失败载体同形（稳定 code + 可序列化 params），编码成失败码后
+            # 读侧按同一条路径本地化；其余异常没有稳定码可编，原样留字符串。
+            structured = isinstance(
+                exc, DeclarativeRuntimeError | ComfyuiError | VideoCapabilityError | ImageCapabilityError
+            )
+            run.error = encode_failure(exc.code, **exc.params) if structured else str(exc)
+            self._finish(run, target, capture, TrialRunStatus.FAILED)
+
+    def _response_writer(
+        self, run: TrialRun, capture: _ResponseCapture, call_id: int
+    ) -> Callable[[ProviderResponseStage, object], Awaitable[None]]:
+        """供应商响应的诊断回调：并进结果体并写进账本的诊断列。两种请求形状共用这一个。"""
+
+        async def on_provider_response(stage: ProviderResponseStage, body: object) -> None:
+            capture.add(stage, body)
+            # 边收边并进结果体：四段状态点读的是这三个字段，只在终态并一次的话，运行中的 GET
+            # 看到的永远是四个空点。
+            _merge_capture(run, capture)
+            # 用户随时可能取消，而取消可能正落在这次写入中间。诊断留痕的写入被拦腰截断会留下
+            # 一个半开的事务，随后的失败结算就得在一条坏掉的连接上做——shield 让这次写入自己跑完，
+            # 取消照常传给调用它的那一层。写入任务登记在 run 名下：shield 只保护协程不被取消，
+            # 外层任务停下后它还在跑，取消方结算前要等它（见 ``cancel``）。
+            write = asyncio.ensure_future(self._ledger.record_provider_response(call_id=call_id, body=body))
+            writes = self._response_writes.setdefault(run.id, set())
+            writes.add(write)
+            write.add_done_callback(writes.discard)
+            await asyncio.shield(write)
+
+        return on_provider_response
+
+    def _video_request(
+        self,
+        run: TrialRun,
+        parameters: EndpointTestParameters,
+        assets: Mapping[str, Path | list[Path] | None],
+        poll_timeout: int,
+        *,
+        aspect_ratio: str,
+        on_provider_response: Callable[[ProviderResponseStage, object], Awaitable[None]],
+    ) -> VideoGenerationRequest:
+        reference_images = assets.get("reference_images")
+        reference_audio = assets.get("reference_audio_files")
+        return VideoGenerationRequest(
+            prompt=parameters.prompt,
+            output_path=self._artifact_file(run.id, "video"),
+            aspect_ratio=aspect_ratio,
+            duration_seconds=parameters.duration_seconds,
+            resolution=parameters.resolution,
+            start_image=_single(assets.get("start_image")),
+            end_image=_single(assets.get("end_image")),
+            reference_images=list(reference_images) if isinstance(reference_images, list) else None,
+            reference_audio_files=list(reference_audio) if isinstance(reference_audio, list) else None,
+            generate_audio=parameters.generate_audio,
+            poll_timeout_seconds=poll_timeout,
+            on_provider_response=on_provider_response,
+        )
+
+    def _image_request(
+        self,
+        run: TrialRun,
+        parameters: EndpointTestParameters,
+        assets: Mapping[str, Path | list[Path] | None],
+        *,
+        aspect_ratio: str,
+        on_provider_response: Callable[[ProviderResponseStage, object], Awaitable[None]],
+    ) -> ImageGenerationRequest:
+        """图像端点这一笔的请求。
+
+        首尾帧与参考音频落不进这个形状：图像端点没有这几个语义键（见 ``comfyui.bindings``），
+        界面也不为它渲这几个格子。轮询上限同样不在请求里——图像通道用自己的定值
+        （``comfyui_image_backend.IMAGE_POLL_TIMEOUT_SECONDS``），不读视频那个设置项。
+        """
+        reference_images = assets.get("reference_images")
+        return ImageGenerationRequest(
+            prompt=parameters.prompt,
+            output_path=self._artifact_file(run.id, "image"),
+            reference_images=[
+                ReferenceImage(path=str(path))
+                for path in (reference_images if isinstance(reference_images, list) else [])
+            ],
+            aspect_ratio=aspect_ratio,
+            image_size=parameters.resolution,
+            on_provider_response=on_provider_response,
+        )
+
+    async def _poll_timeout(self) -> int:
+        if self._read_poll_timeout is not None:
+            return await self._read_poll_timeout()
+        from lib.config.service import read_video_poll_timeout_seconds
+
+        return await read_video_poll_timeout_seconds()
+
+    def _finish(
+        self,
+        run: TrialRun,
+        target: TrialRunTarget,
+        capture: _ResponseCapture,
+        status: TrialRunStatus,
+    ) -> None:
+        run.status = status
+        run.finished_at = time.time()
+        _merge_capture(run, capture)
+        if run.provider_job_id is None:
+            run.provider_job_id = _submitted_prompt_id(capture.submit)
+        run.extractions = _stage_reports(target.definition, capture)
+        try:
+            self._result_file(run.id).write_text(
+                json.dumps(run.to_payload(), ensure_ascii=False, default=str), encoding="utf-8"
+            )
+        except OSError:
+            logger.warning("测试连接结果写盘失败 run_id=%s", run.id, exc_info=True)
+        self._release(run.id)
+
+    async def shutdown(self) -> None:
+        """进程关停：停掉所有在跑的 run 并按取消结算。
+
+        任务随事件循环消亡时没有进程会回来翻账，故由关停方走取消那条路径：先停任务（记账括号
+        据此结算 cancelled），再兜底翻掉没结算成的 pending 行。
+
+        单条 run 结算失败（如库已不可用）不中断这趟排空：异常穿透出去会让后面的 run 一条都
+        不停，关停流程里排在本步之后的关 HTTP 客户端与关库也一起跳过。
+        """
+        for run_id in list(self._tasks):
+            try:
+                await self.cancel(run_id)
+            except Exception:
+                logger.warning("关停时结算测试连接失败：%s", run_id, exc_info=True)
+
+    def _release(self, run_id: str) -> None:
+        """让出用户的并发名额，并删掉素材临时目录——素材用完即丢，不留在盘上。"""
+        self._runs.pop(run_id, None)
+        self._owners.pop(run_id, None)
+        self._response_writes.pop(run_id, None)
+        staging = self._staging.pop(run_id, None)
+        if staging is not None:
+            _remove_tree(staging)
+
+    def _result_file(self, run_id: str) -> Path:
+        return self.root / run_id / _RESULT_FILE
+
+    def _artifact_file(self, run_id: str, media_type: str) -> Path:
+        return self.root / run_id / _ARTIFACT_FILE_BY_MEDIA_TYPE[media_type]
+
+
+async def _gate_trial_video_request(
+    caps: VideoCapabilities,
+    target: TrialRunTarget,
+    parameters: EndpointTestParameters,
+    assets: Mapping[str, Path | list[Path] | None],
+) -> None:
+    """提交前跑生产那道视频能力闸，``caps`` 是按本次请求档位解析好的能力。"""
+    from lib.backends.video_frame_slots import gate_video_request, plan_frame_slots
+    from lib.speech.audio_utils import probe_reference_audio_total_seconds
+
+    reference_images = assets.get("reference_images")
+    reference_audio = assets.get("reference_audio_files")
+    audio_files = list(reference_audio) if isinstance(reference_audio, list) else None
+    # 与生产路径同一探测：只在能力声明了总时长约束时探；探不出（随包 ffmpeg 不可用）传 None，
+    # 闸按未知跳过该项而非拒绝。
+    total_seconds = (
+        await probe_reference_audio_total_seconds(audio_files)
+        if audio_files and caps.max_reference_audio_total_seconds is not None
+        else None
+    )
+    images = list(reference_images) if isinstance(reference_images, list) else None
+    end_image = _single(assets.get("end_image"))
+    # has_image 取整份槽位计划，与生产同源：参考图驱动的端点（如 S2V）没有首帧但带参考图，
+    # 只看首帧会把每一次合法请求都判成纯文生、按 text_to_video=false 拒掉。
+    slot_plan = plan_frame_slots(
+        start_image=_single(assets.get("start_image")),
+        end_image=end_image,
+        reference_images=images,
+    )
+    gate_video_request(
+        caps=caps,
+        provider=target.provider,
+        model=target.model,
+        prompt=parameters.prompt,
+        has_image=bool(slot_plan.specs),
+        end_image=end_image,
+        reference_images=images,
+        reference_audio_files=audio_files,
+        reference_audio_total_seconds=total_seconds,
+    )
+
+
+def _gate_trial_image_request(
+    backend: Any,
+    target: TrialRunTarget,
+    assets: Mapping[str, Path | list[Path] | None],
+) -> None:
+    """图像这一笔的能力闸：判据与 ``MediaGenerator`` 出图前那道同一条。
+
+    图像通道没有 ``gate_video_request`` 的对应物：文生图 / 图生图之外没有别的可选输入路径，判的
+    就是「这次带不带参考图」对不对得上 backend 声明的能力。图像 backend 没有 ``video_capabilities``，
+    而视频那道闸在 caps 为 ``None`` 时把带输入的请求一律按不支持拒掉——图像请求走那道闸，每一次
+    带参考图的测试连接都会被判成 ``video_reference_images_unsupported``。
+    """
+    reference_images = assets.get("reference_images")
+    has_references = bool(reference_images) if isinstance(reference_images, list) else False
+    needed = ImageCapability.IMAGE_TO_IMAGE if has_references else ImageCapability.TEXT_TO_IMAGE
+    if needed not in backend.capabilities:
+        raise ImageCapabilityError(
+            "image_capability_missing_i2i" if has_references else "image_capability_missing_t2i",
+            provider=target.provider,
+            model=target.model,
+        )
+
+
+def declarative_target(
+    definition: Mapping[str, Any],
+    credentials: EndpointTestCredentials,
+    parameters: EndpointTestParameters,
+    *,
+    provider: str | None = None,
+) -> TrialRunTarget:
+    """内联定义的目标：按定义声明的媒体类型直接构造声明式视频或图片 backend。
+
+    ``provider`` 缺省取 ``base_url`` 的 host——内联凭证没有供应商身份，而账本必须落一个能让用户
+    日后认出这笔钱花在哪里的值。三节 URL 都写死绝对地址的定义没有 base_url 可取，退而取提交
+    地址的 host：那正是这笔钱实际打给谁。
+    """
+    label = provider or provider_from_base_url(credentials.base_url) or _definition_host(definition)
+    media_type = definition_media_type(definition)
+    backend_class = DeclarativeImageBackend if media_type == "image" else DeclarativeVideoBackend
+
+    async def build() -> DeclarativeVideoBackend | DeclarativeImageBackend:
+        return backend_class(
+            api_key=credentials.api_key,
+            base_url=credentials.base_url,
+            model=parameters.model,
+            definition=definition,
+            provider=label,
+        )
+
+    return TrialRunTarget(
+        provider=label,
+        model=parameters.model,
+        build_backend=build,
+        definition=definition,
+        media_type=media_type,
+    )
+
+
+def model_ref_target(
+    provider_id: str,
+    model_id: str,
+    *,
+    resolver: ConfigResolver,
+    definition: Mapping[str, Any] | None = None,
+    media_type: str = "video",
+) -> TrialRunTarget:
+    """模型行的目标：经生产那道构造缝装配 backend，内置与自定义供应商同一入口。
+
+    ``definition`` 在模型行解析出声明式定义（自定义调用端点或内置声明式端点）时由调用方带上，
+    用来在结果体里给出渲染后的请求与逐阶段提取；Python 实现的端点两段留空。
+
+    ``media_type`` 决定装配走哪一侧的注册表：模型行自己说它是图像行还是视频行，装配层照它取。
+    """
+
+    async def build() -> Any:
+        from lib.backends.backend_assembly import assemble_backend
+
+        return await assemble_backend(
+            provider_id=provider_id, media_type=media_type, model_id=model_id, resolver=resolver
+        )
+
+    return TrialRunTarget(
+        provider=provider_id,
+        model=model_id,
+        build_backend=build,
+        definition=definition,
+        media_type=media_type,
+    )
+
+
+def artifact_media_type(path: Path) -> str:
+    """一份落盘产物的 MIME，按文件头判。
+
+    不按扩展名：产物名是本层按 ``media_type`` 起的，而真实容器由供应商那一侧的导出设置决定，
+    同族里换一个（mp4 / mov）名字不会跟着变。认不出的字节给通用二进制类型，让读侧自己去认——
+    声明一个错的 MIME 会让浏览器按那个类型去解，比不声明更难排查。
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(CONTAINER_HEAD_BYTES)
+    except OSError:
+        return "application/octet-stream"
+    return sniff_container(head) or "application/octet-stream"
+
+
+def provider_from_base_url(base_url: str) -> str:
+    return urlsplit(base_url).hostname or base_url
+
+
+def _definition_host(definition: Mapping[str, Any]) -> str:
+    return urlsplit(str(definition.get("submit", {}).get("url", ""))).hostname or ""
+
+
+def _single(value: Path | list[Path] | None) -> Path | None:
+    return value if isinstance(value, Path) else None
+
+
+def _merge_capture(run: TrialRun, capture: _ResponseCapture) -> None:
+    """把这一刻收到的供应商响应并进结果体。"""
+    run.submit_response = capture.submit
+    run.poll_responses = list(capture.polls)
+    run.result_response = capture.result
+
+
+def _submitted_prompt_id(submit: object) -> str | None:
+    """失败在提交之后时，从提交响应里捡回供应商的 id。
+
+    只认 ``prompt_id`` 这一个键（ComfyUI 的提交响应只有它）：声明式端点的 id 键随定义而变，
+    那一侧由 ``result.task_id`` 给出，在这里猜键名只会把某个同名的无关字段当成 job id。
+    """
+    if isinstance(submit, Mapping):
+        prompt_id = str(submit.get("prompt_id") or "").strip()
+        return prompt_id or None
+    return None
+
+
+def _stage_reports(definition: Mapping[str, Any] | None, capture: _ResponseCapture) -> dict[str, Any]:
+    """按运行时阶段生成逐节提取报告。没有可读的取值路径时返回空。
+
+    闸门与「验证响应」同一条：逐阶段提取就是那个模式的机器，这种 kind 答不上「响应这样回我时
+    我读成了什么」，这里也就没有可报的——ComfyUI 端点的产物提取是固定代码，不是可配路径。
+    """
+    if definition is None or not supports_test_mode(str(definition.get("kind", "")), EndpointTestMode.CHECK_RESPONSE):
+        return {}
+    polls = list(capture.polls)
+    bodies: dict[str, object] = {}
+    if capture.submit is not None:
+        bodies["submit"] = capture.submit
+    if polls:
+        bodies["poll"] = polls[-1]
+    if capture.result is not None:
+        bodies["result"] = capture.result
+    reports: dict[str, Any] = {}
+    for stage in STAGES:
+        body = bodies.get(stage)
+        if body is None:
+            continue
+        try:
+            reports[stage] = stage_report_payload(check_response(definition, stage, body))
+        except Exception:
+            logger.debug("测试连接的 %s 节提取报告生成失败", stage, exc_info=True)
+    return reports
+
+
+def _expired(entry: Path, now: float) -> bool:
+    return now - entry.stat().st_mtime > TRIAL_RUN_TTL_SECONDS
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+_manager: TrialRunManager | None = None
+
+
+def trial_run_manager() -> TrialRunManager:
+    """进程内唯一的登记处。首次取用时扫一遍过期目录（重启中断的 run 没有结果文件，一并清掉）。"""
+    global _manager
+    if _manager is None:
+        _manager = TrialRunManager()
+        _manager.purge_expired()
+    return _manager
+
+
+async def shutdown_trial_runs() -> None:
+    """进程关停入口：登记处从未被取用时不为关停凭空建一台。"""
+    if _manager is not None:
+        await _manager.shutdown()

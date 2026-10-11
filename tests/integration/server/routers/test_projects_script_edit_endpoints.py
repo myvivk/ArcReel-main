@@ -1,0 +1,981 @@
+"""Tests for projects_script_edit_endpoints."""
+
+import unicodedata
+from contextlib import contextmanager
+from copy import deepcopy
+
+import pytest
+
+from lib.project.project_manager import ProjectManager
+from lib.script.script_batch_edit import ScriptBatchEditor
+from server.routers import projects
+from tests.integration.server.routers.projects_router_support import (
+    _FakePM,
+    build_projects_client,
+    override,
+)
+
+
+class TestProjectsRouter:
+    def test_scene_segment_and_overview_endpoints(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [{"scene_id": "001", "duration_seconds": 8, "image_prompt": {}, "video_prompt": {}}],
+        }
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [{"segment_id": "E1S01", "duration_seconds": 4}],
+        }
+
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            patch_scene = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={"script_file": "episode_1.json", "updates": {"duration_seconds": 6, "segment_break": True}},
+            )
+            assert patch_scene.status_code == 200
+            assert patch_scene.json()["scene"]["duration_seconds"] == 6
+
+            patch_scene_missing = client.patch(
+                "/api/v1/projects/ready/script-scenes/404",
+                json={"script_file": "episode_1.json", "updates": {}},
+            )
+            assert patch_scene_missing.status_code == 404
+
+            patch_segment = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "duration_seconds": 8, "segment_break": True},
+            )
+            assert patch_segment.status_code == 200
+
+            not_narration = client.patch(
+                "/api/v1/projects/ready/segments/001",
+                json={"script_file": "episode_1.json", "duration_seconds": 8},
+            )
+            assert not_narration.status_code == 400
+
+            segment_missing = client.patch(
+                "/api/v1/projects/ready/segments/E9S99",
+                json={"script_file": "narration.json", "duration_seconds": 8},
+            )
+            assert segment_missing.status_code == 404
+
+            gen_overview_ok = client.post("/api/v1/projects/ready/generate-overview")
+            assert gen_overview_ok.status_code == 200
+
+    def test_update_segment_writes_character_and_clue_refs(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [
+                {
+                    "segment_id": "E1S01",
+                    "duration_seconds": 4,
+                    "characters_in_segment": ["Alice"],
+                    "scenes": ["Forest"],
+                    "props": ["Sword"],
+                }
+            ],
+        }
+
+        client = build_projects_client(monkeypatch, fake_pm)
+        nfd_cafe = unicodedata.normalize("NFD", "Café")
+
+        with client:
+            # 写入新引用列表
+            patched = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={
+                    "script_file": "narration.json",
+                    "characters_in_segment": [" Bob ", f" {nfd_cafe} "],
+                    "scenes": [" Castle "],
+                    "props": [],
+                },
+            )
+            assert patched.status_code == 200
+            seg = patched.json()["segment"]
+            assert seg["characters_in_segment"] == ["Bob", "Café"]
+            assert seg["scenes"] == ["Castle"]
+            assert seg["props"] == []
+
+            # 不传字段时不应改动现有值
+            untouched = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "duration_seconds": 7},
+            )
+            assert untouched.status_code == 200
+            seg2 = untouched.json()["segment"]
+            assert seg2["duration_seconds"] == 7
+            assert seg2["characters_in_segment"] == ["Bob", "Café"]
+            assert seg2["scenes"] == ["Castle"]
+            assert seg2["props"] == []
+
+    def test_update_segment_writes_novel_text(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [
+                {"segment_id": "E1S01", "duration_seconds": 4, "novel_text": "风吹过旷野。", "video_prompt": None}
+            ],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "novel_text": "风停了。"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["segment"]["novel_text"] == "风停了。"
+        assert fake_pm.scripts[("ready", "narration.json")]["segments"][0]["novel_text"] == "风停了。"
+
+    def test_update_segment_ignores_transition(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [{"segment_id": "E1S01", "duration_seconds": 4, "novel_text": "风吹过旷野。"}],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "transition_to_next": "fade", "note": "备注"},
+            )
+
+        assert response.status_code == 200
+        segment = fake_pm.scripts[("ready", "narration.json")]["segments"][0]
+        assert (segment["note"], "transition_to_next" in segment) == ("备注", False)
+
+    def test_update_scene_ignores_source_text(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [{"scene_id": "001", "duration_seconds": 8, "source_text": "原文。"}],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={"script_file": "episode_1.json", "updates": {"source_text": "改写的原文", "note": "备注"}},
+            )
+
+        assert response.status_code == 200
+        scene = fake_pm.scripts[("ready", "episode_1.json")]["scenes"][0]
+        assert (scene["source_text"], scene["note"]) == ("原文。", "备注")
+
+    def test_update_segment_allows_unchanged_legacy_mixed_speech(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        prompt = {"dialogue": [{"speaker": "Alice", "line": "快走。"}]}
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [
+                {
+                    "segment_id": "E1S01",
+                    "duration_seconds": 4,
+                    "novel_text": "风吹过旷野。",
+                    "video_prompt": prompt,
+                    "needs_replan": True,
+                }
+            ],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "video_prompt": prompt, "note": "保留历史媒体"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["segment"]["note"] == "保留历史媒体"
+        assert response.json()["segment"]["needs_replan"] is True
+
+    def test_update_segment_allows_visual_prompt_edit_on_legacy_mixed_speech(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [
+                {
+                    "segment_id": "E1S01",
+                    "duration_seconds": 4,
+                    "novel_text": "风吹过旷野。",
+                    "video_prompt": {"action": "转身", "dialogue": [{"speaker": "Alice", "line": "快走。"}]},
+                    "needs_replan": True,
+                }
+            ],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={
+                    "script_file": "narration.json",
+                    "video_prompt": {"action": "慢慢转身", "dialogue": [{"speaker": "Alice", "line": "快走。"}]},
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["segment"]["video_prompt"]["action"] == "慢慢转身"
+        assert response.json()["segment"]["needs_replan"] is True
+
+    def test_update_segment_rejects_drama_script_with_residual_segments(self, tmp_path, monkeypatch):
+        # drama 脚本残留 segments 键不应被当 narration 改写：须返回 400 而非放行
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "drama.json")] = {
+            "content_mode": "drama",
+            "segments": [{"segment_id": "E1S01", "duration_seconds": 4}],
+            "scenes": [{"scene_id": "E1S01"}],
+        }
+
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            resp = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "drama.json", "duration_seconds": 7},
+            )
+            assert resp.status_code == 400
+
+    def test_update_segment_write_value_error_returns_422(self, tmp_path, monkeypatch):
+        # 写盘统一入口对客户端错误（结构非法 / 集号错配 / 非法文件名）抛 ValueError，
+        # router 须统一转 422 而非落到 500 兜底。
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "narration.json")] = {
+            "content_mode": "narration",
+            "segments": [{"segment_id": "E1S01", "duration_seconds": 4}],
+        }
+
+        @contextmanager
+        def _raising_locked_script(name, script_file):
+            script = fake_pm.load_script(name, script_file)
+            yield script
+            raise ValueError("脚本内 episode=1 与文件名 episode_10 不一致")
+
+        monkeypatch.setattr(fake_pm, "locked_script", _raising_locked_script)
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            resp = client.patch(
+                "/api/v1/projects/ready/segments/E1S01",
+                json={"script_file": "narration.json", "duration_seconds": 7},
+            )
+            assert resp.status_code == 422
+            body = resp.json()
+            # 摘要走产品语言，异常原文只进独立诊断字段
+            assert body["detail"] == "脚本结构校验失败，请检查后重试"
+            assert "不一致" in body["diagnostic"]
+
+    def test_update_scene_supports_character_and_clue_refs(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [
+                {
+                    "scene_id": "001",
+                    "duration_seconds": 8,
+                    "characters_in_scene": ["Alice"],
+                    "scenes": [],
+                    "props": [],
+                }
+            ],
+        }
+
+        client = build_projects_client(monkeypatch, fake_pm)
+        nfd_cafe = unicodedata.normalize("NFD", "Café")
+
+        with client:
+            patched = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {
+                        "characters_in_scene": [f" {nfd_cafe} "],
+                        "scenes": [" Castle "],
+                        "props": [" Map "],
+                    },
+                },
+            )
+            assert patched.status_code == 200
+            scene = patched.json()["scene"]
+            assert scene["characters_in_scene"] == ["Café"]
+            assert scene["scenes"] == ["Castle"]
+            assert scene["props"] == ["Map"]
+
+            gen_overview_bad = client.post("/api/v1/projects/bad/generate-overview")
+            assert gen_overview_bad.status_code == 400
+            assert "源目录为空" in gen_overview_bad.json()["detail"]
+
+            # 供应商未配置属另一类原因，与「源目录为空」区分（各自映射独立 i18n key）
+            gen_overview_no_provider = client.post("/api/v1/projects/no-provider/generate-overview")
+            assert gen_overview_no_provider.status_code == 400
+            assert "配置文本供应商" in gen_overview_no_provider.json()["detail"]
+
+            update_overview = client.patch(
+                "/api/v1/projects/ready/overview",
+                json={"synopsis": "new synopsis", "genre": "悬疑", "theme": "真相", "world_setting": "古代"},
+            )
+            assert update_overview.status_code == 200
+            assert update_overview.json()["overview"]["synopsis"] == "new synopsis"
+
+    def test_update_scene_atomically_rejects_mixed_utterances(self, tmp_path, monkeypatch):
+        # 人工编辑不能把一次视频请求写成角色发声 + 叙述旁白混合单元。
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [
+                {
+                    "scene_id": "001",
+                    "duration_seconds": 8,
+                    "characters_in_scene": ["Alice"],
+                    "scenes": [],
+                    "props": [],
+                    "utterances": [],
+                }
+            ],
+        }
+
+        client = build_projects_client(monkeypatch, fake_pm)
+        utterances = [
+            {"kind": "dialogue", "speaker": "Alice", "text": "你来了。"},
+            {"kind": "voiceover", "speaker": None, "text": "命运就此转向。"},
+        ]
+
+        with client:
+            rejected = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={"script_file": "episode_1.json", "updates": {"utterances": utterances}},
+            )
+            assert rejected.status_code == 409
+            detail = rejected.json()["detail"]
+            assert detail["problems"][0]["code"] == "mixed_speech"
+            assert detail["problems"][0]["operation_index"] == 0
+            assert detail["problems"][0]["next_action"] == "replan_unit"
+            assert fake_pm.scripts[("ready", "episode_1.json")]["scenes"][0]["utterances"] == []
+
+    def test_update_scene_allows_unchanged_legacy_mixed_utterances(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        utterances = [
+            {"kind": "dialogue", "speaker": "Alice", "text": "你来了。"},
+            {"kind": "voiceover", "speaker": None, "text": "命运就此转向。"},
+        ]
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [{"scene_id": "001", "duration_seconds": 8, "utterances": utterances}],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {"utterances": utterances, "note": "保留历史媒体"},
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["scene"]["note"] == "保留历史媒体"
+
+    def test_update_scene_rejects_legacy_prompt_edit_that_introduces_mixed_speech(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        original_prompt = {"action": "转身"}
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "drama",
+            "scenes": [
+                {
+                    "scene_id": "001",
+                    "duration_seconds": 8,
+                    "video_prompt": original_prompt,
+                    "voiceover": ["命运就此转向。"],
+                }
+            ],
+        }
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ready/script-scenes/001",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {
+                        "video_prompt": {
+                            "action": "转身",
+                            "dialogue": [{"speaker": "Alice", "line": "跟紧我。"}],
+                        }
+                    },
+                },
+            )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["problems"][0]["code"] == "mixed_speech"
+        assert detail["problems"][0]["locations"] == [
+            {"path": ["video_prompt", "dialogue", 0, "line"], "line": None},
+            {"path": ["voiceover", 0], "line": None},
+        ]
+        saved = fake_pm.scripts[("ready", "episode_1.json")]["scenes"][0]
+        assert saved["video_prompt"] == original_prompt
+
+    @staticmethod
+    def _ad_script(shot_ids: list[str]) -> dict:
+        return {
+            "content_mode": "ad",
+            "shots": [
+                {
+                    "shot_id": sid,
+                    "section": "hook",
+                    "duration_seconds": 4,
+                    "voiceover_text": f"口播 {sid}",
+                    "video_prompt": {},
+                    "products_in_shot": [],
+                }
+                for sid in shot_ids
+            ],
+        }
+
+    def test_update_shot_edits_voiceover_section_duration(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = self._ad_script(["E1S01", "E1S02"])
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            patched = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {
+                        "voiceover_text": "新口播",
+                        "section": "demo",
+                        "duration_seconds": 6,
+                        "products_in_shot": ["速干杯"],
+                    },
+                },
+            )
+            assert patched.status_code == 200
+            shot = patched.json()["shot"]
+            assert shot["voiceover_text"] == "新口播"
+            assert shot["section"] == "demo"
+            assert shot["duration_seconds"] == 6
+            assert shot["products_in_shot"] == ["速干杯"]
+            # 持久化落到脚本存储
+            saved = fake_pm.scripts[("ad-ready", "episode_1.json")]["shots"][0]
+            assert saved["voiceover_text"] == "新口播"
+
+    def test_update_shot_allows_unchanged_legacy_mixed_speech(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        script = self._ad_script(["E1S01"])
+        script["shots"][0]["video_prompt"] = {"dialogue": [{"speaker": "Alice", "line": "快走。"}]}
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = script
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {"voiceover_text": "口播 E1S01", "note": "保留历史媒体"},
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["shot"]["note"] == "保留历史媒体"
+
+    def test_update_shot_allows_visual_prompt_edit_on_legacy_mixed_speech(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        script = self._ad_script(["E1S01"])
+        script["shots"][0]["video_prompt"] = {
+            "action": "转身",
+            "dialogue": [{"speaker": "Alice", "line": "快走。"}],
+        }
+        script["shots"][0]["needs_replan"] = True
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = script
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            response = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {
+                        "video_prompt": {
+                            "action": "慢慢转身",
+                            "dialogue": [{"speaker": "Alice", "line": "快走。"}],
+                        }
+                    },
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["shot"]["video_prompt"]["action"] == "慢慢转身"
+        assert response.json()["shot"]["needs_replan"] is True
+
+    def test_update_shot_ignores_non_whitelisted_fields(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = self._ad_script(["E1S01"])
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            patched = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {"shot_id": "E1S99", "generated_assets": {"status": "completed"}, "note": "备注"},
+                },
+            )
+            assert patched.status_code == 200
+            saved = fake_pm.scripts[("ad-ready", "episode_1.json")]["shots"][0]
+            assert saved["shot_id"] == "E1S01"
+            assert "generated_assets" not in saved
+            assert saved["note"] == "备注"
+
+    def test_update_shot_rejects_non_ad_script(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            rejected = client.patch(
+                "/api/v1/projects/ready/script-shots/001",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert rejected.status_code == 400
+
+    def test_update_shot_unknown_id_404(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = self._ad_script(["E1S01"])
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            missing = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S99",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert missing.status_code == 404
+
+    def test_corrupted_shots_shape_fails_loud_not_silently_wiped(self, tmp_path, monkeypatch):
+        """shots 非列表 / 含非对象元素 / 身份键缺失或重复时 PATCH 返回 422，而非误导性的 404。"""
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ad-ready", "episode_1.json")] = {"content_mode": "ad", "shots": "oops"}
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            patched = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert patched.status_code == 422
+
+            fake_pm.scripts[("ad-ready", "episode_1.json")] = {"content_mode": "ad", "shots": [{"shot_id": "a"}, 42]}
+            mixed = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/a",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert mixed.status_code == 422
+
+            fake_pm.scripts[("ad-ready", "episode_1.json")] = {
+                "content_mode": "ad",
+                "shots": [{"shot_id": 7}],
+            }
+            dirty_id = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert dirty_id.status_code == 422
+
+            # 重复 shot_id：身份键不唯一，PATCH 会静默更新首个命中项，必须拦下
+            fake_pm.scripts[("ad-ready", "episode_1.json")] = {
+                "content_mode": "ad",
+                "shots": [{"shot_id": "a"}, {"shot_id": "a"}],
+            }
+            dup_id = client.patch(
+                "/api/v1/projects/ad-ready/script-shots/a",
+                json={"script_file": "episode_1.json", "updates": {"voiceover_text": "x"}},
+            )
+            assert dup_id.status_code == 422
+
+    @pytest.mark.parametrize(
+        ("method", "project_name", "endpoint", "body"),
+        [
+            (
+                "patch",
+                "ready",
+                "/api/v1/projects/ready/script-scenes/001",
+                {"script_file": "episode_1.json", "updates": {}},
+            ),
+            (
+                "patch",
+                "ad-ready",
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                {"script_file": "episode_1.json", "updates": {}},
+            ),
+            (
+                "post",
+                "ad-ready",
+                "/api/v1/projects/ad-ready/script-items/E1S01/move",
+                {"script_file": "episode_1.json", "after_id": None},
+            ),
+            (
+                "patch",
+                "ready",
+                "/api/v1/projects/ready/segments/E1S01",
+                {"script_file": "narration.json"},
+            ),
+            (
+                "patch",
+                "ready",
+                "/api/v1/projects/ready/episodes/1",
+                {"title": "新集名"},
+            ),
+            (
+                "post",
+                "ad-ready",
+                "/api/v1/projects/ad-ready/script-items",
+                {"script_file": "episode_1.json", "after_id": "E1S01"},
+            ),
+            (
+                "delete",
+                "ad-ready",
+                "/api/v1/projects/ad-ready/script-items/E1S01?script_file=episode_1.json",
+                None,
+            ),
+        ],
+    )
+    def test_script_edit_routes_refuse_on_a_migration_blocked_project(
+        self, tmp_path, monkeypatch, method: str, project_name: str, endpoint: str, body: dict | None
+    ):
+        """写剧本的路由一律在入口层被拒：七条手动编辑路由与同文件其它写入路由同守卫。
+
+        阻断由入口声明，不指望内层兜底：其中六条经 ScriptBatchEditor 另有一道内部裁决，
+        改分集标题那条走 locked_episode_script，全程不读裁决，入口守卫是它唯一的一道。
+
+        409 的 detail 要同时带项目名与迁移失败原因——阻断回执得让人知道该修哪个项目的什么。
+        """
+
+        import lib.project.project_migration_guard as guard
+        from lib.project.project_migration_failure import record_migration_failure
+
+        fake_pm = _FakePM(tmp_path)
+        record_migration_failure(fake_pm.base / project_name, ValueError("坏数据"), schema_version=7)
+        monkeypatch.setattr(guard, "get_project_manager", lambda: fake_pm)
+        client = build_projects_client(monkeypatch, fake_pm)
+        before_project_data = deepcopy(fake_pm.project_data)
+        before_scripts = deepcopy(fake_pm.scripts)
+
+        with client:
+            response = client.request(method.upper(), endpoint, json=body)
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert project_name in detail
+        assert "坏数据" in detail
+        # 阻断必须发生在惰性迁移读写之前：project.json 与 scripts/*.json 都不能被动过
+        assert fake_pm.project_data == before_project_data
+        assert fake_pm.scripts == before_scripts
+
+    @pytest.mark.parametrize(
+        ("project_name", "script_file", "endpoint", "script", "request_body", "kind"),
+        [
+            (
+                "ready",
+                "narration.json",
+                "/api/v1/projects/ready/segments/E1S01",
+                {
+                    "content_mode": "narration",
+                    "segments": [
+                        {
+                            "segment_id": "E1S01",
+                            "duration_seconds": 4,
+                            "novel_text": "风吹过旷野。",
+                            "video_prompt": {},
+                        }
+                    ],
+                },
+                {"video_prompt": {"dialogue": [{"speaker": "Alice", "line": "快走。"}]}},
+                "segments",
+            ),
+            (
+                "ready",
+                "episode_1.json",
+                "/api/v1/projects/ready/script-scenes/E1S01",
+                {
+                    "content_mode": "drama",
+                    "scenes": [{"scene_id": "E1S01", "duration_seconds": 4, "utterances": []}],
+                },
+                {
+                    "updates": {
+                        "utterances": [
+                            {"kind": "dialogue", "speaker": "Alice", "text": "快走。"},
+                            {"kind": "voiceover", "speaker": None, "text": "风吹过旷野。"},
+                        ]
+                    }
+                },
+                "scenes",
+            ),
+            (
+                "ad-ready",
+                "episode_1.json",
+                "/api/v1/projects/ad-ready/script-shots/E1S01",
+                {
+                    "content_mode": "ad",
+                    "shots": [
+                        {
+                            "shot_id": "E1S01",
+                            "duration_seconds": 4,
+                            "voiceover_text": "风吹过旷野。",
+                            "video_prompt": {},
+                        }
+                    ],
+                },
+                {"updates": {"video_prompt": {"dialogue": [{"speaker": "Alice", "line": "快走。"}]}}},
+                "shots",
+            ),
+        ],
+    )
+    def test_three_storyboard_web_manual_edits_atomically_reject_mixed_speech_on_save(
+        self,
+        tmp_path,
+        monkeypatch,
+        project_name: str,
+        script_file: str,
+        endpoint: str,
+        script: dict,
+        request_body: dict,
+        kind: str,
+    ):
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[(project_name, script_file)] = script
+        before = deepcopy(script)
+        client = build_projects_client(monkeypatch, fake_pm)
+        body = {"script_file": script_file, **request_body}
+
+        with client:
+            response = client.patch(endpoint, json=body)
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["success"] is False
+        problem = detail["problems"][0]
+        assert problem["code"] == "mixed_speech"
+        assert problem["operation_index"] == 0
+        assert problem["reason"] == "character_and_narrator_mixed"
+        assert problem["next_action"] == "replan_unit"
+        assert kind in before
+        assert fake_pm.scripts[(project_name, script_file)] == before
+
+
+_VISUAL = {
+    "image_prompt": {
+        "scene": "荒野",
+        "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
+    },
+    "video_prompt": {"action": "转身", "camera_motion": "Static", "ambiance_audio": "风声"},
+}
+
+_ITEM_SHAPES = {
+    "narration": ("segments", "segment_id", {"novel_text": "风吹过旷野。", "characters_in_segment": []}),
+    "drama": (
+        "scenes",
+        "scene_id",
+        {"characters_in_scene": [], "utterances": [{"kind": "voiceover", "speaker": None, "text": "风吹过旷野。"}]},
+    ),
+    "ad": ("shots", "shot_id", {"section": "hook", "voiceover_text": "轻装出发。"}),
+}
+
+
+class TestScriptItemInsertAndRemove:
+    """时间线手动新增 / 移除分镜：专用路由按当前 revision 走真实批量编辑。"""
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch, content_mode: str, *, editor_factory=None):
+        import lib.project.project_migration_guard as guard
+
+        pm = ProjectManager(str(tmp_path))
+        pm.create_project("demo", content_mode=content_mode)
+        pm.create_project_metadata("demo", "Demo", "Anime", content_mode)
+        items_key, id_field, content = _ITEM_SHAPES[content_mode]
+        pm.save_script(
+            "demo",
+            {
+                "episode": 1,
+                "title": "第一集",
+                "content_mode": content_mode,
+                items_key: [
+                    {id_field: item_id, "duration_seconds": 6, **content, **_VISUAL, "generated_assets": {}}
+                    for item_id in ("E1S01", "E1S02")
+                ],
+            },
+            "episode_1.json",
+        )
+        monkeypatch.setattr(guard, "get_project_manager", lambda: pm)
+        client = build_projects_client(monkeypatch, pm)
+        override(
+            client,
+            projects.get_script_batch_editor_factory,
+            lambda: editor_factory or (lambda manager=None: ScriptBatchEditor(manager or pm)),
+        )
+        return pm, client
+
+    @pytest.mark.parametrize("content_mode", ["narration", "drama", "ad"])
+    def test_insert_after_adds_a_pending_blank_item_right_after_the_anchor(
+        self, tmp_path, monkeypatch, content_mode: str
+    ):
+        pm, client = self._client(tmp_path, monkeypatch, content_mode)
+        items_key, id_field, _content = _ITEM_SHAPES[content_mode]
+        body = {"script_file": "episode_1.json", "after_id": "E1S01"}
+        if content_mode == "narration":
+            body["novel_text"] = "风停了。"
+
+        with client:
+            response = client.post("/api/v1/projects/demo/script-items", json=body)
+
+        assert response.status_code == 200, response.json()
+        inserted = response.json()["item"]
+        assert inserted[id_field] == "E1S03"
+        assert inserted["pending_authoring"] is True
+        saved = pm.load_script("demo", "episode_1.json")[items_key]
+        assert [entry[id_field] for entry in saved] == ["E1S01", "E1S03", "E1S02"]
+        assert saved[1]["image_prompt"] is None
+        assert saved[1]["video_prompt"] is None
+        if content_mode == "narration":
+            assert saved[1]["novel_text"] == "风停了。"
+
+    @pytest.mark.parametrize("novel_text", [None, "   "])
+    def test_narration_insert_requires_narration_text(self, tmp_path, monkeypatch, novel_text):
+        pm, client = self._client(tmp_path, monkeypatch, "narration")
+        before = pm.load_script("demo", "episode_1.json")
+
+        with client:
+            response = client.post(
+                "/api/v1/projects/demo/script-items",
+                json={"script_file": "episode_1.json", "after_id": "E1S01", "novel_text": novel_text},
+            )
+
+        assert response.status_code == 422
+        assert pm.load_script("demo", "episode_1.json") == before
+
+    @pytest.mark.parametrize("content_mode", ["narration", "drama", "ad"])
+    def test_remove_drops_the_item_from_the_formal_script(self, tmp_path, monkeypatch, content_mode: str):
+        pm, client = self._client(tmp_path, monkeypatch, content_mode)
+        items_key, id_field, _content = _ITEM_SHAPES[content_mode]
+
+        with client:
+            response = client.delete("/api/v1/projects/demo/script-items/E1S01?script_file=episode_1.json")
+            missing = client.delete("/api/v1/projects/demo/script-items/E1S09?script_file=episode_1.json")
+
+        assert response.status_code == 200, response.json()
+        assert response.json()["edit_result"]["affected_ids"] == ["E1S01"]
+        assert [entry[id_field] for entry in pm.load_script("demo", "episode_1.json")[items_key]] == ["E1S02"]
+        assert missing.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("content_mode", "item_id", "after_id"),
+        [("narration", "E1S02", None), ("drama", "E1S01", "E1S02"), ("ad", "E1S02", None)],
+    )
+    def test_move_reorders_the_formal_script(
+        self, tmp_path, monkeypatch, content_mode: str, item_id: str, after_id: str | None
+    ):
+        pm, client = self._client(tmp_path, monkeypatch, content_mode)
+        items_key, id_field, _content = _ITEM_SHAPES[content_mode]
+
+        with client:
+            response = client.post(
+                f"/api/v1/projects/demo/script-items/{item_id}/move",
+                json={"script_file": "episode_1.json", "after_id": after_id},
+            )
+
+        assert response.status_code == 200, response.json()
+        assert [entry[id_field] for entry in pm.load_script("demo", "episode_1.json")[items_key]] == [
+            "E1S02",
+            "E1S01",
+        ]
+
+    @pytest.mark.parametrize(
+        ("item_id", "after_id", "status"), [("E1S09", None, 404), ("E1S01", "E1S09", 404), ("E1S01", "E1S01", 422)]
+    )
+    def test_move_with_an_unknown_or_self_anchor_writes_nothing(
+        self, tmp_path, monkeypatch, item_id: str, after_id: str, status: int
+    ):
+        pm, client = self._client(tmp_path, monkeypatch, "drama")
+        before = pm.load_script("demo", "episode_1.json")
+
+        with client:
+            response = client.post(
+                f"/api/v1/projects/demo/script-items/{item_id}/move",
+                json={"script_file": "episode_1.json", "after_id": after_id},
+            )
+
+        assert response.status_code == status
+        assert pm.load_script("demo", "episode_1.json") == before
+
+    @pytest.mark.parametrize("content_mode", ["narration", "drama", "ad"])
+    def test_removing_the_only_item_leaves_a_legal_empty_script(self, tmp_path, monkeypatch, content_mode: str):
+        pm, client = self._client(tmp_path, monkeypatch, content_mode)
+        items_key, _id_field, _content = _ITEM_SHAPES[content_mode]
+        with pm.locked_script("demo", "episode_1.json") as script:
+            del script[items_key][1]
+
+        with client:
+            response = client.delete(
+                "/api/v1/projects/demo/script-items/E1S01?script_file=episode_1.json",
+                headers={"Accept-Language": "zh"},
+            )
+
+        assert response.status_code == 200, response.json()
+        assert response.json()["edit_result"]["affected_ids"] == ["E1S01"]
+        assert pm.load_script("demo", "episode_1.json")[items_key] == []
+
+    @pytest.mark.parametrize(
+        ("method", "endpoint", "body"),
+        [
+            ("post", "/api/v1/projects/demo/script-items", {"script_file": "episode_1.json", "after_id": "E1S01"}),
+            ("delete", "/api/v1/projects/demo/script-items/E1S01?script_file=episode_1.json", None),
+        ],
+    )
+    def test_concurrent_write_returns_revision_conflict_instead_of_overwriting(
+        self, tmp_path, monkeypatch, method: str, endpoint: str, body
+    ):
+        """路由读到剧本之后、编辑提交之前，另一个写入方插入了同 id 分镜并改了相邻分镜。"""
+        pm, client = self._client(tmp_path, monkeypatch, "ad")
+        load_script = pm.load_script
+        writes: list[str] = []
+
+        def load_then_concurrent_write(project_name, filename):
+            script = load_script(project_name, filename)
+            if not writes:
+                writes.append(filename)
+                with pm.locked_script(project_name, filename) as locked:
+                    locked["shots"][1]["voiceover_text"] = "并发写入。"
+                    locked["shots"].append({**deepcopy(locked["shots"][1]), "shot_id": "E1S03"})
+            return script
+
+        monkeypatch.setattr(pm, "load_script", load_then_concurrent_write)
+
+        with client:
+            response = client.request(method.upper(), endpoint, json=body)
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["problems"][0]["code"] == "revision_conflict"
+        shots = load_script("demo", "episode_1.json")["shots"]
+        assert [shot["shot_id"] for shot in shots] == ["E1S01", "E1S02", "E1S03"]
+        assert shots[1]["voiceover_text"] == "并发写入。"
+
+    def test_reference_video_units_are_not_handled_by_storyboard_item_routes(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        script = {"content_mode": "narration", "video_units": [{"unit_id": "E1U1", "text": "风吹过旷野。"}]}
+        fake_pm.scripts[("ready", "episode_1.json")] = deepcopy(script)
+        client = build_projects_client(monkeypatch, fake_pm)
+
+        with client:
+            inserted = client.post(
+                "/api/v1/projects/ready/script-items", json={"script_file": "episode_1.json", "after_id": "E1U1"}
+            )
+            removed = client.delete("/api/v1/projects/ready/script-items/E1U1?script_file=episode_1.json")
+
+        assert inserted.status_code == 400
+        assert removed.status_code == 400
+        assert fake_pm.scripts[("ready", "episode_1.json")] == script

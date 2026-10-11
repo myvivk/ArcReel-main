@@ -1,0 +1,328 @@
+import base64
+import json
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from lib.backends.providers import CallStatus
+from lib.db.models.api_call import ApiCall
+from lib.db.models.task import Task
+from lib.project.project_manager import ProjectManager
+from server.auth import CurrentUserInfo, get_current_user
+from server.error_handlers import register_error_handlers
+from server.routers import usage
+from tests.auth_deps import AUTH_DEPENDENCIES
+
+BASE_TIME = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+
+def make_call(**overrides) -> ApiCall:
+    """一行 api_calls；未覆写的列取一组不影响筛选的中性值。"""
+    fields: dict = {
+        "project_name": "demo",
+        "call_type": "image",
+        "model": "gemini-3.1-flash-image-preview",
+        "provider": "gemini",
+        "status": CallStatus.SUCCESS,
+        "started_at": BASE_TIME,
+        "cost_amount": 0.0,
+        "currency": "USD",
+    }
+    fields.update(overrides)
+    return ApiCall(**fields)
+
+
+def build_client(db_factory, monkeypatch) -> TestClient:
+    monkeypatch.setattr(usage, "async_session_factory", db_factory)
+    app = FastAPI()
+    register_error_handlers(app)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
+    app.include_router(usage.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
+    return TestClient(app)
+
+
+@pytest.fixture
+async def records_client(db_factory, monkeypatch):
+    """五条终态记录 + 一条被任务代表的 pending + 一条无任务的 pending。"""
+    async with db_factory() as session:
+        session.add(
+            Task(
+                task_id="t-1",
+                project_name="demo",
+                task_type="video_generation",
+                media_type="video",
+                resource_id="S1",
+                status="running",
+                queued_at=BASE_TIME,
+                updated_at=BASE_TIME,
+            )
+        )
+        session.add_all(
+            [
+                make_call(started_at=BASE_TIME, segment_id="S1", provider="ark", model="doubao", call_type="text"),
+                make_call(
+                    started_at=BASE_TIME + timedelta(minutes=1),
+                    segment_id="S2",
+                    status=CallStatus.FAILED,
+                    error_message="429 too many requests",
+                    error_code="rate_limited",
+                    error_params={"retry_after_seconds": 30},
+                ),
+                make_call(started_at=BASE_TIME + timedelta(minutes=4), segment_id="S3", project_name="demo2"),
+                make_call(started_at=BASE_TIME + timedelta(minutes=4), segment_id="S4", status=CallStatus.CANCELLED),
+                make_call(
+                    started_at=BASE_TIME + timedelta(minutes=4),
+                    segment_id="S5",
+                    task_id="t-1",
+                    call_type="video",
+                    prompt="full prompt",
+                    inputs={"voice": "v1"},
+                    last_provider_response={"raw": "body"},
+                ),
+                make_call(
+                    started_at=BASE_TIME + timedelta(minutes=5),
+                    segment_id="hidden",
+                    status=CallStatus.PENDING,
+                    task_id="t-1",
+                ),
+                make_call(
+                    started_at=BASE_TIME + timedelta(minutes=6), segment_id="taskless", status=CallStatus.PENDING
+                ),
+            ]
+        )
+        await session.commit()
+
+    return build_client(db_factory, monkeypatch)
+
+
+class TestUsageRecordsList:
+    def test_orders_newest_first_and_hides_pending_with_task(self, records_client):
+        body = records_client.get("/api/v1/usage/records").json()
+
+        assert [item["segment_id"] for item in body["items"]] == ["taskless", "S5", "S4", "S3", "S2", "S1"]
+        assert body["total"] == 6
+        assert body["next_cursor"] is None
+
+    def test_record_shape_omits_user_id_and_detail_only_fields(self, records_client):
+        item = records_client.get("/api/v1/usage/records?segment_id=S5").json()["items"][0]
+
+        assert item["task_id"] == "t-1"
+        assert item["task_type"] == "video_generation"
+        assert item["media_type"] == "video"
+        assert item["started_at"] == "2026-03-01T12:04:00+00:00"
+        assert "user_id" not in item
+        assert not {"prompt", "inputs", "last_provider_response"} & set(item)
+
+    def test_cursor_pages_without_gap_or_repeat(self, records_client):
+        first = records_client.get("/api/v1/usage/records?limit=3").json()
+        assert first["next_cursor"]
+        second = records_client.get(f"/api/v1/usage/records?limit=3&cursor={first['next_cursor']}").json()
+
+        segments = [item["segment_id"] for item in first["items"] + second["items"]]
+        assert segments == ["taskless", "S5", "S4", "S3", "S2", "S1"]
+        assert second["total"] == 6
+        assert second["next_cursor"] is None
+
+    def test_total_is_filtered_count(self, records_client):
+        body = records_client.get("/api/v1/usage/records?project_name=demo&limit=1").json()
+
+        assert len(body["items"]) == 1
+        assert body["total"] == 5
+
+    @pytest.mark.parametrize("limit", [0, 201])
+    def test_limit_outside_bounds_rejected(self, records_client, limit):
+        assert records_client.get(f"/api/v1/usage/records?limit={limit}").status_code == 422
+
+    def test_limit_upper_bound_accepted(self, records_client):
+        assert records_client.get("/api/v1/usage/records?limit=200").status_code == 200
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            ("status=failed,cancelled", {"S2", "S4"}),
+            ("status=pending", {"taskless"}),
+            ("media_type=text,video", {"S1", "S5"}),
+            ("provider=ark", {"S1"}),
+            ("model=doubao", {"S1"}),
+            ("segment_id=S2,S3", {"S2", "S3"}),
+            ("project_name=demo2", {"S3"}),
+        ],
+    )
+    def test_filter_dimensions(self, records_client, query, expected):
+        body = records_client.get(f"/api/v1/usage/records?{query}").json()
+
+        assert {item["segment_id"] for item in body["items"]} == expected
+        assert body["total"] == len(expected)
+
+    def test_since_until_half_open_on_started_at(self, records_client):
+        body = records_client.get("/api/v1/usage/records?since=2026-03-01T12:01:00Z&until=2026-03-01T12:06:00Z").json()
+
+        assert [item["segment_id"] for item in body["items"]] == ["S5", "S4", "S3", "S2"]
+
+    def test_naive_bounds_are_read_as_utc(self, records_client):
+        naive = records_client.get("/api/v1/usage/records?since=2026-03-01T12:04:00").json()
+        aware = records_client.get("/api/v1/usage/records?since=2026-03-01T12:04:00%2B00:00").json()
+
+        assert [item["segment_id"] for item in naive["items"]] == ["taskless", "S5", "S4", "S3"]
+        assert naive["items"] == aware["items"]
+
+    @pytest.mark.parametrize("query", ["since=0001-01-01T00:00:00%2B08:00", "until=9999-12-31T23:59:59-08:00"])
+    def test_unrepresentable_bound_is_rejected(self, records_client, query):
+        """带偏移的极端时刻换算到 UTC 会越过 datetime 边界；路由先拒绝，不让它溢出成 500。"""
+        response = records_client.get(f"/api/v1/usage/records?{query}")
+        assert response.status_code == 422
+        assert response.json()["detail"] == "起止时刻超出可表示的时间范围，请检查后重试"
+
+    @pytest.mark.parametrize("cursor", ["not-base64!!", "e30"])
+    def test_undecodable_cursor_rejected(self, records_client, cursor):
+        assert records_client.get(f"/api/v1/usage/records?cursor={cursor}").status_code == 422
+
+    def test_cursor_instant_overflowing_utc_rejected(self, records_client):
+        """游标里的时刻带极端偏移、换算 UTC 越界时同样 422，不让它溢出成 500。"""
+        cursor = base64.urlsafe_b64encode(
+            json.dumps({"started_at": "0001-01-01T00:00:00+14:00", "id": 1}).encode()
+        ).decode()
+
+        assert records_client.get(f"/api/v1/usage/records?cursor={cursor}").status_code == 422
+
+    def test_out_of_range_cursor_id_rejected(self, records_client):
+        cursor = base64.urlsafe_b64encode(
+            json.dumps({"started_at": BASE_TIME.isoformat(), "id": 10**100}).encode()
+        ).decode()
+
+        assert records_client.get(f"/api/v1/usage/records?cursor={cursor}").status_code == 422
+
+
+class TestUsageRecordEpisodeItemRefs:
+    """条目 ID 里的集 ID 不给创作者看：记录附上所属集的标题、播出位置与集内 ID。"""
+
+    @pytest.fixture
+    async def client(self, db_factory, monkeypatch, tmp_path):
+        projects = ProjectManager(tmp_path / "projects")
+        projects.create_project("demo")
+        projects.create_project_metadata("demo", "Demo")
+        projects.update_project(
+            "demo",
+            lambda project: project.update(
+                episodes=[
+                    {"episode": 7, "title": "山门", "script_file": "scripts/episode_7.json"},
+                    {"episode": 3, "title": "", "script_file": "scripts/episode_3.json"},
+                ]
+            ),
+        )
+        monkeypatch.setattr(usage, "get_project_manager", lambda: projects)
+        async with db_factory() as session:
+            session.add_all(
+                [
+                    make_call(started_at=BASE_TIME, segment_id="E7S02"),
+                    make_call(started_at=BASE_TIME + timedelta(minutes=1), segment_id="E3U01"),
+                    make_call(started_at=BASE_TIME + timedelta(minutes=2), segment_id="E9S01"),
+                    make_call(started_at=BASE_TIME + timedelta(minutes=3), segment_id="E7S01", project_name="gone"),
+                ]
+            )
+            await session.commit()
+        return build_client(db_factory, monkeypatch)
+
+    def test_records_carry_the_episode_title_and_broadcast_position(self, client):
+        items = client.get("/api/v1/usage/records").json()["items"]
+
+        assert {item["segment_id"]: item["segment_ref"] for item in items} == {
+            "E7S02": {"episode_title": "山门", "episode_position": 1, "item_id": "S02"},
+            "E3U01": {"episode_title": "", "episode_position": 2, "item_id": "U01"},
+            "E9S01": None,
+            "E7S01": None,
+        }
+
+    def test_detail_carries_the_same_ref(self, client):
+        record_id = client.get("/api/v1/usage/records?segment_id=E7S02").json()["items"][0]["id"]
+
+        detail = client.get(f"/api/v1/usage/records/{record_id}").json()
+
+        assert detail["segment_ref"] == {"episode_title": "山门", "episode_position": 1, "item_id": "S02"}
+
+
+class TestUsageRecordProjectTitles:
+    """项目列显示标题；项目读不到或没有标题时不给标题，由界面回退显示项目名。"""
+
+    @pytest.fixture
+    async def client(self, db_factory, monkeypatch, tmp_path):
+        projects = ProjectManager(tmp_path / "projects")
+        projects.create_project("demo")
+        projects.create_project_metadata("demo", "雨夜行舟")
+        projects.create_project("untitled")
+        projects.create_project_metadata("untitled", "")
+        monkeypatch.setattr(usage, "get_project_manager", lambda: projects)
+        async with db_factory() as session:
+            session.add_all(
+                [
+                    make_call(started_at=BASE_TIME, segment_id="a", project_name="demo"),
+                    make_call(started_at=BASE_TIME + timedelta(minutes=1), segment_id="b", project_name="untitled"),
+                    make_call(
+                        started_at=BASE_TIME + timedelta(minutes=2),
+                        segment_id="c",
+                        project_name="demo#deleted-20260301T120000Z",
+                    ),
+                    make_call(started_at=BASE_TIME + timedelta(minutes=3), segment_id="d", project_name=""),
+                ]
+            )
+            await session.commit()
+        return build_client(db_factory, monkeypatch)
+
+    def test_records_carry_the_title_only_when_the_project_has_one(self, client):
+        items = client.get("/api/v1/usage/records").json()["items"]
+
+        assert {item["segment_id"]: item["project_title"] for item in items} == {
+            "a": "雨夜行舟",
+            "b": None,
+            "c": None,
+            "d": None,
+        }
+
+    def test_detail_and_summary_use_the_same_titles(self, client):
+        record_id = client.get("/api/v1/usage/records?segment_id=a").json()["items"][0]["id"]
+
+        assert client.get(f"/api/v1/usage/records/{record_id}").json()["project_title"] == "雨夜行舟"
+        assert client.get("/api/v1/usage/summary").json()["filter_options"]["project_titles"] == {"demo": "雨夜行舟"}
+
+
+class TestUsageRecordDetail:
+    def test_detail_adds_prompt_inputs_and_provider_response(self, records_client):
+        record_id = records_client.get("/api/v1/usage/records?segment_id=S5").json()["items"][0]["id"]
+
+        detail = records_client.get(f"/api/v1/usage/records/{record_id}").json()
+
+        assert detail["prompt"] == "full prompt"
+        assert detail["inputs"] == {"voice": "v1"}
+        assert detail["last_provider_response"] == {"raw": "body"}
+        assert detail["task_type"] == "video_generation"
+        assert "user_id" not in detail
+
+    def test_detail_carries_the_failure_columns(self, records_client):
+        """失败行的三字段要一路到详情：弹窗的「失败原因」分组靠它们渲染。"""
+        record_id = records_client.get("/api/v1/usage/records?segment_id=S2").json()["items"][0]["id"]
+
+        detail = records_client.get(f"/api/v1/usage/records/{record_id}").json()
+
+        assert detail["error_message"] == "429 too many requests"
+        assert detail["error_code"] == "rate_limited"
+        assert detail["error_params"] == {"retry_after_seconds": 30}
+
+    def test_unknown_id_returns_404(self, records_client):
+        assert records_client.get("/api/v1/usage/records/99999").status_code == 404
+
+    def test_response_models_are_declared_in_openapi(self, records_client):
+        schema = records_client.get("/openapi.json").json()
+        list_ref = schema["paths"]["/api/v1/usage/records"]["get"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]["$ref"]
+        detail_ref = schema["paths"]["/api/v1/usage/records/{record_id}"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]["$ref"]
+
+        assert list_ref.endswith("UsageRecordPage")
+        assert detail_ref.endswith("UsageRecordDetail")
+        record = schema["components"]["schemas"]["UsageRecord"]["properties"]
+        assert "user_id" not in record
+        assert not {"prompt", "inputs", "last_provider_response"} & set(record)

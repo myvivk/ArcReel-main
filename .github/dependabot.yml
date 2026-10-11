@@ -1,0 +1,340 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Python dependencies via uv (pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    versioning-strategy: lockfile-only
+    # 刚发布的版本先沉淀几天再开 PR，降低撞上「发布即回归」的概率；
+    # semver-minor 走 default-days，只有偏离它的档位单列
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+    labels:
+      - "dependencies"
+      - "python:uv"
+    commit-message:
+      prefix: "chore(deps)"
+    # pydantic 精确锁定 pydantic-core 的版本，pydantic-core 只能随 pydantic 一起升级；
+    # 单独升级 pydantic-core 会把 pydantic 拉到与之配套的预发布版。只忽略版本更新：
+    # 不带 update-types 的 ignore 会连安全更新一起屏蔽。
+    ignore:
+      - dependency-name: "pydantic-core"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+    # 各域分组只收 minor/patch，聚合成可安全自动合并的 PR；
+    # major 不匹配任何分组 → 单独成 PR，留给人工审查。
+    groups:
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn"
+          - "pydantic*"
+          - "python-multipart"
+          - "python-dotenv"
+        update-types:
+          - "minor"
+          - "patch"
+      database:
+        patterns:
+          - "sqlalchemy*"
+          - "aiosqlite"
+          - "asyncpg"
+          - "alembic"
+        update-types:
+          - "minor"
+          - "patch"
+      ai-sdks:
+        patterns:
+          - "claude-agent-sdk"
+          - "grpcio"
+          - "mcp"
+          - "google-genai"
+          - "openai"
+          - "volcengine-python-sdk*"
+          - "xai-sdk"
+          - "instructor"
+        update-types:
+          - "minor"
+          - "patch"
+      auth:
+        patterns:
+          - "pyjwt"
+          - "pwdlib*"
+        update-types:
+          - "minor"
+          - "patch"
+      media:
+        patterns:
+          - "Pillow"
+          - "numpy"
+          - "pyjianyingdraft"
+          - "imageio-ffmpeg"
+        update-types:
+          - "minor"
+          - "patch"
+      document-parsing:
+        patterns:
+          - "pdf-oxide"
+          - "mammoth"
+          - "docx2txt"
+          - "ebooklib"
+          - "beautifulsoup4"
+          - "lxml"
+          - "charset-normalizer"
+        update-types:
+          - "minor"
+          - "patch"
+      backend-core:
+        patterns:
+          - "Jinja2"
+          - "PyYAML"
+          - "httpx"
+          - "jsonpath-rfc9535"
+          - "jsonschema"
+          - "packaging"
+          - "portalocker"
+          - "socksio"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "basedpyright"
+          - "deptry"
+          - "pre-commit"
+          - "python-docx"
+          - "import-linter"
+          - "respx"
+          - "mutmut"
+        update-types:
+          - "minor"
+          - "patch"
+      all-other:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Frontend npm dependencies (pnpm)
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # ^ range 内的升级只动 lockfile；超出 range（major）才改 package.json 并开 PR
+    versioning-strategy: increase-if-necessary
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(deps)"
+    # jsdom 上限是 30.0.x：vitest 4 的 jsdom 环境把 jsdom Blob 转成 Node Blob 时读取内部字段
+    # `_buffer`，jsdom 30.1 已将其改名，URL.createObjectURL / FormData 传 File 的测试随之报错。
+    # 解锁条件：frontend 升级到 vitest >= 5.0.3（该版本起改读新字段）。
+    # @types/node 跟随 package.json engines 的 Node 主版本（24），主版本随 Node 升级手动调整。
+    ignore:
+      - dependency-name: "jsdom"
+        versions: [">=30.1"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - "minor"
+          - "patch"
+      i18n:
+        patterns:
+          - "i18next"
+          - "i18next-*"
+          - "react-i18next"
+        update-types:
+          - "minor"
+          - "patch"
+      ui-libs:
+        patterns:
+          - "lucide-react"
+          - "@lobehub/*"
+          - "@dnd-kit/*"
+          - "cmdk"
+          - "recharts"
+          - "react-resizable-panels"
+          - "streamdown"
+          - "driver.js"
+          - "@fontsource/*"
+          - "@fontsource-variable/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # shadcn 原语的运行时与 CLI。major 不进分组、单独开 PR：在该 PR 中对已安装组件
+      # 运行 `pnpm exec shadcn add <组件> --diff` 并手动合并（流程见 docs/standards/frontend-ui.md）。
+      shadcn-stack:
+        patterns:
+          - "@base-ui/react"
+          - "@shadcn/react"
+          - "shadcn"
+          - "cn"
+          - "class-variance-authority"
+          - "tw-animate-css"
+        update-types:
+          - "minor"
+          - "patch"
+      vite-tailwind:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "tailwindcss"
+          - "@tailwindcss/*"
+        update-types:
+          - "minor"
+          - "patch"
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "@testing-library/*"
+          - "jsdom"
+        update-types:
+          - "minor"
+          - "patch"
+      # @playwright/test 升级时，.github/workflows/test.yml 中 frontend-e2e 的镜像版本要在同一 PR 里改成一致，
+      # 否则 CI 找不到浏览器。
+      e2e:
+        patterns:
+          - "@playwright/test"
+          - "@axe-core/*"
+          - "@types/node"
+        update-types:
+          - "minor"
+          - "patch"
+      eslint-stack:
+        patterns:
+          - "eslint"
+          - "eslint-*"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "globals"
+          - "@shadcn/lint"
+        update-types:
+          - "minor"
+          - "patch"
+      app-core:
+        patterns:
+          - "wouter"
+          - "zustand"
+          - "eventsource-parser"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-dependencies:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      all-other:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # 文档站 npm dependencies (pnpm)
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(deps)"
+    # website 的 typescript 上限是 6.x：website/tsconfig.json 继承 @docusaurus/tsconfig，
+    # 后者在 compilerOptions 里设置 baseUrl —— 该选项在 TypeScript 6 被标记弃用
+    # （tsconfig.json 以 ignoreDeprecations: "6.0" 显式豁免），在 TypeScript 7 已移除，
+    # 加载即报 TS5102，无豁免手段。解锁条件：@docusaurus/tsconfig 去掉 baseUrl。
+    # 该约束只覆盖 website/，frontend/ 的 TypeScript 升级独立判断，不适用本条。
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=7"]
+    groups:
+      docusaurus:
+        patterns:
+          - "@docusaurus/*"
+          - "@easyops-cn/docusaurus-search-local"
+        update-types:
+          - "minor"
+          - "patch"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-dependencies:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      all-other:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # github-actions 生态只支持 default-days，不支持 semver 粒度的冷却字段
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns:
+          - "*"

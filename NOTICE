@@ -1,0 +1,96 @@
+ArcReel Notices
+
+ArcReel
+Copyright © 2026 Pollo3470 and ArcReel contributors.
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full project license terms.
+
+==== Additional Terms under AGPLv3 Section 7 ====
+
+Pursuant to Section 7(b) of the GNU Affero General Public License version 3,
+the following reasonable legal notice and author attribution must be preserved
+by modified versions in the Appropriate Legal Notices and in any prominent
+about, legal, footer, or attribution location presented by the user interface:
+
+"Powered by ArcReel — https://github.com/ArcReel/ArcReel"
+
+Modified versions that present a user interface must also preserve a visible
+link to the original project repository in a prominent about, legal, footer,
+or attribution location:
+
+https://github.com/ArcReel/ArcReel
+
+Modified versions must not misrepresent the origin of the software and must
+mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== 依据 AGPLv3 第 7 条的附加条款（中文对照）====
+
+根据 GNU Affero 通用公共许可证第 3 版第 7(b) 条，修改版本必须在"适当的法律
+声明"（Appropriate Legal Notices）以及用户界面呈现的显著位置（关于页、法律
+声明、页脚或署名区域）保留以下法律声明与作者署名：
+
+"Powered by ArcReel — https://github.com/ArcReel/ArcReel"
+
+呈现用户界面的修改版本，还必须在上述显著位置保留指向原项目仓库的可见链接：
+
+https://github.com/ArcReel/ArcReel
+
+修改版本不得歪曲软件来源，并须依照 AGPLv3 第 7(c) 条标明其所做的修改。
+
+==== Trademark / 商标 ====
+
+The ArcReel name and logo are not licensed under AGPL-3.0.
+ArcReel 名称与标识不在 AGPL-3.0 授权范围内。
+
+==== Third-party: FFmpeg / 第三方组件：FFmpeg ====
+
+ArcReel depends on the Python package imageio-ffmpeg (BSD-2-Clause), whose
+platform wheels redistribute an unmodified, statically linked FFmpeg
+executable. ArcReel runs that executable as a separate process for media
+processing, and the Docker image ships it.
+
+FFmpeg is Copyright (c) 2000-2024 the FFmpeg developers. The bundled builds are
+configured with --enable-gpl and include GPL components such as libx264, so
+they are licensed under the GNU General Public License. The Linux and Windows
+builds are additionally configured with --enable-version3 (GPL version 3 or
+later). The GPL version 3 text is in LICENSES/GPL-3.0-or-later.txt.
+
+Bundled builds (imageio-ffmpeg 0.6.0):
+  - Linux x86_64 / aarch64: FFmpeg 7.0.2, static build by John Van Sickle
+    (https://johnvansickle.com/ffmpeg/)
+  - Windows x86_64: FFmpeg 7.1, build by gyan.dev
+    (https://www.gyan.dev/ffmpeg/builds/)
+  - macOS x86_64 / arm64: FFmpeg 7.1 static build
+The binaries are published at
+https://github.com/imageio/imageio-binaries/tree/master/ffmpeg
+
+Corresponding source code:
+  - FFmpeg release sources: https://ffmpeg.org/releases/ (ffmpeg-7.0.2 and
+    ffmpeg-7.1), git tags n7.0.2 and n7.1 at https://git.ffmpeg.org/ffmpeg.git
+  - The build configuration of each binary is printed by `ffmpeg -version`;
+    the builders' pages above link the sources of the bundled libraries.
+
+ArcReel 依赖 Python 包 imageio-ffmpeg（BSD-2-Clause），其平台 wheel 再分发未经修改的
+静态链接 FFmpeg 可执行文件。ArcReel 以独立子进程调用它处理媒体，Docker 镜像亦随附
+该文件。随包构建启用了 --enable-gpl 并包含 libx264 等 GPL 组件，
+按 GNU 通用公共许可证授权（Linux 与 Windows 构建另启用 --enable-version3，即 GPL 第 3 版
+或更新版本），GPL 第 3 版全文见 LICENSES/GPL-3.0-or-later.txt。对应源码的获取方式见上。
+
+==== Third-party: Source Han Sans / 第三方组件：思源黑体 ====
+
+ArcReel bundles lib/subtitle_style/fonts/SourceHanSansCN-Bold.otf, the
+Source Han Sans CN Bold subset OTF from Adobe's source-han-sans release 2.005R
+(https://github.com/adobe-fonts/source-han-sans), and uses it to draw subtitles
+burned into final cuts. The font file is redistributed unmodified.
+
+Source Han Sans is Copyright 2014-2025 Adobe (http://www.adobe.com/), with
+Reserved Font Name 'Source'. It is licensed under the SIL Open Font License,
+Version 1.1; the license text is in lib/subtitle_style/fonts/LICENSE.txt.
+
+ArcReel 随附 lib/subtitle_style/fonts/SourceHanSansCN-Bold.otf，即 Adobe 思源黑体
+2.005R 发布版中的 CN Bold 子集 OTF，用于绘制烧入成片的字幕。字体文件原样再分发，
+未作修改。思源黑体按 SIL 开源字体许可证 1.1 版授权，许可证全文见
+lib/subtitle_style/fonts/LICENSE.txt。
+
+==== End of Notices ====

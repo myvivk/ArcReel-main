@@ -1,0 +1,154 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { ShotDetail } from "./ShotDetail";
+import { API } from "@/api";
+import type { ItemPromptPreview, NarrationSegment } from "@/types";
+import { makeNarrationSegment } from "@/test/factories";
+
+const RENDERED_IMAGE_PROMPT = "Style: Anime\n\nScene: 雨夜街道";
+
+function makeSegment(overrides: Partial<NarrationSegment> = {}): NarrationSegment {
+  return makeNarrationSegment({
+    image_prompt: {
+      scene: "雨夜街道",
+      composition: { shot_type: "Medium Shot", lighting: "暖光", ambiance: "薄雾" },
+    },
+    video_prompt: { action: "撑伞走过", camera_motion: "Static", ambiance_audio: "雨声", dialogue: [] },
+    ...overrides,
+  });
+}
+
+function renderDetail(
+  segment: NarrationSegment,
+  props: Partial<Parameters<typeof ShotDetail>[0]> = {},
+) {
+  return render(
+    <ShotDetail
+      segment={segment}
+      segmentId={segment.segment_id}
+      contentMode="narration"
+      aspectRatio="9:16"
+      projectName="demo"
+      scriptFile="episode_1.json"
+      selectedIndex={0}
+      totalCount={1}
+      onPrev={() => {}}
+      onNext={() => {}}
+      durationOptions={[8]}
+      onUpdatePrompt={vi.fn()}
+      {...props}
+    />,
+  );
+}
+
+function preview(): ItemPromptPreview {
+  return {
+    item_id: "E1S01",
+    content_mode: "narration",
+    storyboard_image: { text: RENDERED_IMAGE_PROMPT, unavailable: null, is_text_form: false, warnings: [] },
+    video: { text: "最终视频提示词", unavailable: null, is_text_form: false, warnings: [] },
+  };
+}
+
+describe("ShotDetail 提示词形态切换", () => {
+  it("结构化 → 文本以后端渲染结果为初值，保存提交字符串形态", async () => {
+    const spy = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(preview());
+    const onUpdatePrompt = vi.fn();
+    renderDetail(makeSegment(), { onUpdatePrompt });
+
+    const [imageToText] = screen.getAllByRole("button", { name: "文本" });
+    fireEvent.click(imageToText);
+
+    await waitFor(() => expect(spy).toHaveBeenCalledWith("demo", "E1S01", "episode_1.json"));
+    // 结构化编辑器让位给纯文本框，框里就是后端渲染的最终提示词
+    expect(await screen.findByDisplayValue(/Scene: 雨夜街道/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("雨夜街道")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(onUpdatePrompt).toHaveBeenCalledWith(
+      "E1S01",
+      expect.objectContaining({ image_prompt: RENDERED_IMAGE_PROMPT }),
+    );
+  });
+
+  it("文本 → 结构化须显式确认丢弃文本，确认后字段留空不做解析", () => {
+    renderDetail(makeSegment({ image_prompt: "一段纯文本提示词" }));
+
+    const [imageToStructured] = screen.getAllByRole("button", { name: "结构化" });
+    fireEvent.click(imageToStructured);
+
+    expect(screen.getByText("切换回结构化提示词？")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("一段纯文本提示词")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "丢弃并切换" }));
+
+    expect(screen.queryByDisplayValue("一段纯文本提示词")).not.toBeInTheDocument();
+    expect(screen.getByText("镜头")).toBeInTheDocument();
+  });
+
+  it("渲染不出最终提示词时不切换形态，就地给出后端的不可用原因", async () => {
+    const unavailable = { ...preview() };
+    unavailable.storyboard_image = { text: null, unavailable: "该分镜没有分镜图提示词", is_text_form: false, warnings: [] };
+    const spy = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(unavailable);
+    renderDetail(makeSegment());
+
+    const [imageToText] = screen.getAllByRole("button", { name: "文本" });
+    fireEvent.click(imageToText);
+
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(await screen.findByText("该分镜没有分镜图提示词")).toBeInTheDocument();
+    // 结构化编辑器留在原地：空正文的文本形态既丢原因、又只会在保存时被非空校验拒掉
+    expect(screen.getByDisplayValue("雨夜街道")).toBeInTheDocument();
+  });
+
+  it("有未保存改动时禁用形态切换：初值取自已保存内容，切换会静默丢弃改动", () => {
+    renderDetail(makeSegment());
+
+    fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "改过的画面" } });
+
+    for (const button of screen.getAllByRole("button", { name: "文本" })) {
+      expect(button).toBeDisabled();
+    }
+  });
+});
+
+describe("ShotDetail 最终提示词预览", () => {
+  it("分镜图与视频各有入口，打开哪一侧就只展示哪一侧的最终文本", async () => {
+    const spy = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(preview());
+    renderDetail(makeSegment());
+
+    const [, videoButton] = screen.getAllByRole("button", { name: "查看提示词" });
+    expect(spy).not.toHaveBeenCalled();
+    fireEvent.click(videoButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "视频最终提示词" });
+    expect(await within(dialog).findByText("最终视频提示词")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Scene: 雨夜街道/)).not.toBeInTheDocument();
+    expect(spy).toHaveBeenCalledWith("demo", "E1S01", "episode_1.json", {
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("有修改时先保存再预览，预览请求排在保存成功之后", async () => {
+    const save = vi.fn().mockResolvedValue(true);
+    const request = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(preview());
+    renderDetail(makeSegment(), { onUpdatePrompt: save });
+    fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "改过的画面" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "保存并预览" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "分镜图最终提示词" });
+    expect(await within(dialog).findByText(/Scene: 雨夜街道/)).toBeInTheDocument();
+    expect(save.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder[0]);
+    expect(save).toHaveBeenCalledWith("E1S01", expect.objectContaining({ image_prompt: expect.objectContaining({ scene: "改过的画面" }) }));
+  });
+
+  it.each([false, new Error("写入失败")])("保存或刷新失败时不打开预览（%s）", async (result) => {
+    const save = result instanceof Error ? vi.fn().mockRejectedValue(result) : vi.fn().mockResolvedValue(result);
+    const request = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(preview());
+    renderDetail(makeSegment(), { onUpdatePrompt: save });
+    fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "改过的画面" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "保存并预览" })[0]);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(request).not.toHaveBeenCalled();
+  });
+});

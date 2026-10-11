@@ -1,0 +1,143 @@
+"""Tests for projects_prompt_preview."""
+
+from server.routers import projects
+from server.services.admission.prompt_preview import (
+    UNAVAILABLE_MISSING,
+    ItemPromptPreview,
+    RenderedPrompt,
+    ScriptItemNotFound,
+)
+from tests.integration.server.routers.projects_router_support import _FakePM, build_projects_client
+
+
+class TestPromptPreviewEndpoint:
+    def _pm(self, tmp_path) -> _FakePM:
+        fake_pm = _FakePM(tmp_path)
+        fake_pm.scripts[("ready", "episode_1.json")] = {
+            "content_mode": "narration",
+            "segments": [{"segment_id": "E1S01", "duration_seconds": 4}],
+        }
+        return fake_pm
+
+    def test_returns_both_sides_with_unavailable_reason_rendered(self, tmp_path, monkeypatch):
+        """两侧各自作答：可渲染的给文本，不可渲染的给已翻译成品文案，不整体失败。"""
+
+        async def _preview(project_name: str, script_file: str, item_id: str) -> ItemPromptPreview:
+            assert (project_name, script_file, item_id) == ("ready", "episode_1.json", "E1S01")
+            return ItemPromptPreview(
+                item_id=item_id,
+                content_mode="narration",
+                storyboard_image=RenderedPrompt(
+                    text="Style: Anime\n\n最终提示词",
+                    is_text_form=True,
+                    warnings=(
+                        {"key": "ref_too_many_images", "params": {"count": 8, "model": "viduq2", "max_count": 7}},
+                    ),
+                ),
+                video=RenderedPrompt(unavailable=UNAVAILABLE_MISSING),
+            )
+
+        monkeypatch.setattr(projects, "preview_item_prompts", _preview)
+        client = build_projects_client(monkeypatch, self._pm(tmp_path))
+
+        with client:
+            response = client.get(
+                "/api/v1/projects/ready/script-items/E1S01/prompt-preview",
+                params={"script_file": "episode_1.json"},
+                headers={"Accept-Language": "zh"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["content_mode"] == "narration"
+        assert body["storyboard_image"] == {
+            "text": "Style: Anime\n\n最终提示词",
+            "unavailable": None,
+            "is_text_form": True,
+            # 渲染时的提示与不可用原因同口径：按请求语言渲染成成品文案，不把裸 key 推给前端
+            "warnings": ["参考图数量 8 超出 Vidu Q2 Image 上限 7，已取前 7 张"],
+        }
+        assert body["video"]["text"] is None
+        assert body["video"]["warnings"] == []
+        # 不可用原因是后端按请求语言渲染的成品文案，不把裸 key 推给前端
+        assert body["video"]["unavailable"] == "该分镜还没有填写提示词"
+
+    def test_refused_generation_input_renders_its_gaps(self, tmp_path, monkeypatch):
+        async def _preview(project_name: str, script_file: str, item_id: str) -> ItemPromptPreview:
+            return ItemPromptPreview(
+                item_id=item_id,
+                content_mode="narration",
+                storyboard_image=RenderedPrompt(
+                    unavailable="asset_original_missing",
+                    unavailable_params={"missing_text": "product: 保温杯", "gaps": []},
+                ),
+                video=RenderedPrompt(unavailable=UNAVAILABLE_MISSING),
+            )
+
+        monkeypatch.setattr(projects, "preview_item_prompts", _preview)
+        client = build_projects_client(monkeypatch, self._pm(tmp_path))
+
+        with client:
+            response = client.get(
+                "/api/v1/projects/ready/script-items/E1S01/prompt-preview",
+                params={"script_file": "episode_1.json"},
+                headers={"Accept-Language": "zh"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["storyboard_image"]["unavailable"] == (
+            "声明的原图读不到：product: 保温杯；请重新上传原图，或清除原图字段"
+        )
+
+    def test_mixed_gaps_render_each_cause(self, tmp_path, monkeypatch):
+        async def _preview(project_name: str, script_file: str, item_id: str) -> ItemPromptPreview:
+            return ItemPromptPreview(
+                item_id=item_id,
+                content_mode="narration",
+                storyboard_image=RenderedPrompt(
+                    unavailable="asset_original_missing",
+                    unavailable_params={
+                        "gaps": [
+                            {"code": "asset_original_missing", "asset_type": "product", "name": "保温杯"},
+                            {"code": "reference_asset_unregistered", "asset_type": "character", "name": "Bob"},
+                        ]
+                    },
+                ),
+                video=RenderedPrompt(unavailable=UNAVAILABLE_MISSING),
+            )
+
+        monkeypatch.setattr(projects, "preview_item_prompts", _preview)
+        client = build_projects_client(monkeypatch, self._pm(tmp_path))
+        with client:
+            response = client.get(
+                "/api/v1/projects/ready/script-items/E1S01/prompt-preview",
+                params={"script_file": "episode_1.json"},
+                headers={"Accept-Language": "zh"},
+            )
+
+        detail = response.json()["storyboard_image"]["unavailable"]
+        assert "原图读不到：product: 保温杯" in detail
+        assert "未登记的资产名：Bob" in detail
+
+    def test_unknown_item_is_404(self, tmp_path, monkeypatch):
+        async def _preview(project_name: str, script_file: str, item_id: str) -> ItemPromptPreview:
+            raise ScriptItemNotFound(item_id)
+
+        monkeypatch.setattr(projects, "preview_item_prompts", _preview)
+        client = build_projects_client(monkeypatch, self._pm(tmp_path))
+
+        with client:
+            response = client.get(
+                "/api/v1/projects/ready/script-items/E9S99/prompt-preview",
+                params={"script_file": "episode_1.json"},
+            )
+
+        assert response.status_code == 404
+
+    def test_script_file_is_required(self, tmp_path, monkeypatch):
+        client = build_projects_client(monkeypatch, self._pm(tmp_path))
+
+        with client:
+            response = client.get("/api/v1/projects/ready/script-items/E1S01/prompt-preview")
+
+        assert response.status_code == 422

@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from lib.generation.generation_queue import GenerationQueue
+from lib.generation.generation_queue_client import wait_for_task
+from lib.generation.generation_worker import CapacityTable, GenerationWorker
+from lib.project.project_change_hints import register_project_change_batch_listener
+from lib.project.project_manager import ProjectManager
+from server.auth import CurrentUserInfo, get_current_user
+from server.error_handlers import register_error_handlers
+from server.routers import assets
+from server.services.tasks.generation_tasks import execute_generation_task
+from server.services.tasks.resume_executor import execute_resume_video_task
+from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.integration.server.agent_tool_support import FakePM, ToolHarness, fake_caps_resolver
+
+
+@pytest.fixture
+def assets_env(db_factory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """全局资产库路由的测试客户端（``client``）与指向 ``tmp_path/projects`` 的 ``ProjectManager``（``pm``）。"""
+
+    pm = ProjectManager(tmp_path / "projects")
+    monkeypatch.setattr(assets, "async_session_factory", db_factory)
+    monkeypatch.setattr(assets, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    register_error_handlers(app)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
+    app.include_router(assets.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
+    return {"client": TestClient(app), "pm": pm}
+
+
+def _build_fake_ctx(tmp_path: Path, session_factory, monkeypatch: pytest.MonkeyPatch) -> ToolHarness:
+    monkeypatch.setattr("lib.db.async_session_factory", session_factory)
+    monkeypatch.setattr("server.services.admission.video_batch_admission.async_session_factory", session_factory)
+    monkeypatch.setattr("server.services.tasks.video_caps.async_session_factory", session_factory)
+    project_dir = tmp_path / "projects" / "demo"
+    project_dir.mkdir(parents=True)
+    (project_dir / "storyboards").mkdir()
+    (project_dir / "storyboards" / "scene_E1S01.png").write_bytes(b"")
+    (project_dir / "audio").mkdir()
+    (project_dir / "audio" / "segment_E1S01.wav").write_bytes(b"")
+    (project_dir / "audio" / "segment_E1S02.wav").write_bytes(b"")
+
+    queue = GenerationQueue(session_factory=session_factory)
+    return ToolHarness(
+        project_name="demo",
+        data_root=tmp_path,
+        pm=FakePM("demo", project_dir),
+        queue=queue,
+        config_resolver=fake_caps_resolver(),
+    )
+
+
+@pytest.fixture
+def idle_fake_ctx(tmp_path: Path, concurrent_session_factory, monkeypatch: pytest.MonkeyPatch) -> ToolHarness:
+    return _build_fake_ctx(tmp_path, concurrent_session_factory, monkeypatch)
+
+
+@pytest.fixture
+async def fake_ctx(
+    tmp_path: Path,
+    concurrent_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[ToolHarness]:
+    ctx = _build_fake_ctx(tmp_path, concurrent_session_factory, monkeypatch)
+    queue = ctx.queue
+
+    async def text_provider(_task: dict[str, Any]) -> str:
+        return "text"
+
+    worker = GenerationWorker(
+        queue=queue,
+        capacity=CapacityTable(_limits={}, _defaults={"text": 1}),
+        provider_projection=text_provider,
+        lanes=("text",),
+        executor=execute_generation_task,
+        resume_executor=execute_resume_video_task,
+    )
+    worker.poll_interval = 60
+    worker.heartbeat_interval = 60
+    terminal_events: dict[str, asyncio.Event] = {}
+
+    def record_terminal_events(_project_name, _source, changes) -> None:
+        for change in changes:
+            if change.get("entity_type") == "task":
+                terminal_events.setdefault(str(change["entity_id"]), asyncio.Event()).set()
+
+    async def wait_for_worker_task(task_id: str, *, queue: GenerationQueue) -> dict[str, Any]:
+        terminal = terminal_events.setdefault(task_id, asyncio.Event())
+        worker.wake()
+        await asyncio.wait_for(terminal.wait(), timeout=5)
+        return await wait_for_task(task_id, queue=queue)
+
+    unregister = register_project_change_batch_listener(record_terminal_events)
+    monkeypatch.setattr("server.tool_runtime.wait_for_task", wait_for_worker_task)
+    assert await queue.acquire_or_renew_worker_lease(
+        name=worker.lease_name,
+        owner_id=worker.owner_id,
+        ttl_seconds=worker.lease_ttl,
+    )
+    await worker.start()
+    try:
+        yield ctx
+    finally:
+        await worker.stop()
+        unregister()
+
+
+@pytest.fixture
+def active_episode_tasks(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """在途任务检查读到的生成队列：按状态（``queued`` / ``running``）回放写进返回字典的任务。"""
+    from server.routers import episode_management
+
+    tasks: dict[str, list[dict[str, Any]]] = {}
+
+    class _Queue:
+        async def list_tasks(self, *, project_name: str, status: str, page: int, page_size: int) -> dict[str, Any]:
+            del project_name, page, page_size
+            return {"items": tasks.get(status, [])}
+
+    monkeypatch.setattr(episode_management, "get_generation_queue", lambda: _Queue())
+    return tasks

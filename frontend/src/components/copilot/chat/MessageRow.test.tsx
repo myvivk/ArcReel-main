@@ -1,0 +1,468 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { base64OfSize } from "@/test/image-data";
+import { stubImageCanvas } from "@/test/imageCanvas";
+import type { Turn } from "@/types";
+import { MAX_ENCODED_IMAGE_BYTES } from "@/utils/image-transcode";
+import { MessageRow } from "./MessageRow";
+
+const userTurn: Turn = {
+  type: "user",
+  uuid: "u-1",
+  timestamp: "2026-05-02T14:21:00Z",
+  content: [{ type: "text", text: "只改第 3 集" }],
+};
+
+const imageTurn: Turn = {
+  type: "user",
+  uuid: "u-2",
+  timestamp: "2026-05-02T14:25:00Z",
+  content: [
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+    { type: "text", text: "按这张图改人设" },
+  ],
+};
+
+const twoImageTurn: Turn = {
+  ...imageTurn,
+  content: [
+    { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } },
+    { type: "text", text: "按这两张图改人设" },
+  ],
+};
+
+const imageOnlyTurn: Turn = {
+  type: "user",
+  uuid: "u-3",
+  timestamp: "2026-05-02T14:27:00Z",
+  content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }],
+};
+
+const fullImageTurn: Turn = {
+  ...userTurn,
+  uuid: "u-4",
+  content: Array.from({ length: 5 }, (_, index) => ({
+    type: "image" as const,
+    source: { type: "base64" as const, media_type: "image/png", data: `IMAGE-${index}` },
+  })),
+};
+
+describe("MessageRow", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the edit entry on an editable user message", () => {
+    render(<MessageRow turn={userTurn} editable />);
+
+    expect(screen.getByLabelText("编辑此消息并从这里重新发送")).toBeInTheDocument();
+    expect(screen.getByLabelText("复制消息")).toBeInTheDocument();
+  });
+
+  it("hides the edit entry when not editable, keeping the rest of the action row", () => {
+    render(<MessageRow turn={userTurn} editable={false} />);
+
+    expect(screen.queryByLabelText("编辑此消息并从这里重新发送")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("复制消息")).toBeInTheDocument();
+  });
+
+  it("hands the anchor uuid and current text to the edit handler", () => {
+    const onStartEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable onStartEdit={onStartEdit} />);
+
+    fireEvent.click(screen.getByLabelText("编辑此消息并从这里重新发送"));
+
+    expect(onStartEdit).toHaveBeenCalledWith("u-1", "只改第 3 集");
+  });
+
+  it("shows the edit entry but no copy button for an image-only user message", () => {
+    render(<MessageRow turn={imageOnlyTurn} editable />);
+
+    expect(screen.getByLabelText("编辑此消息并从这里重新发送")).toBeInTheDocument();
+    expect(screen.queryByLabelText("复制消息")).not.toBeInTheDocument();
+  });
+
+  it("edits in place, showing the consequence note and submitting on ⌘/Ctrl+Enter", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    const textarea = screen.getByLabelText("改写消息内容");
+    expect(textarea).toHaveValue("只改第 3 集");
+    expect(screen.getByText("此消息之后的对话将被丢弃，已产生的文件修改不会撤销")).toBeInTheDocument();
+
+    fireEvent.change(textarea, { target: { value: "逐条给我看要改哪些台词" } });
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-1", "逐条给我看要改哪些台词", []);
+  });
+
+  it("carries the anchor's image attachments along with the rewritten text", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={imageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    const textarea = screen.getByLabelText("改写消息内容");
+    expect(textarea).toHaveValue("按这张图改人设");
+
+    fireEvent.change(textarea, { target: { value: "按这张图改场景" } });
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-2", "按这张图改场景", [
+      { data: "AAAA", media_type: "image/png" },
+    ]);
+  });
+
+  it("shows editable attachment thumbnails and submits only the images that remain", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={twoImageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    expect(screen.getByRole("img", { name: "编辑中的附件 1/2" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "编辑中的附件 2/2" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "移除编辑中的图片 1/2" }));
+
+    expect(screen.getByRole("img", { name: "编辑中的附件 1/1" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-2", "按这两张图改人设", [
+      { data: "BBBB", media_type: "image/jpeg" },
+    ]);
+  });
+
+  it("adds an image in the editor and includes it in the rewrite payload", async () => {
+    const onSubmitEdit = vi.fn();
+    const canvas = stubImageCanvas();
+    render(<MessageRow turn={imageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    const added = new File(["new-image"], "new.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("上传附件图片"), { target: { files: [added] } });
+    await act(async () => {
+      await canvas.decodes[0].finish({ width: 800, height: 600 });
+    });
+
+    expect(screen.getByRole("img", { name: "编辑中的附件 2/2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新发送" }));
+
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-2", "按这张图改人设", [
+      { data: "AAAA", media_type: "image/png" },
+      { data: "anBlZw==", media_type: "image/jpeg" },
+    ]);
+  });
+
+  it("adds a pasted image and includes it in the rewrite payload", async () => {
+    const onSubmitEdit = vi.fn();
+    const canvas = stubImageCanvas();
+    render(<MessageRow turn={userTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    const pasted = new File(["pasted-image"], "paste.png", { type: "image/png" });
+    const defaultWasPrevented = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => pasted }],
+      },
+    });
+
+    expect(defaultWasPrevented).toBe(false);
+    await act(async () => {
+      await canvas.decodes[0].finish({ width: 800, height: 600 });
+    });
+
+    expect(screen.getByRole("img", { name: "编辑中的附件 1/1" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新发送" }));
+
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-1", "只改第 3 集", [
+      { data: "anBlZw==", media_type: "image/jpeg" },
+    ]);
+  });
+
+  it("keeps the browser's default paste behavior for text-only clipboard data", () => {
+    render(<MessageRow turn={userTurn} editable editing />);
+
+    const defaultWasAllowed = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "text/plain", getAsFile: () => null }],
+      },
+    });
+
+    expect(defaultWasAllowed).toBe(true);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("keeps the browser's default paste behavior when an image clipboard item has no file", () => {
+    render(<MessageRow turn={userTurn} editable editing />);
+
+    const defaultWasAllowed = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => null }],
+      },
+    });
+
+    expect(defaultWasAllowed).toBe(true);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("does not intercept image paste while a rewrite is submitting", () => {
+    render(<MessageRow turn={userTurn} editable editing submitting />);
+
+    const defaultWasAllowed = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => new File(["image"], "paste.png", { type: "image/png" }) }],
+      },
+    });
+
+    expect(defaultWasAllowed).toBe(true);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("does not intercept image paste while another image is being read", () => {
+    stubImageCanvas();
+    render(<MessageRow turn={userTurn} editable editing />);
+    fireEvent.change(screen.getByLabelText("上传附件图片"), {
+      target: { files: [new File(["reading"], "reading.png", { type: "image/png" })] },
+    });
+
+    const defaultWasAllowed = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => new File(["image"], "paste.png", { type: "image/png" }) }],
+      },
+    });
+
+    expect(defaultWasAllowed).toBe(true);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("does not intercept image paste once five attachments are present", () => {
+    render(<MessageRow turn={fullImageTurn} editable editing />);
+
+    const defaultWasAllowed = fireEvent.paste(screen.getByLabelText("改写消息内容"), {
+      clipboardData: {
+        items: [{ type: "image/png", getAsFile: () => new File(["image"], "paste.png", { type: "image/png" }) }],
+      },
+    });
+
+    expect(defaultWasAllowed).toBe(true);
+    expect(screen.getAllByRole("img")).toHaveLength(5);
+  });
+
+  it("keeps resend disabled until a newly selected image finishes loading", async () => {
+    const canvas = stubImageCanvas();
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={imageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    fireEvent.change(screen.getByLabelText("上传附件图片"), {
+      target: { files: [new File(["new-image"], "new.png", { type: "image/png" })] },
+    });
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await canvas.decodes[0].finish({ width: 800, height: 600 });
+    });
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeEnabled();
+  });
+
+  it("disables resend when removing the final attachment leaves an empty draft", () => {
+    render(<MessageRow turn={imageTurn} editable editing />);
+
+    fireEvent.change(screen.getByLabelText("改写消息内容"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "移除编辑中的图片 1/1" }));
+
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeDisabled();
+  });
+
+  it("lets a message with attachments be rewritten down to the attachments alone", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={imageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    fireEvent.change(screen.getByLabelText("改写消息内容"), { target: { value: "  " } });
+
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeEnabled();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-2", "  ", [{ data: "AAAA", media_type: "image/png" }]);
+  });
+
+  it("keeps an empty draft unsubmittable on a text-only message", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    fireEvent.change(screen.getByLabelText("改写消息内容"), { target: { value: "  " } });
+
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).not.toHaveBeenCalled();
+  });
+
+  it("cancels the edit on Escape", () => {
+    const onCancelEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing onCancelEdit={onCancelEdit} />);
+
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Escape" });
+
+    expect(onCancelEdit).toHaveBeenCalled();
+  });
+
+  it("locks the editor while the rewrite is in flight", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing submitting onSubmitEdit={onSubmitEdit} />);
+
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", ctrlKey: true });
+
+    expect(onSubmitEdit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "发送中…" })).toBeDisabled();
+  });
+
+  it("keeps the composing key from submitting a half-typed candidate", () => {
+    const onSubmitEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    const textarea = screen.getByLabelText("改写消息内容");
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true, isComposing: true });
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true, keyCode: 229 });
+
+    expect(onSubmitEdit).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).toHaveBeenCalledOnce();
+  });
+
+  it("holds the cancel button while the rewrite is in flight", () => {
+    const onCancelEdit = vi.fn();
+    render(<MessageRow turn={userTurn} editable editing submitting onCancelEdit={onCancelEdit} />);
+
+    expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Escape" });
+
+    expect(onCancelEdit).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft but locks resend once the turn is no longer editable", () => {
+    const onSubmitEdit = vi.fn();
+    const { rerender } = render(
+      <MessageRow turn={userTurn} editable editing onSubmitEdit={onSubmitEdit} />,
+    );
+    fireEvent.change(screen.getByLabelText("改写消息内容"), { target: { value: "写到一半的草稿" } });
+
+    // 会话在编辑期间开跑：草稿留着，重新发送锁住
+    rerender(<MessageRow turn={userTurn} editable={false} editing onSubmitEdit={onSubmitEdit} />);
+
+    expect(screen.getByLabelText("改写消息内容")).toHaveValue("写到一半的草稿");
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByLabelText("改写消息内容"), { key: "Enter", metaKey: true });
+    expect(onSubmitEdit).not.toHaveBeenCalled();
+  });
+
+  it("shows the user's text exactly as typed instead of parsing it as Markdown", () => {
+    render(<MessageRow turn={{ ...userTurn, content: [{ type: "text", text: "把 **第 3 集** 改短" }] }} />);
+
+    expect(screen.getByText("把 **第 3 集** 改短")).toBeInTheDocument();
+  });
+
+  it("keeps user HTML, event attributes and unsafe links as literal text", () => {
+    const text = '<img src=x onerror="alert(1)"><script>alert(1)</script> [x](javascript:alert(1))';
+    const { container } = render(<MessageRow turn={{ ...userTurn, content: [{ type: "text", text }] }} />);
+
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(container.querySelector("img, script, a[href]")).toBeNull();
+    expect(container.querySelector("[onerror]")).toBeNull();
+  });
+
+  it("marks an interrupted round with a separator line", () => {
+    render(<MessageRow turn={{ type: "system", uuid: "s-1", content: [{ type: "interrupt_notice" }] }} />);
+
+    expect(screen.getByText("已停止，这一轮的回复没有完成")).toBeInTheDocument();
+  });
+
+  it("shows a compaction summary as a context-compacted separator with the summary folded", async () => {
+    render(
+      <MessageRow
+        turn={{ type: "system", uuid: "c-1", content: [{ type: "compact_summary", text: "第 8 集已审完三个镜头" }] }}
+      />,
+    );
+
+    expect(screen.queryByText("第 8 集已审完三个镜头")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "上下文已压缩" }));
+    // 摘要按 Markdown 渲染，渲染器加载完会替换先显示的纯文本，所以每次重新查询
+    await waitFor(() => expect(screen.getByText("第 8 集已审完三个镜头")).toBeInTheDocument());
+  });
+
+  it("gives a streaming draft no action row", () => {
+    render(<MessageRow turn={{ ...userTurn, type: "assistant" }} streaming />);
+
+    expect(screen.queryByLabelText("复制消息")).not.toBeInTheDocument();
+  });
+
+  it("rewrites a 7.5-24MB historical image message after serial client transcoding", async () => {
+    const canvas = stubImageCanvas();
+    const onSubmitEdit = vi.fn();
+    const oversized = base64OfSize(4 * 1024 * 1024);
+    const largeImageTurn: Turn = {
+      ...userTurn,
+      uuid: "u-large",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: oversized } },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: oversized } },
+        { type: "text", text: "按这两张图改人设" },
+      ],
+    };
+    render(<MessageRow turn={largeImageTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    expect(screen.getByRole("button", { name: "重新发送" })).toBeDisabled();
+    expect(canvas.decodes).toHaveLength(1);
+
+    await act(async () => {
+      await canvas.decodes[0].finish({ width: 4000, height: 3000 });
+    });
+    expect(canvas.decodes).toHaveLength(2);
+    await act(async () => {
+      await canvas.decodes[1].finish({ width: 4000, height: 3000 });
+    });
+
+    const resend = screen.getByRole("button", { name: "重新发送" });
+    expect(resend).toBeEnabled();
+    fireEvent.click(resend);
+
+    const payload = onSubmitEdit.mock.calls[0][2] as Array<{ data: string; media_type: string }>;
+    const maxBase64Chars = 4 * Math.ceil(MAX_ENCODED_IMAGE_BYTES / 3);
+    expect(payload).toHaveLength(2);
+    expect(payload.every((image) => image.media_type === "image/jpeg")).toBe(true);
+    expect(payload.every((image) => image.data.length <= maxBase64Chars)).toBe(true);
+  });
+
+  it("removes a failed historical attachment, keeps order, and reports its original position", async () => {
+    const canvas = stubImageCanvas();
+    const onSubmitEdit = vi.fn();
+    const brokenTurn: Turn = {
+      ...userTurn,
+      uuid: "u-broken",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: base64OfSize(MAX_ENCODED_IMAGE_BYTES + 1),
+          },
+        },
+        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } },
+        { type: "text", text: "按这三张图改人设" },
+      ],
+    };
+    render(<MessageRow turn={brokenTurn} editable editing onSubmitEdit={onSubmitEdit} />);
+
+    await act(async () => {
+      await canvas.decodes[0].fail();
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "第 2 张历史附图无法读取，已移除；如需保留请重新上传",
+    );
+    expect(screen.getByRole("img", { name: "编辑中的附件 1/2" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "编辑中的附件 2/2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新发送" }));
+
+    expect(onSubmitEdit).toHaveBeenCalledWith("u-broken", "按这三张图改人设", [
+      { data: "AAAA", media_type: "image/png" },
+      { data: "BBBB", media_type: "image/jpeg" },
+    ]);
+  });
+});

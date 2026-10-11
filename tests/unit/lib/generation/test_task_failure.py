@@ -1,0 +1,297 @@
+"""Unit tests for structured task-failure encoding/rendering."""
+
+import pytest
+
+from lib.generation.task_failure import FAILURE_CODE_KEYS, bound_reason, encode_failure, parse_failure, render_failure
+from lib.i18n import _ as translate_message
+from tests.factories import make_display_names
+
+
+def _translator(locale: str):
+    def translate(key: str, **kwargs):
+        return translate_message(key, locale=locale, **kwargs)
+
+    return translate
+
+
+class TestEncodeFailure:
+    def test_encode_code_only(self):
+        assert encode_failure("restart_lost_image") == "[restart_lost_image]"
+
+    def test_encode_with_params_is_sorted_json(self):
+        encoded = encode_failure("provider_unsupported_media", provider_id="grok", media_type="image")
+        assert encoded == '[provider_unsupported_media] {"media_type": "image", "provider_id": "grok"}'
+
+    def test_encode_unknown_code_raises(self):
+        with pytest.raises(KeyError):
+            encode_failure("totally_unknown_code")
+
+    def test_every_known_code_round_trips_through_render(self):
+        # Each known code must encode and render to a non-empty, non-raw string.
+        translate = _translator("en")
+        for code in FAILURE_CODE_KEYS:
+            encoded = encode_failure(code, provider_id="p", media_type="video", detail="boom")
+            rendered = render_failure(encoded, translate, make_display_names("en"))
+            assert rendered
+            assert not rendered.startswith("["), f"{code} rendered to raw code: {rendered}"
+
+    def test_parse_known_code_preserves_params(self):
+        encoded = encode_failure("provider_unsupported_media", provider_id="grok", media_type="image")
+        assert parse_failure(encoded) == (
+            "provider_unsupported_media",
+            {"media_type": "image", "provider_id": "grok"},
+        )
+
+    @pytest.mark.parametrize("raw", [None, "", "provider failed", '[unknown] {"x": 1}'])
+    def test_parse_rejects_non_machine_failures(self, raw: str | None):
+        assert parse_failure(raw) is None
+
+
+class TestRenderKnownCodes:
+    @pytest.mark.parametrize("code", [[], {}, None, 42, True])
+    @pytest.mark.parametrize("locale", ["zh", "en", "vi"])
+    def test_malformed_gap_code_uses_original_message_fallback(self, code, locale):
+        encoded = encode_failure(
+            "reference_asset_missing",
+            missing_text="character: Alice, product: Cup",
+            gaps=[
+                {"code": "reference_asset_missing", "asset_type": "character", "name": "Alice"},
+                {"code": code, "asset_type": "product", "name": "Cup"},
+            ],
+        )
+
+        assert render_failure(encoded, _translator(locale), make_display_names(locale)) == translate_message(
+            "reference_asset_missing", locale=locale, missing_text="character: Alice, product: Cup"
+        )
+
+    @pytest.mark.parametrize("locale", ["zh", "en", "vi"])
+    def test_mixed_gap_codes_render_each_cause(self, locale):
+        encoded = encode_failure(
+            "reference_asset_missing",
+            missing_text="character: Alice, product: Cup",
+            gaps=[
+                {"code": "reference_asset_missing", "asset_type": "character", "name": "Alice"},
+                {"code": "asset_original_missing", "asset_type": "product", "name": "Cup"},
+            ],
+        )
+        details = "; ".join(
+            [
+                translate_message("reference_asset_missing", locale=locale, missing_text="character: Alice"),
+                translate_message("asset_original_missing", locale=locale, missing_text="product: Cup"),
+            ]
+        )
+
+        assert render_failure(encoded, _translator(locale), make_display_names(locale)) == translate_message(
+            "generation_input_multiple_gaps", locale=locale, details=details
+        )
+
+    def test_renders_per_locale(self):
+        encoded = encode_failure("provider_unsupported_media", provider_id="grok", media_type="image")
+        assert render_failure(encoded, _translator("zh"), make_display_names("zh")) == "供应商 Grok 不支持 image 生成"
+        assert (
+            render_failure(encoded, _translator("en"), make_display_names("en"))
+            == "Provider Grok does not support image generation"
+        )
+        vi = render_failure(encoded, _translator("vi"), make_display_names("vi"))
+        assert "Grok" in vi
+        assert "image" in vi
+        # locales differ
+        assert render_failure(encoded, _translator("zh"), make_display_names("zh")) != render_failure(
+            encoded, _translator("en"), make_display_names("en")
+        )
+
+    def test_renders_code_only(self):
+        encoded = encode_failure("restart_lost_image")
+        zh = render_failure(encoded, _translator("zh"), make_display_names("zh"))
+        en = render_failure(encoded, _translator("en"), make_display_names("en"))
+        assert zh
+        assert en
+        assert zh != en
+        assert "[" not in zh
+
+    def test_detail_param_is_interpolated_untranslated(self):
+        encoded = encode_failure("resume_expired_detail", detail="HTTP 404 job gone")
+        zh = render_failure(encoded, _translator("zh"), make_display_names("zh"))
+        en = render_failure(encoded, _translator("en"), make_display_names("en"))
+        assert "HTTP 404 job gone" in zh
+        assert "HTTP 404 job gone" in en
+
+    def test_locale_neutral_detail_is_rendered_with_the_outer_failure_locale(self):
+        encoded = encode_failure(
+            "declarative_template_render_failed",
+            detail={"key": "val_ce_enum_map_value_missing", "params": {"name": "duration", "value": "5"}},
+        )
+
+        assert render_failure(encoded, _translator("en"), make_display_names("en")) == (
+            "Endpoint request rendering failed: enum_maps.duration has no entry for '5'"
+        )
+        assert render_failure(encoded, _translator("zh"), make_display_names("zh")) == (
+            "调用端点请求渲染失败：enum_maps.duration 缺少 '5' 的映射"
+        )
+        assert render_failure(encoded, _translator("vi"), make_display_names("vi")) == (
+            "Không thể kết xuất yêu cầu endpoint: enum_maps.duration không có ánh xạ cho '5'"
+        )
+
+    def test_jsonpath_evaluation_detail_is_rendered_with_the_outer_failure_locale(self):
+        encoded = encode_failure(
+            "declarative_response_extract_failed",
+            detail={"key": "val_ce_jsonpath_evaluation_failed", "params": {"path_expression": "$[?@.a == 1e400]"}},
+        )
+
+        assert render_failure(encoded, _translator("en"), make_display_names("en")) == (
+            "Endpoint response extraction failed: Could not evaluate extraction path: $[?@.a == 1e400]"
+        )
+
+
+class TestCascadeBlockedDependency:
+    def test_renders_nested_structured_reason(self):
+        inner = encode_failure("restart_lost_image")
+        outer = encode_failure("cascade_blocked_dependency", dependency_task_id="task-1", reason=inner)
+        rendered = render_failure(outer, _translator("zh"), make_display_names("zh"))
+        assert "task-1" in rendered
+        assert "[" not in rendered
+        assert render_failure(inner, _translator("zh"), make_display_names("zh")) in rendered
+
+    def test_renders_nested_raw_text_reason(self):
+        outer = encode_failure("cascade_blocked_dependency", dependency_task_id="task-1", reason="boom")
+        rendered = render_failure(outer, _translator("en"), make_display_names("en"))
+        assert "task-1" in rendered
+        assert "boom" in rendered
+
+    def test_renders_per_locale(self):
+        inner = encode_failure("restart_lost_image")
+        outer = encode_failure("cascade_blocked_dependency", dependency_task_id="task-1", reason=inner)
+        rendered = {
+            locale: render_failure(outer, _translator(locale), make_display_names(locale))
+            for locale in ("zh", "en", "vi")
+        }
+        for locale, text in rendered.items():
+            # 嵌套 reason 必须跟随外层同一 locale 渲染，而不是回落到别的语言。
+            assert render_failure(inner, _translator(locale), make_display_names(locale)) in text
+            assert "task-1" in text
+            assert "[" not in text
+        assert len(set(rendered.values())) == 3
+
+    def test_renders_double_nested_cascade(self):
+        level1 = encode_failure("cascade_blocked_dependency", dependency_task_id="task-1", reason="boom")
+        level2 = encode_failure("cascade_blocked_dependency", dependency_task_id="task-2", reason=level1)
+        rendered = render_failure(level2, _translator("en"), make_display_names("en"))
+        assert "task-1" in rendered
+        assert "task-2" in rendered
+        assert "boom" in rendered
+        assert "[" not in rendered
+
+
+class TestBoundReason:
+    def test_returns_unchanged_when_within_limit(self):
+        assert bound_reason("boom", 100) == "boom"
+
+    def test_truncates_raw_text_when_over_limit(self):
+        assert bound_reason("x" * 200, 100) == "x" * 100
+
+    def test_shrinks_longest_string_param_of_structured_reason(self):
+        reason = encode_failure("resume_expired_detail", detail="x" * 1900)
+        bounded = bound_reason(reason, 500)
+        assert len(bounded) <= 500
+        rendered = render_failure(bounded, _translator("en"), make_display_names("en"))
+        assert rendered is not None
+        assert "[" not in rendered
+
+    def test_shrunk_structured_reason_still_round_trips_through_render(self):
+        reason = encode_failure("resume_expired_detail", detail="y" * 3000)
+        bounded = bound_reason(reason, 200)
+        assert len(bounded) <= 200
+        rendered = render_failure(bounded, _translator("zh"), make_display_names("zh"))
+        assert rendered is not None
+        assert "[" not in rendered
+        assert "resume_expired_detail" not in rendered
+
+    @pytest.mark.parametrize("locale", ["zh", "en", "vi"])
+    def test_preserves_oversized_nested_diagnostic_for_locale_rendering(self, locale):
+        path_expression = f"$.{'member' * 500}[?@.a == 1e400]"
+        reason = encode_failure(
+            "declarative_response_extract_failed",
+            detail={
+                "key": "val_ce_jsonpath_evaluation_failed",
+                "params": {"path_expression": path_expression},
+            },
+        )
+
+        bounded = bound_reason(reason, 2000)
+
+        assert len(bounded) <= 2000
+        parsed = parse_failure(bounded)
+        assert parsed is not None
+        detail = parsed[1]["detail"]
+        assert detail["key"] == "val_ce_jsonpath_evaluation_failed"
+        assert detail["params"]["path_expression"]
+        rendered = render_failure(bounded, _translator(locale), make_display_names(locale))
+        assert rendered is not None
+        assert "val_ce_jsonpath_evaluation_failed" not in rendered
+        assert '"key"' not in rendered
+
+    @pytest.mark.parametrize("locale", ["zh", "en", "vi"])
+    @pytest.mark.parametrize("name_length", [120, 5000])
+    def test_bounded_generation_gaps_keep_each_cause_machine_readable(self, locale, name_length):
+        gaps = [{"code": "script_prompt_pending", "asset_type": None, "name": "E1S1"}]
+        gaps.extend(
+            {
+                "code": "reference_asset_missing",
+                "asset_type": "character",
+                "name": f"Character-{index}-" + "x" * name_length,
+            }
+            for index in range(30)
+        )
+        gaps.append({"code": "asset_original_missing", "asset_type": "product", "name": "Product"})
+        reason = encode_failure("script_prompt_pending", segment_id="E1S1", missing_text="x" * 500, gaps=gaps)
+
+        bounded = bound_reason(reason, 2000)
+
+        assert len(bounded) <= 2000
+        parsed = parse_failure(bounded)
+        assert parsed is not None
+        kept = parsed[1]["gaps"]
+        assert isinstance(kept, list)
+        assert {gap["code"] for gap in kept} == {gap["code"] for gap in gaps}
+        assert len(kept) + parsed[1]["gaps_omitted"] == len(gaps)
+        rendered = render_failure(bounded, _translator(locale), make_display_names(locale))
+        assert rendered is not None
+        assert "Character-0-" in rendered
+        assert "Product" in rendered
+
+
+class TestPassthrough:
+    def test_none_and_empty(self):
+        assert render_failure(None, _translator("en"), make_display_names("en")) is None
+        assert render_failure("", _translator("en"), make_display_names("en")) == ""
+
+    def test_raw_exception_text_passthrough(self):
+        raw = "RuntimeError: provider returned 500"
+        assert render_failure(raw, _translator("en"), make_display_names("en")) == raw
+
+    def test_legacy_chinese_row_passthrough(self):
+        legacy = "供应商 grok 不支持 image 生成"
+        assert render_failure(legacy, _translator("en"), make_display_names("en")) == legacy
+
+    def test_legacy_bracket_prefix_with_chinese_tail_passthrough(self):
+        # Old format: [code] followed by free Chinese text (non-JSON tail).
+        legacy = "[restart_lost] image 任务无法接续，需手动重试以避免重复计费"
+        assert render_failure(legacy, _translator("en"), make_display_names("en")) == legacy
+
+    def test_unknown_bracket_code_passthrough(self):
+        msg = '[some_future_code] {"x": 1}'
+        assert render_failure(msg, _translator("en"), make_display_names("en")) == msg
+
+    def test_malformed_json_params_passthrough(self):
+        msg = "[provider_unsupported_media] {not valid json"
+        assert render_failure(msg, _translator("en"), make_display_names("en")) == msg
+
+    def test_non_object_json_params_passthrough(self):
+        msg = "[provider_unsupported_media] [1, 2, 3]"
+        assert render_failure(msg, _translator("en"), make_display_names("en")) == msg
+
+    def test_detail_with_braces_does_not_break_format(self):
+        # str(exc) can contain literal braces; they must not be re-interpreted by .format.
+        encoded = encode_failure("resume_unsupported_detail", detail="weird {placeholder} text")
+        rendered = render_failure(encoded, _translator("en"), make_display_names("en"))
+        assert "weird {placeholder} text" in rendered

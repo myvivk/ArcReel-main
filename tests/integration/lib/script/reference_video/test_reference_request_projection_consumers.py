@@ -1,0 +1,213 @@
+"""Reference request projection contract across public consumers."""
+
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+from fastapi import HTTPException, Request
+
+from lib.config.resolver import ConfigResolver
+from lib.generation.generation_queue import reference_projection_for_queued_task
+from lib.script.reference_video.request_projection import ReferenceRequestOptions
+from server.agent_toolset.declaration import invoke_declaration
+from server.agent_toolset.media_generation import GENERATE_VIDEOS
+from server.auth import CurrentUserInfo
+from server.routers import reference_videos
+from server.services.admission.cost_estimation import CostEstimationService, VideoRequestQuote
+from tests.factories import activate_reference_project, make_display_names
+from tests.fakes import fake_reference_request_facts, fake_reference_request_projector
+from tests.integration.server.agent_tool_support import ToolHarness
+
+
+def _stub_batch_admission_queue(monkeypatch) -> None:
+    """Cut the batch admission's task-store lookups off the ambient database.
+
+    准入在评估每个 unit 之前先整批探在途任务，走的是全局引擎；
+    不打桩时这些用例会连上开发机上的 sqlite 文件，本地能过、干净环境报 no such table。
+    """
+
+    async def _no_active_tasks(**_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "server.services.admission.video_batch_admission.get_active_tasks_for_resources", _no_active_tasks
+    )
+
+
+async def test_reference_projection_contract_stays_aligned_across_public_consumers(
+    db_factory,
+    monkeypatch,
+    tmp_path,
+):
+    """Public request consumers agree; queue routing keeps only current visual generation type facts."""
+
+    request_facts = fake_reference_request_facts(
+        durations=(4, 8, 12),
+        provider_id="fake",
+        model_id="fake-model",
+        max_reference_images=1,
+    )
+    unit: dict[str, Any] = {
+        "unit_id": "E1U1",
+        "text": "镜头：@[甲] 与 @[乙] 看向 @[丙]",
+        "duration_seconds": 5,
+        "generated_assets": {},
+    }
+    script: dict[str, Any] = {
+        "episode": 1,
+        "content_mode": "narration",
+        "generation_mode": "reference_video",
+        "video_units": [unit],
+    }
+    # 生产项目一律处于当前 schema，甲、乙的资产图由补录认领进产物清单；丙的图登记了路径但文件不在。
+    (tmp_path / "characters").mkdir()
+    (tmp_path / "characters/a.png").write_bytes(b"a")
+    (tmp_path / "characters/b.png").write_bytes(b"b")
+    project: dict[str, Any] = activate_reference_project(
+        tmp_path,
+        {
+            "title": "Narration",
+            "characters": {
+                "甲": {"description": "甲", "character_sheet": "characters/a.png"},
+                "乙": {"description": "乙", "character_sheet": "characters/b.png"},
+                "丙": {"description": "丙", "character_sheet": "characters/missing.png"},
+            },
+            "episodes": [{"episode": 1, "title": "", "script_file": "scripts/episode_1.json"}],
+        },
+    )
+    project_current = fake_reference_request_projector(request_facts=request_facts)
+
+    async def quote_current(facts, _session_factory):
+        return VideoRequestQuote(
+            amount=1.2,
+            currency="USD",
+            provider_id=facts.provider_id,
+            model_id=facts.model_id,
+            request_duration_seconds=facts.duration_seconds,
+        )
+
+    class _ProjectManager:
+        def load_project(self, project_name):
+            assert project_name == "demo"
+            return project
+
+        def load_script(self, project_name, script_file):
+            assert (project_name, Path(script_file).name) == ("demo", "episode_1.json")
+            return script
+
+        def get_project_path(self, project_name):
+            assert project_name == "demo"
+            return tmp_path
+
+    pm = _ProjectManager()
+    monkeypatch.setattr(
+        "server.services.admission.cost_estimation.configured_reference_request_facts",
+        lambda _project, _resolver: request_facts,
+    )
+    monkeypatch.setattr(reference_videos, "get_project_manager", lambda: pm)
+    monkeypatch.setattr(reference_videos, "project_reference_unit_request", project_current)
+    monkeypatch.setattr(
+        "server.services.admission.video_batch_admission.project_reference_unit_request", project_current
+    )
+    _stub_batch_admission_queue(monkeypatch)
+    monkeypatch.setattr("server.services.admission.video_batch_admission.quote_video_request", quote_current)
+    monkeypatch.setattr("lib.config.resolver.get_project_manager", lambda: pm)
+    monkeypatch.setattr(
+        "lib.script.reference_video.request_projection.project_reference_unit_request",
+        project_current,
+    )
+    service = CostEstimationService(ConfigResolver(db_factory), db_factory, project_path=tmp_path)
+
+    async def observe(expected_input: int, expected_slot: int) -> None:
+        quote = await service.compute(
+            project,
+            {"scripts/episode_1.json": script},
+            project_name="demo",
+        )
+        quote_projection = quote["episodes"][0]["segments"][0]["request_projection"]
+
+        with pytest.raises(HTTPException) as web_precheck_blocked:
+            await reference_videos.precheck_unit_duration(
+                project_name="demo",
+                episode=1,
+                unit_id="E1U1",
+                request=Request({"type": "http", "query_string": b"", "headers": []}),
+                _t=lambda key, **_params: key,
+                names=make_display_names(),
+            )
+        with pytest.raises(HTTPException) as web_generate_blocked:
+            await reference_videos.generate_unit(
+                project_name="demo",
+                episode=1,
+                unit_id="E1U1",
+                user=CurrentUserInfo(id="u1", sub="test", role="admin"),
+                _t=lambda key, **_params: key,
+                names=make_display_names(),
+                req=reference_videos.GenerateUnitRequest(),
+            )
+
+        agent_ctx = ToolHarness(project_name="demo", data_root=tmp_path, pm=pm)
+        agent_outcome = await invoke_declaration(
+            GENERATE_VIDEOS,
+            {
+                "script": "episode_1.json",
+                "target": {"scope": "scene", "ids": ["E1U1"]},
+                "force": True,
+            },
+            agent_ctx.scope,
+            agent_ctx.caller,
+            agent_ctx.services,
+        )
+        queue_projection = await reference_projection_for_queued_task(
+            project=project,
+            project_name="demo",
+            payload={
+                "script_file": "scripts/episode_1.json",
+                "reference_request_options": ReferenceRequestOptions().to_payload(),
+            },
+            resource_id="E1U1",
+        )
+        assert queue_projection is not None
+
+        expected_facts = ("r2v", "fake", "fake-model", expected_input, expected_slot)
+        assert (
+            quote_projection["capability"],
+            quote_projection["provider_id"],
+            quote_projection["model_id"],
+            quote_projection["duration_input"],
+            quote_projection["request_duration"],
+        ) == expected_facts
+        precheck_detail = cast(dict[str, object], web_precheck_blocked.value.detail)
+        generate_detail = cast(dict[str, object], web_generate_blocked.value.detail)
+        assert isinstance(agent_outcome.value, dict)
+        agent_projection = cast(dict[str, object], agent_outcome.value["request_projections"][0])
+        for projection in (precheck_detail, generate_detail, agent_projection):
+            assert (
+                projection["hydrated_capability"],
+                projection["provider_id"],
+                projection["model_id"],
+                projection["duration_input"],
+                projection["request_duration"],
+            ) == expected_facts
+        assert (
+            queue_projection.hydrated_generation_type,
+            queue_projection.provider_id,
+            queue_projection.model_id,
+            queue_projection.duration_input,
+            queue_projection.request_duration.seconds if queue_projection.request_duration else None,
+        ) == expected_facts
+
+        duration_code = "needs_replan" if expected_input > expected_slot else "reference_duration_confirmation_required"
+        expected_codes = [
+            "reference_asset_missing",
+            "reference_images_clamped",
+            duration_code,
+        ]
+        for projection in (quote_projection, precheck_detail, generate_detail, agent_projection):
+            problems = cast(list[dict[str, object]], projection["problems"])
+            assert [problem["code"] for problem in problems] == expected_codes
+        assert [problem.code for problem in queue_projection.problems] == expected_codes
+
+    await observe(5, 8)
+    unit["duration_seconds"] = 13
+    await observe(13, 12)

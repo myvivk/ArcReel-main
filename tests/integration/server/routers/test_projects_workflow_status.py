@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
+
+from lib.artifacts.artifact_currency import ArtifactCurrencyResolver
+from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactStatus
+from lib.project.project_manager import ProjectManager
+from lib.workflow.workflow_state import WorkflowRequestError, WorkflowStateService
+from server.auth import CurrentUserInfo, get_current_user
+from server.error_handlers import register_error_handlers
+from server.routers import projects
+
+
+def _project(tmp_path: Path) -> ProjectManager:
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create_project("demo")
+    pm.create_project_metadata("demo", "Ad", "", "ad", target_duration=30)
+    return pm
+
+
+async def test_rest_serializes_the_authoritative_workflow_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pm = _project(tmp_path)
+    expected = WorkflowStateService(pm).get_status("demo", None).model_dump(mode="json")
+
+    monkeypatch.setattr(projects, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="u1", sub="tester")
+    app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+    with TestClient(app) as client:
+        response = client.get("/api/v1/projects/demo/workflow-status")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+async def test_workflow_status_rest_treats_corrupt_project_as_server_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pm = _project(tmp_path)
+
+    def _corrupt(*args: object, **kwargs: object) -> None:
+        raise json.JSONDecodeError("broken", "{", 0)
+
+    monkeypatch.setattr(WorkflowStateService, "get_status", _corrupt)
+
+    monkeypatch.setattr(projects, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="u1", sub="tester")
+    app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/projects/demo/workflow-status")
+
+    assert response.status_code == 500
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (WorkflowRequestError("ad workflow only has episode 1"), 400),
+        (ValueError("scenes must be an array of objects"), 500),
+    ],
+)
+async def test_workflow_status_rest_blames_the_request_only_for_request_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_status: int,
+) -> None:
+    pm = _project(tmp_path)
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(WorkflowStateService, "get_status", _raise)
+
+    monkeypatch.setattr(projects, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    register_error_handlers(app)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="u1", sub="tester")
+    app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/projects/demo/workflow-status", params={"episode": 2})
+
+    assert response.status_code == expected_status
+
+
+async def test_episode_next_steps_rest_lists_each_episode_and_404s_missing_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pm = _project(tmp_path)
+    expected = WorkflowStateService(pm).get_episode_next_steps("demo")
+
+    monkeypatch.setattr(projects, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="u1", sub="tester")
+    app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+    register_error_handlers(app)
+    with TestClient(app) as client:
+        listed = client.get("/api/v1/projects/demo/workflow-status/episodes")
+        missing = client.get("/api/v1/projects/ghost/workflow-status/episodes")
+
+    assert listed.status_code == 200
+    steps = listed.json()["episodes"]
+    assert expected
+    assert [(step["episode"], step["next_action"]["type"]) for step in steps] == [
+        (step.episode, step.next_action.type.value) for step in expected
+    ]
+    assert missing.status_code == 404
+
+
+@pytest.mark.parametrize("field", ["brief", "synopsis", "genre", "theme", "world_setting"])
+async def test_saving_ad_inspiration_or_story_setting_makes_the_script_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    pm = _project(tmp_path)
+    pm.update_project(
+        "demo",
+        lambda project: project.update(
+            {
+                "brief": "新品发布",
+                "overview": {"synopsis": "开箱", "genre": "广告", "theme": "轻便", "world_setting": "工作室"},
+            }
+        ),
+    )
+    script_path = pm.save_script(
+        "demo", {"episode": 1, "title": "新品", "content_mode": "ad", "shots": []}, "episode_1.json"
+    )
+    original_script = script_path.read_bytes()
+    project_dir = pm.get_project_path("demo")
+    key = ArtifactKey.episode_script(1)
+    assert (
+        ArtifactCurrencyResolver(project_dir).compare(key, artifact_path="scripts/episode_1.json").status
+        is ArtifactStatus.CURRENT
+    )
+
+    monkeypatch.setattr(projects, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="u1", sub="tester")
+    app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)])
+    with TestClient(app) as client:
+        response = (
+            client.patch("/api/v1/projects/demo", json={field: "新的创作灵感"})
+            if field == "brief"
+            else client.patch("/api/v1/projects/demo/overview", json={field: "新的故事设定"})
+        )
+
+    assert response.status_code == 200
+    assert script_path.read_bytes() == original_script
+    assert (
+        ArtifactCurrencyResolver(project_dir).compare(key, artifact_path="scripts/episode_1.json").status
+        is ArtifactStatus.STALE
+    )

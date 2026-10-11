@@ -1,0 +1,1069 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types import ImageContent
+
+from lib.artifacts.artifact_activation import activate_artifact_target_state, register_current_artifact_if_provable
+from lib.artifacts.artifact_manifest import ArtifactKey
+from lib.generation.generation_batch import GenerationBatchRequestSnapshot
+from lib.generation.generation_queue import GenerationQueue
+from lib.generation.generation_queue_client import submit_generation_batch
+from lib.generation.generation_result import GenerationSelectionMode
+from lib.generation.generation_worker import CapacityTable, GenerationWorker
+from lib.infra.api_errors import ConflictError
+from lib.project.project_manager import ProjectManager
+from lib.project.project_migration_failure import MIGRATION_FAILURE_CODE, record_migration_failure
+from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
+from lib.script.draft_quarantine import QUARANTINE_KIND_DRAMA_SCRIPT_PLAN, read_quarantine
+from lib.workflow.workflow_plan import WorkflowPlanRequest, build_workflow_plan
+from lib.workflow.workflow_state import WorkflowStatus
+from server.agent_toolset.declaration import invoke_declaration
+from server.agent_toolset.script_authoring import GENERATE_EPISODE_SCRIPT
+from server.agent_toolset.toolset import ARCREEL_MCP_TOOL_IDS
+from server.auth import create_download_token, create_token
+from server.cors_config import resolve_cors_policy
+from server.remote_mcp import ArcApiKeyVerifier, RemoteMCPHost, build_remote_mcp_server, mount_remote_mcp
+from server.tool_runtime import Services, TextGenerationResult
+from tests.factories import install_current_video, make_test_clip, make_video_request_facts, register_project_sources
+from tests.fakes import refuse_resume_execution
+from tests.integration.server.agent_tool_support import ToolHarness
+
+
+class _Planner:
+    async def get_plan(self, project_name: str, request: WorkflowPlanRequest, **_caller_scope):
+        assert project_name == "demo"
+        status = WorkflowStatus.model_validate(
+            {
+                "project_revision": "sha256-v1:project",
+                "source_revision": None,
+                "project": {"content_mode": "ad", "generation_mode": "storyboard", "grid_storyboard": False},
+                "target": {
+                    "episode": request.episode_id,
+                    "script": "scripts/episode_1.json",
+                    "script_filename": "episode_1.json",
+                    "source": "source/episode_1.txt",
+                },
+                "content": None,
+                "blockers": [],
+                "gates": {"script_plan_review": {"state": "not_applicable", "revision": None}},
+                "artifacts": {
+                    "asset_sheets": {},
+                    "script_plan": {"state": "not_applicable"},
+                    "script": {"state": "missing"},
+                    "storyboards": {"current_ids": [], "stale_ids": [], "missing_ids": []},
+                    "videos": {"current_ids": [], "stale_ids": [], "missing_ids": []},
+                    "audio": {"state": "not_applicable", "current_ids": [], "stale_ids": [], "missing_ids": []},
+                },
+                "next_action": {"type": "generate_script", "reason": "script missing"},
+            }
+        )
+        return build_workflow_plan(status)
+
+
+class _Capabilities:
+    async def video_capabilities_for_project(self, project: dict, *, generation_type=None) -> dict:
+        return {"provider_id": "fake", "model": "video-1", "supported_durations": [4, 6]}
+
+    async def resolve_image_backend(self, _project: dict, _payload: object, *, generation_type: str) -> None:
+        assert generation_type == "i2i"
+        raise ValueError("image capability unavailable")
+
+
+class _AvailableImageCapabilities(_Capabilities):
+    async def resolve_image_backend(self, _project: dict, _payload: object, *, generation_type: str) -> None:
+        assert generation_type == "i2i"
+
+
+@pytest.fixture
+def remote_projects(tmp_path: Path) -> ProjectManager:
+    projects_root = tmp_path / "projects"
+    manager = ProjectManager(tmp_path)
+    manager.create_project("demo", content_mode="drama")
+    manager.create_project_metadata("demo", "Demo", "", "drama")
+    project_dir = projects_root / "demo"
+    register_project_sources(manager, "demo", own_episodes=("第一集原文",))
+    (project_dir / "scripts").mkdir(exist_ok=True)
+    (project_dir / "scripts" / "episode_1.json").write_text('{"episode":1,"scenes":[]}', encoding="utf-8")
+    drafts = project_dir / "drafts" / "episode_1"
+    drafts.mkdir(parents=True)
+    (drafts / "script_plan_normalized_script.json").write_text(
+        '{"title":"第一集","scenes":[{"scene_id":"E1S01","duration_seconds":4,'
+        '"segment_break":false,"characters_in_scene":[],"scenes":[],"props":[],'
+        '"scene_description":"山门前。","utterances":[],"source_text":"第一集原文"}]}',
+        encoding="utf-8",
+    )
+    activate_artifact_target_state(project_dir, bump_schema=False)
+    (projects_root / "empty").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "project.json").write_text("{}", encoding="utf-8")
+    (projects_root / "escape").symlink_to(outside, target_is_directory=True)
+
+    return manager
+
+
+@pytest.fixture
+def remote_server(remote_projects: ProjectManager):
+
+    async def verify_api_key(token: str):
+        return {"sub": "apikey:test", "via": "apikey"} if token == "arc-valid" else None
+
+    services = Services(projects=remote_projects, workflow_planner=_Planner(), capabilities=_Capabilities())
+    return build_remote_mcp_server(
+        projects=remote_projects, services=services, token_verifier=ArcApiKeyVerifier(verify_api_key)
+    )
+
+
+@pytest.fixture
+def remote_batch_server(remote_projects: ProjectManager, db_factory):
+    async def verify_api_key(token: str):
+        subjects = {
+            "arc-valid": "apikey:test",
+            "arc-user-a": "apikey:user-a",
+            "arc-user-b": "apikey:user-b",
+        }
+        return {"sub": subjects[token], "via": "apikey"} if token in subjects else None
+
+    queue = GenerationQueue(session_factory=db_factory, project_manager=remote_projects)
+    services = Services(
+        projects=remote_projects,
+        workflow_planner=_Planner(),
+        capabilities=_AvailableImageCapabilities(),
+        queue=queue,
+    )
+    return (
+        build_remote_mcp_server(
+            projects=remote_projects,
+            services=services,
+            token_verifier=ArcApiKeyVerifier(verify_api_key),
+        ),
+        queue,
+    )
+
+
+def _mounted(server) -> FastAPI:
+    app = FastAPI()
+    mount_remote_mcp(app, server.streamable_http_app())
+    return app
+
+
+def test_remote_mcp_accepts_source_upload_sized_requests(remote_server) -> None:
+    assert remote_server.settings.max_request_body_size > 300 * 1024 * 1024
+
+
+def test_remote_mcp_rejects_mismatched_projects_roots(tmp_path: Path) -> None:
+    projects = ProjectManager(tmp_path / "scope-projects")
+    services = Services(
+        projects=ProjectManager(tmp_path / "service-projects"),
+        workflow_planner=_Planner(),
+        capabilities=_Capabilities(),
+    )
+
+    with pytest.raises(ValueError, match="同一项目根"):
+        build_remote_mcp_server(projects=projects, services=services)
+
+
+async def _post_initialize(app: FastAPI, token: str | None = None) -> httpx.Response:
+    headers = {"Accept": "application/json, text/event-stream"}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost", follow_redirects=True
+    ) as client:
+        return await client.post(
+            "/mcp",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+
+
+@pytest.mark.parametrize("auth_enabled", ["true", "false"])
+async def test_remote_mcp_always_rejects_anonymous(remote_server, monkeypatch, auth_enabled: str) -> None:
+    monkeypatch.setenv("AUTH_ENABLED", auth_enabled)
+
+    response = await _post_initialize(_mounted(remote_server))
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/"])
+async def test_remote_mcp_serves_endpoint_without_redirect(remote_server, path: str) -> None:
+    """规范端点 ``/mcp`` 与兼容入口 ``/mcp/`` 都直接处理：不跟随 POST 重定向的客户端也能接入。"""
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client,
+    ):
+        response = await client.post(
+            path,
+            headers={"Accept": "application/json, text/event-stream", "Authorization": "Bearer arc-valid"},
+            json=_INITIALIZE_REQUEST,
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "metadata_path", ["/.well-known/oauth-protected-resource/mcp", "/mcp/.well-known/oauth-protected-resource"]
+)
+async def test_remote_mcp_does_not_advertise_oauth_discovery(remote_server, metadata_path: str) -> None:
+    """只认静态 arc- API Key、没有授权服务器：401 是普通 Bearer challenge，也不提供受保护资源元数据。"""
+    app = _mounted(remote_server)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
+        challenge = await client.post(
+            "/mcp", headers={"Accept": "application/json, text/event-stream"}, json=_INITIALIZE_REQUEST
+        )
+        metadata = await client.get(metadata_path)
+
+    assert challenge.status_code == 401
+    assert challenge.headers["www-authenticate"].startswith("Bearer ")
+    assert "resource_metadata" not in challenge.headers["www-authenticate"]
+    assert metadata.status_code == 404
+
+
+_INITIALIZE_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "1"},
+    },
+}
+
+
+async def test_remote_mcp_accepts_non_loopback_host_header(remote_server) -> None:
+    """任意 Host 都能到达端点：边界由每请求强制的 arc- API Key 承担，不由 Host 白名单承担。"""
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://arcreel.example.com",
+            follow_redirects=True,
+        ) as client,
+    ):
+        response = await client.post(
+            "/mcp",
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Authorization": "Bearer arc-valid",
+            },
+            json=_INITIALIZE_REQUEST,
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("origin", "allowed"),
+    [("https://evil.example.com", False), ("https://arcreel.example.com", True)],
+)
+async def test_remote_mcp_mount_inherits_app_cors_allowlist(
+    remote_server, monkeypatch, origin: str, allowed: bool
+) -> None:
+    """浏览器型客户端的跨源防护由应用级 CORSMiddleware 单点承担，``/mcp`` 挂载被一并覆盖。
+
+    MCP 的 POST 带 Authorization 与 JSON body，浏览器必先发预检；不在 ``CORS_ORIGINS`` 里的
+    Origin 在预检阶段即被拒，实际请求不会发出。
+    """
+    monkeypatch.setenv("CORS_ORIGINS", "https://arcreel.example.com")
+    host = RemoteMCPHost(server_factory=lambda: remote_server)
+    app = FastAPI()
+    allow_origins, allow_credentials = resolve_cors_policy()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    mount_remote_mcp(app, host)
+
+    async with (
+        host.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://arcreel.example.com",
+        ) as client,
+    ):
+        preflight = await client.options(
+            "/mcp",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert (preflight.headers.get("access-control-allow-origin") == origin) is allowed
+    assert (preflight.status_code == 200) is allowed
+
+
+@pytest.mark.parametrize(
+    "token_factory", [lambda: create_token("admin"), lambda: create_download_token("admin", "demo")]
+)
+async def test_remote_mcp_rejects_non_api_key_bearer_tokens(remote_server, token_factory) -> None:
+    response = await _post_initialize(_mounted(remote_server), token_factory())
+
+    assert response.status_code == 401
+
+
+async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
+    remote_server, remote_projects: ProjectManager, set_video_request_facts
+) -> None:
+    set_video_request_facts(
+        make_video_request_facts(
+            provider_id="fake", model_id="video-1", supported_durations=(4, 6), allowed_durations=(4, 6)
+        )
+    )
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        result = await session.call_tool("get_workflow_plan", {"project": " demo ", "episode_id": 1})
+        capabilities = await session.call_tool("get_video_capabilities", {"project": "demo"})
+        patched = await session.call_tool("patch_project", {"project": "demo", "overview": {"synopsis": "远程更新"}})
+        project_content = await session.call_tool("get_project_content", {"project": "demo"})
+        source_files = await session.call_tool("list_source_files", {"project": "demo"})
+        source_text = await session.call_tool("get_source_text", {"project": "demo", "path": "source/episode_1.txt"})
+        script = await session.call_tool("get_episode_script", {"project": "demo", "script": "episode_1.json"})
+        script_plan = await session.call_tool("get_script_plan_content", {"project": "demo", "episode_id": 1})
+        project_files = await session.call_tool("list_project_files", {"project": "demo"})
+        project_file = await session.call_tool("read_project_file", {"project": "demo", "path": "project.json"})
+        missing = await session.call_tool("get_workflow_plan", {"episode_id": 1})
+        traversal = await session.call_tool("get_workflow_plan", {"project": "../demo", "episode_id": 1})
+        nonexistent = await session.call_tool("get_workflow_plan", {"project": "absent", "episode_id": 1})
+        empty = await session.call_tool("get_workflow_plan", {"project": "empty", "episode_id": 1})
+        escape = await session.call_tool("get_workflow_plan", {"project": "escape", "episode_id": 1})
+        declared_missing = await session.call_tool("get_source_text", {"path": "source/episode_1.txt"})
+        declared_escape = await session.call_tool(
+            "get_source_text", {"project": "escape", "path": "source/episode_1.txt"}
+        )
+
+    assert not result.isError
+    migrated = {
+        "plan_episodes",
+        "reset_episode_planning",
+        "patch_project",
+        "patch_episode_meta",
+        "rename_asset",
+        "merge_asset",
+        "retry_project_migration",
+        "complete_script_plan_rebuild",
+    }
+    readers = {
+        "get_project_content",
+        "get_prompt_preview",
+        "list_source_files",
+        "get_source_text",
+        "get_episode_script",
+        "get_script_plan_content",
+        "list_project_files",
+        "read_project_file",
+    }
+    drafts = {"open_draft", "patch_draft", "promote_draft", "discard_draft"}
+    text_and_script = {
+        "generate_episode_script",
+        "generate_script_plan",
+        "confirm_script_review",
+        "patch_episode_script",
+    }
+    batches = {"get_generation_batch", "cancel_generation_batch"}
+    retired = {
+        "convert_script_plan",
+        "normalize_drama_script",
+        "split_narration_segments",
+        "split_reference_video_units",
+        "insert_segment",
+        "remove_segment",
+        "split_segment",
+        "open_script_plan_for_edit",
+        "validate_and_promote_draft",
+        "get_episode_script_revision",
+        "generate_video_episode",
+        "generate_video_scene",
+        "generate_video_all",
+        "generate_video_selected",
+    }
+    listed = {tool.name: tool for tool in tools.tools}
+    assert set(listed) == set(ARCREEL_MCP_TOOL_IDS)
+    assert migrated | readers | drafts | text_and_script | batches <= listed.keys()
+    assert retired.isdisjoint(listed)
+    assert all(
+        "project" in listed[name].inputSchema["required"]
+        for name in migrated | readers | drafts | text_and_script | batches
+    )
+    patch_schema = listed["patch_episode_script"].inputSchema
+    operations_schema = patch_schema["properties"]["operations"]
+    operation_defs = patch_schema["$defs"]
+    operation_branches = [
+        operation_defs[branch["$ref"].rsplit("/", 1)[1]] for branch in operations_schema["items"]["oneOf"]
+    ]
+    assert operations_schema["minItems"] == 1
+    assert operations_schema["items"]["discriminator"]["propertyName"] == "op"
+    assert {branch["properties"]["op"]["const"] for branch in operation_branches} == {
+        "update",
+        "insert",
+        "move",
+        "remove",
+        "split",
+    }
+    assert all(branch["additionalProperties"] is False for branch in operation_branches)
+    assert result.structuredContent is not None
+    assert result.structuredContent["workflow_plan"]["status"]["target"]["episode"] == 1
+    assert capabilities.structuredContent == {
+        "video_capabilities": {
+            "provider_id": "fake",
+            "model": "video-1",
+            "supported_durations": [4, 6],
+            "duration_constraints": {
+                "resolution": None,
+                "uses_reference_images": False,
+                "allowed": [4, 6],
+                "excluded": {},
+            },
+        }
+    }
+    assert patched.structuredContent is not None
+    assert patched.structuredContent["project_patch"]["operation"] == "overview"
+    for content_result in (
+        project_content,
+        source_files,
+        source_text,
+        script,
+        script_plan,
+        project_files,
+        project_file,
+    ):
+        assert not content_result.isError
+        assert content_result.structuredContent is not None
+        assert next(iter(content_result.structuredContent.values()))["revision"].startswith("sha256-v1:")
+    assert missing.isError
+    assert traversal.isError
+    assert nonexistent.isError
+    assert empty.isError
+    assert escape.isError
+    for declared in (declared_missing, declared_escape):
+        assert declared.isError
+        assert declared.structuredContent is not None
+        assert declared.structuredContent["problem"]["code"] == "invalid_project"
+
+
+async def test_remote_inspect_video_units_returns_contact_sheets_as_image_content(
+    remote_server, remote_projects: ProjectManager
+) -> None:
+    project_dir = remote_projects.get_project_path("demo")
+    (project_dir / "scripts" / "episode_1.json").write_text(
+        '{"episode":1,"content_mode":"drama","scenes":[{"scene_id":"E1S01"}]}', encoding="utf-8"
+    )
+    clip = project_dir / ".staging" / "E1S01.mp4"
+    make_test_clip(clip, size="160x90", fps=25, seconds=1, tone=False)
+    install_current_video(project_dir, "videos", "E1S01", clip)
+
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool("inspect_video_units", {"project": "demo", "unit_ids": ["E1S01"], "frames": 3})
+
+    assert not result.isError
+    assert result.structuredContent is not None
+    (unit,) = result.structuredContent["inspect_video_units"]["units"]
+    assert unit["status"] == "ok"
+    images = [block for block in result.content if isinstance(block, ImageContent)]
+    assert [image.mimeType for image in images] == ["image/jpeg"]
+    assert base64.b64decode(images[0].data).startswith(b"\xff\xd8")
+
+
+async def test_remote_grid_list_only_returns_preview_without_a_batch(
+    remote_server, remote_projects: ProjectManager
+) -> None:
+    project = remote_projects.load_project("demo")
+    project["grid_storyboard"] = True
+    # 预览渲染按集定位的宫格记录：剧本须已绑定集号
+    project["episodes"] = [{"episode": 1, "script_file": "episode_1.json"}]
+    remote_projects.save_project("demo", project)
+
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(
+            "generate_grid",
+            {"project": "demo", "script": "episode_1.json", "list_only": True},
+        )
+
+    assert not result.isError
+    assert result.structuredContent is not None
+    assert set(result.structuredContent) == {"generate_grid"}
+    assert isinstance(result.structuredContent["generate_grid"], str)
+
+
+async def test_remote_media_runtime_validates_shared_schema_and_forwards_nested_instruction(
+    remote_batch_server, remote_projects: ProjectManager
+) -> None:
+    """远程 adapter 按共享 schema 校验，并把嵌套编辑指令完整转发给 handler。"""
+    remote_batch_server, queue = remote_batch_server
+    instruction = "把头发改成红色，保留原有发型"
+    args = {
+        "resource_type": "character",
+        "edits": [{"id": "张三", "instruction": instruction}],
+    }
+    project = remote_projects.load_project("demo")
+    project["characters"] = {
+        "张三": {"description": "黑衣剑客", "character_sheet": "characters/zhangsan.png"},
+    }
+    remote_projects.save_project("demo", project)
+    project_dir = remote_projects.get_project_path("demo")
+    (project_dir / "characters").mkdir(exist_ok=True)
+    (project_dir / "characters" / "zhangsan.png").write_bytes(b"png")
+    assert register_current_artifact_if_provable(project_dir, ArtifactKey.asset_sheet("character", "张三"))
+    assert await queue.acquire_or_renew_worker_lease(name="default", owner_id="test-worker", ttl_seconds=60)
+
+    app = _mounted(remote_batch_server)
+    async with (
+        remote_batch_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(
+            "edit_images",
+            {"project": "demo", **args},
+        )
+        invalid = await session.call_tool(
+            "generate_assets",
+            {"project": "demo", "type": "not-an-asset-type"},
+        )
+
+    assert not result.isError
+    assert result.structuredContent is not None
+    members = result.structuredContent["generation_batch"]["members"]
+    assert [(member["unit_id"], member["status"]) for member in members] == [("张三", "queued")]
+    tasks = (await queue.list_tasks(project_name="demo", task_type="image_edit"))["items"]
+    assert len(tasks) == 1
+    assert tasks[0]["payload"]["prompt"] == instruction
+
+    assert invalid.isError
+    assert invalid.structuredContent is not None
+    assert invalid.structuredContent["problem"]["code"] == "invalid_request"
+
+
+async def test_remote_media_submission_returns_complete_durable_batch_and_dedupes(
+    remote_batch_server,
+    remote_projects: ProjectManager,
+) -> None:
+    remote_batch_server, queue = remote_batch_server
+    project = remote_projects.load_project("demo")
+    project["characters"] = {
+        "张三": {"description": "黑衣剑客"},
+        "李四": {"description": ""},
+    }
+    remote_projects.save_project("demo", project)
+    assert await queue.acquire_or_renew_worker_lease(name="default", owner_id="test-worker", ttl_seconds=60)
+
+    app = _mounted(remote_batch_server)
+    async with (
+        remote_batch_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        first = await session.call_tool(
+            "generate_assets",
+            {"project": "demo", "type": "character", "names": ["张三", "李四"]},
+        )
+        second = await session.call_tool(
+            "generate_assets",
+            {"project": "demo", "type": "character", "names": ["张三", "李四"]},
+        )
+        first_batch = first.structuredContent["generation_batch"]
+        second_batch = second.structuredContent["generation_batch"]
+        cancelled = await session.call_tool(
+            "cancel_generation_batch",
+            {"project": "demo", "batch_id": second_batch["batch_id"]},
+        )
+        reread = await session.call_tool(
+            "get_generation_batch",
+            {"project": "demo", "batch_id": first_batch["batch_id"]},
+        )
+
+    assert not first.isError
+    assert not second.isError
+    assert first_batch["batch_id"] != second_batch["batch_id"]
+    assert first_batch["poll_after_seconds"] > 0
+    assert [(member["unit_id"], member["status"]) for member in first_batch["members"]] == [
+        ("character/张三", "queued"),
+        ("character/李四", "blocked"),
+    ]
+    assert first_batch["members"][0]["task_id"] == second_batch["members"][0]["task_id"]
+    assert second_batch["members"][0]["deduped"] is True
+    assert len((await queue.list_tasks(project_name="demo"))["items"]) == 1
+    assert not cancelled.isError
+    assert not reread.isError
+    assert reread.structuredContent["generation_batch"]["members"][0]["status"] == "cancelled"
+
+
+async def test_remote_batch_submission_reads_migration_verdict_from_fixture_root(
+    remote_batch_server,
+    remote_projects: ProjectManager,
+) -> None:
+    _server, queue = remote_batch_server
+    record_migration_failure(
+        remote_projects.get_project_path("demo"),
+        RuntimeError("blocked in fixture root"),
+        schema_version=CURRENT_PROJECT_SCHEMA_VERSION,
+    )
+
+    with pytest.raises(ConflictError) as raised:
+        await submit_generation_batch(
+            project_name="demo",
+            operation="generate_assets",
+            requested=GenerationBatchRequestSnapshot(
+                selection=GenerationSelectionMode.MISSING_ONLY,
+                requested=[],
+            ),
+            blocked=[],
+            specs=[],
+            source="mcp",
+            queue=queue,
+        )
+
+    assert raised.value.key == MIGRATION_FAILURE_CODE
+
+
+async def test_remote_api_keys_share_the_persisted_single_operator_owner(
+    remote_batch_server,
+    remote_projects: ProjectManager,
+) -> None:
+    remote_batch_server, queue = remote_batch_server
+    project = remote_projects.load_project("demo")
+    project["characters"] = {"张三": {"description": "黑衣剑客"}}
+    remote_projects.save_project("demo", project)
+    assert await queue.acquire_or_renew_worker_lease(name="default", owner_id="test-worker", ttl_seconds=60)
+
+    app = _mounted(remote_batch_server)
+
+    async def call_as(token: str, tool: str, args: dict[str, object]):
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost",
+                headers={"Authorization": f"Bearer {token}"},
+                follow_redirects=True,
+            ) as client,
+            streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            return await session.call_tool(tool, args)
+
+    async with remote_batch_server.session_manager.run():
+        first = await call_as(
+            "arc-user-a",
+            "generate_assets",
+            {"project": "demo", "type": "character", "names": ["张三"]},
+        )
+        first_batch = first.structuredContent["generation_batch"]
+        foreign_read = await call_as(
+            "arc-user-b",
+            "get_generation_batch",
+            {"project": "demo", "batch_id": first_batch["batch_id"]},
+        )
+        second = await call_as(
+            "arc-user-b",
+            "generate_assets",
+            {"project": "demo", "type": "character", "names": ["张三"]},
+        )
+        foreign_cancel = await call_as(
+            "arc-user-b",
+            "cancel_generation_batch",
+            {"project": "demo", "batch_id": first_batch["batch_id"]},
+        )
+
+    second_batch = second.structuredContent["generation_batch"]
+    assert not first.isError
+    assert not second.isError
+    assert not foreign_read.isError
+    assert not foreign_cancel.isError
+    assert first_batch["members"][0]["deduped"] is False
+    assert second_batch["members"][0]["deduped"] is True
+    assert first_batch["members"][0]["task_id"] == second_batch["members"][0]["task_id"]
+    assert len((await queue.list_tasks(project_name="demo"))["items"]) == 1
+
+
+async def test_remote_mcp_entry_tools_share_one_projects_root(remote_server) -> None:
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        created = await session.call_tool(
+            "create_project",
+            {
+                "name": "new-project",
+                "title": "New Project",
+                "content_mode": "narration",
+                "generation_mode": "storyboard",
+            },
+        )
+        projects = await session.call_tool("list_projects", {})
+        uploaded = await session.call_tool(
+            "upload_source",
+            {"project": "new-project", "filename": "novel.txt", "content": "hello"},
+        )
+
+    assert created.structuredContent is not None
+    assert created.structuredContent["project"]["name"] == "new-project"
+    assert projects.structuredContent is not None
+    assert {project["name"] for project in projects.structuredContent["projects"]} == {"demo", "new-project"}
+    assert uploaded.structuredContent is not None
+    assert uploaded.structuredContent["source"]["path"] == "source/novel.txt"
+
+
+async def test_remote_mcp_text_generation_and_script_patch_return_structured_content(
+    remote_server, remote_projects: ProjectManager, video_request_facts
+) -> None:
+    remote_projects.create_project("ad-demo", content_mode="ad")
+    remote_projects.create_project_metadata(
+        "ad-demo",
+        "Ad Demo",
+        "",
+        "ad",
+        target_duration=30,
+        brief="展示产品卖点",
+    )
+    progress_messages: list[str | None] = []
+
+    async def record_progress(_progress: float, _total: float | None, message: str | None) -> None:
+        progress_messages.append(message)
+
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        script_plan = await session.call_tool(
+            "generate_script_plan",
+            {
+                "project": "demo",
+                "episode_id": 1,
+                "source": "source/episode_1.txt",
+                "dry_run": True,
+            },
+            progress_callback=record_progress,
+        )
+        refused = await session.call_tool("confirm_script_review", {"project": "demo", "episode_id": 1})
+        refused_problem = refused.structuredContent["problem"]
+        confirmed = await session.call_tool(
+            "confirm_script_review",
+            {
+                "project": "demo",
+                "episode_id": 1,
+                "overwrite_revision": refused_problem["params"]["script_overwrite"]["revision"],
+            },
+        )
+        script = await session.call_tool(
+            "generate_episode_script",
+            {"project": "ad-demo", "episode_id": 1, "dry_run": True},
+            progress_callback=record_progress,
+        )
+        scoped = await session.call_tool(
+            "generate_episode_script",
+            {"project": "ad-demo", "episode_id": 1, "dry_run": True, "scope": "all"},
+        )
+        patched = await session.call_tool(
+            "patch_episode_script",
+            {
+                "project": "demo",
+                "script": "episode_1.json",
+                "base_revision": "sha256-v1:" + "0" * 64,
+                "operations": [{"op": "remove", "id": "E1S01"}],
+            },
+        )
+
+    assert not script_plan.isError
+    assert set(script_plan.structuredContent) == {"text_generation"}
+    assert script_plan.structuredContent["text_generation"]["message"]
+    assert refused.isError
+    assert refused_problem["code"] == "script_overwrite_required"
+    assert refused_problem["params"]["script_overwrite"]["entries"] == []
+    # 回执正文就是服务端生成的丢失清单，与 params 里的文本同一份。
+    assert refused_problem["params"]["script_overwrite"]["text"] in refused_problem["detail"]
+    assert not confirmed.isError
+    assert confirmed.structuredContent["text_generation"]["message"]
+    assert not script.isError
+    assert set(script.structuredContent) == {"text_generation"}
+    assert "DRY RUN" in script.structuredContent["text_generation"]["message"]
+    assert scoped.isError
+    assert scoped.structuredContent["problem"]["code"] == "invalid_request"
+    assert "entry_ids" in scoped.structuredContent["problem"]["detail"]
+    assert progress_messages == []
+    assert patched.isError
+    assert patched.structuredContent["script_patch"]["problems"][0]["code"] == "revision_conflict"
+
+
+async def test_text_task_is_shared_by_remote_and_embedded_hosts_and_running_member_is_not_cancellable(
+    tmp_path: Path, file_db_factory
+) -> None:
+    class RecordingQueue(GenerationQueue):
+        def __init__(self, projects: ProjectManager) -> None:
+            super().__init__(session_factory=file_db_factory, project_manager=projects)
+            self.batch_ids: list[str] = []
+            self.deduped = asyncio.Event()
+
+        async def create_generation_batch(self, **kwargs) -> str:
+            batch_id = await super().create_generation_batch(**kwargs)
+            self.batch_ids.append(batch_id)
+            return batch_id
+
+        async def enqueue_task(self, **kwargs):
+            result = await super().enqueue_task(**kwargs)
+            if result["deduped"]:
+                self.deduped.set()
+            return result
+
+    projects = ProjectManager(tmp_path)
+    projects.create_project("demo", content_mode="ad")
+    projects.create_project_metadata("demo", "Demo", "", "ad", target_duration=30, brief="卖点")
+    queue = RecordingQueue(projects)
+    services = Services(projects=projects, workflow_planner=_Planner(), capabilities=_Capabilities(), queue=queue)
+
+    async def verify_api_key(token: str):
+        return {"sub": "apikey:test", "via": "apikey"} if token == "arc-valid" else None
+
+    server = build_remote_mcp_server(
+        projects=projects,
+        services=services,
+        token_verifier=ArcApiKeyVerifier(verify_api_key),
+    )
+    started = asyncio.Event()
+    interrupted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_text(_task, *, claimed_provider_id=None):
+        del claimed_provider_id
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            interrupted.set()
+            raise
+        return {"message": "done"}
+
+    async def text_provider(_task):
+        return "text"
+
+    worker = GenerationWorker(
+        queue=queue,
+        capacity=CapacityTable(_limits={}, _defaults={"text": 1}),
+        provider_projection=text_provider,
+        executor=blocking_text,
+        lanes=("text",),
+        resume_executor=refuse_resume_execution,
+    )
+    worker.poll_interval = 0.01
+    worker.heartbeat_interval = 0.01
+    await worker.start()
+
+    app = _mounted(server)
+    try:
+        async with (
+            server.session_manager.run(),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://localhost",
+                headers={"Authorization": "Bearer arc-valid"},
+                follow_redirects=True,
+            ) as client,
+            streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            remote = await session.call_tool("generate_episode_script", {"project": "demo", "episode_id": 1})
+            await started.wait()
+            embedded_ctx = ToolHarness(
+                project_name="demo",
+                data_root=projects.data_root,
+                pm=projects,
+                queue=queue,
+            )
+            embedded = asyncio.create_task(
+                invoke_declaration(
+                    GENERATE_EPISODE_SCRIPT,
+                    {"episode_id": 1},
+                    embedded_ctx.scope,
+                    embedded_ctx.caller,
+                    embedded_ctx.services,
+                )
+            )
+            await queue.deduped.wait()
+
+            assert not embedded.done()
+            assert remote.structuredContent is not None
+            remote_batch = remote.structuredContent["generation_batch"]
+            assert remote_batch["members"][0]["deduped"] is False
+            assert len(queue.batch_ids) == 2
+
+            cancel_result = await session.call_tool(
+                "cancel_generation_batch", {"project": "demo", "batch_id": remote_batch["batch_id"]}
+            )
+            task_id = remote_batch["members"][0]["task_id"]
+            still_running = await queue.get_task(task_id)
+            release.set()
+            embedded_result = await embedded
+            terminal = await session.call_tool(
+                "get_generation_batch", {"project": "demo", "batch_id": remote_batch["batch_id"]}
+            )
+
+        assert not cancel_result.isError
+        assert cancel_result.structuredContent["generation_batch_cancellation"] == {
+            "cancelled": [],
+            "skipped_running": [task_id],
+            "skipped_terminal": [],
+        }
+        assert still_running is not None
+        assert still_running["status"] == "running"
+        assert not interrupted.is_set()
+        assert isinstance(embedded_result.value, TextGenerationResult)
+        assert embedded_result.value.message == "done"
+        assert terminal.structuredContent["generation_batch"]["done"] is True
+        assert terminal.structuredContent["generation_batch"]["members"][0]["status"] == "succeeded"
+        second = await queue.get_generation_batch(project_name="demo", batch_id=queue.batch_ids[1])
+        assert second.members[0].task_id == task_id
+        assert second.members[0].deduped is True
+    finally:
+        release.set()
+        await worker.stop()
+
+
+async def test_remote_mcp_draft_preserves_explicit_null_updates(remote_server, remote_projects) -> None:
+    # 尚无正式剧本：脚本规划未确认，可取回编辑副本。
+    (remote_projects.get_project_path("demo") / "scripts" / "episode_1.json").unlink()
+    app = _mounted(remote_server)
+    async with (
+        remote_server.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"Authorization": "Bearer arc-valid"},
+            follow_redirects=True,
+        ) as client,
+        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        args = {
+            "project": "demo",
+            "episode_id": 1,
+            "doc_type": "drama_script_plan",
+            "source": "source/episode_1.txt",
+        }
+        opened = await session.call_tool("open_draft", args)
+        (remote_projects.get_project_path("demo") / "drafts/episode_1/script_plan_normalized_script.json").unlink()
+        patched = await session.call_tool(
+            "patch_draft",
+            {
+                **args,
+                "content": opened.structuredContent["draft"]["content"],
+                "base_revision": opened.structuredContent["draft"]["revision"],
+                "accept_formal_revision": None,
+                "source": None,
+            },
+        )
+
+    draft = read_quarantine(remote_projects.get_project_path("demo"), 1, QUARANTINE_KIND_DRAMA_SCRIPT_PLAN)
+    assert not patched.isError
+    assert draft is not None
+    assert draft.meta["base_fingerprint"] is None
+    assert draft.meta["source"] is None
+
+
+async def test_remote_mcp_host_initializes_first_request_and_can_restart() -> None:
+    async def verify_api_key(token: str):
+        return {"sub": "apikey:test", "via": "apikey"} if token == "arc-valid" else None
+
+    host = RemoteMCPHost(lambda: build_remote_mcp_server(token_verifier=ArcApiKeyVerifier(verify_api_key)))
+    app = FastAPI()
+    mount_remote_mcp(app, host)
+
+    for _ in range(2):
+        async with host.run():
+            response = await _post_initialize(app, "arc-valid")
+            assert response.status_code == 200

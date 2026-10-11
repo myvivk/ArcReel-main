@@ -1,0 +1,212 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { API } from "@/api";
+import { LeaveGuardProvider, useLeaveGuard } from "@/components/shared/edit-unit/LeaveGuard";
+import { useAppStore } from "@/stores/app-store";
+import { useCostStore } from "@/stores/cost-store";
+import { useProjectsStore } from "@/stores/projects-store";
+import type { EpisodeCost, EpisodeMeta } from "@/types";
+
+import { EpisodeHead } from "./EpisodeHead";
+
+const FIRST: EpisodeMeta = { episode: 1, title: "第一章", script_file: "scripts/episode_1.json" };
+
+function seedCost(projectName: string, actual: EpisodeCost["totals"]["actual"]) {
+  const episodeCost: EpisodeCost = {
+    episode: 1,
+    title: "第一章",
+    segments: [],
+    totals: { estimate: { video: { USD: 10 } }, actual },
+  };
+  useCostStore.setState({
+    costData: { project_name: projectName } as never,
+    _episodeIndex: new Map([[1, episodeCost]]),
+  });
+}
+
+function renderHead(meta: EpisodeMeta = FIRST, overrides: Partial<Parameters<typeof EpisodeHead>[0]> = {}) {
+  return render(
+    <EpisodeHead
+      projectName="demo"
+      episode={meta.episode}
+      meta={meta}
+      route="storyboard"
+      canEditTitle
+      onSaveTitle={vi.fn().mockResolvedValue(undefined)}
+      canDelete
+      {...overrides}
+    />,
+  );
+}
+
+describe("EpisodeHead", () => {
+  beforeEach(() => {
+    useProjectsStore.setState(useProjectsStore.getInitialState(), true);
+    useCostStore.setState(useCostStore.getInitialState(), true);
+    useAppStore.setState(useAppStore.getInitialState(), true);
+  });
+
+  it("names an untitled episode by its position and lists its facts", () => {
+    const blank: EpisodeMeta = {
+      episode: 7,
+      title: "",
+      script_file: "",
+      item_count: 12,
+      duration_seconds: 125,
+      videos: { available: 3, total: 12, stale: 0 },
+    };
+    useProjectsStore.setState({ currentProjectData: { episodes: [FIRST, blank] } as never });
+
+    renderHead(blank);
+
+    expect(screen.getByText("EP · 02")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "第 2 集" })).toBeInTheDocument();
+    expect(screen.getByText("12 分镜 · 时长 2:05 · 视频 3/12")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑分集标题" }));
+    expect(screen.getByRole("textbox", { name: "编辑分集标题" })).toHaveAttribute("placeholder", "第 2 集");
+  });
+
+  it("counts history spend as spent but not against the remaining estimate", () => {
+    seedCost("demo", { unassigned: { USD: 10 } });
+
+    renderHead();
+
+    // 已花含历史支出；剩余仍是整笔预估——那 $10 花在已被替换掉的旧剧本上，当前剧本的工作一件也没做
+    expect(screen.getByText("预估 $10.00")).toBeInTheDocument();
+    expect(screen.getByText("已花 $10.00，剩余 $10.00")).toBeInTheDocument();
+  });
+
+  it("deducts current-script spend from the remaining estimate", () => {
+    seedCost("demo", { video: { USD: 4 } });
+
+    renderHead();
+
+    expect(screen.getByText("已花 $4.00，剩余 $6.00")).toBeInTheDocument();
+  });
+
+  it("leaves the cost out until this project's estimate has loaded", () => {
+    seedCost("other-project", { video: { USD: 4 } });
+
+    renderHead();
+
+    expect(screen.queryByText(/预估/)).not.toBeInTheDocument();
+  });
+
+  it("offers no episode menu where episodes cannot be deleted", () => {
+    renderHead(FIRST, { canDelete: false, canEditTitle: false });
+
+    expect(screen.queryByRole("button", { name: "这一集的更多操作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑分集标题" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "第一章" })).toBeInTheDocument();
+  });
+
+  it("asks about unsaved edits only once the deletion is confirmed, so cancelling the deletion keeps them", async () => {
+    const remove = vi.spyOn(API, "deleteEpisode").mockImplementation(async (_project, episode, revision) =>
+      revision
+        ? { status: "deleted", impact: { episode, recoverable: true, revision } }
+        : { status: "confirmation_required", impact: { episode, recoverable: true, revision: "r1", text: "将删除本集剧本" } },
+    );
+    const discard = vi.fn();
+    function DirtyUnit() {
+      useLeaveGuard({ dirty: true, save: async () => true, discard });
+      return null;
+    }
+    const openDeletion = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "这一集的更多操作" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "删除这一集" }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog).toHaveTextContent("将删除本集剧本");
+      return dialog;
+    };
+    render(
+      <LeaveGuardProvider>
+        <DirtyUnit />
+        <EpisodeHead projectName="demo" episode={1} meta={FIRST} route="storyboard" canEditTitle={false}
+          onSaveTitle={vi.fn()} canDelete />
+      </LeaveGuardProvider>,
+    );
+
+    fireEvent.click(within(await openDeletion()).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(discard).not.toHaveBeenCalled();
+
+    fireEvent.click(within(await openDeletion()).getByRole("button", { name: "删除" }));
+    fireEvent.click(within(await screen.findByRole("alertdialog", { name: "有未保存的修改" })).getByRole("button", { name: "放弃修改" }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("demo", 1, "r1"));
+    expect(discard).toHaveBeenCalledTimes(1);
+  });
+
+  describe("确认删除并放弃修改后", () => {
+    const IMPACT = { episode: 1, recoverable: true, revision: "r1", text: "将删除本集剧本" };
+
+    function renderWithDirtyUnit(discard: () => void) {
+      function DirtyUnit() {
+        useLeaveGuard({ dirty: true, save: async () => true, discard });
+        return null;
+      }
+      render(
+        <LeaveGuardProvider>
+          <DirtyUnit />
+          <EpisodeHead projectName="demo" episode={1} meta={FIRST} route="storyboard" canEditTitle={false}
+            onSaveTitle={vi.fn()} canDelete />
+        </LeaveGuardProvider>,
+      );
+    }
+
+    async function confirmAndDiscard() {
+      fireEvent.click(screen.getByRole("button", { name: "这一集的更多操作" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "删除这一集" }));
+      fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "删除" }));
+      fireEvent.click(within(await screen.findByRole("alertdialog", { name: "有未保存的修改" })).getByRole("button", { name: "放弃修改" }));
+    }
+
+    it("删除请求失败时未保存修改原样保留", async () => {
+      vi.spyOn(API, "deleteEpisode").mockImplementation(async (_project, _episode, revision) => {
+        if (revision) throw new Error("网络中断");
+        return { status: "confirmation_required", impact: IMPACT };
+      });
+      const discard = vi.fn();
+      renderWithDirtyUnit(discard);
+
+      await confirmAndDiscard();
+
+      await waitFor(() => expect(useAppStore.getState().toast?.text).toBe("删除失败：网络中断"));
+      expect(discard).not.toHaveBeenCalled();
+    });
+
+    it("服务端因清单变化要求再次确认时未保存修改原样保留", async () => {
+      vi.spyOn(API, "deleteEpisode").mockImplementation(async (_project, _episode, revision) => ({
+        status: "confirmation_required",
+        impact: revision ? { ...IMPACT, revision: "r2", text: "将删除本集剧本与 3 段视频" } : IMPACT,
+      }));
+      const discard = vi.fn();
+      renderWithDirtyUnit(discard);
+
+      await confirmAndDiscard();
+
+      expect(await screen.findByText("将删除本集剧本与 3 段视频")).toBeInTheDocument();
+      expect(discard).not.toHaveBeenCalled();
+    });
+
+    it("删除成功但项目数据刷新失败时提示手动刷新", async () => {
+      vi.spyOn(API, "deleteEpisode").mockImplementation(async (_project, episode, revision) =>
+        revision
+          ? { status: "deleted", impact: { episode, recoverable: true, revision } }
+          : { status: "confirmation_required", impact: IMPACT },
+      );
+      vi.spyOn(API, "getProject").mockRejectedValue(new Error("服务不可用"));
+      useProjectsStore.setState({ currentProjectName: "demo", hasLoadedAnyProject: true });
+      const discard = vi.fn();
+      renderWithDirtyUnit(discard);
+
+      await confirmAndDiscard();
+
+      await waitFor(() =>
+        expect(useAppStore.getState().toast?.text).toBe("操作已完成，但页面数据刷新失败，请手动刷新查看最新状态"),
+      );
+      expect(discard).toHaveBeenCalledTimes(1);
+    });
+  });
+});

@@ -1,0 +1,577 @@
+"""迁移失败 → 项目级阻断 → 修复 → 重试成功的完整路径。
+
+断言的是外部可观察的输出：磁盘上的裁决记录、制作状态的 blocker、制作计划的单条 problem、
+入队被拒、以及重试工具的返回，不断言内部调用顺序。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import APIRouter, Depends, FastAPI
+from fastapi.routing import iter_route_contexts
+from fastapi.testclient import TestClient
+
+from lib.artifacts.artifact_activation import (
+    ARTIFACT_MANIFEST_SCHEMA_VERSION,
+    register_current_artifact,
+    register_current_artifact_if_provable,
+)
+from lib.artifacts.artifact_manifest import ArtifactKey
+from lib.generation.generation_queue import GenerationQueue
+from lib.generation.generation_result import GenerationAction, GenerationProblemCode
+from lib.infra.api_errors import ConflictError
+from lib.infra.json_io import atomic_write_json
+from lib.project.project_manager import ProjectManager
+from lib.project.project_migration_failure import (
+    MIGRATION_FAILURE_CODE,
+    MIGRATION_FAILURE_FILENAME,
+    RETRY_MIGRATION_ACTION,
+    load_migration_failure,
+    record_migration_failure,
+)
+from lib.project.project_migrations.runner import migrate_project_with_verdict, run_project_migrations
+from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
+from lib.script.script_batch_edit import script_revision
+from lib.workflow.workflow_plan import WorkflowPlanRequest
+from lib.workflow.workflow_state import WorkflowStateService
+from server.dependencies import require_project_migration_ok
+from server.error_handlers import register_error_handlers
+from server.media_tools.assets import ListPendingAssetsRequest, list_pending_assets
+from server.services.project.workflow_planner import WorkflowPlanner
+from server.tool_runtime import (
+    CallerContext,
+    EpisodeScriptRequest,
+    ProjectScope,
+    PromptPreviewRequest,
+    Services,
+    ToolOutcome,
+    ToolRequest,
+    get_episode_script,
+    get_prompt_preview,
+    retry_project_migration,
+)
+from tests.integration.lib.project.project_migrations.test_project_migration_v7_v8 import _project
+
+
+def _break_episode_script(project_dir: Path) -> None:
+    """Drop the identity off one item — a violation the activation preflight names."""
+
+    script_path = project_dir / "scripts" / "episode_1.json"
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    del script["segments"][0]["segment_id"]
+    script_path.write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
+
+
+def _repair_episode_script(project_dir: Path) -> None:
+    script_path = project_dir / "scripts" / "episode_1.json"
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    script["segments"][0]["segment_id"] = "E1S01"
+    script_path.write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
+
+
+def test_failed_migration_records_the_offending_episode_and_file(tmp_path: Path) -> None:
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+
+    failure = migrate_project_with_verdict(project_dir)
+
+    assert failure is not None
+    # 项目卡在清单激活这一步的起点版本上，不是迁移链的末端。
+    assert failure.schema_version == ARTIFACT_MANIFEST_SCHEMA_VERSION - 1
+    assert failure.reason
+    assert [(d.episode, d.file) for d in failure.details] == [(1, "scripts/episode_1.json")]
+    assert "identity" in failure.details[0].violation
+    assert (project_dir / MIGRATION_FAILURE_FILENAME).exists()
+
+
+def test_startup_run_records_the_verdict_and_clears_it_once_repaired(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+
+    summary = run_project_migrations(projects_root)
+    assert summary.failed == ["demo"]
+    assert load_migration_failure(project_dir) is not None
+
+    _repair_episode_script(project_dir)
+    summary = run_project_migrations(projects_root)
+
+    assert summary.migrated == ["demo"]
+    assert load_migration_failure(project_dir) is None
+    assert not (project_dir / MIGRATION_FAILURE_FILENAME).exists()
+
+
+def test_workflow_status_reports_exactly_one_blocker_with_the_raw_reason(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+
+    status = WorkflowStateService(ProjectManager(str(tmp_path))).get_status("demo")
+
+    assert [blocker.code for blocker in status.blockers] == [MIGRATION_FAILURE_CODE]
+    assert status.blockers[0].reason == failure.reason
+    assert status.next_action.type == RETRY_MIGRATION_ACTION
+
+
+async def test_workflow_plan_reports_exactly_one_problem_pointing_at_the_retry(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+
+    plan = await WorkflowPlanner(ProjectManager(str(tmp_path))).get_plan("demo", WorkflowPlanRequest())
+
+    assert len(plan.problems) == 1
+    problem = plan.problems[0]
+    assert problem.code == GenerationProblemCode.PROJECT_MIGRATION_FAILED
+    assert plan.status.blockers[0].reason == failure.reason
+    assert [p for step in plan.steps for p in step.problems] == []
+    assert problem.action == GenerationAction.RETRY_PROJECT_MIGRATION
+    assert problem.params["details"][0]["episode"] == 1
+    assert plan.next_action.type == RETRY_MIGRATION_ACTION
+
+
+def test_project_status_marks_the_project_for_repair(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+
+    summary = WorkflowStateService(ProjectManager(str(tmp_path))).get_project_summary("demo")
+
+    assert summary.needs_repair is True
+    assert summary.repair_reason == failure.reason
+
+
+def test_generation_entries_refuse_while_the_project_is_blocked(tmp_path: Path, monkeypatch) -> None:
+    import lib.project.project_migration_guard as guard
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is not None
+
+    pm = ProjectManager(str(tmp_path))
+    monkeypatch.setattr(guard, "get_project_manager", lambda: pm)
+
+    with pytest.raises(ConflictError) as excinfo:
+        guard.assert_project_migration_ok("demo")
+    assert excinfo.value.key == MIGRATION_FAILURE_CODE
+
+    _repair_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is None
+    guard.assert_project_migration_ok("demo")
+
+
+async def test_retry_tool_returns_details_then_unblocks_once_repaired(tmp_path: Path) -> None:
+    from server.agent_toolset.repair_channel import RETRY_PROJECT_MIGRATION
+    from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is not None
+
+    ctx = ToolHarness(project_name="demo", data_root=tmp_path, pm=ProjectManager(str(tmp_path)))
+
+    blocked = await run_declared_tool(RETRY_PROJECT_MIGRATION, ctx, {})
+    # 与被拦截的生成工具同一个回执形状：一份 problem，不是第二套 error/reason 信封
+    assert blocked.problem is not None
+    assert blocked.problem.code == MIGRATION_FAILURE_CODE
+    assert blocked.problem.params is not None
+    assert blocked.problem.params["details"][0]["episode"] == 1
+    assert blocked.problem.params["details"][0]["file"] == "scripts/episode_1.json"
+
+    _repair_episode_script(project_dir)
+    unblocked = await run_declared_tool(RETRY_PROJECT_MIGRATION, ctx, {})
+
+    assert unblocked.problem is None
+    assert unblocked.value is not None
+    assert load_migration_failure(project_dir) is None
+    assert unblocked.value.workflow_plan.status.blockers == []
+
+
+def test_web_retry_reports_the_reason_then_unblocks_once_repaired(tmp_path: Path, monkeypatch) -> None:
+    """Web 的「重试」与 Agent 的重试工具走同一服务：失败带回原因与明细，修好后解除阻断。"""
+    from server.auth import CurrentUserInfo, get_current_user
+    from server.routers import project_migration
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is not None
+    pm = ProjectManager(str(tmp_path))
+    monkeypatch.setattr(project_migration, "get_project_manager", lambda: pm)
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="tester", role="admin")
+    app.include_router(project_migration.router, dependencies=[Depends(get_current_user)])
+    register_error_handlers(app)
+    client = TestClient(app)
+
+    refused = client.post("/projects/demo/migration/retry")
+
+    assert refused.status_code == 422
+    diagnostic = refused.json()["diagnostic"]
+    # 失败原文经 Web 呈现边界改写集指称，其余原样。
+    assert "item 0 has no identity" in diagnostic["reason"]
+    assert diagnostic["details"][0]["file"] == "scripts/episode_1.json"
+
+    _repair_episode_script(project_dir)
+    retried = client.post("/projects/demo/migration/retry")
+
+    assert retried.status_code == 200
+    assert load_migration_failure(project_dir) is None
+    assert WorkflowStateService(pm).get_project_summary("demo").needs_repair is False
+    assert client.post("/projects/missing/migration/retry").status_code == 404
+
+
+async def test_retry_success_uses_caller_scoped_queue_and_capabilities(tmp_path: Path, file_db_factory) -> None:
+    projects_root = tmp_path / "projects"
+    projects = ProjectManager(tmp_path)
+    projects.create_project("demo", content_mode="ad")
+    projects.create_project_metadata("demo", "Demo", "", "ad", target_duration=30)
+    project_dir = projects.get_project_path("demo")
+    atomic_write_json(
+        project_dir / "scripts" / "episode_1.json",
+        {
+            "episode": 1,
+            "title": "广告",
+            "content_mode": "ad",
+            "shots": [
+                {
+                    "shot_id": "E1S01",
+                    "duration_seconds": 4,
+                    "voiceover_text": "",
+                    "characters_in_shot": [],
+                    "scenes": [],
+                    "props": [],
+                    "products_in_shot": [],
+                    "image_prompt": "画面",
+                    "video_prompt": "动作",
+                    "generated_assets": {},
+                }
+            ],
+        },
+    )
+    register_current_artifact_if_provable(project_dir, ArtifactKey.episode_script_plan(1))
+    register_current_artifact(project_dir, ArtifactKey.episode_script(1))
+    queue = GenerationQueue(session_factory=file_db_factory, project_manager=projects)
+    capabilities = object()
+
+    class RecordingPlanner(WorkflowPlanner):
+        received: dict[str, object]
+
+        async def get_plan(self, project_name, request, **kwargs):
+            self.received = kwargs
+            return await super().get_plan(project_name, request, **kwargs)
+
+    planner = RecordingPlanner(projects)
+    await queue.enqueue_task(
+        project_name="demo",
+        task_type="storyboard",
+        media_type="image",
+        resource_id="E1S01",
+        payload={"projects_root": str(projects_root)},
+        script_file="episode_1.json",
+        source="mcp",
+        user_id="tenant-user",
+        provider_id="image-provider",
+    )
+    record_migration_failure(
+        project_dir, RuntimeError("retry requested"), schema_version=CURRENT_PROJECT_SCHEMA_VERSION
+    )
+    services = Services(
+        projects=projects,
+        workflow_planner=planner,
+        capabilities=capabilities,
+        queue=queue,
+    )
+
+    outcome = await retry_project_migration(
+        ToolRequest(None),
+        ProjectScope(project_name="demo", data_root=tmp_path),
+        CallerContext(user_id="tenant-user", source="mcp"),
+        services,
+    )
+
+    assert outcome.problem is None
+    assert outcome.value is not None
+    assert outcome.value.workflow_plan.next_action.type == "wait_for_task"
+    assert outcome.value.workflow_plan.next_action.requested_ids == ["E1S01"]
+    assert planner.received == {
+        "user_id": "tenant-user",
+        "queue": queue,
+        "config_resolver": capabilities,
+    }
+
+
+async def test_pending_asset_listing_reports_the_migration_problem_until_repaired(tmp_path: Path) -> None:
+    """待生成资产清单自报迁移裁决：命中则返回与生成类工具同构的 problem，裁决清空后照常列出。"""
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+    projects = ProjectManager(str(tmp_path))
+    services = Services(projects=projects, workflow_planner=WorkflowPlanner(projects), capabilities=object())
+    scope = ProjectScope(project_name="demo", data_root=tmp_path)
+    caller = CallerContext(user_id="u1", source="mcp")
+    request = ToolRequest(ListPendingAssetsRequest())
+
+    blocked = await list_pending_assets(request, scope, caller, services)
+
+    assert blocked.value is None
+    assert blocked.problem is not None
+    assert blocked.problem.code == MIGRATION_FAILURE_CODE
+    assert blocked.problem.action == RETRY_MIGRATION_ACTION
+    assert blocked.problem.detail == failure.reason
+
+    _repair_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is None
+    unblocked = await list_pending_assets(request, scope, caller, services)
+
+    assert unblocked.problem is None
+    assert isinstance(unblocked.value, str)
+    assert "demo" in unblocked.value
+
+
+async def test_episode_script_reader_withholds_the_revision_until_the_migration_is_repaired(tmp_path: Path) -> None:
+    """剧本读取自报迁移裁决：失败时不签发 revision，返回带 action 与明细的完整 problem。"""
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+    projects = ProjectManager(str(tmp_path))
+    services = Services(projects=projects, workflow_planner=WorkflowPlanner(projects), capabilities=object())
+    scope = ProjectScope(project_name="demo", data_root=tmp_path)
+    caller = CallerContext(user_id="u1", source="mcp")
+    request = ToolRequest(EpisodeScriptRequest(script="episode_1.json"))
+
+    blocked = await get_episode_script(request, scope, caller, services)
+
+    assert blocked.value is None
+    assert blocked.problem is not None
+    assert blocked.problem.code == MIGRATION_FAILURE_CODE
+    assert blocked.problem.detail == failure.reason
+    assert blocked.problem.action == RETRY_MIGRATION_ACTION
+    assert blocked.problem.params is not None
+    assert blocked.problem.params["details"][0]["file"] == "scripts/episode_1.json"
+
+    _repair_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is None
+    unblocked = await get_episode_script(request, scope, caller, services)
+
+    assert unblocked.problem is None
+    assert unblocked.value is not None
+    assert unblocked.value.revision == script_revision(projects.load_script_readonly("demo", "episode_1.json"))
+
+
+async def test_prompt_preview_reports_the_full_migration_problem(tmp_path: Path) -> None:
+    """提示词预览自报迁移裁决，返回与入口阻断同形、带 action 与明细的 problem。"""
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    failure = migrate_project_with_verdict(project_dir)
+    assert failure is not None
+    projects = ProjectManager(str(tmp_path))
+    services = Services(projects=projects, workflow_planner=WorkflowPlanner(projects), capabilities=object())
+
+    blocked = await get_prompt_preview(
+        ToolRequest(PromptPreviewRequest(script="episode_1.json", item_id="E1S01")),
+        ProjectScope(project_name="demo", data_root=tmp_path),
+        CallerContext(user_id="u1", source="mcp"),
+        services,
+    )
+
+    assert blocked.problem is not None
+    assert blocked.problem.code == MIGRATION_FAILURE_CODE
+    assert blocked.problem.detail == failure.reason
+    assert blocked.problem.action == RETRY_MIGRATION_ACTION
+    assert blocked.problem.params is not None
+    assert blocked.problem.params["details"][0]["file"] == "scripts/episode_1.json"
+
+
+_ABSENT_REVISION = "sha256-v1:" + "0" * 64
+_DRAFT = {"episode_id": 1, "doc_type": "drama_script_plan"}
+
+
+async def test_mcp_guard_reads_the_session_projects_root_not_the_global_one(tmp_path: Path, monkeypatch) -> None:
+    """声明入口的裁决必须取自会话的项目根：会话可能绑定另一个 projects_root，同名项目不是同一个项目。"""
+
+    import lib.project.project_migration_guard as guard
+    from server.agent_toolset.script_authoring import DISCARD_DRAFT
+    from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+
+    session_root = tmp_path / "session"
+    session_root.mkdir()
+    session_dir, *_ = _project(session_root)
+    assert migrate_project_with_verdict(session_dir) is None
+
+    global_root = tmp_path / "global"
+    global_root.mkdir()
+    global_dir, *_ = _project(global_root)
+    _break_episode_script(global_dir)
+    assert migrate_project_with_verdict(global_dir) is not None
+
+    monkeypatch.setattr(guard, "get_project_manager", lambda: ProjectManager(str(global_root)))
+    ctx = ToolHarness(project_name="demo", data_root=session_root, pm=ProjectManager(str(session_root)))
+    ran = False
+
+    async def _handler(*_args: object) -> ToolOutcome[Any]:
+        nonlocal ran
+        ran = True
+        return ToolOutcome(value={})
+
+    result = await run_declared_tool(
+        replace(DISCARD_DRAFT, handler=_handler), ctx, {**_DRAFT, "base_revision": _ABSENT_REVISION}
+    )
+
+    assert ran is True
+    assert result.problem is None
+
+
+def test_retry_keeps_the_project_blocked_when_the_chain_cannot_place_it(tmp_path: Path) -> None:
+    """迁移器一次也没跑起来（project.json 不可读）时不得报成功——裁决必须留着。"""
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is not None
+
+    # 「修复」把 project.json 弄没了：链条无处落脚，schema 仍未达标。
+    (project_dir / "project.json").unlink()
+    residual = migrate_project_with_verdict(project_dir)
+
+    assert residual is not None
+    assert str(CURRENT_PROJECT_SCHEMA_VERSION) in residual.reason
+    assert load_migration_failure(project_dir) is not None
+
+
+def test_a_verdict_that_cannot_be_persisted_fails_loud(tmp_path: Path) -> None:
+    """裁决写不进磁盘时，任何守卫都读不到它——报成功等于放开一个该被阻断的项目。"""
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    # 记录位置被一个目录占住：落盘那一步必然失败，且不依赖平台的权限语义。
+    (project_dir / MIGRATION_FAILURE_FILENAME).mkdir()
+
+    with pytest.raises(IsADirectoryError, match=r"Is a directory"):
+        migrate_project_with_verdict(project_dir)
+
+    # 启动期一个项目写不下裁决，不拖垮同一轮里其它项目：healthy 排在 demo 之后，
+    # 只有循环真的继续了它才会被迁移。
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    healthy_dir, *_ = _project(seed_root)
+    healthy_dir.rename(projects_root / "healthy")
+    summary = run_project_migrations(projects_root)
+
+    assert "demo" in summary.failed
+    assert "healthy" in summary.migrated
+
+
+def _guarded_app() -> FastAPI:
+    """一个只挂守卫的最小 app：断言的是依赖本身在真实 FastAPI 栈里的行为。"""
+
+    app = FastAPI()
+    register_error_handlers(app)
+    router = APIRouter(dependencies=[Depends(require_project_migration_ok)])
+
+    @router.post("/projects/{project_name}/generate/thing")
+    async def _generate(project_name: str) -> dict[str, str]:
+        return {"generated": project_name}
+
+    @router.get("/projects/{project_name}/thing")
+    async def _read(project_name: str) -> dict[str, str]:
+        return {"read": project_name}
+
+    @router.post("/no-project-param")
+    async def _unparametrized() -> dict[str, str]:
+        return {"ok": "yes"}
+
+    app.include_router(router)
+    return app
+
+
+def test_rest_guard_refuses_writes_but_keeps_reads_open(tmp_path: Path, monkeypatch) -> None:
+    import lib.project.project_migration_guard as guard
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    project_dir, *_ = _project(tmp_path)
+    _break_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is not None
+    monkeypatch.setattr(guard, "get_project_manager", lambda: ProjectManager(str(tmp_path)))
+
+    client = TestClient(_guarded_app())
+
+    refused = client.post("/projects/demo/generate/thing")
+    assert refused.status_code == 409
+    assert "demo" in refused.json()["detail"]
+
+    # 只读照常：被阻断的项目仍要能看脚本与画布上已有的产物
+    assert client.get("/projects/demo/thing").status_code == 200
+
+    _repair_episode_script(project_dir)
+    assert migrate_project_with_verdict(project_dir) is None
+    assert client.post("/projects/demo/generate/thing").status_code == 200
+
+
+def test_rest_guard_fails_loud_when_the_route_has_no_project_param() -> None:
+    client = TestClient(_guarded_app(), raise_server_exceptions=True)
+
+    with pytest.raises(RuntimeError, match="没有项目路径参数"):
+        client.post("/no-project-param")
+
+
+def test_every_guarded_router_route_can_name_its_project() -> None:
+    """守卫按路径参数取项目，所以挂了守卫的路由必须都带得出项目名——否则会 fail loud。"""
+
+    from server.app import app
+
+    guarded = [
+        route.path
+        for route in iter_route_contexts(app.routes)
+        if any(
+            dep.call is require_project_migration_ok
+            for dep in getattr(getattr(route, "dependant", None), "dependencies", ())
+        )
+    ]
+    assert guarded
+    for path in guarded:
+        assert "{project_name}" in path or "/projects/{name}/" in f"{path}/", path
+
+
+def test_a_repaired_project_is_idempotent_to_retry(tmp_path: Path) -> None:
+    project_dir, *_ = _project(tmp_path)
+
+    assert migrate_project_with_verdict(project_dir) is None
+    # Already at the current schema: rerunning is a no-op success, not a second migration.
+    assert migrate_project_with_verdict(project_dir) is None
+    assert load_migration_failure(project_dir) is None

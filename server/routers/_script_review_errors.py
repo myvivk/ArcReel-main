@@ -1,0 +1,72 @@
+"""内容确认领域错误 → HTTP 响应的共享映射。
+
+内容确认的领域错误从两个 router 冒出来：``script_review``（内容确认自身的读写端点）与
+``files``（通用草稿端点对参考生视频 script_plan 改道 ``ScriptReviewService``）。映射放在两者之外的
+共享模块，两个 router 各自从这里取，同一个错误码在不同端点上不会给出不同的状态码或文案。
+"""
+
+from typing import NoReturn
+
+from fastapi import HTTPException
+
+from lib.infra.api_errors import ConflictError, UnprocessableError
+from lib.script.script_review import overwrite_with_text
+from server.i18n import Translator
+from server.services.project.script_review import ScriptReviewError
+
+# gate 领域错误码 → HTTP 状态。invalid_content / episode_not_found 带参数另行注入。
+_ERROR_STATUS: dict[str, int] = {
+    "not_applicable": 409,
+    "no_script_plan": 409,
+    "invalid_content": 422,
+    "episode_not_found": 404,
+    "quarantined": 409,
+    "conflict": 409,
+    "speech_admission": 409,
+}
+# 仅无参错误码走本映射；invalid_content / episode_not_found 需注参，在 raise_review_error 单独处理。
+# 只读拒绝（script_plan_confirmed）与确认转换的错误码（overwrite_required / invalid_new_assets /
+# unregistered_references / conversion_refused / conversion_conflict / video_request_facts / foreign_formal_script）
+# 带诊断或专用状态，同样在 raise_review_error 单独处理。
+_ERROR_I18N: dict[str, str] = {
+    "not_applicable": "script_review_not_applicable",
+    "no_script_plan": "script_review_no_script_plan",
+    "quarantined": "script_review_quarantined",
+    "conflict": "script_review_conflict",
+}
+
+
+def raise_review_error(exc: ScriptReviewError, episode: int, _t: Translator) -> NoReturn:
+    """把 ``ScriptReviewError`` 抛成对应的 ``HTTPException``；未登记的错误码落 400。"""
+    if exc.code == "overwrite_required":
+        raise ConflictError("script_review_overwrite_required").with_diagnostic(
+            {"script_overwrite": overwrite_with_text(exc.overwrite, _t)}
+        )
+    if exc.code == "invalid_new_assets":
+        raise UnprocessableError("script_review_invalid_new_assets").with_diagnostic(exc.message)
+    if exc.code == "unregistered_references":
+        raise UnprocessableError("script_review_unregistered_references", details=exc.message)
+    if exc.code == "conversion_refused":
+        raise UnprocessableError("script_review_conversion_refused").with_diagnostic(exc.message)
+    if exc.code == "video_request_facts" and exc.problem is not None:
+        # 视频请求事实的问题码与参数就是持久化的失败契约，与预检、执行同码呈现。
+        raise UnprocessableError(exc.problem.code, **exc.problem.parameters())
+    if exc.code == "foreign_formal_script":
+        raise ConflictError("script_review_foreign_formal_script", episode=episode, filename=exc.script_filename or "")
+    if exc.code == "script_plan_confirmed":
+        raise ConflictError("script_review_script_plan_confirmed").with_diagnostic({"code": exc.code})
+    if exc.code == "draft_agent_owned":
+        raise ConflictError("draft_agent_owned").with_diagnostic({"code": exc.code})
+    if exc.code == "conversion_conflict":
+        raise ConflictError("script_conversion_conflict")
+    status = _ERROR_STATUS.get(exc.code, 400)
+    if exc.code == "speech_admission" and exc.admission is not None:
+        detail = exc.admission.to_dict()
+    elif exc.code == "invalid_content":
+        detail = _t("script_review_invalid_content", details=exc.message)
+
+    elif exc.code == "episode_not_found":
+        detail = _t("episode_not_found", episode=episode)
+    else:
+        detail = _t(_ERROR_I18N.get(exc.code, "internal_server_error"))
+    raise HTTPException(status_code=status, detail=detail)

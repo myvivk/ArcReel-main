@@ -20,13 +20,14 @@ const SCRIPTED: EpisodeViewFacts = {
 };
 
 describe("episodeViewTabs", () => {
-  it("lists plan, grid, board, edit and source for a scripted grid episode", () => {
+  // 内容在前、产物在后：原文/剧本排在分镜之前，与制作进度的行序同一读法。
+  it("lists plan, source, grid, board and edit for a scripted grid episode", () => {
     expect(episodeViewTabs({ ...SCRIPTED, grid: true })).toEqual([
       { view: "plan", disabled: false },
+      { view: "source", disabled: false },
       { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
-      { view: "source", disabled: false },
     ]);
   });
 
@@ -34,8 +35,8 @@ describe("episodeViewTabs", () => {
     const tabs = episodeViewTabs({ ...SCRIPTED, hasScript: false });
     expect(tabs).toEqual([
       { view: "plan", disabled: false },
-      { view: "board", disabled: true },
       { view: "source", disabled: false },
+      { view: "board", disabled: true },
     ]);
   });
 

@@ -1,7 +1,9 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useTranslation } from "react-i18next";
-import { Bot, Sparkles } from "lucide-react";
+import { Bot, ChevronDown, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import {
   Dialog,
   DialogBody,
@@ -13,6 +15,13 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useEpisodeLedger } from "@/hooks/useEpisodeLedger";
 import { createBlankEpisodes } from "@/actions/shortDrama";
 import { useAppStore } from "@/stores/app-store";
@@ -20,12 +29,29 @@ import { useAssistantStore } from "@/stores/assistant-store";
 import { useShortDramaGenerateStore, type ShortDramaGenerateOpenRequest } from "@/stores/short-drama-generate-store";
 import { episodeDisplayName } from "@/utils/episode-display";
 
+export type ShortDramaFormat = "standard" | "long" | "manju";
+
 export interface OriginalScriptBrief {
   /** 目标集号列表：单集导入时长度为 1；连写多集时为各集号。 */
   episodes: number[];
   genre: string;
   brief: string;
   tone: string;
+  /** 篇幅档位：标准 / 长档 / 漫剧（short-drama-factory 的制式）。 */
+  format: ShortDramaFormat;
+}
+
+/** 各档位篇幅说明，写入交给 Agent 的指令。 */
+const FORMAT_LENGTH: Record<ShortDramaFormat, string> = {
+  standard: "标准档 90~120 秒",
+  long: "长档 165~195 秒（约 3 分钟，双回合 + 中段小钩）",
+  manju: "漫剧档 60~90 秒",
+};
+
+/** 按档位给出短剧工厂的撰写指令：长档用 /写长档、/连写 长档。 */
+function formatWriteCommand(format: ShortDramaFormat, single: boolean, episode: number): string {
+  if (single) return format === "long" ? `/写长档 第${episode}集` : `/写剧本 第${episode}集`;
+  return format === "long" ? "/连写 长档" : "/连写";
 }
 
 /**
@@ -36,7 +62,7 @@ export interface OriginalScriptBrief {
 export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   const episodes = b.episodes;
   const single = episodes.length === 1;
-  const command = single ? `/写剧本 第${episodes[0]}集` : "/连写 或 /极速短剧";
+  const command = formatWriteCommand(b.format, single, episodes[0]);
   const tool = single ? "import_short_drama_script" : "import_short_drama_series";
   const toneLine = b.tone.trim() ? b.tone.trim() : "（按题材默认基调）";
   const lines = [
@@ -46,7 +72,7 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
     `- 题材 / 类型：${b.genre.trim()}`,
     `- 核心梗概：${b.brief.trim()}`,
     `- 风格基调：${toneLine}`,
-    "- 篇幅：标准档 90~120 秒",
+    `- 篇幅：${FORMAT_LENGTH[b.format]}`,
     "",
     "【要求】",
     `1. 先按 short-drama-factory 的 ${command} 流程产出符合规范的剧本 Markdown：前 3 秒钩子 + 往返回合 + 断章，动作/神态与台词分明。`,
@@ -65,6 +91,120 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
     );
   }
   return lines.join("\n");
+}
+
+/** 题材下拉预设：i18n 里以逗号分隔存储，这里拆成候选列表；用户仍可输入预设之外的任意题材。 */
+const GENRE_OPTIONS_I18N_KEY = "short_drama_genre_options";
+
+/**
+ * 题材/类型输入：下拉给热门预设，也允许填写预设之外的任意题材。
+ * 用 Base UI 的 Autocomplete 而不是 Combobox：后者只接受候选项（同 ModelIdField 的取舍）。
+ */
+function GenreField({
+  id,
+  value,
+  onChange,
+  placeholder,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  const { t } = useTranslation("dashboard");
+  const options = useMemo(
+    () =>
+      (t(GENRE_OPTIONS_I18N_KEY) as string)
+        .split(",")
+        .map((option) => option.trim())
+        .filter(Boolean),
+    [t],
+  );
+  return (
+    <Autocomplete.Root items={options} value={value} onValueChange={onChange} openOnInputClick>
+      <InputGroup>
+        <Autocomplete.Input
+          id={id}
+          placeholder={placeholder}
+          autoComplete="off"
+          spellCheck={false}
+          render={<InputGroupInput />}
+        />
+        <InputGroupAddon align="inline-end">
+          {value && (
+            <Autocomplete.Clear render={<InputGroupButton size="icon-xs" />}>
+              <X aria-hidden />
+            </Autocomplete.Clear>
+          )}
+          <Autocomplete.Trigger render={<InputGroupButton size="icon-xs" />}>
+            <ChevronDown aria-hidden />
+          </Autocomplete.Trigger>
+        </InputGroupAddon>
+      </InputGroup>
+      <Autocomplete.Portal>
+        <Autocomplete.Positioner sideOffset={6} align="start" className="isolate z-overlay">
+          <Autocomplete.Popup className="max-h-(--available-height) w-(--anchor-width) overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-overlay ring-1 ring-foreground/10 data-closed:animate-out data-closed:fade-out-0 data-open:animate-in data-open:fade-in-0">
+            <Autocomplete.List className="relative max-h-72 overflow-y-auto overscroll-contain p-1 data-empty:p-0">
+              {(item: string) => (
+                <Autocomplete.Item
+                  key={item}
+                  value={item}
+                  className="flex cursor-default items-center rounded-md px-2 py-1 text-sm outline-hidden select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+                >
+                  {item}
+                </Autocomplete.Item>
+              )}
+            </Autocomplete.List>
+          </Autocomplete.Popup>
+        </Autocomplete.Positioner>
+      </Autocomplete.Portal>
+    </Autocomplete.Root>
+  );
+}
+
+/** 篇幅档位下拉：标准 / 长档 / 漫剧（short-drama-factory 的三档制式）。 */
+const FORMAT_ITEMS: { value: ShortDramaFormat; labelKey: string; descKey: string }[] = [
+  { value: "standard", labelKey: "short_drama_format_standard", descKey: "short_drama_format_standard_desc" },
+  { value: "long", labelKey: "short_drama_format_long", descKey: "short_drama_format_long_desc" },
+  { value: "manju", labelKey: "short_drama_format_manju", descKey: "short_drama_format_manju_desc" },
+];
+
+function FormatSelect({
+  id,
+  value,
+  onChange,
+  disabled,
+}: {
+  id: string;
+  value: ShortDramaFormat;
+  onChange: (value: ShortDramaFormat) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation("dashboard");
+  return (
+    <Select
+      items={FORMAT_ITEMS.map((item) => ({ value: item.value, label: t(item.labelKey) }))}
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (next !== null) onChange(next as ShortDramaFormat);
+      }}
+    >
+      <SelectTrigger size="sm" aria-label={t("short_drama_generate_format_label")} className="w-full sm:w-64">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent alignItemWithTrigger={false} align="start" className="w-auto max-w-xs">
+        {FORMAT_ITEMS.map((item) => (
+          <SelectItem key={item.value} value={item.value}>
+            <span className="flex flex-col gap-0.5 whitespace-normal">
+              <span>{t(item.labelKey)}</span>
+              <span className="text-xs text-muted-foreground">{t(item.descKey)}</span>
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
 }
 
 /** 「AI 原创剧本」弹窗宿主：按 {@link useShortDramaGenerateStore} 的请求打开。 */
@@ -98,9 +238,10 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const [brief, setBrief] = useState("");
   const [tone, setTone] = useState("");
   const [count, setCount] = useState(1);
+  const [format, setFormat] = useState<ShortDramaFormat>("standard");
   const [submitting, setSubmitting] = useState(false);
 
-  const canSubmit = genre.trim().length > 0 && brief.trim().length > 0 && count >= 1;
+  const canSubmit = genre.trim().length > 0 && count >= 1;
 
   const handOff = async () => {
     if (!canSubmit || submitting) return;
@@ -117,7 +258,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     } else {
       episodes = [Number(episode)];
     }
-    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone });
+    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format });
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);
     setSubmitting(false);
@@ -140,45 +281,62 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
               {createMode ? (
-                <div className="flex flex-col gap-1.5 sm:w-1/2">
-                  <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
-                  <input
-                    id={`${fieldId}-count`}
-                    type="number"
-                    min={1}
-                    max={100}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                    value={count}
-                    onChange={(event) => setCount(Math.max(1, Number(event.target.value) || 1))}
-                  />
-                </div>
+                <>
+                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                    <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
+                    <GenreField
+                      id={`${fieldId}-genre`}
+                      value={genre}
+                      onChange={setGenre}
+                      placeholder={t("short_drama_generate_genre_placeholder")}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                    <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
+                    <input
+                      id={`${fieldId}-count`}
+                      type="number"
+                      min={1}
+                      max={100}
+                      className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+                      value={count}
+                      onChange={(event) => setCount(Math.max(1, Number(event.target.value) || 1))}
+                    />
+                  </div>
+                </>
               ) : (
-                <div className="flex flex-col gap-1.5 sm:w-1/2">
-                  <Label htmlFor={`${fieldId}-episode`}>{t("short_drama_generate_episode_label")}</Label>
-                  <select
-                    id={`${fieldId}-episode`}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                    value={episode}
-                    onChange={(event) => setEpisode(Number(event.target.value))}
-                  >
-                    {ledger.map((ep) => (
-                      <option key={ep.episode} value={ep.episode}>
-                        {episodeDisplayName(ledger, ep.episode, t)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <>
+                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                    <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
+                    <GenreField
+                      id={`${fieldId}-genre`}
+                      value={genre}
+                      onChange={setGenre}
+                      placeholder={t("short_drama_generate_genre_placeholder")}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                    <Label htmlFor={`${fieldId}-episode`}>{t("short_drama_generate_episode_label")}</Label>
+                    <select
+                      id={`${fieldId}-episode`}
+                      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                      value={episode}
+                      onChange={(event) => setEpisode(Number(event.target.value))}
+                    >
+                      {ledger.map((ep) => (
+                        <option key={ep.episode} value={ep.episode}>
+                          {episodeDisplayName(ledger, ep.episode, t)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
               )}
-              <div className="flex flex-col gap-1.5 sm:w-1/2">
-                <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
-                <input
-                  id={`${fieldId}-genre`}
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                  value={genre}
-                  onChange={(event) => setGenre(event.target.value)}
-                  placeholder={t("short_drama_generate_genre_placeholder")}
-                />
-              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${fieldId}-format`}>{t("short_drama_generate_format_label")}</Label>
+              <FormatSelect id={`${fieldId}-format`} value={format} onChange={setFormat} />
             </div>
 
             {createMode && (

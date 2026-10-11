@@ -303,6 +303,8 @@ export interface DramaScene {
   characters_in_scene: string[];
   scenes?: string[];
   props?: string[];
+  /** 画面描述：动作行与神态的转写（提示词编写的视觉基底）。 */
+  scene_description?: string;
   /** `null` = 待编写：内容确认转出的正式脚本只有内容层，提示词尚未编写。 */
   image_prompt: ImagePrompt | string | null;
   video_prompt: VideoPrompt | string | null;
@@ -347,6 +349,11 @@ export interface DramaEpisodeScript {
   schema_version?: number;
   novel: NovelInfo;
   scenes: DramaScene[];
+  /**
+   * short-drama-factory 导入标记：本集剧本由短剧工厂 Markdown 整份转写产出。
+   * 后端剧本顶层容忍额外字段（short_drama_meta 命名空间），这里只为前端识别导入来源。
+   */
+  short_drama_meta?: Record<string, unknown>;
 }
 
 /** 带货框架 section 八值引导（与后端审定配比表用词一致；不硬枚举，允许自定义值）。 */

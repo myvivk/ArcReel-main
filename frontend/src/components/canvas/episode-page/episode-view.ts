@@ -35,6 +35,10 @@ export interface EpisodeViewFacts {
   sourceReview: boolean;
   /** 演示项目：没有剪辑视图。 */
   demo: boolean;
+  /** 本集正式脚本来自短剧工厂导入（顶层 short_drama_meta）：没有脚本规划时不给「脚本规划」页签。 */
+  shortDrama?: boolean;
+  /** 工作流计划里 script_plan 的产物态；取不到时视为没有（短剧工厂导入的集据此藏掉规划页签）。 */
+  scriptPlanState?: string | null;
 }
 
 export interface EpisodeViewTab {
@@ -44,6 +48,9 @@ export interface EpisodeViewTab {
 
 function planAvailable(facts: EpisodeViewFacts): boolean {
   if (facts.isAd) return false;
+  // 短剧工厂导入的集不走脚本规划（Markdown 直转正式脚本）：规划不存在时藏掉页签。
+  // 之后真跑了原生规划，产物态变为 current/stale，页签自动回来（内容确认还要用它）。
+  if (facts.shortDrama && facts.scriptPlanState !== "current" && facts.scriptPlanState !== "stale") return false;
   return facts.sourceReview || facts.hasDraft || (facts.route === "reference_video" && facts.hasScript);
 }
 

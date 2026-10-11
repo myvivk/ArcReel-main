@@ -317,20 +317,18 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
         : [];
     const planningSteps = stepsFor(facts, ["episode_plan"]);
     const planning = planningSteps.some((step) => step.state === "active");
-    rows.push({
-      key: "source",
-      title: t("workflow:row_source"),
-      tone: planning ? "running" : content.episode_plan_stale ? "warn" : present ? "done" : "todo",
-      // 短剧工厂导入的集不走集原文：只改陈述（"不适用"），入口与准入照旧可用作备选路线。
-      status: present
-        ? t("workflow:status_source_present")
-        : content.script_from_short_drama
-          ? t("workflow:status_source_short_drama")
-          : t("workflow:status_source_absent"),
-      notes,
-      acts,
-      steps: planningSteps,
-    });
+    // 短剧工厂导入的集不走集原文，整行不出现（含「补充集原文」入口）；要走原生路线时补了原文自然回来。
+    if (!content.script_from_short_drama) {
+      rows.push({
+        key: "source",
+        title: t("workflow:row_source"),
+        tone: planning ? "running" : content.episode_plan_stale ? "warn" : present ? "done" : "todo",
+        status: present ? t("workflow:status_source_present") : t("workflow:status_source_absent"),
+        notes,
+        acts,
+        steps: planningSteps,
+      });
+    }
 
     const review = status.gates.script_plan_review?.state;
     let planStatus: string;
@@ -372,15 +370,18 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
         },
       ];
     }
-    rows.push({
-      key: "plan",
-      title: t("workflow:row_plan"),
-      tone: planTone,
-      status: planStatus,
-      notes: [],
-      acts: planActs,
-      steps: stepsFor(facts, ["script_plan_content", "script_plan_review"]),
-    });
+    // 短剧工厂导入的集没有脚本规划时整行不出现；真跑了原生规划（current/stale）行会回来。
+    if (!(content.script_from_short_drama && planState !== "current" && planState !== "stale" && !planDraft)) {
+      rows.push({
+        key: "plan",
+        title: t("workflow:row_plan"),
+        tone: planTone,
+        status: planStatus,
+        notes: [],
+        acts: planActs,
+        steps: stepsFor(facts, ["script_plan_content", "script_plan_review"]),
+      });
+    }
   }
 
   const unitWord = facts.unitWordKey;

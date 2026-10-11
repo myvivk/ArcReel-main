@@ -44,6 +44,7 @@ export function EpisodePageHeader({
   view,
   onViewChange,
   boardLabel,
+  sourceLabel,
   onActionsSlot,
 }: {
   head: ReactNode;
@@ -54,6 +55,11 @@ export function EpisodePageHeader({
   onViewChange: (view: EpisodeView) => void;
   /** 「分镜」tab 的名称：参考生视频项目称「视频单元」。 */
   boardLabel: string;
+  /**
+   * 「原文」tab 的名称。短剧工厂导入的集没有集原文，这一页是剧本内容，故给「剧本」，
+   * 沿用集页「页签名按项目与这一集的事实取」的做法（同 boardLabel）。
+   */
+  sourceLabel?: string;
   onActionsSlot: (node: HTMLDivElement | null) => void;
 }) {
   const { t } = useTranslation("dashboard");
@@ -62,7 +68,7 @@ export function EpisodePageHeader({
     plan: t("episode_view_plan"),
     grid: t("episode_view_grid"),
     board: boardLabel,
-    source: t("episode_view_source"),
+    source: sourceLabel ?? t("episode_view_source"),
     edit: t("episode_view_edit"),
   };
   return (

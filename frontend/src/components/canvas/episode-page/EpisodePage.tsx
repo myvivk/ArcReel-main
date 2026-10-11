@@ -21,6 +21,7 @@ import { DemoEpisodePlaceholder } from "@/onboarding/DemoEpisodePlaceholder";
 import { useCostStore } from "@/stores/cost-store";
 import { useEpisodeSurfaceRequest } from "@/stores/episode-surface-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
+import { useWorkflowStore, workflowPlanKey } from "@/stores/workflow-store";
 import type { EpisodeMeta, ProjectData } from "@/types";
 import type { EpisodeScript } from "@/types/script";
 import { gridStoryboardEnabled, normalizeRoute } from "@/utils/generation-mode";
@@ -35,6 +36,7 @@ import {
   type EpisodeView,
   type EpisodeViewFacts,
 } from "./episode-view";
+import { DramaScriptContentView } from "./DramaScriptContentView";
 import { EpisodeHead } from "./EpisodeHead";
 import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeaderActions";
 import { EpisodePageHeader, episodeViewTabId } from "./EpisodePageHeader";
@@ -57,6 +59,11 @@ export interface EpisodeCanvasContext {
 /** 本集已有中间稿：分段稿或生成好的剧本草稿。 */
 function hasEpisodeDraft(meta: EpisodeMeta | undefined): boolean {
   return meta?.script_status === "segmented" || meta?.script_status === "generated";
+}
+
+/** 本集已有分镜图或视频产物：改剧本内容会让它们过期，界面据此提示。 */
+function hasEpisodeArtifacts(meta: EpisodeMeta | undefined): boolean {
+  return (meta?.storyboards?.available ?? 0) + (meta?.videos?.available ?? 0) > 0;
 }
 
 /**
@@ -117,9 +124,27 @@ function EpisodePageContent({
   const hasDraft = hasEpisodeDraft(meta);
   const grid = gridStoryboardEnabled(projectData);
   const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
+  const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
+  // 剧本视图要的集账本与产物计数：随项目数据走 memo，避免在 JSX 里现算新数组/对象。
+  const ledger = useMemo(() => projectData?.episodes ?? [], [projectData?.episodes]);
+  const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
+  // 规划产物态取工作流计划（页头的制作进度面板驱动刷新）：短剧导入的集据此藏掉规划页签。
+  const planState = useWorkflowStore((s) =>
+    s.planKey === workflowPlanKey(projectName, episode) ? s.plan?.status.artifacts.script_plan?.state : undefined,
+  );
   const facts = useMemo<EpisodeViewFacts>(
-    () => ({ isAd, route, grid, hasScript, hasDraft, sourceReview, demo }),
-    [isAd, route, grid, hasScript, hasDraft, sourceReview, demo],
+    () => ({
+      isAd,
+      route,
+      grid,
+      hasScript,
+      hasDraft,
+      sourceReview,
+      demo,
+      shortDrama,
+      scriptPlanState: planState ?? null,
+    }),
+    [isAd, route, grid, hasScript, hasDraft, sourceReview, demo, shortDrama, planState],
   );
   const tabs = useMemo(() => episodeViewTabs(facts), [facts]);
   const view = resolveEpisodeView(searchParams.get(EPISODE_VIEW_PARAM), facts);
@@ -204,12 +229,24 @@ function EpisodePageContent({
       </EpisodeViewFactsProvider>
     );
   } else if (view === "source") {
-    // 「原文」视图：已有脚本也能就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
-    body = (
-      <EpisodeViewFactsProvider value={facts}>
-        <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} sourceOnly />
-      </EpisodeViewFactsProvider>
-    );
+    // 「原文」视图：短剧工厂导入的集没有集原文，只读呈现剧本内容（创作者要看的"原文"就是剧本）；
+    // 其余集就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
+    body =
+      shortDrama && script?.content_mode === "drama" ? (
+        <DramaScriptContentView
+          script={script}
+          projectName={projectName}
+          episode={episode}
+          scriptFile={meta?.script_file ?? ""}
+          episodes={ledger}
+          readOnly={demo}
+          hasArtifacts={hasArtifacts}
+        />
+      ) : (
+        <EpisodeViewFactsProvider value={facts}>
+          <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} sourceOnly />
+        </EpisodeViewFactsProvider>
+      );
   } else if (demo && !script) {
     body = <DemoEpisodePlaceholder />;
   } else if (sourceReview) {
@@ -251,6 +288,8 @@ function EpisodePageContent({
           view={view}
           onViewChange={changeView}
           boardLabel={t(route === "reference_video" ? "episode_view_units" : "episode_view_board")}
+          // 短剧工厂导入的集没有集原文，这一页是剧本内容，页签据此改称「剧本」。
+          sourceLabel={shortDrama ? t("episode_view_script") : undefined}
           onActionsSlot={setActionsSlot}
         />
         {!demo && (

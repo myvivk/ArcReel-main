@@ -242,6 +242,8 @@ export interface WorkflowContent {
   drafts: WorkflowDraft[];
   formal_script?: "present" | "absent" | "invalid" | null;
   script_item_count?: number | null;
+  /** 本集正式脚本是不是短剧工厂导入产出（顶层带 short_drama_meta）；这类集不走集原文与脚本规划。 */
+  script_from_short_drama?: boolean;
   pending_authoring_ids: string[];
   needs_replan_ids: string[];
   referenced_assets_without_sheet: string[];

@@ -1029,7 +1029,8 @@ class ImportShortDramaScriptRequest(BaseModel):
         description=(
             "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
             "动作行与神态进 scene_description，台词进 utterances，单集按所选视频模型的时长档位切分为多幕"
-            "（每幕不超过最大档位，档位未知时 60 秒），"
+            "（每幕不超过最大档位）。档位读不出时**中止导入**（不降级成 60 秒）：先到设置里选定视频模型，"
+            "或稍后重试、在分集页手动分镜；时长不由 ArcReel 驱动的端点（如 ComfyUI）按旧口径处理。"
             "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
             "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
         )
@@ -1054,18 +1055,51 @@ def _duration_shortfall(parsed: Any, script: dict) -> dict[str, Any]:
     }
 
 
+#: 档位解析的瞬态重试次数。只重试读库/会话这类抖动；配置类错误一次都不重试。
+_TIER_RETRY_ATTEMPTS = 3
+
+
+class ShortDramaTierUnavailable(Exception):
+    """切幕拿不到合法时长档位。
+
+    拿不到档位时**不降级**到 60 秒静态上限——那会落一份时长可能在档位外的剧本，生成期
+    才被拒。要么给得出档位，要么中止导入并说明该怎么办（去分集页手动分镜 / 先选定模型）。
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 async def _short_drama_split_durations(project: dict, services: Services) -> list[int] | None:
     """短剧导入切幕用的合法时长档位：所选视频模型的 ``supported_durations``。
 
-    能力解析失败（未选模型/自定义端点读不出等）返回 None，调用方退回 60 秒静态上限，
-    不因能力读不出而拦下导入。
+    两类失败分开处理，都不降级：
+
+    * **配置类**（``ValueError`` 及其子类：未选定视频模型 / 模型找不到 / 档位声明缺失或无效）——
+      重试多少次结果都一样，直接中止，由 handler 报"请先选定视频模型"；
+    * **其余异常**按瞬态（读库、会话抖动）处理，重试 ``_TIER_RETRY_ATTEMPTS`` 次，仍失败才中止。
+
+    正常返回而档位为空是 ComfyUI 类端点的合法状态（时长不由 ArcReel 驱动），返回 None 走旧口径。
     """
-    try:
-        capabilities = await services.capabilities.video_capabilities_for_project(project)
-    except Exception:
-        return None
-    durations = capabilities.get("supported_durations")
-    return durations if isinstance(durations, list) and durations else None
+    last_error: BaseException | None = None
+    for _attempt in range(_TIER_RETRY_ATTEMPTS):
+        try:
+            capabilities = await services.capabilities.video_capabilities_for_project(project)
+        except ValueError as exc:
+            # 配置类：不是抖动，重试无意义。
+            raise ShortDramaTierUnavailable(
+                f"视频模型时长档位不可用，请先到设置里选定视频模型：{exc}"
+            ) from exc
+        except Exception as exc:
+            last_error = exc
+            continue
+        durations = capabilities.get("supported_durations")
+        return durations if isinstance(durations, list) and durations else None
+    raise ShortDramaTierUnavailable(
+        f"读取视频模型时长档位失败（已重试 {_TIER_RETRY_ATTEMPTS} 次）：{last_error}；"
+        "请稍后重试，或在分集页手动分镜。"
+    ) from last_error
 
 
 async def import_short_drama_script(
@@ -1100,6 +1134,8 @@ async def import_short_drama_script(
         )
         core = {k: v for k, v in script.items() if k != "short_drama_meta"}
         DramaEpisodeScript.model_validate(core)  # 映射正确性自检
+    except ShortDramaTierUnavailable as exc:
+        return ToolOutcome(problem=ToolProblem("video_tier_unavailable", exc.detail))
     except Exception as exc:
         return ToolOutcome(problem=ToolProblem("short_drama_parse_failed", f"Markdown 解析失败: {exc}"))
     try:
@@ -1163,8 +1199,12 @@ async def import_short_drama_series(
         return ToolOutcome(
             problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
         )
-    # 档位整批解析一次：各集同一项目同一模型，没必要每集各查一遍。
-    split_durations = await _short_drama_split_durations(project, services)
+    # 档位整批解析一次：各集同一项目同一模型，没必要每集各查一遍。拿不到档位整批中止，
+    # 不逐集降级——否则同一项目会落一批时长口径不一致的剧本。
+    try:
+        split_durations = await _short_drama_split_durations(project, services)
+    except ShortDramaTierUnavailable as exc:
+        return ToolOutcome(problem=ToolProblem("video_tier_unavailable", exc.detail))
 
     async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
         try:

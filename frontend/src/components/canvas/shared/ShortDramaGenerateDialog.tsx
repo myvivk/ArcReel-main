@@ -351,10 +351,14 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
             )}
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
+                <span className="text-xs tabular-nums text-muted-foreground">{brief.length}/1000</span>
+              </div>
               <Textarea
                 id={`${fieldId}-brief`}
                 value={brief}
+                maxLength={1000}
                 onChange={(event) => setBrief(event.target.value)}
                 placeholder={t("short_drama_generate_brief_placeholder")}
                 className="min-h-28"

@@ -80,6 +80,12 @@ python3 scripts/validate_series.py <台账文件> [--episodes 30|40|50|60|80|100
 ### Step 6 合规
 `screenplay-compliance-rules.md`（一票否决四类+敏感词转译表）。
 
+### Step 7 分批落库（每单元一交，不攒到最后）
+机检（Step 5）与合规（Step 6）全过后，**立即把"当前这一个单元（约 8 集）"落库**，不要等所有单元写完再一次性提交：
+- 逐个调用 ArcReel 的 `mcp__arcreel__*` 工具把本单元每集落到项目里——把分集故事写入**集原文**（`update_episode_source`），并按需调用 `generate_episode_script` 生成正式剧本，规则与 `CLAUDE.drama.md` 的落库纪律一致；
+- 一个单元机检全过即交一个单元；本单元里未通过的集修到通过后再交，**绝不带着 FAIL 裸交**；
+- 这样用户能在 WebUI 实时看到、编辑已交付的集，也能在早批次发现风格/体量偏差及时纠偏，避免最后一次性返工——上一版 65 集垃圾数据即源于"只写草稿不落库"。
+
 ---
 
 ## 绝对红线（9 条）

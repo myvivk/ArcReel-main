@@ -1,26 +1,7 @@
 # ============================================================
-# Stage 1: 构建前端
-# ============================================================
-FROM node:24-slim AS frontend-builder
-
-WORKDIR /build/frontend
-
-# 启用 corepack；pnpm 版本由 frontend/package.json 的 packageManager 字段固定
-# 关闭交互式下载确认，否则 docker build 这种非 TTY 环境会卡在
-# "Corepack is about to download ..." 直到超时
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable
-
-# 先复制依赖文件，利用缓存（corepack 按 packageManager 字段自动下载对应 pnpm）
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-# 复制前端源码并构建
-COPY frontend/ ./
-RUN pnpm build
-
-# ============================================================
-# Stage 2: 生产镜像
+# 生产镜像
+# 前端构建产物（frontend/dist）由 CI 的 frontend job 预构建并作为构建上下文传入，
+# 不再在镜像内执行 node/pnpm 构建，缩短镜像构建时间。
 # ============================================================
 FROM python:3.12-slim AS production
 
@@ -69,8 +50,8 @@ COPY public/ public/
 COPY LICENSE NOTICE ./
 COPY LICENSES/ LICENSES/
 
-# 复制前端构建产物
-COPY --from=frontend-builder /build/frontend/dist/ frontend/dist/
+# 复制前端构建产物（由 CI frontend job 预构建后放入构建上下文）
+COPY frontend/dist/ frontend/dist/
 
 # 暴露端口
 EXPOSE 1241

@@ -8,6 +8,9 @@ import { StoryboardBatchDialog } from "./StoryboardBatchDialog";
 import { EmptyScriptState } from "./EmptyScriptState";
 import type { InsertShotHandler } from "./ShotStructureActions";
 import { AdScriptButton, AdScriptProgress } from "@/components/canvas/shared/AdScriptDialog";
+import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
+import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
+import { ShortDramaVisualButton } from "@/components/canvas/shared/ShortDramaVisualDialog";
 import { NoScriptBlankState } from "@/components/canvas/shared/StartBlankScriptButton";
 import { BatchFillButton, useBatchGap } from "@/components/canvas/episode-page/BatchFillButton";
 import { EpisodeHeaderActions } from "@/components/canvas/episode-page/EpisodeHeaderActions";
@@ -211,6 +214,13 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
           {editorContentMode === "ad" && !demoReadOnly && (
             <AdScriptButton projectName={projectName} episode={episode} regenerate />
           )}
+          {editorContentMode === "drama" && !demoReadOnly && (
+            <>
+              <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+              <ShortDramaImportButton projectName={projectName} episode={episode} />
+              <ShortDramaVisualButton projectName={projectName} episode={episode} />
+            </>
+          )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
           <BatchFillButton
             kind="storyboards"
@@ -292,6 +302,15 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
           />
         ) : episodeScript && contentMode === editorContentMode ? (
           <EmptyScriptState contentMode={editorContentMode} onInsert={handleInsertShot} />
+        ) : editorContentMode === "drama" && !hasScript ? (
+          // 剧情演绎项目还没有正式脚本：给出「AI 原创剧本」与「导入短剧工厂剧本」两个入口
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+            <p>{t("timeline_script_not_ready")}</p>
+            <div className="flex gap-2">
+              <ShortDramaGenerateButton projectName={projectName} episode={episode} prominent />
+              <ShortDramaImportButton projectName={projectName} episode={episode} />
+            </div>
+          </div>
         ) : (
           // 兜底：分镜视图下无可编辑分镜（未知 content_mode），
           // 或剧本回退后仍停留在分镜视图——给出指引而非空白

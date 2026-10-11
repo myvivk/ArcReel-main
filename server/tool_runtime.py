@@ -1021,6 +1021,141 @@ async def confirm_script_review(
     )
 
 
+class ImportShortDramaScriptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
+    markdown: str = Field(
+        description=(
+            "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
+            "动作行与神态进 scene_description，台词进 utterances，单集超过 60 秒按节拍切分为多幕，"
+            "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
+            "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
+        )
+    )
+
+
+async def import_short_drama_script(
+    request: ToolRequest[ImportShortDramaScriptRequest],
+    scope: ProjectScope,
+    _caller: CallerContext,
+    services: Services,
+) -> ToolOutcome[Any]:
+    """把 short-drama-factory 的 Markdown 剧本转写为本项目的正式剧情演绎剧本并落盘。
+
+    前置：本项目须为剧情演绎（drama）且目标集已存在。转换逻辑见
+    ``lib.script.short_drama_import``；短剧工厂 Skill 原样复刻于
+    ``agent_runtime_profile/.claude/skills/short-drama-factory/``。
+    """
+    from lib.episode.episode_paths import episode_script_filename
+    from lib.script.script_models import DramaEpisodeScript
+    from lib.script.short_drama_import import convert_to_drama_script, parse_short_drama_episode
+
+    try:
+        project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
+    except FileNotFoundError as exc:
+        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
+    if project.get("content_mode") != "drama":
+        return ToolOutcome(
+            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
+        )
+    try:
+        parsed = parse_short_drama_episode(request.value.markdown)
+        script = convert_to_drama_script(parsed, request.value.episode_id)
+        core = {k: v for k, v in script.items() if k != "short_drama_meta"}
+        DramaEpisodeScript.model_validate(core)  # 映射正确性自检
+    except Exception as exc:
+        return ToolOutcome(problem=ToolProblem("short_drama_parse_failed", f"Markdown 解析失败: {exc}"))
+    try:
+        await asyncio.to_thread(
+            services.projects.save_script,
+            scope.project_name,
+            script,
+            episode_script_filename(request.value.episode_id),
+        )
+    except Exception as exc:
+        return ToolOutcome(problem=ToolProblem("short_drama_save_failed", f"剧本落盘失败: {exc}"))
+    return ToolOutcome(value={"episode": request.value.episode_id, "scenes": len(script["scenes"])})
+
+
+class ImportShortDramaEpisodeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
+    markdown: str = Field(description="该集的 short-drama-factory 剧本 Markdown 原文")
+
+
+class ImportShortDramaSeriesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    episodes: list[ImportShortDramaEpisodeItem] = Field(
+        description="本批要导入的多集剧本（每集一份 Markdown）。各集独立解析转写并落盘，互不依赖。"
+    )
+    continue_on_error: bool = Field(
+        default=True,
+        description="单集解析/落盘失败时是否跳过继续（默认 true，整体仍返回各集明细）；false 则任一一集失败即整体报错。",
+    )
+
+
+async def import_short_drama_series(
+    request: ToolRequest[ImportShortDramaSeriesRequest],
+    scope: ProjectScope,
+    _caller: CallerContext,
+    services: Services,
+) -> ToolOutcome[Any]:
+    """批量把 short-drama-factory 的多集 Markdown 转写为本项目的正式剧情演绎剧本并落盘。
+
+    底层复用 ``import_short_drama_script`` 的单集路径；各集通过 ``asyncio.gather`` 并发执行。
+    并发安全性由 ``ProjectManager`` 保证：每集脚本文件有独立锁，账本 ``project.json`` 的同步走单项目锁，
+    因此并发不会损坏数据，但同一项目内的账本更新会被串行化（墙钟时间不会线性下降）。
+    """
+    from lib.episode.episode_paths import episode_script_filename
+    from lib.script.script_models import DramaEpisodeScript
+    from lib.script.short_drama_import import convert_to_drama_script, parse_short_drama_episode
+
+    try:
+        project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
+    except FileNotFoundError as exc:
+        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
+    if project.get("content_mode") != "drama":
+        return ToolOutcome(
+            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
+        )
+
+    async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
+        try:
+            parsed = parse_short_drama_episode(item.markdown)
+            script = convert_to_drama_script(parsed, item.episode_id)
+            core = {k: v for k, v in script.items() if k != "short_drama_meta"}
+            DramaEpisodeScript.model_validate(core)
+            await asyncio.to_thread(
+                services.projects.save_script,
+                scope.project_name,
+                script,
+                episode_script_filename(item.episode_id),
+            )
+            return {"episode": item.episode_id, "scenes": len(script["scenes"]), "ok": True}
+        except Exception as exc:
+            return {"episode": item.episode_id, "ok": False, "error": str(exc)}
+
+    results = await asyncio.gather(*(_import_one(item) for item in request.value.episodes))
+    failed = [r for r in results if not r["ok"]]
+    if failed and not request.value.continue_on_error:
+        return ToolOutcome(
+            problem=ToolProblem(
+                "short_drama_series_partial_failed",
+                f"{len(failed)}/{len(results)} 集导入失败：" + "; ".join(r.get("error", "") for r in failed),
+            )
+        )
+    return ToolOutcome(
+        value={
+            "imported": sum(1 for r in results if r["ok"]),
+            "failed": len(failed),
+            "details": results,
+        }
+    )
+
+
 class NoArguments(BaseModel):
     """不带参数的工具请求。"""
 

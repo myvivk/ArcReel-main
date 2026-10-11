@@ -269,6 +269,7 @@ MESSAGES = {
     "ad_script_overwrite_required": "Tạo lại sẽ thay thế toàn bộ kịch bản chính thức của tập này. Hãy xem danh sách mất mát, đồng ý ghi đè rồi thử lại",
     "ad_script_task_active": "Tập này đang có tác vụ tạo kịch bản chưa hoàn tất. Hãy đợi tác vụ xong rồi gửi lại",
     "ad_script_refused": "Không thể gửi yêu cầu tạo kịch bản bằng AI: {reason}",
+    "short_drama_import_refused": "Nhập kịch bản short-drama-factory thất bại: {reason}",
     "script_plan_task_active": "Tập này đang có tác vụ lập kế hoạch kịch bản chưa hoàn tất. Hãy đợi tác vụ xong rồi gửi lại",
     "script_plan_refused": "Không thể gửi yêu cầu lập kế hoạch kịch bản: {reason}",
     "episode_planning_task_active": "Đang lập kế hoạch phân tập. Hãy đợi hoàn tất hoặc dừng lại rồi gửi lại",

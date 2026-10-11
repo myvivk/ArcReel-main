@@ -258,6 +258,7 @@ MESSAGES = {
     "ad_script_overwrite_required": "重新生成会整份替换本集已有的正式脚本。请核对丢失清单，确认覆盖后重试",
     "ad_script_task_active": "本集已有进行中的脚本生成任务，请等待完成后再提交",
     "ad_script_refused": "AI 生成脚本未能提交：{reason}",
+    "short_drama_import_refused": "短剧工厂剧本导入失败：{reason}",
     "script_plan_task_active": "本集已有进行中的脚本规划任务，请等待完成后再提交",
     "script_plan_refused": "脚本规划未能提交：{reason}",
     "episode_planning_task_active": "分集规划正在进行，请等待完成或停止后再提交",

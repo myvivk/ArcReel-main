@@ -158,6 +158,8 @@ export default {
   'next_detail_wait_for_episode_planning': 'AI is planning episodes section by section. The status updates when it finishes.',
   'act_view_planning_progress': 'View planning progress',
   'agent_prefill_generate_script': 'Generate the script of {{episodeRef}} from the brief and products',
+  'agent_prefill_generate_visuals': 'Fill the visual layer (image_prompt / video_prompt) of {{episodeRef}}',
+  'agent_prefill_visuals_fill_only': 'Fill gaps only, keep existing prompts, do not rewrite explicitly. The story and structure are already in this episode script; only add the visual prompts, do not change the dialogue or shots.',
   'agent_prefill_add_script_items_storyboard': 'Add shots to the final script of {{episodeRef}}',
   'agent_prefill_add_script_items_unit': 'Add video units to the final script of {{episodeRef}}',
   'agent_prefill_repair_video_units': 'Revise video units {{ids}} of {{episodeRef}} so that videos can be generated',

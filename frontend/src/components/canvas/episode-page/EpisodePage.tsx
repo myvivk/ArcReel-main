@@ -9,6 +9,9 @@ import { EditTimelineEmptyState } from "@/components/canvas/edit-render/EditTime
 import { RenderButton } from "@/components/canvas/edit-render/RenderButton";
 import { EpisodeSourceReview } from "@/components/canvas/EpisodeSourceReview";
 import { AdScriptHost } from "@/components/canvas/shared/AdScriptDialog";
+import { ShortDramaImportHost } from "@/components/canvas/shared/ShortDramaImportDialog";
+import { ShortDramaGenerateHost } from "@/components/canvas/shared/ShortDramaGenerateDialog";
+import { ShortDramaVisualHost } from "@/components/canvas/shared/ShortDramaVisualDialog";
 import { PromptAuthoringHost } from "@/components/canvas/shared/PromptAuthoringDialog";
 import { ScriptPlanHost } from "@/components/canvas/shared/ScriptPlanDialog";
 import { TextTaskFailureNote } from "@/components/canvas/shared/TextTaskFailureNote";
@@ -252,6 +255,9 @@ function EpisodePageContent({
               savedInstructions={meta?.script_plan_instructions}
             />
             {isAd && <AdScriptHost projectName={projectName} episode={episode} />}
+            <ShortDramaImportHost projectName={projectName} episode={episode} />
+            <ShortDramaGenerateHost projectName={projectName} episode={episode} />
+            <ShortDramaVisualHost projectName={projectName} episode={episode} />
             <PromptAuthoringHost
               projectName={projectName}
               episode={episode}

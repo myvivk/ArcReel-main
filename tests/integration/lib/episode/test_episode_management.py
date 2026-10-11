@@ -8,9 +8,13 @@ from pathlib import Path
 import pytest
 
 from lib.episode.episode_deletion import (
+    EpisodeBatchDeletionConfirmationRequired,
+    EpisodeBatchDeletionResult,
     EpisodeDeletionConfirmationRequired,
     EpisodeDeletionResult,
     delete_episode,
+    delete_episodes,
+    render_episode_batch_deletion_text,
     render_episode_deletion_text,
 )
 from lib.episode.episode_layout import build_episode_layout
@@ -343,6 +347,68 @@ class TestDelete:
             delete_episode(_pm(project_dir), "demo", 1)
 
         assert exc.value.code == "ad_episode_locked"
+
+
+class TestBatchDelete:
+    def test_batch_delete_two_cut_episodes_in_one_confirmation(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2), _cut(2, CH2, CH3), _cut(3, CH3, len(A))])
+
+        preview = delete_episodes(_pm(project_dir), "demo", [1, 2])
+        assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
+        assert preview.episodes == [1, 2]
+        result = delete_episodes(_pm(project_dir), "demo", [1, 2], revision=preview.revision)
+
+        assert isinstance(result, EpisodeBatchDeletionResult)
+        assert _order(project_dir) == [3]
+        assert not (project_dir / "source" / "episode_1.txt").exists()
+        assert not (project_dir / "source" / "episode_2.txt").exists()
+        assert (project_dir / "source" / "episode_3.txt").exists()
+
+    def test_batch_delete_is_all_or_nothing_in_one_lock(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_own(1), _own(2), _own(3)])
+
+        preview = delete_episodes(_pm(project_dir), "demo", [1, 2, 3])
+        assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
+        result = delete_episodes(_pm(project_dir), "demo", [1, 2, 3], revision=preview.revision)
+
+        assert isinstance(result, EpisodeBatchDeletionResult)
+        assert _order(project_dir) == []
+
+    def test_a_stale_batch_confirmation_writes_nothing(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_own(1), _own(2)])
+        preview = delete_episodes(_pm(project_dir), "demo", [1, 2])
+        assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
+        before = _load(project_dir)
+        _give_script(project_dir, 2, storyboards=1)
+
+        again = delete_episodes(_pm(project_dir), "demo", [1, 2], revision=preview.revision)
+
+        assert isinstance(again, EpisodeBatchDeletionConfirmationRequired)
+        assert again.impacts[1].storyboard_count == 1
+        assert _load(project_dir) == before
+        assert (project_dir / "scripts" / "episode_2.json").exists()
+
+    def test_batch_text_aggregates_losses(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_own(1), _own(2)])
+        _give_script(project_dir, 1, storyboards=1)
+        _give_script(project_dir, 2, storyboards=1)
+
+        preview = delete_episodes(_pm(project_dir), "demo", [1, 2])
+        assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
+        project = _load(project_dir)
+        text = render_episode_batch_deletion_text(preview.impacts, project, i18n_message)
+
+        assert text.startswith("将删除 2 集：")
+        assert "集原文（2 集" in text
+        assert "分镜图 2 张" in text
+
+    def test_dedupes_and_sorts_the_requested_episodes(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_own(1), _own(2), _own(3)])
+
+        preview = delete_episodes(_pm(project_dir), "demo", [3, 1, 1, 2])
+
+        assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
+        assert preview.episodes == [1, 2, 3]
 
 
 def test_drama_episode_created_with_source_text_records_its_source_kind(tmp_path: Path):

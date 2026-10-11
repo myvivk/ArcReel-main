@@ -109,3 +109,50 @@ def test_delete_is_refused_while_the_episode_has_active_tasks(tmp_path, monkeypa
     assert refused.json()["detail"] == zh_errors.MESSAGES["episode_manage_tasks_active"]
     assert _order(pm) == [1, 2]
     assert other.json()["status"] == "confirmation_required"
+
+
+def test_batch_delete_returns_the_loss_text_first_then_deletes_with_its_revision(tmp_path, monkeypatch):
+    client, pm = _client(monkeypatch, tmp_path, [_cut(1, 0, 5), _cut(2, 5, 10), _cut(3, 10, len(NOVEL))])
+
+    with client:
+        preview = client.post(
+            "/api/v1/projects/demo/episodes/delete-batch", json={"episodes": [3, 1]}
+        )
+        body = preview.json()
+        deleted = client.post(
+            "/api/v1/projects/demo/episodes/delete-batch",
+            json={"episodes": [3, 1], "revision": body["batch"]["revision"]},
+        )
+
+    assert body["status"] == "confirmation_required"
+    assert body["batch"]["episodes"] == [1, 3]
+    assert body["batch"]["recoverable"] is True
+    assert body["batch"]["text"].startswith("将删除 2 集：")
+    assert _order(pm) == [2]
+    assert deleted.json()["status"] == "deleted"
+    assert deleted.json()["episodes"] == [1, 3]
+
+
+def test_batch_delete_rejects_an_unknown_episode(tmp_path, monkeypatch):
+    client, _pm = _client(monkeypatch, tmp_path, [_cut(1, 0, 5)])
+
+    with client:
+        resp = client.post("/api/v1/projects/demo/episodes/delete-batch", json={"episodes": [9]})
+
+    assert resp.status_code == 404
+
+
+def test_batch_delete_is_refused_while_any_episode_has_active_tasks(tmp_path, monkeypatch, active_episode_tasks):
+    client, pm = _client(monkeypatch, tmp_path, [_cut(1, 0, 5), _cut(2, 5, 10)])
+
+    active_episode_tasks["running"] = [{"resource_id": "E2S01", "script_file": None, "payload": {}}]
+
+    with client:
+        refused = client.post(
+            "/api/v1/projects/demo/episodes/delete-batch",
+            json={"episodes": [1, 2], "revision": "anything"},
+        )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == zh_errors.MESSAGES["episode_manage_tasks_active"]
+    assert _order(pm) == [1, 2]

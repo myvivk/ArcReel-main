@@ -288,3 +288,15 @@ export interface EpisodeDeletionImpact {
 export type EpisodeDeletionResponse =
   | { status: "deleted"; impact: EpisodeDeletionImpact }
   | { status: "confirmation_required"; impact: EpisodeDeletionImpact & { text: string } };
+
+/** 批量删除等待确认时的服务端清单。 */
+export interface EpisodeBatchDeletionPreview {
+  episodes: number[];
+  revision: string;
+  recoverable: boolean;
+  text: string;
+}
+
+export type EpisodeBatchDeletionResponse =
+  | { status: "deleted"; episodes: number[] }
+  | { status: "confirmation_required"; batch: EpisodeBatchDeletionPreview };

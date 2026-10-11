@@ -45,6 +45,8 @@ jobs:
           name: frontend-dist
           path: frontend/dist
           if-no-files-found: error
+          # 防御：v4.4.0+ 默认剔除隐藏文件，dist 若含点文件（如 .vite、.env 产物）会被漏掉
+          include-hidden-files: true
 
   # ----------------------------------------------------------
   # Step 2: 拉取代码，打包为 artifact 供下游使用（排除 .git 和 node_modules）
@@ -91,6 +93,9 @@ jobs:
         with:
           name: build-context
           path: build-context
+          # v4.4.0+ 默认剔除隐藏文件（.claude/.dockerignore 等），必须显式打开，
+          # 否则 agent_runtime_profile/.claude 进不了构建上下文，镜像缺内置技能
+          include-hidden-files: true
 
   # ----------------------------------------------------------
   # Step 4: 计算镜像标签 / 元数据，作为 outputs 传给 build-push

@@ -461,6 +461,7 @@ MESSAGES = {
     "api_key_name_exists": "Name '{name}' already exists",
     "api_key_not_found": "API Key {key_id} not found",
     # Agent Chat
+    "agent_skills_not_ready": "Project built-in skills are not ready; generation stopped. Missing skills: {missing_skills}. Reason: {reason}. Ensure the image ships agent_runtime_profile/.claude and restart the service to re-materialize skills.",
     "session_project_mismatch": "Session '{session_id}' belongs to project '{session_project}', which does not match the requested project '{request_project}'",
     # Cost Estimation
     "cost_estimation_failed": "Cost estimation failed, please try again later",
@@ -798,4 +799,12 @@ MESSAGES = {
     "episode_delete_cut_tail": "After deletion, its text becomes unsplit source again, and continued planning starts from an earlier point.",
     "episode_delete_cut_gap_first": "After deletion, its text becomes unsplit source before “{after}”. Planning to the end does not fill this gap; you can plan this unsplit source in the Episodes view.",
     "episode_delete_cut_gap_between": "After deletion, its text becomes unsplit source between “{before}” and “{after}”. Planning to the end does not fill this gap; you can plan this unsplit source in the Episodes view.",
+    "episode_delete_batch_header": "Deleting {count} episodes: {names}",
+    "episode_delete_batch_names_more": "{names} and {count} more",
+    "episode_delete_batch_loss": "{count} of them cannot be recovered; the following are removed together:",
+    "episode_delete_batch_loss_source_chars": "episode source ({count} episodes, {total} chars)",
+    "episode_delete_batch_loss_source_words": "episode source ({count} episodes, {total} words)",
+    "episode_delete_batch_loss_script": "{count} formal scripts",
+    "episode_delete_batch_loss_script_plan": "{count} script plans and drafts",
+    "episode_delete_batch_cut_warning": "Deleting a cut episode turns its text back into unsplit source; you can re-plan it in the Episodes view.",
 }

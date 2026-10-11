@@ -302,7 +302,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       max={100}
                       className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
                       value={count}
-                      onChange={(event) => setCount(Math.max(1, Number(event.target.value) || 1))}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        // 硬钳制到 1~100：HTML min/max 只管步进按钮，键入必须在这里拦
+                        setCount(Math.min(100, Math.max(1, Number.isFinite(next) ? Math.floor(next) : 1)));
+                      }}
                     />
                   </div>
                 </>
@@ -347,10 +351,14 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
             )}
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
+                <span className="text-xs tabular-nums text-muted-foreground">{brief.length}/1000</span>
+              </div>
               <Textarea
                 id={`${fieldId}-brief`}
                 value={brief}
+                maxLength={1000}
                 onChange={(event) => setBrief(event.target.value)}
                 placeholder={t("short_drama_generate_brief_placeholder")}
                 className="min-h-28"

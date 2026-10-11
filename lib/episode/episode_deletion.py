@@ -138,10 +138,38 @@ class EpisodeDeletionResult:
     impact: EpisodeDeletionImpact
 
 
+@dataclass(frozen=True)
+class EpisodeBatchDeletionConfirmationRequired:
+    """批量删除等待确认；返回本对象时没有发生任何写入。
+
+    ``revision`` 是全部集丢失清单指纹的合成指纹；确认时回传。
+    """
+
+    episodes: list[int]
+    impacts: list[EpisodeDeletionImpact]
+
+    @property
+    def revision(self) -> str:
+        return batch_deletion_revision(self.impacts)
+
+    @property
+    def recoverable(self) -> bool:
+        return all(impact.recoverable for impact in self.impacts)
+
+
+@dataclass(frozen=True)
+class EpisodeBatchDeletionResult:
+    episodes: list[int]
+
+
 class _StaleConfirmation(Exception):
-    def __init__(self, impact: EpisodeDeletionImpact):
+    def __init__(self, impacts: list[EpisodeDeletionImpact]):
         super().__init__("episode deletion needs confirmation")
-        self.impact = impact
+        self.impacts = impacts
+
+    @property
+    def impact(self) -> EpisodeDeletionImpact:
+        return self.impacts[0]
 
 
 def _ledger_entry(project: Mapping[str, Any], episode: int) -> Mapping[str, Any]:
@@ -263,7 +291,7 @@ def delete_episode(
     def _mutate(p: dict[str, Any]) -> None:
         locked_impact = episode_deletion_impact(project_dir, p, episode)
         if locked_impact.revision != revision:
-            raise _StaleConfirmation(locked_impact)
+            raise _StaleConfirmation([locked_impact])
         entries = p.get("episodes")
         p["episodes"] = [
             entry
@@ -299,6 +327,83 @@ def delete_episode(
     result_impact: EpisodeDeletionImpact = committed["impact"]
     logger.info("已删除集：项目 %s，集 ID %s，%s", project_name, episode, result_impact.to_dict())
     return EpisodeDeletionResult(impact=result_impact)
+
+
+def batch_deletion_revision(impacts: list[EpisodeDeletionImpact]) -> str:
+    """批量删除的确认指纹：全部集丢失清单指纹按清单顺序的合成。"""
+    payload = json.dumps([impact.revision for impact in impacts], ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def delete_episodes(
+    pm: ProjectManager, project_name: str, episodes: list[int], *, revision: str | None = None
+) -> EpisodeBatchDeletionResult | EpisodeBatchDeletionConfirmationRequired:
+    """批量删除多集，同一把项目锁内一次性提交：要么全部删除，要么都不删。
+
+    确认流程与删除一集相同：``revision`` 缺省或与当前全部清单的合成指纹不符时只返回清单，不写入。
+    逐集调用单集删除做不到这一点——删掉相邻的切出集会改变余下集的丢失清单，确认会一再失效。
+    """
+    wanted = sorted(dict.fromkeys(parse_positive_episode_num(episode) for episode in episodes))
+    if not wanted:
+        raise EpisodeManagementError("episode_not_found", "没有要删除的集")
+    project_dir = pm.get_project_path(project_name)
+    project = pm.load_project(project_name)
+    if project.get("content_mode") == "ad":
+        raise EpisodeManagementError("ad_episode_locked", "广告/短片项目只有一集，不能新建或删除集")
+    impacts = [episode_deletion_impact(project_dir, project, episode) for episode in wanted]
+    if revision is None or revision != batch_deletion_revision(impacts):
+        return EpisodeBatchDeletionConfirmationRequired(episodes=wanted, impacts=impacts)
+
+    wanted_set = set(wanted)
+    formal_paths: list[Path] = []
+    for episode in wanted:
+        formal_paths.extend(discover_episode_file_aliases(project_dir).get(episode, []))
+        formal_paths.append(episode_source_path(project_dir, episode))
+        script_path = _script_path(project_dir, project, episode)
+        if script_path is not None:
+            formal_paths.append(script_path)
+    formal_paths.extend(source_snapshot_path(project_dir, rel) for rel in whole_source_files(project))
+    committed: dict[str, Any] = {}
+
+    def _mutate(p: dict[str, Any]) -> None:
+        locked = [episode_deletion_impact(project_dir, p, episode) for episode in wanted]
+        if batch_deletion_revision(locked) != revision:
+            raise _StaleConfirmation(locked)
+        entries = p.get("episodes")
+        p["episodes"] = [
+            entry
+            for entry in (entries if isinstance(entries, list) else [])
+            if not (
+                isinstance(entry, Mapping) and parse_positive_episode_num(entry.get("episode")) in wanted_set
+            )
+        ]
+        try:
+            snapshot = ProjectArtifactManifestAdapter(project_dir).snapshot_entries()
+        except ArtifactManifestError:
+            # 清单读不出时不可能有这些集的有效登记，删除照常进行
+            snapshot = {}
+        committed["expected"] = {key: entry for key, entry in snapshot.items() if key.episode_number in wanted_set}
+        committed["project"] = p
+        committed["episodes"] = wanted
+
+    def _on_commit(_project_file: Path) -> None:
+        from lib.artifacts.artifact_activation import register_artifact_entries_atomically
+
+        for path in dict.fromkeys(formal_paths):
+            path.unlink(missing_ok=True)
+        sync_source_snapshots(project_dir, committed["project"], {})
+        expected: dict[ArtifactKey, ArtifactManifestEntry | None] = committed["expected"]
+        if expected:
+            register_artifact_entries_atomically(project_dir, dict.fromkeys(expected), expected_entries=expected)
+
+    try:
+        pm.update_project(project_name, _mutate, on_commit=_on_commit, formal_paths=list(dict.fromkeys(formal_paths)))
+    except _StaleConfirmation as exc:
+        return EpisodeBatchDeletionConfirmationRequired(episodes=wanted, impacts=exc.impacts)
+    for episode in wanted:
+        _purge_episode_products(project_dir, episode)
+    logger.info("已批量删除集：项目 %s，集 ID %s", project_name, wanted)
+    return EpisodeBatchDeletionResult(episodes=wanted)
 
 
 def _remove_tree(path: Path) -> None:
@@ -430,12 +535,67 @@ def render_episode_deletion_text(
     return "\n".join(lines) if not data["recoverable"] else "".join(lines)
 
 
+#: 批量确认文本里最多逐个点名的集数，其余以「等 N 集」收尾。
+_BATCH_NAME_LIMIT = 8
+
+
+def render_episode_batch_deletion_text(
+    impacts: list[EpisodeDeletionImpact] | list[Mapping[str, Any]],
+    project: Mapping[str, Any],
+    translate: Callable[..., str],
+) -> str:
+    """把批量删除的丢失清单渲染成确认文本：逐个点名（超出的汇总），损失按类合并计数。"""
+    data = [
+        impact.to_dict() if isinstance(impact, EpisodeDeletionImpact) else dict(impact)
+        for impact in impacts
+    ]
+    separator = translate("episode_delete_separator")
+
+    def name(episode: int) -> str:
+        return episode_display_name(project, episode, translate)
+
+    shown = [name(int(item["episode"])) for item in data[:_BATCH_NAME_LIMIT]]
+    rest = len(data) - len(shown)
+    if rest > 0:
+        names = translate("episode_delete_batch_names_more", names=separator.join(shown), count=rest)
+    else:
+        names = separator.join(shown)
+    lines = [translate("episode_delete_batch_header", count=len(data), names=names)]
+
+    losses = [item for item in data if not item["recoverable"]]
+    if losses:
+        lines.append(translate("episode_delete_batch_loss", count=len(losses)))
+        items: list[str] = []
+        own = [item for item in losses if item["origin"] == SourceOrigin.OWN.value]
+        if own:
+            unit = "words" if reading_unit_noun(_language(project)) == "词" else "chars"
+            total = sum(int(item["source_units"] or 0) for item in own)
+            items.append(translate(f"episode_delete_batch_loss_source_{unit}", count=len(own), total=total))
+        if scripts := sum(1 for item in losses if item["has_script"]):
+            items.append(translate("episode_delete_batch_loss_script", count=scripts))
+        if plans := sum(1 for item in losses if item["has_script_plan"]):
+            items.append(translate("episode_delete_batch_loss_script_plan", count=plans))
+        for field, key in _LOSS_COUNTS:
+            if count := sum(int(item[field] or 0) for item in losses):
+                items.append(translate(key, count=count))
+        lines.append(separator.join(items))
+        lines.append(translate("episode_delete_history"))
+    if any(item["origin"] == SourceOrigin.WHOLE_SOURCE.value and item["placed"] for item in data):
+        lines.append(translate("episode_delete_batch_cut_warning"))
+    return "\n".join(lines)
+
+
 __all__ = [
+    "EpisodeBatchDeletionConfirmationRequired",
+    "EpisodeBatchDeletionResult",
     "EpisodeDeletionConfirmationRequired",
     "EpisodeDeletionImpact",
     "EpisodeDeletionResult",
+    "batch_deletion_revision",
     "delete_episode",
+    "delete_episodes",
     "episode_deletion_impact",
+    "render_episode_batch_deletion_text",
     "render_episode_deletion_text",
     "render_episode_loss_items",
 ]

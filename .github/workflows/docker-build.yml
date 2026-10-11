@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ master ]
-  pull_request:
-    branches: [ master ]
 
 # 默认权限收紧；只有真正推送的 job 临时需要 registry 写权限
 permissions:

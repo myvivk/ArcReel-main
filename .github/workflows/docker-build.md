@@ -68,8 +68,8 @@ flowchart TD
 | Job | 作用 | 触发条件 |
 |-----|------|----------|
 | `frontend` | 构建前端，上传 `frontend-dist` | 总是 |
-| `checkout` | 上传 `repo` 源码 artifact | 总是 |
-| `download` | 合并 repo + 前端产物为 `build-context` | needs: frontend, checkout |
+| `checkout` | 打包源码为 `repo.tar.gz`（排除 `.git` / `node_modules`），上传 `repo` artifact | 总是 |
+| `download` | 解压 repo + 合并前端产物为 `build-context` artifact | needs: frontend, checkout |
 | `buildx` | 设置 Buildx（图形节点；最终 build-push 会再设一次） | 总是 |
 | `login` | 登录 Docker Hub（仅图形节点；最终 build-push 会再登录） | **仅 push 到 master** |
 | `metadata` | 计算镜像标签/元数据，通过 `outputs` 传出 | 总是 |

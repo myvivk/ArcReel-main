@@ -392,6 +392,16 @@ export function ProjectStatusBar({ projectName }: { projectName: string }) {
   const done = summary.episodes_summary.completed;
   const staleEpisodes = episodes.filter(episodeNeedsUpdate).length;
   const isAd = project.content_mode === "ad";
+  // 剧情演绎空项目：欢迎页的「AI 原创剧本」是主行动、上传是次要链接，
+  // 顶栏的「下一步·上传原文」会与之抢主 CTA，这里让位隐藏（后续阶段照常出现）。
+  const emptyDramaWelcome =
+    !isAd &&
+    project.content_mode === "drama" &&
+    total === 0 &&
+    (project.whole_source_files?.length ?? 0) === 0 &&
+    !Boolean(
+      project.overview?.synopsis || project.overview?.genre || project.overview?.theme || project.overview?.world_setting,
+    );
   const progressText =
     total === 0
       ? t("guide_no_episodes")
@@ -427,7 +437,7 @@ export function ProjectStatusBar({ projectName }: { projectName: string }) {
           <EpisodeList projectName={projectName} episodes={episodes} current={currentEpisode} onNavigate={navigate} />
         </PopoverContent>
       </Popover>
-      {guide && !yieldToPanel && (
+      {guide && !yieldToPanel && !emptyDramaWelcome && (
         <>
           <Divider />
           <Popover open={open === "next"} onOpenChange={openChange("next")}>

@@ -1,59 +1,60 @@
-import { useState } from "react";
-import { Upload } from "lucide-react";
+import { Loader2, Sparkles, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { cn } from "cn";
+import { Button } from "@/components/ui/button";
 
 import { getProjectDisplayName } from "@/utils/project-display";
-import { SOURCE_FILE_FORMATS_LABEL } from "@/utils/source-files";
 
 /**
- * 空项目欢迎页：标题、一句说明、拖放区与「从空白开始」的指引。
- * 拖入或点击都把文件交给概览打开「分集」的上传对话框，上传后概览就地读取原文。
+ * 空项目欢迎页（Hero 布局）：标题 + 一句话引导，主行动「AI 原创剧本」居中与次要入口「上传原文」。
+ * 不强制用户先建集——原创剧本在提交时由前端透明建好目标集再导入，用户全程无感。
  */
 export function WelcomeCanvas({
   projectTitle,
   onSelectFiles,
+  onOriginalScript,
+  originalScriptBusy = false,
 }: {
   projectTitle: string | undefined;
-  /** 打开上传对话框；拖入的文件预先放进对话框，点击时为空数组。 */
+  /** 打开上传对话框；点击「上传原文」时为空数组，由对话框提供拖放与选择。 */
   onSelectFiles: (files: File[]) => void;
+  /** 剧情演绎项目：从空白项目直接开启「AI 原创剧本」创建模式（提交时透明建集）。 */
+  onOriginalScript?: () => void;
+  /** 提交（建集）期间禁用按钮并显示加载态。 */
+  originalScriptBusy?: boolean;
 }) {
   const { t } = useTranslation("dashboard");
-  const [dragging, setDragging] = useState(false);
 
   return (
-    <div className="flex max-w-140 flex-col gap-6 pt-8">
-      <header className="flex flex-col gap-2">
+    <div className="mx-auto flex max-w-140 flex-col items-center gap-8 pt-20 text-center">
+      <header className="flex flex-col items-center gap-2">
         <h1 className="display-serif text-2xl font-semibold tracking-tight break-words text-foreground">
           {t("welcome_title", { title: getProjectDisplayName(projectTitle, t("untitled_project")) })}
         </h1>
         <p className="text-sm leading-relaxed text-subtle-foreground">{t("welcome_desc")}</p>
       </header>
+
+      {onOriginalScript && (
+        <div className="flex flex-col items-center gap-3">
+          <Button size="lg" onClick={onOriginalScript} disabled={originalScriptBusy}>
+            {originalScriptBusy ? (
+              <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+            ) : (
+              <Sparkles aria-hidden data-icon="inline-start" />
+            )}
+            {t("short_drama_generate_open")}
+          </Button>
+          <p className="max-w-md text-xs leading-relaxed text-muted-foreground">{t("welcome_original_hint")}</p>
+        </div>
+      )}
+
       <button
         type="button"
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          onSelectFiles(Array.from(event.dataTransfer.files));
-        }}
         onClick={() => onSelectFiles([])}
-        className={cn(
-          "focus-ring flex w-full flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-12 text-center transition-colors duration-fast",
-          dragging ? "border-primary bg-primary/10" : "border-input hover:border-primary/50 hover:bg-primary/5",
-        )}
+        className="focus-ring inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-fast hover:text-foreground"
       >
-        <Upload aria-hidden className="size-6 text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">{t("welcome_drop")}</span>
-        <span className="num text-xs text-muted-foreground">
-          {t("welcome_formats", { formats: SOURCE_FILE_FORMATS_LABEL })}
-        </span>
+        <Upload aria-hidden className="size-4" />
+        {t("welcome_upload_link")}
       </button>
-      <p className="text-sm text-muted-foreground">{t("welcome_blank_hint")}</p>
     </div>
   );
 }

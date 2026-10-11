@@ -2248,6 +2248,7 @@ export default {
   'short_drama_generate_brief_placeholder': '一句话核心设定与主线冲突，越具体越好',
   'short_drama_generate_tone_label': '风格基调（可选）',
   'short_drama_generate_tone_placeholder': '如：冷冽压迫、甜宠轻喜',
+  'short_drama_tone_options': '冷冽压迫,甜宠轻喜,热血逆袭,悬疑紧张,市井烟火,虐心催泪,轻松解压,高甜撒糖,权谋厚重,黑色幽默',
   'short_drama_generate_count_label': '连写集数',
   'short_drama_generate_count_hint': '大于 1 时按简报连写多集并逐集导入',
   'short_drama_generate_create_hint': '生成时将自动创建新集（无需先手动建集）',

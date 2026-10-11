@@ -1028,11 +1028,44 @@ class ImportShortDramaScriptRequest(BaseModel):
     markdown: str = Field(
         description=(
             "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
-            "动作行与神态进 scene_description，台词进 utterances，单集超过 60 秒按节拍切分为多幕，"
+            "动作行与神态进 scene_description，台词进 utterances，单集按所选视频模型的时长档位切分为多幕"
+            "（每幕不超过最大档位，档位未知时 60 秒），"
             "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
             "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
         )
     )
+
+
+def _duration_shortfall(parsed: Any, script: dict) -> dict[str, Any]:
+    """本集声明时长与落盘实得时长对不上时的回执字段；对得上时返回空 dict。
+
+    剧本只给整集总时长，切幕又受「每幕 ≤ 最大档位」约束：拍数不足以撑起所需幕数时
+    （Markdown 残缺或【本集时长】写错），实得时长会缩水。静默缩水会让后续流程拿到一份
+    悄悄变短的剧本，故如实回执，由 Agent/用户去补剧本行或修正时长。
+    """
+    declared = int(getattr(parsed, "total_duration", 0) or 0)
+    actual = sum(int(scene.get("duration_seconds") or 0) for scene in script.get("scenes", []))
+    if not declared or actual == declared:
+        return {}
+    return {
+        "declared_seconds": declared,
+        "actual_seconds": actual,
+        "duration_shortfall": actual < declared,
+    }
+
+
+async def _short_drama_split_durations(project: dict, services: Services) -> list[int] | None:
+    """短剧导入切幕用的合法时长档位：所选视频模型的 ``supported_durations``。
+
+    能力解析失败（未选模型/自定义端点读不出等）返回 None，调用方退回 60 秒静态上限，
+    不因能力读不出而拦下导入。
+    """
+    try:
+        capabilities = await services.capabilities.video_capabilities_for_project(project)
+    except Exception:
+        return None
+    durations = capabilities.get("supported_durations")
+    return durations if isinstance(durations, list) and durations else None
 
 
 async def import_short_drama_script(
@@ -1061,7 +1094,10 @@ async def import_short_drama_script(
         )
     try:
         parsed = parse_short_drama_episode(request.value.markdown)
-        script = convert_to_drama_script(parsed, request.value.episode_id)
+        durations = await _short_drama_split_durations(project, services)
+        script = convert_to_drama_script(
+            parsed, request.value.episode_id, supported_durations=durations
+        )
         core = {k: v for k, v in script.items() if k != "short_drama_meta"}
         DramaEpisodeScript.model_validate(core)  # 映射正确性自检
     except Exception as exc:
@@ -1075,7 +1111,13 @@ async def import_short_drama_script(
         )
     except Exception as exc:
         return ToolOutcome(problem=ToolProblem("short_drama_save_failed", f"剧本落盘失败: {exc}"))
-    return ToolOutcome(value={"episode": request.value.episode_id, "scenes": len(script["scenes"])})
+    return ToolOutcome(
+        value={
+            "episode": request.value.episode_id,
+            "scenes": len(script["scenes"]),
+            **_duration_shortfall(parsed, script),
+        }
+    )
 
 
 class ImportShortDramaEpisodeItem(BaseModel):
@@ -1121,11 +1163,15 @@ async def import_short_drama_series(
         return ToolOutcome(
             problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
         )
+    # 档位整批解析一次：各集同一项目同一模型，没必要每集各查一遍。
+    split_durations = await _short_drama_split_durations(project, services)
 
     async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
         try:
             parsed = parse_short_drama_episode(item.markdown)
-            script = convert_to_drama_script(parsed, item.episode_id)
+            script = convert_to_drama_script(
+                parsed, item.episode_id, supported_durations=split_durations
+            )
             core = {k: v for k, v in script.items() if k != "short_drama_meta"}
             DramaEpisodeScript.model_validate(core)
             await asyncio.to_thread(
@@ -1134,7 +1180,12 @@ async def import_short_drama_series(
                 script,
                 episode_script_filename(item.episode_id),
             )
-            return {"episode": item.episode_id, "scenes": len(script["scenes"]), "ok": True}
+            return {
+                "episode": item.episode_id,
+                "scenes": len(script["scenes"]),
+                "ok": True,
+                **_duration_shortfall(parsed, script),
+            }
         except Exception as exc:
             return {"episode": item.episode_id, "ok": False, "error": str(exc)}
 

@@ -129,7 +129,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: arcreel/arcreel
+          images: 15200944233/arcreel
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short

@@ -16,7 +16,7 @@ services:
       retries: 5
 
   arcreel:
-    image: arcreel/arcreel:latest
+    image: 15200944233/arcreel:latest
     ports:
       - "1241:1241"
     # 端口发布到宿主机所有网卡：远程部署不得在 .env 中设置 AUTH_ENABLED=false。

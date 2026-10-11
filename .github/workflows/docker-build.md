@@ -36,7 +36,7 @@ flowchart TD
 
     JL -. "push=false (PR)" .-> Skip["跳过登录"]
     JP -. "push=false (PR)" .-> N["仅构建，不推送 ✓"]
-    JP -. "push=true (合并到 master)" .-> P["推送镜像至 Docker Hub<br/>arcreel/arcreel:latest<br/>arcreel/arcreel:sha-xxxxxxx"]
+    JP -. "push=true (合并到 master)" .-> P["推送镜像至 Docker Hub<br/>15200944233/arcreel:latest<br/>15200944233/arcreel:sha-xxxxxxx"]
 
     style JF fill:#1f6feb,color:#fff
     style JC fill:#1f6feb,color:#fff

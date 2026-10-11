@@ -1,6 +1,6 @@
 services:
   arcreel:
-    image: arcreel/arcreel:latest
+    image: 15200944233/arcreel:latest
     # build: ../  # 本地构建时取消注释，注释掉 image 行
     ports:
       - "1241:1241"

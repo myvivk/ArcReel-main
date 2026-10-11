@@ -269,6 +269,7 @@ MESSAGES = {
     "ad_script_overwrite_required": "Regenerating replaces the formal script of this episode entirely. Review the loss list, acknowledge the overwrite and retry",
     "ad_script_task_active": "A script generation task for this episode is already running. Wait for it to finish before submitting again",
     "ad_script_refused": "AI script generation could not be submitted: {reason}",
+    "short_drama_import_refused": "Short-drama-factory script import failed: {reason}",
     "script_plan_task_active": "A script-planning task for this episode is already running. Wait for it to finish before submitting again",
     "script_plan_refused": "Script planning could not be submitted: {reason}",
     "episode_planning_task_active": "Episode planning is in progress. Wait for it to finish or stop it before submitting again",

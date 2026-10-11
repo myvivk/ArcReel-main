@@ -160,6 +160,8 @@ export default {
   'next_detail_wait_for_episode_planning': 'AI đang lập kế hoạch tập theo từng đoạn, trạng thái sẽ tự cập nhật khi xong.',
   'act_view_planning_progress': 'Xem tiến độ lập kế hoạch',
   'agent_prefill_generate_script': 'Tạo kịch bản cho {{episodeRef}} theo ý tưởng và sản phẩm',
+  'agent_prefill_generate_visuals': 'Điền lớp hình ảnh (image_prompt / video_prompt) cho {{episodeRef}}',
+  'agent_prefill_visuals_fill_only': 'Chỉ điền chỗ trống, giữ nguyên prompt hiện có, không ghi đè rõ ràng. Cốt truyện và cấu trúc đã có trong kịch bản tập này; chỉ thêm prompt hình ảnh, không đổi thoại hay phân cảnh.',
   'agent_prefill_add_script_items_storyboard': 'Thêm phân cảnh vào kịch bản chính thức của {{episodeRef}}',
   'agent_prefill_add_script_items_unit': 'Thêm đơn vị video vào kịch bản chính thức của {{episodeRef}}',
   'agent_prefill_repair_video_units': 'Sửa các đơn vị video {{ids}} của {{episodeRef}} để có thể tạo video',

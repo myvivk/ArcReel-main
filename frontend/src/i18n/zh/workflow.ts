@@ -160,6 +160,8 @@ export default {
   'next_detail_wait_for_episode_planning': 'AI 正在逐段规划分集，完成后状态会自动更新。',
   'act_view_planning_progress': '查看规划进度',
   'agent_prefill_generate_script': '按创作灵感与商品为{{episodeRef}}生成脚本',
+  'agent_prefill_generate_visuals': '为{{episodeRef}}补写视觉层（image_prompt / video_prompt）',
+  'agent_prefill_visuals_fill_only': '只补缺，保留已有提示词，不要显式重写；故事与结构已在本集剧本里，只补画面提示词，不要改动台词与分镜。',
   'agent_prefill_add_script_items_storyboard': '为{{episodeRef}}的正式脚本添加分镜',
   'agent_prefill_add_script_items_unit': '为{{episodeRef}}的正式脚本添加视频单元',
   'agent_prefill_repair_video_units': '修改{{episodeRef}}的视频单元 {{ids}}，使它们可以生成视频',

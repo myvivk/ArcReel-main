@@ -92,6 +92,7 @@ from server.routers import (
     scenes,
     script_plan,
     script_review,
+    short_drama,
     shot_uploads,
     storyboard_batches,
     system,
@@ -655,6 +656,12 @@ app.include_router(
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["内容确认"],
+)
+app.include_router(
+    short_drama.router,
+    prefix="/api/v1",
+    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
+    tags=["短剧工厂导入"],
 )
 app.include_router(
     episode_drafts.router,

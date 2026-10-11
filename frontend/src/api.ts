@@ -1439,6 +1439,34 @@ class API {
     );
   }
 
+  /** 导入一集短剧工厂剧本：Markdown → 正式剧情演绎剧本并落盘，返回集号与场景数。 */
+  static async importShortDramaScript(
+    projectName: string,
+    episodeId: number,
+    markdown: string,
+  ): Promise<{ episode: number; scenes: number }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/short-drama/import`,
+      { method: "POST", body: JSON.stringify({ episode_id: episodeId, markdown }) },
+    );
+  }
+
+  /** 批量导入多集短剧工厂剧本：返回导入/失败计数与各集明细。 */
+  static async importShortDramaSeries(
+    projectName: string,
+    episodes: Array<{ episode_id: number; markdown: string }>,
+    continueOnError = true,
+  ): Promise<{
+    imported: number;
+    failed: number;
+    details: Array<{ episode: number; ok: boolean; scenes?: number; error?: string }>;
+  }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/short-drama/import-batch`,
+      { method: "POST", body: JSON.stringify({ episodes, continue_on_error: continueOnError }) },
+    );
+  }
+
   /** 只保存本集 AI 规划脚本的附加指令（「交给 Agent」路径），不提交生成。 */
   static async saveScriptPlanInstructions(
     projectName: string,

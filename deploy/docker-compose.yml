@@ -1,12 +1,27 @@
 services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: arcreel
+      POSTGRES_DB: arcreel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /opt/arcreel/pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arcreel -d arcreel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   arcreel:
     image: 15200944233/arcreel:latest
-    # build: ../  # 本地构建时取消注释，注释掉 image 行
     ports:
       - "1241:1241"
-    # 端口发布到宿主机所有网卡：远程部署不得在 .env 中设置 AUTH_ENABLED=false。
+    command: /app/.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 1241
     env_file: .env
     environment:
+      DATABASE_URL: postgresql+asyncpg://arcreel:${POSTGRES_PASSWORD}@postgres:5432/arcreel
       TZ: ${TZ:-Asia/Shanghai}
     # Agent Bash 沙箱 (bwrap) 需要：
     # 1) 非特权 user namespace → 放开 docker 默认 seccomp/apparmor profile
@@ -21,6 +36,9 @@ services:
       - ./.env:/app/.env
       - ./projects:/app/projects
       - ./claude_data:/root/.claude
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:1241/health"]

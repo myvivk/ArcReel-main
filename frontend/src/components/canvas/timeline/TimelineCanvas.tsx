@@ -302,15 +302,6 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
           />
         ) : episodeScript && contentMode === editorContentMode ? (
           <EmptyScriptState contentMode={editorContentMode} onInsert={handleInsertShot} />
-        ) : editorContentMode === "drama" && !hasScript ? (
-          // 剧情演绎项目还没有正式脚本：给出「AI 原创剧本」与「导入短剧工厂剧本」两个入口
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-            <p>{t("timeline_script_not_ready")}</p>
-            <div className="flex gap-2">
-              <ShortDramaGenerateButton projectName={projectName} episode={episode} prominent />
-              <ShortDramaImportButton projectName={projectName} episode={episode} />
-            </div>
-          </div>
         ) : (
           // 兜底：分镜视图下无可编辑分镜（未知 content_mode），
           // 或剧本回退后仍停留在分镜视图——给出指引而非空白

@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { SourceUploadDialog, type SourceUploadResult } from "@/components/canvas/episodes/SourceUploadDialog";
+import {
+  ShortDramaGenerateHost,
+} from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { useCostStore } from "@/stores/cost-store";
 import { useOverviewGenerateStore } from "@/stores/overview-generate-store";
+import { useShortDramaGenerateStore } from "@/stores/short-drama-generate-store";
 import type { ProjectData, ProjectOverview } from "@/types";
 
 import { AdBrief } from "./AdBrief";
@@ -62,6 +66,9 @@ export function OverviewCanvas({ projectName, projectData, readOnly = false }: O
     [runGenerate],
   );
 
+  // 剧情演绎空项目：直接开启「AI 原创剧本」创建模式（episode=0，提交时透明建集，用户无感）。
+  const isDrama = projectData?.content_mode === "drama";
+
   // 交接提示：本次会话内故事设定由空变为有内容时触发一次；只读态与广告项目不触发。
   // 上一次看到的状态按项目记在 store 里：切项目时不把上一个项目的状态当成这个项目的变化，
   // 离开概览期间后台生成填入的故事设定，回来时也算一次变化。
@@ -87,6 +94,11 @@ export function OverviewCanvas({ projectName, projectData, readOnly = false }: O
         <WelcomeCanvas
           projectTitle={projectData.title}
           onSelectFiles={(files) => setUpload({ projectName, files })}
+          onOriginalScript={
+            isDrama
+              ? () => useShortDramaGenerateStore.getState().open({ projectName, episode: 0 })
+              : undefined
+          }
         />
       ) : (
         <div className="flex w-full max-w-190 shrink-0 flex-col gap-6">
@@ -136,6 +148,8 @@ export function OverviewCanvas({ projectName, projectData, readOnly = false }: O
           onUploaded={handleUploaded}
         />
       ) : null}
+      {/* 空项目「AI 原创剧本」创建模式：episode=0 仅作标记，弹窗在提交时透明建集。 */}
+      <ShortDramaGenerateHost projectName={projectName} episode={0} />
     </div>
   );
 }

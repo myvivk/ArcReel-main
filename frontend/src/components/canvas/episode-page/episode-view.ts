@@ -8,17 +8,18 @@
  * | `grid` | 多宫格分镜图 | 分镜图生视频且开启宫格；集原文待确认时不可选 |
  * | `board` | 分镜（参考生视频项目称「视频单元」） | 恒有；有脚本规划却还没有正式剧本时不可选 |
  * | `edit` | 剪辑 | 有正式剧本的非演示项目 |
+ * | `source` | 集原文（就地查看与编辑，改后需重新规划脚本） | 非广告、非演示，且集原文确认不在进行中（那时脚本规划视图已承担） |
  *
  * 缺省视图：有正式剧本时是 `board`，否则有脚本规划时是 `plan`。地址只在所选视图不是缺省视图时
  * 写 `view`，剧本生成后停在缺省视图上的页面因此自动落到分镜。取值无效或当前不可选时按缺省视图显示。
  */
-import { EPISODE_VIEW_EDIT, EPISODE_VIEW_PARAM } from "@/app-routes";
+import { EPISODE_VIEW_EDIT, EPISODE_VIEW_PARAM, EPISODE_VIEW_SOURCE } from "@/app-routes";
 import type { GenerationRoute } from "@/utils/generation-mode";
 
-export const EPISODE_VIEWS = ["setting", "plan", "grid", "board", EPISODE_VIEW_EDIT] as const;
+export const EPISODE_VIEWS = ["setting", "plan", "grid", "board", EPISODE_VIEW_SOURCE, EPISODE_VIEW_EDIT] as const;
 export type EpisodeView = (typeof EPISODE_VIEWS)[number];
-/** 画布承担的视图；故事设定与剪辑视图替换整个画布。 */
-export type CanvasView = Exclude<EpisodeView, "setting" | "edit">;
+/** 画布承担的视图；故事设定、集原文与剪辑视图替换整个画布。 */
+export type CanvasView = Exclude<EpisodeView, "setting" | "edit" | "source">;
 
 /** 决定集页有哪些视图的事实，由路由层按项目与这一集算出。 */
 export interface EpisodeViewFacts {
@@ -58,6 +59,8 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
     facts.hasScript || !plan || (facts.route === "reference_video" && !facts.sourceReview);
   tabs.push({ view: "board", disabled: !boardEnabled });
   if (facts.hasScript && !facts.demo) tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
+  // 集原文常驻可查可改；脚本规划视图正在做集原文确认时不重复给（那已经是同一个编辑器）。
+  if (!facts.isAd && !facts.demo && !facts.sourceReview) tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
   return tabs;
 }
 

@@ -103,9 +103,14 @@ IMPORT_SHORT_DRAMA_SCRIPT = ToolDeclaration(
     description=(
         "把 short-drama-factory 产出的单集剧本 Markdown 转写为本项目的正式剧情演绎剧本并落盘。"
         "前置：项目须为剧情演绎（drama）且目标集已存在。转换只处理产物（Markdown → 剧本 JSON）："
-        "动作行与神态进 scene_description，台词进 utterances，单集超过 60 秒按节拍切分为多幕，"
+        "动作行与神态进 scene_description，台词进 utterances，单集按所选视频模型的时长档位切分为多幕"
+        "（每幕不超过最大档位）。档位读不出时**中止导入**（不降级成 60 秒）：先到设置里选定视频模型，"
+        "或稍后重试、在分集页手动分镜；时长不由 ArcReel 驱动的端点（如 ComfyUI）按旧口径处理。"
         "视觉层留空并置 pending_authoring 待 generate_episode_script 补出，无原生字段的短剧元信息进顶层"
-        " short_drama_meta，集尾断章卡点对齐 hook。不重述短剧工厂的编剧规则——其 Skill 原样复刻于"
+        " short_drama_meta，集尾断章卡点对齐 hook。回执给 episode 与 scenes；若本集声明时长在档位内"
+        "排不满（剧本拍数不足或【本集时长】有误），另给 declared_seconds / actual_seconds /"
+        " duration_shortfall，此时应补写剧本行或修正时长后重新导入，不要拿缩水的剧本往下走。"
+        "不重述短剧工厂的编剧规则——其 Skill 原样复刻于"
         " agent_runtime_profile/.claude/skills/short-drama-factory/。dry_run 不支持。"
     ),
     request_model=ImportShortDramaScriptRequest,
@@ -118,9 +123,11 @@ IMPORT_SHORT_DRAMA_SERIES = ToolDeclaration(
     name="import_short_drama_series",
     description=(
         "批量把 short-drama-factory 的多集剧本 Markdown 转写为本项目的正式剧情演绎剧本并落盘。"
-        "每集独立解析转写（动作/神态进 scene_description、台词进 utterances、单集超 60 秒按节拍切分多幕、"
+        "每集独立解析转写（动作/神态进 scene_description、台词进 utterances、单集按所选视频模型的时长档位切分多幕、"
         "视觉层留空待 generate_episode_script 补出、短剧元信息进顶层 short_drama_meta、集尾断章对齐 hook），"
         "通过 asyncio.gather 并发执行，并发安全由 ProjectManager 的脚本锁与项目锁保证。"
+        "每集明细除 episode / scenes / ok 外，声明时长排不满时另给 declared_seconds / actual_seconds"
+        " / duration_shortfall，需补写剧本行或修正时长后重新导入该集。"
         "前置：项目须为 drama 且各目标集已存在。continue_on_error 控制单集失败是否跳过。不重述短剧工厂规则。"
     ),
     request_model=ImportShortDramaSeriesRequest,

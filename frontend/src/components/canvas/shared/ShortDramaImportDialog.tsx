@@ -62,7 +62,8 @@ type Mode = "single" | "batch";
 /**
  * 短剧工厂「导入剧本」：把 short-drama-factory 的 Markdown 转写为正式剧情演绎剧本并落盘。
  * 转写规则（与 Agent 入口一致，固化在此处）：动作/神态进 scene_description、台词进 utterances、
- * 单集超 60 秒按节拍切分多幕、视觉层留空待 generate_episode_script 补出、集尾断章对齐 hook。
+ * 单集按所选视频模型的时长档位切分多幕（每幕不超过最大档位，档位未知时 60 秒）、
+ * 视觉层留空待 generate_episode_script 补出、集尾断章对齐 hook。
  * 集须已存在；批量模式可先「批量建空白集」再粘贴多集 Markdown（以「第 N 集」标题分隔，N 即集 ID）。
  */
 function ShortDramaImportDialog({ request, onClose }: DialogProps) {

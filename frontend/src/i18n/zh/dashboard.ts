@@ -3237,6 +3237,7 @@ export default {
   'episode_view_plan': '脚本规划',
   'episode_view_grid': '多宫格分镜图',
   'episode_view_board': '分镜',
+  'episode_view_source': '原文',
   'episode_view_units': '视频单元',
   'episode_view_needs_script': '脚本生成后可用',
   'episode_head_more': '这一集的更多操作',

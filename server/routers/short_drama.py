@@ -2,7 +2,7 @@
 
 与 Agent 的 ``import_short_drama_script`` / ``import_short_drama_series`` 调用同一个服务命令：把
 short-drama-factory 的剧本 Markdown 转写为正式剧情演绎剧本并落盘。路由只负责把结果映射成 HTTP，
-「动作/神态进 scene_description、台词进 utterances、单集超 60 秒按节拍切分多幕、视觉层留空、
+「动作/神态进 scene_description、台词进 utterances、单集按所选视频模型的时长档位切分多幕、视觉层留空、
 短剧元信息进 short_drama_meta、集尾断章对齐 hook」等转写规则全在 lib.script.short_drama_import 与
 Agent 工具里，与聊天式入口完全一致（不重述规则）。
 

@@ -216,6 +216,10 @@ class WorkflowContent(BaseModel):
     drafts: list[WorkflowDraft] = Field(default_factory=list)
     formal_script: Literal["present", "absent", "invalid"] | None = None
     script_item_count: int | None = None
+    #: 本集正式脚本是不是短剧工厂导入产出的：顶层带 ``short_drama_meta`` 即为真。
+    # 这类集不走「集原文 → 脚本规划」，那两行按"不适用"陈述而不是"还没有"，但它们仍是
+    # 可用的备选路线（随时能补原文、重跑规划），故只改陈述、不改准入。
+    script_from_short_drama: bool = False
     pending_authoring_ids: list[str] = Field(default_factory=list)
     needs_replan_ids: list[str] = Field(default_factory=list)
     #: 本集引用、但没有资产图的角色 / 场景 / 道具（含衍生），与生成入口同一判定（ADR 0073）。
@@ -643,23 +647,28 @@ class WorkflowStateService:
         target: WorkflowTarget,
         issues: list[WorkflowBlocker],
         resolver: ArtifactCurrencyResolver | None,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], str | None, dict[str, Any] | None]:
+        """返回 ``(产物态, 条目, 骨架种类, 原始剧本)``。
+
+        原始剧本只在读出来且是对象时给出：调用方据此识别本集是不是短剧工厂导入产出的
+        （顶层带 ``short_drama_meta``），损坏时按 None 处理，不额外增加一次读盘。
+        """
         path = target.script
         state = ArtifactStatus.CURRENT.value
         if resolver is not None:
             state = self._artifact_state(resolver, ArtifactKey.episode_script(target.episode), path, issues)
             if state not in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}:
-                return {"state": state, "path": path}, [], None
+                return {"state": state, "path": path}, [], None, None
         try:
             script: Any = self.pm.load_script_readonly(project_name, path)
         except FileNotFoundError:
-            return {"state": "missing", "path": path}, [], None
+            return {"state": "missing", "path": path}, [], None, None
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             issues.append(WorkflowBlocker(code="invalid_script", path=path, reason=str(exc)))
-            return {"state": "blocked", "path": path}, [], None
+            return {"state": "blocked", "path": path}, [], None, None
         if not isinstance(script, dict):
             issues.append(WorkflowBlocker(code="invalid_script", path=path, reason="script must be an object"))
-            return {"state": "blocked", "path": path}, [], None
+            return {"state": "blocked", "path": path}, [], None, None
         script_episode = script.get("episode")
         if script_episode != target.episode or isinstance(script_episode, bool):
             issues.append(
@@ -669,12 +678,12 @@ class WorkflowStateService:
                     reason=f"script episode must equal target episode {target.episode}",
                 )
             )
-            return {"state": "blocked", "path": path}, [], None
+            return {"state": "blocked", "path": path}, [], None, None
         try:
             kind = ensure_route_skeleton(script, project.get("content_mode"), project.get("generation_mode"))
         except ValueError as exc:
             issues.append(WorkflowBlocker(code="invalid_project_mode", path="content_mode", reason=str(exc)))
-            return {"state": "blocked", "path": path}, [], None
+            return {"state": "blocked", "path": path}, [], None, None
         raw_items, id_field, _kind = resolve_kind_items(script, kind=kind)
         # 空的正式脚本合法（见 docs/adr/0091）：「非空」只留在各 AI 生成动作的产出验收里。
         if not isinstance(raw_items, list) or not all(isinstance(item, dict) for item in raw_items):
@@ -685,7 +694,7 @@ class WorkflowStateService:
                     reason=f"{kind} must be an array of objects",
                 )
             )
-            return {"state": "blocked", "path": path}, [], kind
+            return {"state": "blocked", "path": path}, [], kind, script
         seen_ids: set[str] = set()
         for index, item in enumerate(raw_items):
             resource_id = item.get(id_field)
@@ -697,7 +706,7 @@ class WorkflowStateService:
                         reason=f"{id_field} must be a non-empty string",
                     )
                 )
-                return {"state": "blocked", "path": path}, [], kind
+                return {"state": "blocked", "path": path}, [], kind, script
             if kind != "video_units" and STORYBOARD_ITEM_ID_PATTERN.fullmatch(resource_id) is None:
                 issues.append(
                     WorkflowBlocker(
@@ -706,7 +715,7 @@ class WorkflowStateService:
                         reason=f"invalid {id_field}: {resource_id}",
                     )
                 )
-                return {"state": "blocked", "path": path}, [], kind
+                return {"state": "blocked", "path": path}, [], kind, script
             if resource_id in seen_ids:
                 issues.append(
                     WorkflowBlocker(
@@ -715,7 +724,7 @@ class WorkflowStateService:
                         reason=f"duplicate {id_field}: {resource_id}",
                     )
                 )
-                return {"state": "blocked", "path": path}, [], kind
+                return {"state": "blocked", "path": path}, [], kind, script
             seen_ids.add(resource_id)
             duration = item.get("duration_seconds")
             duration_max = 300 if kind == "video_units" else 60
@@ -737,7 +746,7 @@ class WorkflowStateService:
                         reason=f"duration_seconds must be an integer between 1 and {duration_max}",
                     )
                 )
-                return {"state": "blocked", "path": path}, [], kind
+                return {"state": "blocked", "path": path}, [], kind, script
         validation = DataValidator(str(self.pm.projects_dir)).validate_episode_payload(
             project_path,
             project,
@@ -752,8 +761,8 @@ class WorkflowStateService:
                     reason="; ".join(validation.errors),
                 )
             )
-            return {"state": "blocked", "path": path}, [], kind
-        return {"state": state, "path": path}, raw_items, kind
+            return {"state": "blocked", "path": path}, [], kind, script
+        return {"state": state, "path": path}, raw_items, kind, script
 
     @classmethod
     def _media_collection(
@@ -1622,10 +1631,12 @@ class WorkflowStateService:
                 and not formal_in_use
             )
 
-        script_artifact, items, kind = self._load_script_artifacts(
+        script_artifact, items, kind, script_data = self._load_script_artifacts(
             project_path, project_name, project, target, issues, shared.currency
         )
         artifacts["script"] = script_artifact
+        if isinstance(script_data, dict) and isinstance(script_data.get("short_drama_meta"), dict):
+            content.script_from_short_drama = True
         formal_present = script_artifact["state"] in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}
         content.formal_script = (
             "present" if formal_present else "invalid" if script_artifact["state"] == "blocked" else "absent"

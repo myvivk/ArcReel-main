@@ -321,7 +321,12 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
       key: "source",
       title: t("workflow:row_source"),
       tone: planning ? "running" : content.episode_plan_stale ? "warn" : present ? "done" : "todo",
-      status: present ? t("workflow:status_source_present") : t("workflow:status_source_absent"),
+      // 短剧工厂导入的集不走集原文：只改陈述（"不适用"），入口与准入照旧可用作备选路线。
+      status: present
+        ? t("workflow:status_source_present")
+        : content.script_from_short_drama
+          ? t("workflow:status_source_short_drama")
+          : t("workflow:status_source_absent"),
       notes,
       acts,
       steps: planningSteps,
@@ -341,7 +346,12 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
       planStatus = confirmed ? t("workflow:status_plan_confirmed") : t("workflow:status_plan_pending_review");
       planTone = confirmed ? "done" : "partial";
     } else {
-      planStatus = formal === "present" ? t("workflow:status_plan_not_used") : t("workflow:status_none");
+      planStatus =
+        formal !== "present"
+          ? t("workflow:status_none")
+          : content.script_from_short_drama
+            ? t("workflow:status_plan_short_drama")
+            : t("workflow:status_plan_not_used");
       planTone = "todo";
     }
     const planOp = status.operations.prepare_script_plan;

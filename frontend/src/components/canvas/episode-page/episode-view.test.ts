@@ -20,12 +20,13 @@ const SCRIPTED: EpisodeViewFacts = {
 };
 
 describe("episodeViewTabs", () => {
-  it("lists plan, grid, board and edit for a scripted grid episode", () => {
+  it("lists plan, grid, board, edit and source for a scripted grid episode", () => {
     expect(episodeViewTabs({ ...SCRIPTED, grid: true })).toEqual([
       { view: "plan", disabled: false },
       { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
+      { view: "source", disabled: false },
     ]);
   });
 
@@ -34,6 +35,7 @@ describe("episodeViewTabs", () => {
     expect(tabs).toEqual([
       { view: "plan", disabled: false },
       { view: "board", disabled: true },
+      { view: "source", disabled: false },
     ]);
   });
 

@@ -416,10 +416,13 @@ export function EpisodeSourceReview({
   projectName,
   episode,
   episodes,
+  sourceOnly = false,
 }: {
   projectName: string;
   episode: number;
   episodes: EpisodeMeta[];
+  /** 只读改本集原文：不渲染脚本规划入口（集页「原文」视图用，这一集多半已有脚本）。 */
+  sourceOnly?: boolean;
 }) {
   const meta = episodes.find((e) => e.episode === episode);
   const guide = hasGuide(meta);
@@ -436,12 +439,14 @@ export function EpisodeSourceReview({
         }
       >
         <div className="flex min-w-0 flex-col gap-6">
-          <ScriptPlanStart
-            projectName={projectName}
-            episode={episode}
-            savedInstructions={meta?.script_plan_instructions ?? ""}
-            prepare={saveSource}
-          />
+          {!sourceOnly && (
+            <ScriptPlanStart
+              projectName={projectName}
+              episode={episode}
+              savedInstructions={meta?.script_plan_instructions ?? ""}
+              prepare={saveSource}
+            />
+          )}
           {guide && <GuideCollapsible key={episode} meta={meta} className="@min-[860px]/plan-start:hidden" />}
           <EpisodeSource projectName={projectName} episode={episode} episodes={episodes} meta={meta} editRef={sourceRef} />
         </div>

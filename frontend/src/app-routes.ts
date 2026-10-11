@@ -129,6 +129,8 @@ export const WORKSPACE_ROUTE_EPISODES = "episodes";
 /** 集页的视图查询参数：`?view=edit` 打开剪辑视图，缺省为分镜视图；`tl` 指定打开哪条剪辑时间线。 */
 export const EPISODE_VIEW_PARAM = "view";
 export const EPISODE_VIEW_EDIT = "edit";
+/** 集页的集原文视图：就地查看与编辑本集原文。 */
+export const EPISODE_VIEW_SOURCE = "source";
 export const EPISODE_VIEW_TIMELINE_PARAM = "tl";
 
 /** 项目工作区内打开某集（集 ID）剪辑视图的相对路径；给出 `timelineId` 时切到那条剪辑时间线。 */

@@ -203,6 +203,13 @@ function EpisodePageContent({
         <StorySettingView projectName={projectName} overview={projectData?.overview} readOnly={demo} />
       </EpisodeViewFactsProvider>
     );
+  } else if (view === "source") {
+    // 「原文」视图：已有脚本也能就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
+    body = (
+      <EpisodeViewFactsProvider value={facts}>
+        <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} sourceOnly />
+      </EpisodeViewFactsProvider>
+    );
   } else if (demo && !script) {
     body = <DemoEpisodePlaceholder />;
   } else if (sourceReview) {

@@ -62,6 +62,7 @@ export function EpisodePageHeader({
     plan: t("episode_view_plan"),
     grid: t("episode_view_grid"),
     board: boardLabel,
+    source: t("episode_view_source"),
     edit: t("episode_view_edit"),
   };
   return (

@@ -3238,6 +3238,7 @@ export default {
   'episode_view_plan': 'Kế hoạch kịch bản',
   'episode_view_grid': 'Phân cảnh đa lưới',
   'episode_view_board': 'Cảnh quay',
+  'episode_view_source': 'Nguyên văn',
   'episode_view_units': 'Đơn vị video',
   'episode_view_needs_script': 'Dùng được sau khi tạo kịch bản',
   'episode_head_more': 'Thao tác khác cho tập này',

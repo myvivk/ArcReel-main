@@ -95,29 +95,7 @@ jobs:
           path: build-context
 
   # ----------------------------------------------------------
-  # Step 4: 设置 Docker Buildx（每个 runner 独立，最终 build-push 会再设一次）
-  # ----------------------------------------------------------
-  buildx:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-  # ----------------------------------------------------------
-  # Step 5: 登录 Docker Hub（仅 push；登录态不跨 runner，最终 build-push 会再登录）
-  # ----------------------------------------------------------
-  login:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-  # ----------------------------------------------------------
-  # Step 6: 计算镜像标签 / 元数据，作为 outputs 传给 build-push
+  # Step 4: 计算镜像标签 / 元数据，作为 outputs 传给 build-push
   # ----------------------------------------------------------
   metadata:
     runs-on: ubuntu-latest
@@ -147,10 +125,10 @@ jobs:
         run: echo "token=$(date +%G-W%V)" >> "$GITHUB_OUTPUT"
 
   # ----------------------------------------------------------
-  # Step 8: 构建并推送（聚合所有上游；自身仍需 checkout/buildx/login）
+  # Step 6: 构建并推送（聚合所有上游；自身完成 buildx/login）
   # ----------------------------------------------------------
   build-push:
-    needs: [ download, buildx, login, metadata, apt ]
+    needs: [ download, metadata, apt ]
     runs-on: ubuntu-latest
     steps:
       - name: Download build context

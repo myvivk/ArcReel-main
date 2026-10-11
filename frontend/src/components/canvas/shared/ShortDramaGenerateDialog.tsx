@@ -93,32 +93,33 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   return lines.join("\n");
 }
 
-/** 题材下拉预设：i18n 里以逗号分隔存储，这里拆成候选列表；用户仍可输入预设之外的任意题材。 */
-const GENRE_OPTIONS_I18N_KEY = "short_drama_genre_options";
-
 /**
- * 题材/类型输入：下拉给热门预设，也允许填写预设之外的任意题材。
+ * 预设输入框：下拉给常用预设，也允许填写预设之外的任意值。
+ * 预设存于 i18n（逗号分隔），由 optionsKey 指定。
  * 用 Base UI 的 Autocomplete 而不是 Combobox：后者只接受候选项（同 ModelIdField 的取舍）。
  */
-function GenreField({
+function SuggestField({
   id,
   value,
   onChange,
   placeholder,
+  optionsKey,
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  /** 预设选项的 i18n key，值为逗号分隔列表。 */
+  optionsKey: string;
 }) {
   const { t } = useTranslation("dashboard");
   const options = useMemo(
     () =>
-      (t(GENRE_OPTIONS_I18N_KEY) as string)
+      (t(optionsKey) as string)
         .split(",")
         .map((option) => option.trim())
         .filter(Boolean),
-    [t],
+    [t, optionsKey],
   );
   return (
     <Autocomplete.Root items={options} value={value} onValueChange={onChange} openOnInputClick>
@@ -289,6 +290,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       value={genre}
                       onChange={setGenre}
                       placeholder={t("short_drama_generate_genre_placeholder")}
+                      optionsKey="short_drama_genre_options"
                     />
                   </div>
                   <div className="flex flex-col gap-1.5 sm:w-1/2">
@@ -313,6 +315,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       value={genre}
                       onChange={setGenre}
                       placeholder={t("short_drama_generate_genre_placeholder")}
+                      optionsKey="short_drama_genre_options"
                     />
                   </div>
                   <div className="flex flex-col gap-1.5 sm:w-1/2">
@@ -356,12 +359,12 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${fieldId}-tone`}>{t("short_drama_generate_tone_label")}</Label>
-              <input
+              <SuggestField
                 id={`${fieldId}-tone`}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
                 value={tone}
-                onChange={(event) => setTone(event.target.value)}
+                onChange={setTone}
                 placeholder={t("short_drama_generate_tone_placeholder")}
+                optionsKey="short_drama_tone_options"
               />
               {createMode && count > 1 && (
                 <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>

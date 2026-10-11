@@ -2346,6 +2346,7 @@ export default {
   'short_drama_generate_brief_placeholder': 'Ý tưởng cốt lõi và xung đột chính trong một câu, càng cụ thể càng tốt',
   'short_drama_generate_tone_label': 'Tông giọng (tùy chọn)',
   'short_drama_generate_tone_placeholder': 'vd: lạnh lẽo áp bức, ngọt ngào hài hước',
+  'short_drama_tone_options': 'Lạnh lẽo áp bức,Ngọt ngào hài hước,Nhiệt huyết lội ngược,Căng thẳng trinh thám,Khói bếp đời thường,Ngược tâm dụi mắt,Nhẹ nhàng thư giãn,Ngọt lịm,Sâu nặng mưu lược,Hài kịch đen',
   'short_drama_generate_count_label': 'Số tập viết',
   'short_drama_generate_count_hint': 'Lớn hơn 1 sẽ viết nhiều tập và nhập từng tập',
   'short_drama_generate_create_hint': 'Tập mới sẽ được tạo tự động khi tạo (không cần tạo thủ công).',

@@ -58,13 +58,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create source archive
-        run: tar -czf repo.tar.gz --exclude=.git --exclude=node_modules --exclude=frontend/node_modules .
+        run: tar -czf /tmp/repo.tar.gz --exclude=.git --exclude=node_modules --exclude=frontend/node_modules .
 
       - name: Upload repo archive
         uses: actions/upload-artifact@v4
         with:
           name: repo
-          path: repo.tar.gz
+          path: /tmp/repo.tar.gz
           if-no-files-found: error
 
   # ----------------------------------------------------------

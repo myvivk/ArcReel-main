@@ -10,41 +10,42 @@ flowchart TD
         T3["pull_request → master"]
     end
 
-    T1 --> F
-    T2 --> F
-    T3 --> F
+    T1 --> JF
+    T2 --> JF
+    T3 --> JF
+    T1 --> JC
+    T2 --> JC
+    T3 --> JC
 
-    subgraph JOBF["Job: frontend"]
-        direction TB
-        F["① Checkout code<br/>actions/checkout@v4"] --> F2
-        F2["② Set up pnpm + Node 24<br/>pnpm/action-setup@v4<br/>actions/setup-node@v4"] --> F3
-        F3["③ pnpm install --frozen-lockfile"] --> F4
-        F4["④ pnpm build"] --> F5
-        F5["⑤ Upload artifact<br/>actions/upload-artifact@v4<br/>(frontend-dist)"]
-    end
+    JF["frontend<br/>构建前端 + 上传 artifact"]
+    JC["checkout<br/>上传 repo artifact"]
+    JD["download<br/>合并 repo + 前端产物"]
+    JB["buildx<br/>设置 Buildx"]
+    JL["login<br/>登录 Docker Hub (仅 push)"]
+    JM["metadata<br/>计算标签 (outputs)"]
+    JA["apt<br/>计算 apt token (outputs)"]
+    JP["build-push<br/>聚合所有上游并构建/推送"]
 
-    F5 -.->|artifact| D2
+    JF --> JD
+    JC --> JD
+    JD --> JP
+    JB --> JP
+    JL --> JP
+    JM --> JP
+    JA --> JP
 
-    subgraph JOBD["Job: docker (needs: frontend)"]
-        direction TB
-        D1["① Checkout code<br/>actions/checkout@v4"] --> D2
-        D2["② Download frontend artifact<br/>actions/download-artifact@v4"] --> D3
-        D3["③ Set up Docker Buildx<br/>docker/setup-buildx-action@v4"] --> D4
-        D4["④ Log in to Docker Hub<br/>docker/login-action@v4<br/><b>仅 push 事件</b>"] --> D5
-        D5["⑤ Extract metadata<br/>docker/metadata-action@v6<br/>tags: latest + sha"] --> D6
-        D6["⑥ apt refresh token<br/>date +%G-W%V"] --> D7
-        D7["⑦ Build and push<br/>docker/build-push-action@v6<br/>cache: gha"]
-    end
+    JL -. "push=false (PR)" .-> Skip["跳过登录"]
+    JP -. "push=false (PR)" .-> N["仅构建，不推送 ✓"]
+    JP -. "push=true (合并到 master)" .-> P["推送镜像至 Docker Hub<br/>arcreel/arcreel:latest<br/>arcreel/arcreel:sha-xxxxxxx"]
 
-    F --> JOBF
-    JOBF --> JOBD
-
-    D4 -. "push=false (PR)" .-> Skip["跳过登录，仅构建验证"]
-    D7 -. "push=false (PR)" .-> N["仅构建，不推送 ✓"]
-    D7 -. "push=true (合并到 master)" .-> P["推送镜像至 Docker Hub<br/>arcreel/arcreel:latest<br/>arcreel/arcreel:sha-xxxxxxx"]
-
-    style JOBF fill:#1f6feb22,stroke:#1f6feb
-    style JOBD fill:#1f6feb22,stroke:#1f6feb
+    style JF fill:#1f6feb,color:#fff
+    style JC fill:#1f6feb,color:#fff
+    style JD fill:#1f6feb,color:#fff
+    style JB fill:#1f6feb,color:#fff
+    style JL fill:#1f6feb,color:#fff
+    style JM fill:#1f6feb,color:#fff
+    style JA fill:#1f6feb,color:#fff
+    style JP fill:#2da44e,color:#fff
     style P fill:#2da44e,color:#fff
     style N fill:#8957e5,color:#fff
     style Skip fill:#6e7681,color:#fff
@@ -62,16 +63,19 @@ flowchart TD
 | ④ pnpm build | `pnpm build` | 总是 |
 | ⑤ Upload artifact | `actions/upload-artifact@v4` | 总是（产物 `frontend-dist`）|
 
-### Job: `docker`（needs: `frontend`）
+每个原 step 已拆为独立 job（共 8 个）：
 
-| 节点 | Action | 触发条件 |
-|------|--------|----------|
-| ① Checkout | `actions/checkout@v4` | 总是 |
-| ② Download artifact | `actions/download-artifact@v4` | 总是（取 `frontend-dist` → `frontend/dist`）|
-| ③ Buildx | `docker/setup-buildx-action@v4` | 总是 |
-| ④ Login | `docker/login-action@v4` | **仅 push 到 master** |
-| ⑤ Metadata | `docker/metadata-action@v6` | 总是（产出 `latest` + `sha` 标签）|
-| ⑥ apt token | `date +%G-W%V` | 总是（按周刷新系统包缓存层）|
-| ⑦ Build/Push | `docker/build-push-action@v6` | 构建总是；**推送仅 push 到 master** |
+| Job | 作用 | 触发条件 |
+|-----|------|----------|
+| `frontend` | 构建前端，上传 `frontend-dist` | 总是 |
+| `checkout` | 上传 `repo` 源码 artifact | 总是 |
+| `download` | 合并 repo + 前端产物为 `build-context` | needs: frontend, checkout |
+| `buildx` | 设置 Buildx（图形节点；最终 build-push 会再设一次） | 总是 |
+| `login` | 登录 Docker Hub（仅图形节点；最终 build-push 会再登录） | **仅 push 到 master** |
+| `metadata` | 计算镜像标签/元数据，通过 `outputs` 传出 | 总是 |
+| `apt` | 计算 weekly apt token，通过 `outputs` 传出 | 总是 |
+| `build-push` | 聚合所有上游，下载 `build-context` 并构建/推送 | needs: download, buildx, login, metadata, apt |
 
-**关键分支**：`pull_request` 触发时 ④ 跳过、⑦ 只构建不推送；`push` 到 `master` 时才登录并推送镜像到 Docker Hub。`docker` job 依赖 `frontend` 产出，必须等其完成。
+**关键说明**：GitHub Actions 的每个 job 跑在独立 runner 上，`checkout` / `buildx` / `login` 的状态**无法跨 job 传递**。因此真正执行构建的 `build-push` 必须自行再 checkout（改为下载 `build-context` artifact）、设置 buildx、登录；`metadata` 与 `apt` 是通过 job 的 `outputs` 把值传给 `build-push`，`frontend`/`checkout` 的产物通过 artifact 传递。
+
+**关键分支**：`pull_request` 触发时 `login` 跳过、`build-push` 只构建不推送；`push` 到 `master` 时才登录并推送镜像到 Docker Hub。

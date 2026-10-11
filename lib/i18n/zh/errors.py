@@ -427,6 +427,8 @@ MESSAGES = {
     "api_key_name_exists": "名称 '{name}' 已存在",
     "api_key_not_found": "API Key {key_id} 不存在",
     # Agent 对话
+    # Agent 技能就绪
+    "agent_skills_not_ready": "项目内置技能未就绪，已停止生成。缺失技能：{missing_skills}。根因：{reason}。请确认镜像包含 agent_runtime_profile/.claude，并重启服务重新物化技能后再试。",
     "session_project_mismatch": "会话 '{session_id}' 属于项目 '{session_project}'，与请求项目 '{request_project}' 不符",
     # Cost Estimation
     "cost_estimation_failed": "费用估算失败，请稍后重试",
@@ -735,4 +737,12 @@ MESSAGES = {
     "episode_delete_cut_tail": "删除后，它的原文变回未切分的原文，接续规划的起点随之回退。",
     "episode_delete_cut_gap_first": "删除后，它的原文变回未切分的原文，留在「{after}」之前；一键规划不会回填这段原文，可以在「分集」视图里规划这段未切分的原文。",
     "episode_delete_cut_gap_between": "删除后，它的原文变回未切分的原文，留在「{before}」与「{after}」之间；一键规划不会回填这段原文，可以在「分集」视图里规划这段未切分的原文。",
+    "episode_delete_batch_header": "将删除 {count} 集：{names}",
+    "episode_delete_batch_names_more": "{names} 等 {count} 集",
+    "episode_delete_batch_loss": "其中 {count} 集删除后无法恢复，以下内容会一并删除：",
+    "episode_delete_batch_loss_source_chars": "集原文（{count} 集，共 {total} 字）",
+    "episode_delete_batch_loss_source_words": "集原文（{count} 集，共 {total} 词）",
+    "episode_delete_batch_loss_script": "正式脚本 {count} 份",
+    "episode_delete_batch_loss_script_plan": "脚本规划与草稿 {count} 份",
+    "episode_delete_batch_cut_warning": "删除切出的集后，对应原文变回未切分的原文，可以在「分集」视图里重新规划。",
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, FilePlus, Loader2, Sparkles, Upload } from "lucide-react";
+import { ChevronDown, FilePlus, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -26,13 +26,26 @@ interface EpisodesHeaderProps {
   planning: boolean;
   onUpload: (mode: SourceUploadMode) => void;
   onCreate: () => void;
+  /** 打开批量删除对话框。 */
+  onBatchDelete: () => void;
+  /** 没有集时禁用批量删除。 */
+  canBatchDelete: boolean;
 }
 
 /**
  * 「分集」视图的页头工具行：左侧是标题、集数与整本源文的分集进度，右侧是「AI 规划分集」弹层、新建一集与上传原文。
  * 有新的分集方案时规划按钮不可用，先在方案栏里采纳或放弃。
  */
-export function EpisodesHeader({ projectName, view, episodeCount, planning, onUpload, onCreate }: EpisodesHeaderProps) {
+export function EpisodesHeader({
+  projectName,
+  view,
+  episodeCount,
+  planning,
+  onUpload,
+  onCreate,
+  onBatchDelete,
+  canBatchDelete,
+}: EpisodesHeaderProps) {
   const { t } = useTranslation("dashboard");
   const [planOpen, setPlanOpen] = useState(false);
   const hasSource = view.files.length > 0;
@@ -101,6 +114,18 @@ export function EpisodesHeader({ projectName, view, episodeCount, planning, onUp
         <FilePlus aria-hidden data-icon="inline-start" />
         <span className="hidden @min-[44rem]/episodes-header:inline">{t("episode_create_title")}</span>
       </Button>
+      {episodeCount > 0 ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBatchDelete}
+          disabled={!canBatchDelete}
+          aria-label={t("episodes_header_batch_delete")}
+        >
+          <Trash2 aria-hidden data-icon="inline-start" />
+          <span className="hidden @min-[44rem]/episodes-header:inline">{t("episodes_header_batch_delete")}</span>
+        </Button>
+      ) : null}
       <ButtonGroup>
         <Button size="sm" onClick={() => onUpload("whole_source")}>
           <Upload aria-hidden data-icon="inline-start" />

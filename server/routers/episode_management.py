@@ -10,7 +10,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from lib.episode.episode_deletion import EpisodeDeletionResult, delete_episode, render_episode_deletion_text
+from lib.episode.episode_deletion import (
+    EpisodeBatchDeletionResult,
+    EpisodeDeletionResult,
+    delete_episode,
+    delete_episodes,
+    render_episode_batch_deletion_text,
+    render_episode_deletion_text,
+)
 from lib.episode.episode_management import EpisodeManagementError, create_episode, move_episode
 from lib.episode.episode_source_commands import EpisodeSourceError
 from lib.episode.source_kinds import SourceKind
@@ -47,6 +54,15 @@ class DeleteEpisodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: 创作者看过的丢失清单的 ``revision``；缺省或与当前清单不符时只返回清单，不删除。
+    revision: str | None = None
+
+
+class DeleteEpisodesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: 要删除的集 ID 列表。
+    episodes: Annotated[list[Annotated[int, Field(gt=0)]], Field(min_length=1, max_length=500)]
+    #: 创作者看过的全部丢失清单的合成 ``revision``；缺省或与当前不符时只返回清单，不删除。
     revision: str | None = None
 
 
@@ -129,3 +145,34 @@ async def delete_episode_endpoint(name: str, episode: int, req: DeleteEpisodeReq
         return {"status": "confirmation_required", "impact": {**impact, "text": text}}
 
     return await _run(name, _t, _delete, episode=episode)
+
+
+@router.post("/projects/{name}/episodes/delete-batch", dependencies=[Depends(require_project_migration_ok)])
+async def delete_episodes_endpoint(name: str, req: DeleteEpisodesRequest, _t: Translator) -> dict[str, Any]:
+    """批量删除多集（硬删除），要么全部删除要么都不删。
+
+    先不带 ``revision`` 调用，得到 ``status=confirmation_required`` 与全部集合并成文的丢失清单
+    ``batch.text``；创作者确认后带上 ``batch.revision`` 重新提交。清单在两次调用之间变了时再次返回确认。
+    """
+    if req.revision is not None:
+        for episode in req.episodes:
+            if await episode_has_active_tasks(name, episode):
+                raise HTTPException(status_code=409, detail=_t("episode_manage_tasks_active"))
+
+    def _delete(manager: ProjectManager) -> dict[str, Any]:
+        outcome = delete_episodes(manager, name, req.episodes, revision=req.revision)
+        if isinstance(outcome, EpisodeBatchDeletionResult):
+            return {"status": "deleted", "episodes": outcome.episodes}
+        project = manager.load_project(name)
+        text = render_episode_batch_deletion_text(outcome.impacts, project, _t)
+        return {
+            "status": "confirmation_required",
+            "batch": {
+                "episodes": outcome.episodes,
+                "revision": outcome.revision,
+                "recoverable": outcome.recoverable,
+                "text": text,
+            },
+        }
+
+    return await _run(name, _t, _delete)

@@ -22,7 +22,9 @@ import { SourceManuscript } from "./SourceManuscript";
 import { SourceUploadDialog } from "./SourceUploadDialog";
 import { UnregisteredFilesBanner } from "./UnregisteredFiles";
 import { replanCompare } from "./replan-compare-model";
+import { BatchDeleteEpisodesDialog } from "./BatchDeleteEpisodesDialog";
 import { useDeleteEpisode } from "./useDeleteEpisode";
+import { useDeleteEpisodes } from "./useDeleteEpisodes";
 import { useManualSplit } from "./useManualSplit";
 import { useReplanEpisode } from "./useReplanEpisode";
 import {
@@ -135,7 +137,9 @@ export function EpisodesView({ projectName }: { projectName: string }) {
   const [upload, setUpload] = useState<SourceUploadMode | null>(null);
   /** 新建一集对话框：undefined 为关闭，null 放在末尾，数字为插在这一集之后。 */
   const [createAfter, setCreateAfter] = useState<number | null | undefined>(undefined);
+  const [batchOpen, setBatchOpen] = useState(false);
   const deletion = useDeleteEpisode(projectName);
+  const batchDeletion = useDeleteEpisodes(projectName, reload);
   const manuscriptRef = useRef<HTMLElement>(null);
   const [current, setCurrent] = useCurrentEpisode(manuscriptRef, view);
   const episodeHeaders = useRef(new Map<number, HTMLElement>());
@@ -253,6 +257,8 @@ export function EpisodesView({ projectName }: { projectName: string }) {
         planning={planning}
         onUpload={setUpload}
         onCreate={() => setCreateAfter(null)}
+        onBatchDelete={() => setBatchOpen(true)}
+        canBatchDelete={episodes.length > 0}
       />
       <UnregisteredFilesBanner
         projectName={projectName}
@@ -332,6 +338,18 @@ export function EpisodesView({ projectName }: { projectName: string }) {
       {deletion.dialog}
       {replan.dialog}
       {split.dialog}
+      {batchOpen ? (
+        <BatchDeleteEpisodesDialog
+          episodes={episodes}
+          busy={false}
+          onSubmit={(selected) => {
+            setBatchOpen(false);
+            void batchDeletion.requestDelete(selected);
+          }}
+          onClose={() => setBatchOpen(false)}
+        />
+      ) : null}
+      {batchDeletion.dialog}
     </div>
   );
 }

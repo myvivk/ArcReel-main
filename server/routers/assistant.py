@@ -22,6 +22,7 @@ from server.agent_runtime.models import SessionMeta, WithdrawalIntent
 from server.agent_runtime.service import (
     AssistantService,
     InterruptSettleTimeoutError,
+    SkillNotReadyError,
     PendingQuestionError,
     QueuedMessagesPendingError,
     RewriteAnchorError,
@@ -177,6 +178,15 @@ async def send_message(
         raise NotFoundError("session_or_project_not_found") from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail=_t("sdk_session_timeout")) from exc
+    except SkillNotReadyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=_t(
+                "agent_skills_not_ready",
+                missing_skills=exc.params.get("missing_skills", ""),
+                reason=exc.params.get("reason", ""),
+            ),
+        ) from exc
     except ValueError as exc:
         # 空消息内容 / 非法项目名等坏请求，str(exc) 只进日志
         logger.warning("会话发送请求非法: %s", exc)

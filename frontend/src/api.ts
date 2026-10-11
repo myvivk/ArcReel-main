@@ -137,6 +137,7 @@ import type {
 import type {
   AdoptSourceFileTarget,
   CreateEpisodeBody,
+  EpisodeBatchDeletionResponse,
   EpisodeDeletionResponse,
   EpisodePlanningResponse,
   PlanningGap,
@@ -2104,6 +2105,18 @@ class API {
     return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/delete`, {
       method: "POST",
       body: JSON.stringify({ revision }),
+    });
+  }
+
+  /** 批量删除多集：不带 `revision` 只返回合并成文的丢失清单，带上 `batch.revision` 才删除。 */
+  static async deleteEpisodes(
+    projectName: string,
+    episodes: number[],
+    revision: string | null = null
+  ): Promise<EpisodeBatchDeletionResponse> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/delete-batch`, {
+      method: "POST",
+      body: JSON.stringify({ episodes, revision }),
     });
   }
 

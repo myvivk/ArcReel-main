@@ -34,6 +34,7 @@ from lib.agent.agent_profile import agent_profile_dir
 from lib.agent.profile_frontmatter import FrontmatterError, parse_profile_metadata
 from lib.agent.profile_manifest import VALID_CONTENT_MODES
 from lib.i18n import DEFAULT_LOCALE
+from lib.infra.api_errors import ApiError
 from lib.infra.data_root_layout import DataRootLayout
 from lib.project.project_manager import ProjectManager
 from server.agent_runtime.event_log import (
@@ -88,6 +89,22 @@ class RewriteUnavailableError(MessageRewriteError):
 
 class InterruptSettleTimeoutError(MessageRewriteError):
     """等待运行中轮次中断到终态超时。"""
+
+
+class SkillNotReadyError(ApiError):
+    """项目 .claude/skills 未物化出 profile 声明的全部技能 → 拒绝开新会话（fail-closed）。
+
+    否则 Agent 会在缺技能的情况下自作主张降级生成（如 short-drama-factory 缺失时
+    自行编造编剧流程）。``missing_skills`` 为缺失技能名列表，``reason`` 为根因说明。
+    """
+
+    def __init__(self, *, missing_skills: list[str], reason: str) -> None:
+        super().__init__(
+            "agent_skills_not_ready",
+            status_code=409,
+            missing_skills=", ".join(missing_skills) if missing_skills else "",
+            reason=reason,
+        )
 
 
 class AssistantService:
@@ -397,6 +414,43 @@ class AssistantService:
         while len(self._new_session_client_keys) > self._new_session_client_keys_max:
             self._new_session_client_keys.popitem(last=False)
 
+    def _require_project_skills_ready(self, project_name: str) -> None:
+        """Fail-closed 前置：项目 .claude/skills 须物化出 profile 声明的全部技能目录。
+
+        缺任一 → 拒绝开新会话（生成与改写分支都走新建会话）。这能挡住「技能没进镜像 /
+        sync 被设备节点污染」导致的 Agent 降级瞎写，而不是静默退化。
+
+        不变量：``agent_profile_dir()/.claude/skills`` 下的每个技能目录，都应在项目
+        ``.claude/skills`` 下物化为真实目录且含 ``SKILL.md``（sync 负责复制，content_mode
+        变体在 sync 时落为 SKILL.md）。任一不达标即视为物化失败。
+        """
+        profile_skills = agent_profile_dir() / ".claude" / "skills"
+        if not profile_skills.is_dir():
+            raise SkillNotReadyError(
+                missing_skills=[],
+                reason="agent_runtime_profile/.claude/skills 不存在（镜像未携带或 volume 未挂载）",
+            )
+        try:
+            declared = sorted(d.name for d in profile_skills.iterdir() if d.is_dir())
+        except OSError as exc:
+            raise SkillNotReadyError(missing_skills=[], reason=f"读取 profile 技能目录失败: {exc}") from exc
+
+        if not declared:
+            raise SkillNotReadyError(missing_skills=[], reason="agent_runtime_profile 未声明任何技能")
+
+        project_skills = self.pm.get_project_path(project_name) / ".claude" / "skills"
+        missing = []
+        for name in declared:
+            skill_dir = project_skills / name
+            # is_dir() 对 /dev/null 等设备节点返回 False；SKILL.md 缺失也视为不完整
+            if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
+                missing.append(name)
+        if missing:
+            raise SkillNotReadyError(
+                missing_skills=missing,
+                reason=f"项目 .claude/skills 缺少技能: {', '.join(missing)}（agent_runtime_profile 未成功物化）",
+            )
+
     async def _create_new_session(
         self,
         project_name: str,
@@ -406,6 +460,8 @@ class AssistantService:
         client_key: str | None,
     ) -> dict[str, Any]:
         """实际创建新会话并投递首条消息，不涉及 client_key 幂等映射记账。"""
+        # Fail-closed 前置：技能未物化则拒绝开新会话，避免 Agent 缺技能降级瞎写。
+        self._require_project_skills_ready(project_name)
         prompt = self._prepare_content(content, images)
         new_sdk_session_id = await self.session_manager.send_new_session(
             project_name,

@@ -460,6 +460,7 @@ MESSAGES = {
     "api_key_name_exists": "Tên '{name}' đã tồn tại",
     "api_key_not_found": "Không tìm thấy API Key {key_id}",
     # Agent Chat
+    "agent_skills_not_ready": "Kỹ năng tích hợp của dự án chưa sẵn sàng, đã dừng tạo. Thiếu kỹ năng: {missing_skills}. Nguyên nhân: {reason}. Hãy đảm bảo image chứa agent_runtime_profile/.claude và khởi động lại dịch vụ để đồng bộ lại kỹ năng.",
     "session_project_mismatch": "Phiên '{session_id}' thuộc dự án '{session_project}', không khớp với dự án yêu cầu '{request_project}'",
     # Cost Estimation
     "cost_estimation_failed": "Ước tính chi phí thất bại, vui lòng thử lại sau",
@@ -800,4 +801,12 @@ MESSAGES = {
     "episode_delete_cut_tail": "Sau khi xóa, nguyên văn của tập trở lại thành nguyên văn chưa cắt, điểm bắt đầu lập kế hoạch tiếp lùi về theo.",
     "episode_delete_cut_gap_first": "Sau khi xóa, nguyên văn của tập trở lại thành nguyên văn chưa cắt, nằm trước «{after}». Lập kế hoạch đến hết sẽ không lấp đoạn này; có thể lập kế hoạch đoạn nguyên văn chưa cắt này trong chế độ xem «Phân tập».",
     "episode_delete_cut_gap_between": "Sau khi xóa, nguyên văn của tập trở lại thành nguyên văn chưa cắt, nằm giữa «{before}» và «{after}». Lập kế hoạch đến hết sẽ không lấp đoạn này; có thể lập kế hoạch đoạn nguyên văn chưa cắt này trong chế độ xem «Phân tập».",
+    "episode_delete_batch_header": "Xóa {count} tập: {names}",
+    "episode_delete_batch_names_more": "{names} và {count} tập khác",
+    "episode_delete_batch_loss": "{count} tập trong số đó không thể khôi phục; các nội dung sau bị xóa cùng:",
+    "episode_delete_batch_loss_source_chars": "nguyên văn tập ({count} tập, {total} chữ)",
+    "episode_delete_batch_loss_source_words": "nguyên văn tập ({count} tập, {total} từ)",
+    "episode_delete_batch_loss_script": "{count} kịch bản chính thức",
+    "episode_delete_batch_loss_script_plan": "{count} kế hoạch kịch bản và bản nháp",
+    "episode_delete_batch_cut_warning": "Xóa tập đã cắt sẽ trả nguyên văn của nó về dạng chưa cắt; bạn có thể lập kế hoạch lại trong chế độ xem «Phân tập».",
 }

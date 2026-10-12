@@ -519,7 +519,13 @@ class PatchEpisodeScriptRequest(BaseModel):
         pattern=r"^sha256-v1:[0-9a-f]{64}$", description="get_episode_script 返回的当前 revision"
     )
     operations: list[PatchEpisodeScriptOperation] = Field(
-        min_length=1, description="按顺序执行的编辑操作，整批原子提交：update / insert / move / remove / split"
+        min_length=1,
+        description=(
+            "按顺序执行的编辑操作，整批原子提交：update / insert / move / remove / split。"
+            'update 的结构固定为 {"op": "update", "id": "<条目id>", "fields": {"<字段路径>": "<新值>"}}：'
+            "条目 id 写进 id（值如 E66S1，键名就叫 id，不是 unit_id），要改的字段全部写进 fields 映射；"
+            "把字段平铺在 operation 上会被整批拒绝"
+        ),
     )
 
     @field_validator("script")

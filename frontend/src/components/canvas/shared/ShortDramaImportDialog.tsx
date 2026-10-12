@@ -24,7 +24,8 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { useShortDramaImportStore, type ShortDramaImportOpenRequest } from "@/stores/short-drama-import-store";
 import { episodeDisplayName } from "@/utils/episode-display";
 
-const HEADER_RE = /^(?:#\s*)?第\s*(\d+)\s*集\b/;
+// 兼容 Web 弹窗占位符「# 第 N 集 标题」与短剧工厂 skill 的「第【N】集：标题」写法（与 lib 的 _EPISODE_RE 对齐）。
+const HEADER_RE = /^(?:#\s*)?第\s*[【\[]?\s*(\d+)\s*[】\]]?\s*集/;
 
 /** 把多集拼接的 Markdown 按「第 N 集」标题拆成 [{episode_id, markdown}]；标题行保留在正文里（转写器据此取集数/集名）。 */
 function parseBatch(text: string): Array<{ episode_id: number; markdown: string }> {
@@ -62,9 +63,11 @@ type Mode = "single" | "batch";
 /**
  * 短剧工厂「导入剧本」：把 short-drama-factory 的 Markdown 转写为正式剧情演绎剧本并落盘。
  * 转写规则（与 Agent 入口一致，固化在此处）：动作/神态进 scene_description、台词进 utterances、
- * 单集按所选视频模型的时长档位切分多幕（每幕不超过最大档位，档位未知时 60 秒）、
+ * 单集按所选视频模型的时长档位切分多幕（每幕不超过最大档位；档位不可用时——如未选定视频模型——
+ * 后端会中止导入并提示先选定模型，而非静默回退 60 秒）、
  * 视觉层留空待 generate_episode_script 补出、集尾断章对齐 hook。
- * 集须已存在；批量模式可先「批量建空白集」再粘贴多集 Markdown（以「第 N 集」标题分隔，N 即集 ID）。
+ * 集须已存在；批量模式可先「批量建空白集」再粘贴多集 Markdown（以「第 N 集」标题分隔，N 即集 ID；
+ * 集头亦兼容「# 第 N 集」与「第【N】集」两种写法）。
  */
 function ShortDramaImportDialog({ request, onClose }: DialogProps) {
   const { t } = useTranslation("dashboard");
@@ -220,15 +223,25 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
                       })}
                     </p>
                     {result.details.map((detail) => (
-                      <p key={detail.episode} className={detail.ok ? "text-primary" : "text-destructive"}>
-                        {t("short_drama_import_result_detail", {
-                          episode: detail.episode,
-                          status: detail.ok
-                            ? t("short_drama_import_result_ok")
-                            : t("short_drama_import_result_failed"),
-                          info: detail.ok ? String(detail.scenes ?? 0) : detail.error ?? "",
-                        })}
-                      </p>
+                      <div key={detail.episode}>
+                        <p className={detail.ok ? "text-primary" : "text-destructive"}>
+                          {t("short_drama_import_result_detail", {
+                            episode: detail.episode,
+                            status: detail.ok
+                              ? t("short_drama_import_result_ok")
+                              : t("short_drama_import_result_failed"),
+                            info: detail.ok ? String(detail.scenes ?? 0) : detail.error ?? "",
+                          })}
+                        </p>
+                        {detail.ok && detail.duration_shortfall && (
+                          <p className="text-amber-600 dark:text-amber-400">
+                            {t("short_drama_import_result_shortfall", {
+                              declared: detail.declared_seconds ?? 0,
+                              actual: detail.actual_seconds ?? 0,
+                            })}
+                          </p>
+                        )}
+                      </div>
                     ))}
                   </div>
                 )}

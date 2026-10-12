@@ -3266,6 +3266,11 @@ export default {
   'drama_script_agent_redo_prefill': 'Tôi đã sửa kịch bản của {{episodeRef}}; hãy làm lại tập này theo nội dung đã sửa.',
   'drama_script_agent_redo_steps': 'Hãy theo các bước "修改内容" của skill video-workflow: gọi get_episode_script trước để đọc kịch bản hiện tại (revision trong kết quả là phiên bản hiện tại), rồi dùng patch_episode_script để điều chỉnh cảnh và thời lượng của tập này theo nội dung đã sửa và ghi vào dự án — viết update thành {"op": "update", "id": "<id cảnh>", "fields": {...}}, không trải phẳng trường lên operation; bỏ qua base_revision nếu không biết, không được tự bịa; không động đến các tập khác.',
   'drama_script_agent_redo_artifacts': 'Ảnh phân cảnh và video hiện tại sẽ mất hiệu lực và cần tạo lại.',
+  // Tập nhập từ short-drama-factory: làm lại nghĩa là viết lại Markdown rồi nhập lại,
+  // không phải chỉnh sửa cục bộ.
+  'drama_script_agent_redo_short_drama': 'Giao Agent: nhập lại tập này theo nội dung hiện tại',
+  'drama_script_agent_redo_short_drama_steps': 'Tập này được tạo bằng cách nhập từ short-drama-factory, nên hãy làm lại toàn bộ: gọi get_episode_script trước để đọc kịch bản hiện tại làm căn cứ, rồi dùng skill short-drama-factory viết lại Markdown kịch bản của tập này (giữ nguyên header thời lượng tập và các marker khối cảnh đúng như templates/episode-format.md quy định, mang theo nguyên vẹn các chỉnh sửa tôi đã làm ở đây), sau đó gọi import_short_drama_script để nhập đè toàn bộ tập. Chỉ việc nhập lại mới chia lại các cảnh, tính lại thời lượng từng cảnh theo tier của mô hình video hiện tại, đưa lớp hình ảnh về trạng thái chờ viết prompt và đăng ký lại tài sản. Đừng chuyển sang patch_episode_script chỉnh sửa cục bộ (cách đó không bao giờ thay đổi số cảnh hay thời lượng), và đừng động đến các tập khác.',
+  'drama_script_agent_redo_short_drama_artifacts': 'Nhập lại sẽ ghi đè toàn bộ kịch bản tập này: ảnh phân cảnh và video hiện tại mất hiệu lực và phải tạo lại, các prompt đã viết cũng bị xóa để viết lại.',
   'episode_view_units': 'Đơn vị video',
   'episode_view_needs_script': 'Dùng được sau khi tạo kịch bản',
   'episode_head_more': 'Thao tác khác cho tập này',

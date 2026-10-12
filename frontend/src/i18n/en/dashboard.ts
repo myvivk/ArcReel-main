@@ -3266,6 +3266,11 @@ export default {
   'drama_script_agent_redo_prefill': "I've edited the script of {{episodeRef}}; please redo this episode from the edited content.",
   'drama_script_agent_redo_steps': 'Follow the "修改内容" steps of the video-workflow skill: call get_episode_script first to read the current script (the revision in its result is the current version), then use patch_episode_script to adjust scenes and durations of this episode from the edited content and commit — write update ops as {"op": "update", "id": "<scene id>", "fields": {...}}, never flatten fields onto the operation; omit base_revision if you do not know it, never invent it; do not touch other episodes.',
   'drama_script_agent_redo_artifacts': 'Existing storyboards and videos become invalid and need regenerating afterwards.',
+  // Episodes imported from short-drama-factory: redoing means rewriting the Markdown and re-importing,
+  // never a local patch.
+  'drama_script_agent_redo_short_drama': 'Hand to Agent: re-import this episode from current content',
+  'drama_script_agent_redo_short_drama_steps': 'This episode came from a short-drama-factory import, so redo it wholesale: call get_episode_script first to read the current script as the basis, then rewrite this episode’s script Markdown with the short-drama-factory skill (keep the duration header and the scene-block markers exactly as templates/episode-format.md defines them, and carry over verbatim the edits I made here), and finally overwrite the episode with a full import_short_drama_script call. Only re-importing re-splits scenes, recomputes each scene duration against the current video model tiers, resets the visual layer to pending authoring and re-registers assets. Do not fall back to patch_episode_script with partial edits (that never changes scene count or durations), and leave the other episodes untouched.',
+  'drama_script_agent_redo_short_drama_artifacts': 'Re-importing overwrites the whole episode script: existing storyboards and videos become invalid and must be regenerated, and written prompts are cleared for re-authoring.',
   'episode_view_units': 'Video units',
   'episode_view_needs_script': 'Available once the script is generated',
   'episode_head_more': 'More actions for this episode',

@@ -24,6 +24,10 @@ import { episodeAgentRef } from "@/utils/episode-display";
  * - **不在这里改时长**：时长编辑在分镜视图里带档位校验，两处都能改会出现校验口径不一致；
  * - **不在这里批量补生成分镜图**：页头「补齐分镜图」是分镜/宫格视图的批量入口，更快更省，
  *   这里只提示前往。改了内容后已有产物会过期，正是那个批量入口要补的。
+ *
+ * 页头「交给 Agent」按钮按来源分叉：短剧工厂导入的集（`short_drama_meta` 在场）重做就是
+ * 「重写 Markdown + 重新导入」，只有整份导入才会重切幕、重算时长、重录视觉层；其余集走
+ * `patch_episode_script` 的局部修改，保留结构与已写的提示词。
  */
 export function DramaScriptContentView({
   script,
@@ -49,17 +53,23 @@ export function DramaScriptContentView({
   const { t } = useTranslation("dashboard");
   const episodeRef = episodeAgentRef(episodes, episode, t);
 
+  // 短剧工厂导入的集（顶层带 short_drama_meta）：「重做」要达到整份重来的粒度——
+  // 重写 Markdown 后重新导入。局部 patch 改不动幕数、时长、视觉层与资产，达不到重做的效果。
+  const shortDrama = script.short_drama_meta != null;
+
   const handOffRedo = useCallback(() => {
+    const stepsKey = shortDrama
+      ? "drama_script_agent_redo_short_drama_steps"
+      : "drama_script_agent_redo_steps";
+    const artifactsKey = shortDrama
+      ? "drama_script_agent_redo_short_drama_artifacts"
+      : "drama_script_agent_redo_artifacts";
     prefillAssistant(
-      [
-        t("drama_script_agent_redo_prefill", { episodeRef }),
-        t("drama_script_agent_redo_steps"),
-        hasArtifacts ? t("drama_script_agent_redo_artifacts") : "",
-      ]
+      [t("drama_script_agent_redo_prefill", { episodeRef }), t(stepsKey), hasArtifacts ? t(artifactsKey) : ""]
         .filter(Boolean)
         .join("\n"),
     );
-  }, [t, episodeRef, hasArtifacts]);
+  }, [t, episodeRef, hasArtifacts, shortDrama]);
 
   return (
     <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -68,7 +78,7 @@ export function DramaScriptContentView({
           <h2 className="text-lg font-semibold">{script.title || t("drama_script_title_fallback")}</h2>
           {!readOnly && (
             <Button variant="outline" size="sm" onClick={handOffRedo}>
-              {t("drama_script_agent_redo")}
+              {t(shortDrama ? "drama_script_agent_redo_short_drama" : "drama_script_agent_redo")}
             </Button>
           )}
         </div>

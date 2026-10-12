@@ -45,6 +45,7 @@ class AdmissionReason(StrEnum):
     EPISODE_SOURCE_MISSING = "episode_source_missing"
     FORMAL_SCRIPT_MISSING = "formal_script_missing"
     FORMAL_SCRIPT_EXISTS = "formal_script_exists"
+    FORMAL_SCRIPT_NO_SOURCE = "formal_script_no_source"
     NO_PENDING_AUTHORING = "no_pending_authoring"
     PROMPT_AUTHORING_DRAFT_PENDING = "prompt_authoring_draft_pending"
     AD_INPUTS_MISSING = "ad_brief_and_products_missing"
@@ -139,11 +140,22 @@ def admit_plan_episodes(
     return _refused(AdmissionReason.REPLAN_CANDIDATE_PENDING) if replan_pending else ADMITTED
 
 
-def admit_script_plan(content_mode: object, *, episode_source: bool) -> OperationAdmission:
-    """AI 规划脚本：本集有集原文。"""
+def admit_script_plan(
+    content_mode: object, *, episode_source: bool, formal_script: bool = False
+) -> OperationAdmission:
+    """AI 规划脚本：本集有集原文。
+
+    短剧工厂导入的集无集原文，但已有正式脚本：AI 规划脚本不适用，应走
+    ``patch_episode_script`` / ``generate_episode_script``，故返回专门的拒绝理由，
+    避免回执误导成「补充集原文」（旧文案会引导去补源文，而这类集本就不该有源文）。
+    """
     if content_mode == "ad":
         return NOT_APPLICABLE
-    return ADMITTED if episode_source else _refused(AdmissionReason.EPISODE_SOURCE_MISSING)
+    if episode_source:
+        return ADMITTED
+    if formal_script:
+        return _refused(AdmissionReason.FORMAL_SCRIPT_NO_SOURCE)
+    return _refused(AdmissionReason.EPISODE_SOURCE_MISSING)
 
 
 def admit_author_prompts(

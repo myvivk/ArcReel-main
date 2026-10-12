@@ -7,6 +7,7 @@ MESSAGES = {
     "operation_replan_candidate_pending": "Có một phương án phân tập mới đang chờ xử lý. Hãy áp dụng hoặc bỏ phương án đó trong chế độ xem «Phân tập» rồi mới lập kế hoạch tiếp",
     "operation_episode_source_missing": "{where} chưa có văn bản nguồn; hãy tự viết kịch bản trống hoặc bổ sung nguồn trước khi AI lập kế hoạch kịch bản",
     "operation_formal_script_missing": "{where} chưa có kịch bản chính thức; hãy xác nhận kế hoạch hoặc tự viết kịch bản trước khi soạn prompt",
+    "operation_formal_script_no_source": "{where} được nhập từ công cụ short-drama factory, không có văn bản nguồn; không dùng AI lập kế hoạch kịch bản. Hãy dùng patch_episode_script để điều chỉnh cảnh/thời lượng, và generate_episode_script để bổ sung lớp hình ảnh",
     "operation_formal_script_exists": "{where} đã có kịch bản chính thức. Muốn thay thế toàn bộ, hãy tạo lại một cách rõ ràng và xác nhận ghi đè. Soạn prompt chỉ bổ sung các mục đang chờ",
     "operation_no_pending_authoring": "{where} không có mục chờ soạn",
     "operation_prompt_authoring_draft_pending": "{where} có bản nháp soạn prompt cần xử lý nên chưa thể soạn prompt",

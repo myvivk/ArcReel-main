@@ -7,6 +7,7 @@ MESSAGES = {
     "operation_replan_candidate_pending": "A new episode plan is waiting for review. Adopt or discard it in the Episodes view before planning again",
     "operation_episode_source_missing": "{where} has no episode source text; write a blank script manually or provide source text before AI script planning",
     "operation_formal_script_missing": "{where} has no formal script; confirm a script plan or write a blank script before authoring prompts",
+    "operation_formal_script_no_source": "{where} was imported from a short-drama factory and has no episode source text; AI script planning does not apply. Use patch_episode_script to adjust scenes and durations, and generate_episode_script to fill the visual layer",
     "operation_formal_script_exists": "{where} already has a formal script. To replace it, regenerate it explicitly and confirm the overwrite. Prompt authoring fills pending entries only",
     "operation_no_pending_authoring": "{where} has no pending entries",
     "operation_prompt_authoring_draft_pending": "{where} has a prompt-authoring draft to resolve, so prompts can't be written yet",

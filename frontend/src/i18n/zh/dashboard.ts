@@ -3263,7 +3263,7 @@ export default {
   'drama_script_stale_hint': '改动内容会让已有的分镜图与视频过期；重新生成请到「分镜」页签用页头的批量补齐。',
   'drama_script_agent_redo': '交给 Agent：按当前内容重做本集',
   'drama_script_agent_redo_prefill': '{{episodeRef}}的剧本内容我已经改好了，请按改后的内容重做这一集。',
-  'drama_script_agent_redo_steps': '重新拆分分镜与时长并把结果落库；不要改动我没有改过的其它集。',
+  'drama_script_agent_redo_steps': '用 patch_episode_script 按改后的内容调整分镜与时长并落库；不要改动我没有改过的其它集。',
   'drama_script_agent_redo_artifacts': '已有的分镜图与视频会因此失效，落库后请一并重新生成。',
   'episode_view_units': '视频单元',
   'episode_view_needs_script': '脚本生成后可用',

@@ -7,6 +7,7 @@ MESSAGES = {
     "operation_replan_candidate_pending": "有一份新的分集方案等待处理，先在「分集」视图里采纳或放弃它，才能再规划分集",
     "operation_episode_source_missing": "{where}没有集原文，无法用 AI 规划脚本；可以从空白开始手写正式脚本，或先补充本集原文",
     "operation_formal_script_missing": "{where}尚无正式脚本，无法编写提示词；请先完成脚本规划与内容确认，或从空白开始手写",
+    "operation_formal_script_no_source": "{where}由短剧工厂导入、无集原文，AI 规划脚本不适用；请用 patch_episode_script 调整分镜与时长，用 generate_episode_script 补视觉层",
     "operation_formal_script_exists": "{where}已有正式脚本；要整份替换，请显式重新生成并确认覆盖。编写提示词只写待编写条目",
     "operation_no_pending_authoring": "{where}没有待编写的条目",
     "operation_prompt_authoring_draft_pending": "{where}有待处理的提示词编写草稿，暂不能编写提示词",

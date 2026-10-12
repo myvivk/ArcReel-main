@@ -100,15 +100,24 @@ def test_plan_episodes_needs_the_whole_source(content_mode: str, whole_source: b
 
 
 @pytest.mark.parametrize(
-    ("content_mode", "episode_source", "expected"),
+    ("content_mode", "episode_source", "formal_script", "expected"),
     [
-        ("narration", True, ("admitted", None)),
-        ("drama", False, ("refused", "episode_source_missing")),
-        ("ad", True, ("not_applicable", "operation_not_applicable")),
+        ("narration", True, False, ("admitted", None)),
+        ("drama", False, False, ("refused", "episode_source_missing")),
+        # 短剧工厂导入集：无集原文但已有正式脚本，回执须指向 patch/generate，而非「补充原文」。
+        ("drama", False, True, ("refused", "formal_script_no_source")),
+        ("ad", True, False, ("not_applicable", "operation_not_applicable")),
     ],
 )
-def test_script_plan_needs_the_episode_source(content_mode: str, episode_source: bool, expected: tuple) -> None:
-    assert _conclusion(admit_script_plan(content_mode, episode_source=episode_source)) == expected
+def test_script_plan_needs_the_episode_source(
+    content_mode: str, episode_source: bool, formal_script: bool, expected: tuple
+) -> None:
+    assert (
+        _conclusion(
+            admit_script_plan(content_mode, episode_source=episode_source, formal_script=formal_script)
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(

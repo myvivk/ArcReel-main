@@ -1440,12 +1440,21 @@ class API {
     );
   }
 
-  /** 导入一集短剧工厂剧本：Markdown → 正式剧情演绎剧本并落盘，返回集号与场景数。 */
+  /** 导入一集短剧工厂剧本：Markdown → 正式剧情演绎剧本并落盘，返回集号、场景数与质量回执。 */
   static async importShortDramaScript(
     projectName: string,
     episodeId: number,
     markdown: string,
-  ): Promise<{ episode: number; scenes: number }> {
+  ): Promise<{
+    episode: number;
+    scenes: number;
+    declared_seconds?: number;
+    actual_seconds?: number;
+    duration_shortfall?: boolean;
+    registered_assets?: Record<string, string[]>;
+    asset_conflicts?: Array<Record<string, string>>;
+    asset_registration_failed?: string;
+  }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/short-drama/import`,
       { method: "POST", body: JSON.stringify({ episode_id: episodeId, markdown }) },
@@ -1460,7 +1469,18 @@ class API {
   ): Promise<{
     imported: number;
     failed: number;
-    details: Array<{ episode: number; ok: boolean; scenes?: number; error?: string }>;
+    details: Array<{
+      episode: number;
+      ok: boolean;
+      scenes?: number;
+      error?: string;
+      declared_seconds?: number;
+      actual_seconds?: number;
+      duration_shortfall?: boolean;
+      registered_assets?: Record<string, string[]>;
+      asset_conflicts?: Array<Record<string, string>>;
+      asset_registration_failed?: string;
+    }>;
   }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/short-drama/import-batch`,

@@ -30,6 +30,7 @@ from lib.episode.episode_ids import describe_episode_for_agent
 from lib.episode.episode_paths import (
     SCRIPT_PLAN_FILENAMES,
     episode_drafts_dir,
+    episode_script_relpath,
     episode_source_relpath,
 )
 from lib.episode.episode_sources import episode_entry
@@ -631,14 +632,24 @@ def prompt_authoring_preflight(
 
 
 def script_plan_preflight(project_path: Path, project: Mapping[str, Any], episode: int, source: str | None) -> None:
-    """AI 规划脚本的准入：本集有集原文（按账本记录的来源判定）。显式指定源文件时以该文件为输入，由生成时校验。"""
+    """AI 规划脚本的准入：本集有集原文（按账本记录的来源判定）。显式指定源文件时以该文件为输入，由生成时校验。
+
+    短剧工厂导入的集无集原文但已有正式脚本：误调时回执改为专属理由，明确改用
+    ``patch_episode_script`` / ``generate_episode_script``，不再误导去补集原文。
+    """
     has_source = source is not None or episode_source_present(project_path, episode, episode_entry(project, episode))
-    require_admitted(
-        "prepare_script_plan",
-        admit_script_plan(project.get("content_mode", "narration"), episode_source=has_source),
-        episode=episode,
-        detail=translate("operation_episode_source_location", path=episode_source_relpath(episode)),
+    admission = admit_script_plan(
+        project.get("content_mode", "narration"),
+        episode_source=has_source,
+        formal_script=(project_path / episode_script_relpath(episode)).is_file(),
     )
+    # 短剧导入态用专属文案，不附带「集原文位置」这种误导性细节。
+    detail = (
+        ""
+        if admission.reason is AdmissionReason.FORMAL_SCRIPT_NO_SOURCE
+        else translate("operation_episode_source_location", path=episode_source_relpath(episode))
+    )
+    require_admitted("prepare_script_plan", admission, episode=episode, detail=detail)
 
 
 async def generate_episode_script(

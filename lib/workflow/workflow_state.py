@@ -1719,7 +1719,9 @@ class WorkflowStateService:
             and is_episode_complete(ArtifactCount.of(videos, total=len(items)), has_edit_timeline=bool(timeline_ids))
         )
 
-        operations[WorkflowActionType.PREPARE_SCRIPT_PLAN] = admit_script_plan(mode, episode_source=episode_source)
+        operations[WorkflowActionType.PREPARE_SCRIPT_PLAN] = admit_script_plan(
+            mode, episode_source=episode_source, formal_script=formal_present
+        )
         operations[WorkflowActionType.GENERATE_SCRIPT] = admit_ad_script(
             mode,
             formal_script=formal_present,

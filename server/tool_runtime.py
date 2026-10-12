@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -1219,10 +1219,18 @@ async def import_short_drama_series(
     底层复用 ``import_short_drama_script`` 的单集路径；各集通过 ``asyncio.gather`` 并发执行。
     并发安全性由 ``ProjectManager`` 保证：每集脚本文件有独立锁，账本 ``project.json`` 的同步走单项目锁，
     因此并发不会损坏数据，但同一项目内的账本更新会被串行化（墙钟时间不会线性下降）。
+
+    各集脚本落盘后，引用到的角色/场景/道具由**一次** ``update_project`` 在 ``gather`` 之后统一补登记
+    （与单集路径登记的字段与口径一致），避免逐集并发登记 ``project.json`` 的读-改-写竞态与 N 倍项目锁竞争。
     """
     from lib.episode.episode_paths import episode_script_filename
+    from lib.project.asset_types import register_missing_assets
     from lib.script.script_models import DramaEpisodeScript
-    from lib.script.short_drama_import import convert_to_drama_script, parse_short_drama_episode
+    from lib.script.short_drama_import import (
+        convert_to_drama_script,
+        parse_short_drama_episode,
+        referenced_asset_names,
+    )
 
     try:
         project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
@@ -1257,6 +1265,8 @@ async def import_short_drama_series(
                 "episode": item.episode_id,
                 "scenes": len(script["scenes"]),
                 "ok": True,
+                # `_script` 仅供落盘后的资产登记单趟使用，不进入回执
+                "_script": script,
                 **_duration_shortfall(parsed, script),
             }
         except Exception as exc:
@@ -1271,6 +1281,36 @@ async def import_short_drama_series(
                 f"{len(failed)}/{len(results)} 集导入失败：" + "; ".join(r.get("error", "") for r in failed),
             )
         )
+
+    # 资产登记单趟补做：收集各成功集引用到的角色/场景/道具，在 gather 之后用一次
+    # update_project 登记，避免「每集并发 update_project」的读-改-写竞态与 N 倍项目锁竞争
+    # （同一 project.json 的写被单项目锁串行化，并发只会徒增墙钟时间且可能丢更新）。
+    asset_outcome: dict[str, Any] = {}
+    ok_scripts = [cast(dict, r.pop("_script")) for r in results if r.get("ok")]
+    if ok_scripts:
+        merged: dict[str, list[str]] = {"character": [], "scene": [], "prop": []}
+        for script in ok_scripts:
+            for asset_type, names in referenced_asset_names(script).items():
+                seen = merged[asset_type]
+                for name in names:
+                    if name not in seen:
+                        seen.append(name)
+
+        def _mutate(project: dict) -> None:
+            registered, conflicts = register_missing_assets(project, merged)
+            if registered:
+                asset_outcome["registered_assets"] = registered
+            if conflicts:
+                asset_outcome["asset_conflicts"] = conflicts
+
+        try:
+            await asyncio.to_thread(services.projects.update_project, scope.project_name, _mutate)
+        except Exception as exc:  # 登记失败不推翻已落盘的剧本
+            asset_outcome["asset_registration_failed"] = str(exc)
+    for r in results:
+        if r.get("ok"):
+            r.update(asset_outcome)
+
     return ToolOutcome(
         value={
             "imported": sum(1 for r in results if r["ok"]),

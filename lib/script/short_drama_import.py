@@ -12,9 +12,10 @@ short-drama-factory 的编剧方法论与模板**原样复刻**在
   ``utterances``（带说话人=dialogue，旁白/画外音=voiceover）。原文逐字保留在 ``source_text`` 追溯锚。
 * 短剧单集 90~195 秒，超过 ArcReel 单幕 ``duration_seconds`` 上限，故切成若干幕。**切点按剧本结构
   取：以 ``[场景]`` 块边界为首选项，场景本身超上限时才在块内按 beat 细分（切点仍在 beat 边界上，
-  不劈断台词或动作行）**，而不是把整集拍平后均分。单幕上限取所选视频模型的最大时长档位（档位
-  未知时退回 60 秒静态上限）；剧本只给整集总时长、不给逐拍秒数，每拍时长按均匀估算分摊，
-  每幕时长再吸附到最近的合法档位——生成期拿不到档位的时长会被 backend 拒，落盘前必须对齐。
+  不劈断台词或动作行）**，而不是把整集拍平后均分。单幕上限取所选视频模型的最大时长档位；
+  **只有 ComfyUI 这类时长不由 ArcReel 驱动的端点（backend 传 ``supported_durations=None``）才退回
+  60 秒静态上限的旧口径**。走普通视频模型时，backend 在切幕前若拿不到合法时长档位会直接中止导入，
+  不会落到这里——生成期拿不到档位的时长会被 backend 拒，落盘前必须对齐。
   这是格式对齐所需的必要拆分，不丢弃任何内容。
 * 视觉层（``image_prompt`` / ``video_prompt``）留空并置 ``pending_authoring=True``，交给 ArcReel 既有的
   ``generate_episode_script``（提示词编写）补出——与 ArcReel 两段式（内容层 → 视觉层）一致。
@@ -75,7 +76,9 @@ _HEADER_PATTERNS: dict[str, re.Pattern[str]] = {
     "mid_hook": re.compile(r"^【本集中段小钩】[：:]\s*(.+)$"),
     "cliffhanger": re.compile(r"^【本集断章卡点】[：:]\s*(.+)$"),
 }
-_EPISODE_RE = re.compile(r"^第【(\d+)】集[：:]\s*(.*)$")
+# 集头容错：可选 Markdown 标题符「#」、可选「【】」/「[]」包裹的集号，集号后可选「：标题」或
+# 「 标题」。对齐 Web 导入弹窗的「# 第 N 集 标题」占位符与短剧工厂 skill 的「第【N】集：标题」规范。
+_EPISODE_RE = re.compile(r"^(?:#\s*)?第\s*[【\[]?\s*(\d+)\s*[】\]]?\s*集(?:\s*[：:]?\s*(.*))?$")
 _SCENE_RE = re.compile(r"^\[场景\][：:]\s*(.+)$")
 _PERSON_RE = re.compile(r"^\[人物\][：:]\s*(.+)$")
 _ACTION_PREFIX = "△"
@@ -280,7 +283,8 @@ def _split_into_scenes(
     只给整集总时长，不给逐拍秒数，故每拍时长取均匀估算（``total / 总拍数``）。
     """
     tiers = sorted({int(d) for d in (supported_durations or []) if int(d) > 0})
-    # 单幕上限取所选视频模型的最大时长档位；能力未知时退回 60 秒静态上限（旧行为）。
+    # 单幕上限取所选视频模型的最大时长档位；仅 ComfyUI 类端点（supported_durations 为空、时长不由
+    # ArcReel 驱动）退回 60 秒静态上限的旧口径。普通视频模型档位不可用时由 backend 中止导入，不会到此。
     max_duration = tiers[-1] if tiers else 60
     total = parsed.total_duration or 60
     beat_total = sum(len(block.beats) for block in parsed.blocks)

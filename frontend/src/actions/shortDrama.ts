@@ -18,6 +18,13 @@ export interface ShortDramaImportDetail {
   ok: boolean;
   scenes?: number;
   error?: string;
+  /** 声明时长与落盘实得时长不一致时由后端回执（剧本可能悄悄变短）。 */
+  declared_seconds?: number;
+  actual_seconds?: number;
+  duration_shortfall?: boolean;
+  registered_assets?: Record<string, string[]>;
+  asset_conflicts?: Array<Record<string, string>>;
+  asset_registration_failed?: string;
 }
 
 export interface ShortDramaImportResult {
@@ -26,17 +33,44 @@ export interface ShortDramaImportResult {
   details: ShortDramaImportDetail[];
 }
 
+export interface ShortDramaImportOneResult {
+  episode: number;
+  scenes: number;
+  declared_seconds?: number;
+  actual_seconds?: number;
+  duration_shortfall?: boolean;
+  registered_assets?: Record<string, string[]>;
+  asset_conflicts?: Array<Record<string, string>>;
+  asset_registration_failed?: string;
+}
+
 /** 导入一集短剧工厂剧本，成功/失败均弹提示。 */
 export async function importShortDramaScript(
   projectName: string,
   episodeId: number,
   markdown: string,
-): Promise<{ episode: number; scenes: number }> {
+): Promise<ShortDramaImportOneResult> {
   try {
     const res = await API.importShortDramaScript(projectName, episodeId, markdown);
-    useAppStore
-      .getState()
-      .pushToast(i18n.t("dashboard:short_drama_imported_one", { episode: res.episode, scenes: res.scenes }), "success");
+    if (res.duration_shortfall) {
+      useAppStore
+        .getState()
+        .pushToast(
+          i18n.t("dashboard:short_drama_imported_one_shortfall", {
+            episode: res.episode,
+            declared: res.declared_seconds ?? 0,
+            actual: res.actual_seconds ?? 0,
+          }),
+          "warning",
+        );
+    } else {
+      useAppStore
+        .getState()
+        .pushToast(
+          i18n.t("dashboard:short_drama_imported_one", { episode: res.episode, scenes: res.scenes }),
+          "success",
+        );
+    }
     return res;
   } catch (err) {
     useAppStore.getState().pushToast(errMsg(err), "error");

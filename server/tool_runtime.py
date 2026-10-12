@@ -516,7 +516,8 @@ class PatchEpisodeScriptRequest(BaseModel):
         min_length=1, description="剧本纯文件名（不含目录），如 episode_1.json；单集单文件，多集编辑每集一次调用"
     )
     base_revision: str = Field(
-        pattern=r"^sha256-v1:[0-9a-f]{64}$", description="get_episode_script 返回的当前 revision"
+        description="get_episode_script 返回的当前 revision（sha256-v1: 前缀 + 64 位十六进制）；"
+        "先调 get_episode_script 读取，原样传入，不要编造"
     )
     operations: list[PatchEpisodeScriptOperation] = Field(
         min_length=1,
@@ -533,6 +534,17 @@ class PatchEpisodeScriptRequest(BaseModel):
     def _validate_script(cls, value: str) -> str:
         if "/" in value or "\\" in value or value in (".", ".."):
             raise ValueError(f"script 必须是纯文件名，禁止路径分隔符: {value!r}")
+        return value
+
+    @field_validator("base_revision")
+    @classmethod
+    def _validate_base_revision(cls, value: str) -> str:
+        if re.fullmatch(r"sha256-v1:[0-9a-f]{64}", value) is None:
+            raise ValueError(
+                "base_revision 不是合法 revision：须原样传 get_episode_script 返回的 revision"
+                "（sha256-v1: 前缀 + 64 位十六进制），不要自行编造或拼接；"
+                "请先调用 get_episode_script 读取本集当前 revision，再原样传入"
+            )
         return value
 
 

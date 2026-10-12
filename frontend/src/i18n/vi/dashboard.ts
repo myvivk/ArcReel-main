@@ -3264,7 +3264,7 @@ export default {
   'drama_script_stale_hint': 'Sửa nội dung sẽ làm ảnh phân cảnh và video hiện có bị cũ — tạo lại bằng nút bù hàng loạt ở tab Phân cảnh.',
   'drama_script_agent_redo': 'Giao Agent: làm lại tập này theo nội dung hiện tại',
   'drama_script_agent_redo_prefill': 'Tôi đã sửa kịch bản của {{episodeRef}}; hãy làm lại tập này theo nội dung đã sửa.',
-  'drama_script_agent_redo_steps': 'Dùng patch_episode_script để điều chỉnh cảnh và thời lượng theo nội dung đã sửa rồi ghi vào dự án; không động đến các tập khác.',
+  'drama_script_agent_redo_steps': 'Hãy theo các bước "修改内容" của skill video-workflow: dùng patch_episode_script để điều chỉnh cảnh và thời lượng của tập này theo nội dung đã sửa rồi ghi vào dự án; không động đến các tập khác.',
   'drama_script_agent_redo_artifacts': 'Ảnh phân cảnh và video hiện tại sẽ mất hiệu lực và cần tạo lại.',
   'episode_view_units': 'Đơn vị video',
   'episode_view_needs_script': 'Dùng được sau khi tạo kịch bản',

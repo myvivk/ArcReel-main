@@ -515,9 +515,14 @@ class PatchEpisodeScriptRequest(BaseModel):
     script: str = Field(
         min_length=1, description="剧本纯文件名（不含目录），如 episode_1.json；单集单文件，多集编辑每集一次调用"
     )
-    base_revision: str = Field(
-        description="get_episode_script 返回的当前 revision（sha256-v1: 前缀 + 64 位十六进制）；"
-        "先调 get_episode_script 读取，原样传入，不要编造"
+    base_revision: str | SkipJsonSchema[None] = Field(
+        default=None,
+        description=(
+            "基线 revision：不知道就省略（不给这个字段），服务端按当前 revision 执行；"
+            "千万不要填占位文字或凭空编造，格式不符会被整批拒绝。"
+            "要校验并发就传 get_episode_script 返回的原样 revision（sha256-v1: 前缀 + 64 位十六进制），"
+            "与当前 revision 不一致时整批以 revision_conflict 拒绝，须重新读取后重试"
+        ),
     )
     operations: list[PatchEpisodeScriptOperation] = Field(
         min_length=1,
@@ -538,7 +543,9 @@ class PatchEpisodeScriptRequest(BaseModel):
 
     @field_validator("base_revision")
     @classmethod
-    def _validate_base_revision(cls, value: str) -> str:
+    def _validate_base_revision(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if re.fullmatch(r"sha256-v1:[0-9a-f]{64}", value) is None:
             raise ValueError(
                 "base_revision 不是合法 revision：须原样传 get_episode_script 返回的 revision"
@@ -2666,7 +2673,11 @@ def _patch_episode_script_sync(
     except Exception as exc:
         return ToolOutcome(problem=ToolProblem("internal_error", f"patch_episode_script 失败: {exc}"))
 
-    if request.value.base_revision != script_revision(current):
+    # base_revision 省略即按服务端当前 revision 执行：不拿一个无从得知的值去逼调用方编造。
+    requested_revision = request.value.base_revision
+    expected_revision = requested_revision if requested_revision is not None else script_revision(current)
+
+    if requested_revision is not None and requested_revision != script_revision(current):
         return ToolOutcome(
             value=_script_edit_failure(
                 request.value,
@@ -2681,7 +2692,7 @@ def _patch_episode_script_sync(
         projected, source_indexes, fresh_insert_indexes = _project_patch_operations(current, request.value.operations)
     except ScriptEditError as exc:
         latest = services.projects.load_script(scope.project_name, request.value.script)
-        if request.value.base_revision != script_revision(latest):
+        if requested_revision is not None and requested_revision != script_revision(latest):
             return ToolOutcome(
                 value=_script_edit_failure(
                     request.value,
@@ -2713,7 +2724,7 @@ def _patch_episode_script_sync(
     command = ScriptBatchEditCommand.model_validate(
         {
             "script": request.value.script,
-            "expected_revision": request.value.base_revision,
+            "expected_revision": expected_revision,
             "operations": projected,
         }
     )

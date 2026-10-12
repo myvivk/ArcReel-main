@@ -3264,7 +3264,7 @@ export default {
   'drama_script_stale_hint': 'Editing content makes existing storyboards and videos stale — regenerate them from the batch fill button on the Storyboard tab.',
   'drama_script_agent_redo': 'Hand to Agent: redo this episode from current content',
   'drama_script_agent_redo_prefill': "I've edited the script of {{episodeRef}}; please redo this episode from the edited content.",
-  'drama_script_agent_redo_steps': 'Follow the "修改内容" steps of the video-workflow skill: use patch_episode_script to adjust scenes and durations of this episode from the edited content and commit; do not touch other episodes.',
+  'drama_script_agent_redo_steps': 'Follow the "修改内容" steps of the video-workflow skill: call get_episode_script first to read the current script (the revision in its result is the current version), then use patch_episode_script to adjust scenes and durations of this episode from the edited content and commit — write update ops as {"op": "update", "id": "<scene id>", "fields": {...}}, never flatten fields onto the operation; omit base_revision if you do not know it, never invent it; do not touch other episodes.',
   'drama_script_agent_redo_artifacts': 'Existing storyboards and videos become invalid and need regenerating afterwards.',
   'episode_view_units': 'Video units',
   'episode_view_needs_script': 'Available once the script is generated',

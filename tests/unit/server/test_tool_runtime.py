@@ -375,6 +375,23 @@ async def test_patch_episode_script_returns_typed_revision_conflict() -> None:
     assert all(thread != caller_thread for thread in projects.load_script_threads)
 
 
+def test_patch_episode_script_base_revision_is_omittable() -> None:
+    """base_revision 可省略：不拿一个无从得知的值逼调用方编造占位文字；给了就仍按格式校验。"""
+    omitted = PatchEpisodeScriptRequest.model_validate(
+        {"script": "episode_1.json", "operations": [{"op": "remove", "id": "E1S01"}]}
+    )
+    assert omitted.base_revision is None
+
+    with pytest.raises(ValidationError, match="base_revision"):
+        PatchEpisodeScriptRequest.model_validate(
+            {
+                "script": "episode_1.json",
+                "base_revision": "无",
+                "operations": [{"op": "remove", "id": "E1S01"}],
+            }
+        )
+
+
 async def test_sync_transaction_finishes_worker_before_propagating_cancellation() -> None:
     started = threading.Event()
     release = threading.Event()

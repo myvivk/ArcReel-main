@@ -36,6 +36,8 @@ PATCH_EPISODE_SCRIPT = ToolDeclaration(
         "按 canonical revision 原子执行有序剧本 operations（update / insert / move / remove / split）。"
         'update 的结构固定为 {"op": "update", "id": "<条目id>", "fields": {...}}：条目 id 写进 id，'
         "要改的字段（如 image_prompt / video_prompt）全部写进 fields 映射，平铺在 operation 上会被整批拒绝。"
+        "base_revision 不知道就整个字段省略（服务端按当前 revision 执行），不要填占位文字或凭空编造——"
+        "格式不符会被整批拒绝；确要校验并发时传 get_episode_script 返回的原样 revision。"
         "先在内存形成完整 candidate，再统一校验 schema、项目引用、Artifact Manifest 与 SpeechComposition；"
         "任一问题整批零写入，结果 success=false，problems 给出稳定 code、operation_index、unit/field location 与 "
         "next_action，发声组合问题另附 speech_admission。insert 的新条目 id 由服务端分配（本集最大序号的下一个），"

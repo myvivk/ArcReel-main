@@ -125,6 +125,8 @@ function EpisodePageContent({
   const grid = gridStoryboardEnabled(projectData);
   const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
   const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
+  // 起步区据此给剧情演绎模式追加「AI 原创剧本」入口；演示态不可写入，不追加。
+  const scriptContentMode = demo ? undefined : projectData?.content_mode === "drama" ? "drama" : undefined;
   const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
   // 规划产物态取工作流计划（页头的制作进度面板驱动刷新）：短剧导入的集据此藏掉规划页签。
   const planState = useWorkflowStore((s) =>
@@ -240,13 +242,13 @@ function EpisodePageContent({
         />
       ) : (
         <EpisodeViewFactsProvider value={facts}>
-          <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} sourceOnly />
+          <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} contentMode={scriptContentMode} sourceOnly />
         </EpisodeViewFactsProvider>
       );
   } else if (demo && !script) {
     body = <DemoEpisodePlaceholder />;
   } else if (sourceReview) {
-    body = <EpisodeViewFactsProvider value={facts}><EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} /></EpisodeViewFactsProvider>;
+    body = <EpisodeViewFactsProvider value={facts}><EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} contentMode={scriptContentMode} /></EpisodeViewFactsProvider>;
   } else {
     body = <EpisodeViewFactsProvider value={facts}>{renderCanvas({ view, onViewChange: changeView })}</EpisodeViewFactsProvider>;
   }

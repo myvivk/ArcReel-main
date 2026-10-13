@@ -12,10 +12,11 @@ short-drama-factory 的编剧方法论与模板**原样复刻**在
   ``utterances``（带说话人=dialogue，旁白/画外音=voiceover）。原文逐字保留在 ``source_text`` 追溯锚。
 * 短剧单集 90~195 秒，超过 ArcReel 单幕 ``duration_seconds`` 上限，故切成若干幕。**切点按剧本结构
   取：以 ``[场景]`` 块边界为首选项，场景本身超上限时才在块内按 beat 细分（切点仍在 beat 边界上，
-  不劈断台词或动作行）**，而不是把整集拍平后均分。单幕上限取调用方给出的规划时长（短剧导入使用
-  项目默认分镜时长，未设置时为 8 秒）；剧本只给整集总时长、不给逐拍秒数，每拍时长按均匀估算分摊，
-  每幕时长再吸附到最近的合法档位——生成期拿不到档位的时长会被 backend 拒，落盘前必须对齐。
-  这是格式对齐所需的必要拆分，不丢弃任何内容。
+  不劈断台词或动作行）**，而不是把整集拍平后均分。短剧导入走剧情窗口（见
+  :data:`STORY_SCENE_WINDOW_SECONDS`）：单幕时长按内容节奏落在窗口内，**不吸附任何视频供应商档位**
+  ——导入阶段并不知道用户最终用哪个模型生成视频，拿档位去吸附等于用拍脑袋的值替用户做决定，
+  档位对齐留给生成期（分镜路线的生成预检）。剧本只给整集总时长、不给逐拍秒数，每拍时长按均匀
+  估算分摊。这是格式对齐所需的必要拆分，不丢弃任何内容。
 * 视觉层（``image_prompt`` / ``video_prompt``）留空并置 ``pending_authoring=True``，交给 ArcReel 既有的
   ``generate_episode_script``（提示词编写）补出——与 ArcReel 两段式（内容层 → 视觉层）一致。
 * 短剧专属元信息（所属阶段 / 黄金前3秒钩子 / 情绪流变 / 本集结构 / 中段小钩 / 总时长）无原生字段承载，
@@ -83,6 +84,13 @@ _PERSON_RE = re.compile(r"^\[人物\][：:]\s*(.+)$")
 _ACTION_PREFIX = "△"
 _DIALOGUE_RE = re.compile(r"^(?P<speaker>.+?)(?:（(?P<stage>[^）]+)）)?[：:]\s*(?P<text>.+)$")
 _NARRATION_HINTS = ("旁白", "画外音", "解说", "narrator", "vo")
+
+#: 剧情驱动的切分窗口（秒）：单幕时长落在 [下限, 上限] 内。
+#:
+#: 导入阶段不读视频供应商能力（用户此时未必已选定生成模型），因此**不做档位吸附**——
+#: 单幕时长由内容节奏决定，档位对齐交给生成期的预检。窗口取 12~15 秒：短剧单幕要装下
+#: 一个完整的往返回合，短于 12 秒会碎成流水账，长于 15 秒单镜头信息量过载。
+STORY_SCENE_WINDOW_SECONDS: tuple[int, int] = (12, 15)
 
 
 def _split_character_names(line: str) -> list[str]:
@@ -273,6 +281,140 @@ def _align_to_tiers(values: list[int], tiers: list[int], target: int) -> list[in
     return snapped
 
 
+def _build_scene(
+    episode: int,
+    scene_index: int,
+    block: _Block,
+    sub_beats: list[_Beat],
+    duration: int,
+    characters: list[str] | None = None,
+) -> dict[str, Any]:
+    """一幕的剧本载荷。``characters`` 缺省取所属块的人物；跨块合并的幕由调用方给并集。
+
+    ``segment_break`` 恒为 False：末幕之后没有下一幕，把它标成场景切换点只是个哨兵，
+    却会让整集被切成「13 + 1」两组——尾组只有一格要多出一张联合图，且断章那一格因此
+    拿不到上一幕的首帧参考（见 ``storyboard_sequence.previous_storyboard_image``）。
+    需要硬切的场景由创作者在界面上显式标记。
+    """
+
+    return {
+        "scene_id": f"E{episode}S{scene_index + 1}",
+        "duration_seconds": duration,
+        "segment_break": False,
+        "characters_in_scene": sorted(set(characters if characters is not None else block.characters)),
+        "scenes": [block.location] if block.location else [],
+        "props": [],
+        "image_prompt": None,
+        "video_prompt": None,
+        "utterances": _build_utterances(sub_beats),
+        "source_text": "\n".join(beat.raw.strip() for beat in sub_beats),
+        "scene_description": _build_scene_description(sub_beats),
+        "generated_assets": {},
+        "pending_authoring": True,
+        "note": None,
+    }
+
+
+def _split_by_story_window(
+    parsed: ParsedEpisode, episode: int, min_seconds: int, max_seconds: int
+) -> list[dict[str, Any]]:
+    """按剧情节奏切幕：单幕时长落在 ``[min_seconds, max_seconds]`` 窗口内。
+
+    切点优先级仍是「【场景】块边界 > 拍与拍之间」，绝不劈断一句台词或一个动作行：
+
+    * 已进窗口（``>= 下限``）且走到块边界，或再塞一拍会超上限 → 在此收口；
+    * 还没到下限就走到块边界 → 继续往下一块合并，宁可跨块也不产出一幕碎片。
+
+    窗口是软约束：整集拍数很少时单个拍的估算时长本身就可能超过上限，那一幕只能超出——
+    劈断一个拍的代价（台词/动作被切开）远大于超出上限。
+    """
+
+    total = parsed.total_duration or 60
+    flat: list[tuple[_Block, _Beat]] = [(block, beat) for block in parsed.blocks for beat in block.beats]
+    if not flat:
+        return [_build_scene(episode, 0, _Block(), [], total)]
+
+    per_beat = total / len(flat)
+    buckets: list[list[tuple[_Block, _Beat]]] = []
+    current: list[tuple[_Block, _Beat]] = []
+    accumulated = 0.0
+    for block, beat in flat:
+        if current:
+            at_block_boundary = current[-1][0] is not block
+            if accumulated >= min_seconds and (accumulated + per_beat > max_seconds or at_block_boundary):
+                buckets.append(current)
+                current = []
+                accumulated = 0.0
+        current.append((block, beat))
+        accumulated += per_beat
+    if current:
+        buckets.append(current)
+
+    durations = _windowed_durations([len(bucket) for bucket in buckets], total, min_seconds, max_seconds)
+    scenes: list[dict[str, Any]] = []
+    for index, bucket in enumerate(buckets):
+        blocks = [block for block, _ in bucket]
+        # 跨块合并的幕：场景名取首块（一幕一个主场景），在场角色取各块并集，画面提示词才不会漏人。
+        characters = sorted({name for block in blocks for name in block.characters})
+        scenes.append(
+            _build_scene(
+                episode,
+                index,
+                blocks[0],
+                [beat for _, beat in bucket],
+                durations[index],
+                characters,
+            )
+        )
+    return scenes
+
+
+def _windowed_durations(counts: list[int], total: int, min_seconds: int, max_seconds: int) -> list[int]:
+    """各幕按拍数占本集总时长的比例估算时长，钳进窗口后再校准回 ``total``。
+
+    拍数是内容体量的唯一可算代理（剧本 Markdown 不给逐拍秒数），因此比例估算是"按篇幅分摊"；
+    钳进窗口后总和会偏离 ``total``，交给 :func:`_fit_total` 按 ±1 微调拉回——偏差大小由
+    导入回执的 ``duration_shortfall`` 报给用户。
+    """
+
+    beat_total = sum(counts)
+    if beat_total == 0:
+        return [total] if counts else []
+    raw = [round(total * count / beat_total) for count in counts]
+    return _fit_within_window(
+        [min(max(value, min_seconds), max_seconds) for value in raw], total, min_seconds, max_seconds
+    )
+
+
+def _fit_within_window(values: list[int], target: int, min_seconds: int, max_seconds: int) -> list[int]:
+    """在窗口内尽力把各幕时长凑回 ``target``：只按 ±1 挪，且挪完不能越出窗口。
+
+    窗口是硬约束：宁可让整集总时长对不上（偏差由导入回执的 ``duration_shortfall`` 报出），
+    也不为了凑数把某一幕挪到 12~15 秒之外。动不了就停手，不反复试。
+    """
+
+    if not values:
+        return values
+    diff = target - sum(values)
+    order = sorted(range(len(values)), key=lambda i: -values[i])
+    while diff != 0:
+        moved = False
+        for i in order:
+            if diff > 0 and values[i] + 1 <= max_seconds:
+                values[i] += 1
+                diff -= 1
+                moved = True
+            elif diff < 0 and values[i] - 1 >= min_seconds:
+                values[i] -= 1
+                diff += 1
+                moved = True
+            if diff == 0:
+                break
+        if not moved:
+            break
+    return values
+
+
 def _split_into_scenes(
     parsed: ParsedEpisode, episode: int, supported_durations: list[int] | None = None
 ) -> list[dict[str, Any]]:
@@ -310,29 +452,11 @@ def _split_into_scenes(
         buckets = [(_Block(), [beat for block in parsed.blocks for beat in block.beats])]
 
     durations = _estimate_durations([len(beats) for _, beats in buckets], total, tiers)
-
-    scenes: list[dict[str, Any]] = []
-    for scene_index, (block, sub_beats) in enumerate(buckets):
-        scenes.append(
-            {
-                "scene_id": f"E{episode}S{scene_index + 1}",
-                "duration_seconds": durations[scene_index],
-                "segment_break": scene_index == len(buckets) - 1,
-                # 一段幕只属于一个【场景】块，场景名与在场角色直接取所属块，不用跨块并集。
-                "characters_in_scene": sorted(set(block.characters)),
-                "scenes": [block.location] if block.location else [],
-                "props": [],
-                "image_prompt": None,
-                "video_prompt": None,
-                "utterances": _build_utterances(sub_beats),
-                "source_text": "\n".join(beat.raw.strip() for beat in sub_beats),
-                "scene_description": _build_scene_description(sub_beats),
-                "generated_assets": {},
-                "pending_authoring": True,
-                "note": None,
-            }
-        )
-    return scenes
+    return [
+        # 一段幕只属于一个【场景】块，场景名与在场角色直接取所属块，不用跨块并集。
+        _build_scene(episode, index, block, beats, durations[index])
+        for index, ((block, beats)) in enumerate(buckets)
+    ]
 
 
 def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -357,14 +481,23 @@ def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 def convert_to_drama_script(
-    parsed: ParsedEpisode, episode: int, supported_durations: list[int] | None = None
+    parsed: ParsedEpisode,
+    episode: int,
+    supported_durations: list[int] | None = None,
+    scene_window: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """把解析结果转换为 ``DramaEpisodeScript`` 兼容的 dict（含顶层 ``short_drama_meta`` 命名空间）。
 
-    ``supported_durations`` 是调用方指定的规划时长；给了就按它决定幕数并把每幕时长
-    吸附到对应值；None 沿用 60 秒兼容上限。
+    两种切分口径二选一：
+
+    * ``scene_window``：按剧情窗口切幕（短剧导入走这条），单幕时长由内容节奏决定，不做档位吸附；
+    * ``supported_durations``：按调用方给出的时长档位切幕并吸附到档位（旧口径，None 沿用 60 秒兼容上限）。
     """
-    scenes = _split_into_scenes(parsed, episode, supported_durations)
+    scenes = (
+        _split_by_story_window(parsed, episode, *scene_window)
+        if scene_window is not None
+        else _split_into_scenes(parsed, episode, supported_durations)
+    )
     return {
         "episode": episode,
         "title": parsed.title or f"第{episode}集",

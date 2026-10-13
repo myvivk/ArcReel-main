@@ -246,7 +246,8 @@ async def test_import_short_drama_does_not_resolve_video_capabilities(tmp_path: 
     assert outcome.problem is None
     script_path = services.projects.get_project_path(scope.project_name) / "scripts" / "episode_1.json"
     assert script_path.exists()
-    assert services.projects.load_script(scope.project_name, "episode_1.json")["scenes"][0]["duration_seconds"] == 8
+    # 导入按剧情窗口（12~15 秒）切幕，不再按 8 秒默认切碎。
+    assert services.projects.load_script(scope.project_name, "episode_1.json")["scenes"][0]["duration_seconds"] == 15
 
 
 # --------------------------------------------------------------------------- #

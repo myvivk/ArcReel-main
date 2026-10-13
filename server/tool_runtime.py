@@ -1053,8 +1053,8 @@ class ImportShortDramaScriptRequest(BaseModel):
     markdown: str = Field(
         description=(
             "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
-            "动作行与神态进 scene_description，台词进 utterances，按项目默认分镜时长切分为多幕"
-            "（项目未设置时使用 8 秒）。导入阶段不读取视频供应商能力；实际生成前再校验模型时长档位。"
+            "动作行与神态进 scene_description，台词进 utterances，按剧情节奏切分为多幕（单幕 12~15 秒）。"
+            "导入阶段不读取视频供应商能力、不做时长档位吸附；实际生成前再按模型档位校验。"
             "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
             "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
         )

@@ -12,6 +12,7 @@ from lib.project.asset_types import register_missing_assets
 from lib.project.project_manager import ProjectManager
 from lib.script.script_models import DramaEpisodeScript
 from lib.script.short_drama_import import (
+    STORY_SCENE_WINDOW_SECONDS,
     convert_to_drama_script,
     parse_short_drama_episode,
     referenced_asset_names,
@@ -60,17 +61,6 @@ class ShortDramaImportResult:
                 duration_shortfall=self.duration_shortfall,
             )
         return result
-
-
-_DEFAULT_SCENE_DURATION_SECONDS = 8
-
-
-def _import_scene_duration(project: dict[str, Any]) -> int:
-    """导入只用项目级创作默认值，不读取尚未参与执行的视频供应商能力。"""
-    duration = project.get("default_duration")
-    if type(duration) is int and 1 <= duration <= 60:
-        return duration
-    return _DEFAULT_SCENE_DURATION_SECONDS
 
 
 def _require_episode(project: dict[str, Any], episode: int) -> None:
@@ -130,7 +120,9 @@ async def import_short_drama_episode(
         script = convert_to_drama_script(
             parsed,
             episode,
-            supported_durations=[_import_scene_duration(project)],
+            # 导入阶段不知道用户最终用哪个模型生成视频，按剧情窗口切幕、不做档位吸附；
+            # 档位对齐交给生成期的预检（见 STORY_SCENE_WINDOW_SECONDS 的说明）。
+            scene_window=STORY_SCENE_WINDOW_SECONDS,
         )
         core = {key: value for key, value in script.items() if key != "short_drama_meta"}
         DramaEpisodeScript.model_validate(core)

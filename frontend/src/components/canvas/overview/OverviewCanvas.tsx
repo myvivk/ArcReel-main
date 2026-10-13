@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { SourceUploadDialog, type SourceUploadResult } from "@/components/canvas/episodes/SourceUploadDialog";
 import {
+  ShortDramaGenerateButton,
   ShortDramaGenerateHost,
 } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { useCostStore } from "@/stores/cost-store";
@@ -37,6 +39,7 @@ function hasStorySetting(overview: ProjectOverview | undefined): boolean {
  */
 export function OverviewCanvas({ projectName, projectData, readOnly = false }: OverviewCanvasProps) {
   const isAd = projectData?.content_mode === "ad";
+  const { t } = useTranslation("dashboard");
   const debouncedFetch = useCostStore((s) => s.debouncedFetch);
 
   useEffect(() => {
@@ -109,6 +112,12 @@ export function OverviewCanvas({ projectName, projectData, readOnly = false }: O
               <CostLine projectName={projectName} readOnly={readOnly} />
             </div>
           </div>
+          {!isAd && isDrama && !readOnly && (
+            <div className="flex flex-col gap-1.5">
+              <ShortDramaGenerateButton projectName={projectName} episode={0} prominent />
+              <p className="text-sm text-muted-foreground">{t("short_drama_generate_create_hint")}</p>
+            </div>
+          )}
           {isAd ? (
             <>
               <AdBrief

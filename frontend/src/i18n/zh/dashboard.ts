@@ -3265,6 +3265,10 @@ export default {
   'drama_script_agent_redo_prefill': '{{episodeRef}}的剧本内容我已经改好了，请按改后的内容重做这一集。',
   'drama_script_agent_redo_steps': '请按 video-workflow skill 的「修改内容」步骤执行：先调 get_episode_script 读到本集当前剧本（返回体里的 revision 就是当前版本），再用 patch_episode_script 按改后的内容调整本集分镜与时长并落库——update 操作写成 {"op": "update", "id": "<分镜 id>", "fields": {...}}，字段不要平铺到 operation 上；base_revision 不知道就省略该字段，不要编造；不要改动我没有改过的其它集。',
   'drama_script_agent_redo_artifacts': '已有的分镜图与视频会因此失效，落库后请一并重新生成。',
+  // 短剧工厂导入的集：剧本就是正式脚本，重做要走「重写 Markdown → 重新导入」，不能只做局部 patch。
+  'drama_script_agent_redo_short_drama': '交给 Agent：按当前内容重新导入本集',
+  'drama_script_agent_redo_short_drama_steps': '本集是短剧工厂导入产出的，请整份重做：先调 get_episode_script 读本集当前剧本作为依据，再用 short-drama-factory skill 重写本集剧本 Markdown（保留【本集时长】与 [场景] 块结构，把我在这里改过的内容原样带进去），最后用 import_short_drama_script 整份导入覆盖——只有导入才会重切幕、按当前视频模型时长档位重算各幕时长、把视觉层重置为待编写并重新登记资产。不要改用 patch_episode_script 做局部修改（那样幕数与时长都不会变），也不要改动其它集。',
+  'drama_script_agent_redo_short_drama_artifacts': '重新导入会整份覆盖本集剧本：已有的分镜图与视频会失效需要重新生成，提示词也会被清空后重录。',
   'episode_view_units': '视频单元',
   'episode_view_needs_script': '脚本生成后可用',
   'episode_head_more': '这一集的更多操作',

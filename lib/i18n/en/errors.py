@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "Story planning changed elsewhere. Reload before saving.",
+    "story_plan_invalid": "A record is incomplete or its references no longer exist. Check its episode, characters and content.",
+    "story_plan_source_changed": "The source script changed. Extract the event again before confirming.",
     "episode_position_name": "Episode {position}",
     "episode_unlisted_name": "Untitled episode",
     "episode_script_name": "Script for “{name}”",
@@ -271,6 +274,9 @@ MESSAGES = {
     "ad_script_task_active": "A script generation task for this episode is already running. Wait for it to finish before submitting again",
     "ad_script_refused": "AI script generation could not be submitted: {reason}",
     "short_drama_import_refused": "Short-drama-factory script import failed: {reason}",
+    "short_drama_source_missing": "This episode has no saved Markdown source",
+    "short_drama_source_conflict": "The Markdown source was updated elsewhere; refresh and try again",
+    "short_drama_reimport_confirmation_required": "This episode already has storyboards or videos; confirm that reimporting will make them stale",
     "script_plan_task_active": "A script-planning task for this episode is already running. Wait for it to finish before submitting again",
     "script_plan_refused": "Script planning could not be submitted: {reason}",
     "episode_planning_task_active": "Episode planning is in progress. Wait for it to finish or stop it before submitting again",

@@ -243,6 +243,16 @@ def _confirm_delete(project_dir: Path, episode: int):
 
 
 class TestDelete:
+    def test_delete_removes_short_drama_markdown_source(self, tmp_path: Path):
+        project_dir = _project_dir(tmp_path, [_none(1)])
+        source = project_dir / "source" / "short_drama" / "episode_1.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("第【1】集：测试", encoding="utf-8")
+
+        _confirm_delete(project_dir, 1)
+
+        assert not source.exists()
+
     def test_deleting_the_last_cut_episode_moves_the_planning_start_back(self, tmp_path: Path):
         project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2), _cut(2, CH2, CH3)])
 

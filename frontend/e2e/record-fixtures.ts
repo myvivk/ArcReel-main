@@ -51,6 +51,7 @@ const RECORDINGS: Recording[] = [
   { file: "onboarding-status", method: "GET", path: "/api/v1/onboarding/status" },
   { file: "projects", method: "GET", path: "/api/v1/projects" },
   { file: "project-demo", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}` },
+  { file: "project-demo-story", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/story-planning` },
   // 工作区与集页的启动请求（项目事件流是 SSE，不录制，场景里按需替换）。
   { file: "tasks", method: "GET", path: "/api/v1/tasks?page_size=200" },
   { file: "project-demo-tasks", method: "GET", path: `/api/v1/tasks?page_size=200&project_name=${DEMO_PROJECT}` },

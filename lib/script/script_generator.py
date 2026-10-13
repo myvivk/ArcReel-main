@@ -29,6 +29,7 @@ from lib.artifacts.artifact_activation import (
 from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor, ArtifactKey
 from lib.artifacts.artifact_provenance import (
     build_ad_episode_script_basis,
+    build_episode_script_basis,
     project_ad_episode_script_inputs,
 )
 from lib.backends.providers import CallPurpose
@@ -154,6 +155,7 @@ from lib.script.script_skeleton import resolve_declared_kind, resolve_kind_items
 from lib.script.script_structure_validator import validate_script_structure
 from lib.speech.speech_composition import require_script_unit_admitted
 from lib.speech.speech_rate import project_speech_rate_override
+from lib.story.story_planning import plan_from_project, project_authoring_context, stale_record_ids
 
 logger = logging.getLogger(__name__)
 
@@ -566,6 +568,7 @@ class ScriptGenerator:
             script_data,
             filename,
             validate=True,
+            artifact_basis=self._artifact_basis,
             expected_fingerprint=formal_baseline,
         )
         self._quality_probe(script_data, episode)
@@ -578,7 +581,19 @@ class ScriptGenerator:
         """分镜类条目（segments / scenes / shots）的视觉层 prompt：输入是正式剧本里这些条目的内容字段。"""
         entries = list(targets.entries)
         if targets.kind == "scenes":
-            return self._build_drama_prompt_authoring_prompt(entries, episode, instructions)
+            context_characters: set[str] = set()
+            for item in targets.items:
+                if not isinstance(item, dict):
+                    continue
+                raw_characters = item.get("characters_in_scene")
+                if isinstance(raw_characters, list):
+                    context_characters.update(name for name in raw_characters if isinstance(name, str))
+            return self._build_drama_prompt_authoring_prompt(
+                entries,
+                episode,
+                instructions,
+                context_characters=context_characters,
+            )
         if targets.kind == "shots":
             return self._build_ad_shot_prompt_authoring_prompt(episode, targets, instructions)
         return build_narration_prompt(
@@ -828,7 +843,12 @@ class ScriptGenerator:
             )
 
     def _build_drama_prompt_authoring_prompt(
-        self, content_scenes: list, episode: int, instructions: str | None = None
+        self,
+        content_scenes: list,
+        episode: int,
+        instructions: str | None = None,
+        *,
+        context_characters: set[str] | None = None,
     ) -> str:
         """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求 image_prompt / video_prompt。"""
         characters = self.project_json.get("characters")
@@ -837,7 +857,7 @@ class ScriptGenerator:
         scenes = scenes if isinstance(scenes, dict) else {}
         props = self.project_json.get("props")
         props = props if isinstance(props, dict) else {}
-        return build_drama_prompt(
+        prompt = build_drama_prompt(
             project_overview=self.project_json.get("overview", {}),
             style=self.project_json.get("style", ""),
             style_description=self.project_json.get("style_description", ""),
@@ -851,6 +871,24 @@ class ScriptGenerator:
             props=props,
             instructions=instructions,
         )
+        pm = ProjectManager.for_project_dir(self.project_path)
+        plan = plan_from_project(self.project_json)
+        stale = stale_record_ids(
+            self.project_json,
+            plan,
+            lambda filename: pm.load_script_readonly(self.project_path.name, filename),
+        )
+        context = project_authoring_context(
+            self.project_json,
+            episode,
+            stale_ids=stale,
+            characters=context_characters,
+            visual=True,
+        )
+        self._artifact_basis = ArtifactBasisDescriptor.from_basis(
+            build_episode_script_basis(project=self.project_json, story_context=context)
+        )
+        return prompt + ("\n\n" + context if context else "")
 
     async def _generate_and_save(
         self,

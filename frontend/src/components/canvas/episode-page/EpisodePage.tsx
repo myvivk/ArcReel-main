@@ -125,8 +125,6 @@ function EpisodePageContent({
   const grid = gridStoryboardEnabled(projectData);
   const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
   const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
-  // 剧本视图要的集账本与产物计数：随项目数据走 memo，避免在 JSX 里现算新数组/对象。
-  const ledger = useMemo(() => projectData?.episodes ?? [], [projectData?.episodes]);
   const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
   // 规划产物态取工作流计划（页头的制作进度面板驱动刷新）：短剧导入的集据此藏掉规划页签。
   const planState = useWorkflowStore((s) =>
@@ -229,7 +227,7 @@ function EpisodePageContent({
       </EpisodeViewFactsProvider>
     );
   } else if (view === "source") {
-    // 「原文」视图：短剧工厂导入的集没有集原文，只读呈现剧本内容（创作者要看的"原文"就是剧本）；
+    // 「原文」视图：短剧工厂导入集编辑其持久化 Markdown 源稿，并显式重新导入正式脚本；
     // 其余集就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
     body =
       shortDrama && script?.content_mode === "drama" ? (
@@ -237,8 +235,6 @@ function EpisodePageContent({
           script={script}
           projectName={projectName}
           episode={episode}
-          scriptFile={meta?.script_file ?? ""}
-          episodes={ledger}
           readOnly={demo}
           hasArtifacts={hasArtifacts}
         />

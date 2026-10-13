@@ -1495,6 +1495,7 @@ async def update_scene(
                 raise HTTPException(status_code=404, detail=_t("scene_not_found", id=scene_id))
             allowed = {
                 "duration_seconds",
+                "scene_description",
                 "image_prompt",
                 "video_prompt",
                 "characters_in_scene",

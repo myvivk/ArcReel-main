@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -1053,109 +1053,12 @@ class ImportShortDramaScriptRequest(BaseModel):
     markdown: str = Field(
         description=(
             "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
-            "动作行与神态进 scene_description，台词进 utterances，单集按所选视频模型的时长档位切分为多幕"
-            "（每幕不超过最大档位）。档位读不出时**中止导入**（不降级成 60 秒）：先到设置里选定视频模型，"
-            "或稍后重试、在分集页手动分镜；时长不由 ArcReel 驱动的端点（如 ComfyUI）按旧口径处理。"
+            "动作行与神态进 scene_description，台词进 utterances，按项目默认分镜时长切分为多幕"
+            "（项目未设置时使用 8 秒）。导入阶段不读取视频供应商能力；实际生成前再校验模型时长档位。"
             "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
             "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
         )
     )
-
-
-async def _register_short_drama_assets(
-    project_name: str,
-    services: Services,
-    script: dict,
-) -> dict[str, Any]:
-    """把本集引用的角色 / 场景 / 道具补登记进项目资产表，回执本次登记与冲突。
-
-    短剧导入不走「内容确认」，原生流程在那里登记新增资产的环节这路上没人做——资产表会一直是
-    空的，后面资产图与生成入口会因"引用了未登记的名字"拒绝。这里补上，已登记的条目不动
-    （描述与资产图是用户资产），跨类型重名跳过并如实回报，登记失败也不推翻已落盘的剧本。
-    """
-    from lib.project.asset_types import register_missing_assets
-    from lib.script.short_drama_import import referenced_asset_names
-
-    names = referenced_asset_names(script)
-    if not any(names.values()):
-        return {}
-    outcome: dict[str, Any] = {}
-
-    def _mutate(project: dict) -> None:
-        registered, conflicts = register_missing_assets(project, names)
-        outcome["registered_assets"] = registered
-        outcome["asset_conflicts"] = conflicts
-
-    try:
-        await asyncio.to_thread(services.projects.update_project, project_name, _mutate)
-    except Exception as exc:  # 登记失败不推翻剧本：回执里如实说明，资产可后续再补
-        return {"asset_registration_failed": str(exc)}
-    return {key: value for key, value in outcome.items() if value}
-
-
-def _duration_shortfall(parsed: Any, script: dict) -> dict[str, Any]:
-    """本集声明时长与落盘实得时长对不上时的回执字段；对得上时返回空 dict。
-
-    剧本只给整集总时长，切幕又受「每幕 ≤ 最大档位」约束：拍数不足以撑起所需幕数时
-    （Markdown 残缺或【本集时长】写错），实得时长会缩水。静默缩水会让后续流程拿到一份
-    悄悄变短的剧本，故如实回执，由 Agent/用户去补剧本行或修正时长。
-    """
-    declared = int(getattr(parsed, "total_duration", 0) or 0)
-    actual = sum(int(scene.get("duration_seconds") or 0) for scene in script.get("scenes", []))
-    if not declared or actual == declared:
-        return {}
-    return {
-        "declared_seconds": declared,
-        "actual_seconds": actual,
-        "duration_shortfall": actual < declared,
-    }
-
-
-#: 档位解析的瞬态重试次数。只重试读库/会话这类抖动；配置类错误一次都不重试。
-_TIER_RETRY_ATTEMPTS = 3
-
-
-class ShortDramaTierUnavailable(Exception):
-    """切幕拿不到合法时长档位。
-
-    拿不到档位时**不降级**到 60 秒静态上限——那会落一份时长可能在档位外的剧本，生成期
-    才被拒。要么给得出档位，要么中止导入并说明该怎么办（去分集页手动分镜 / 先选定模型）。
-    """
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail)
-        self.detail = detail
-
-
-async def _short_drama_split_durations(project: dict, services: Services) -> list[int] | None:
-    """短剧导入切幕用的合法时长档位：所选视频模型的 ``supported_durations``。
-
-    两类失败分开处理，都不降级：
-
-    * **配置类**（``ValueError`` 及其子类：未选定视频模型 / 模型找不到 / 档位声明缺失或无效）——
-      重试多少次结果都一样，直接中止，由 handler 报"请先选定视频模型"；
-    * **其余异常**按瞬态（读库、会话抖动）处理，重试 ``_TIER_RETRY_ATTEMPTS`` 次，仍失败才中止。
-
-    正常返回而档位为空是 ComfyUI 类端点的合法状态（时长不由 ArcReel 驱动），返回 None 走旧口径。
-    """
-    last_error: BaseException | None = None
-    for _attempt in range(_TIER_RETRY_ATTEMPTS):
-        try:
-            capabilities = await services.capabilities.video_capabilities_for_project(project)
-        except ValueError as exc:
-            # 配置类：不是抖动，重试无意义。
-            raise ShortDramaTierUnavailable(
-                f"视频模型时长档位不可用，请先到设置里选定视频模型：{exc}"
-            ) from exc
-        except Exception as exc:
-            last_error = exc
-            continue
-        durations = capabilities.get("supported_durations")
-        return durations if isinstance(durations, list) and durations else None
-    raise ShortDramaTierUnavailable(
-        f"读取视频模型时长档位失败（已重试 {_TIER_RETRY_ATTEMPTS} 次）：{last_error}；"
-        "请稍后重试，或在分集页手动分镜。"
-    ) from last_error
 
 
 async def import_short_drama_script(
@@ -1170,48 +1073,21 @@ async def import_short_drama_script(
     ``lib.script.short_drama_import``；短剧工厂 Skill 原样复刻于
     ``agent_runtime_profile/.claude/skills/short-drama-factory/``。
     """
-    from lib.episode.episode_paths import episode_script_filename
-    from lib.script.script_models import DramaEpisodeScript
-    from lib.script.short_drama_import import convert_to_drama_script, parse_short_drama_episode
+    from server.services.short_drama_workflow import (
+        ShortDramaWorkflowError,
+        import_short_drama_episode,
+    )
 
     try:
-        project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
-    except FileNotFoundError as exc:
-        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
-    if project.get("content_mode") != "drama":
-        return ToolOutcome(
-            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
+        result = await import_short_drama_episode(
+            project_name=scope.project_name,
+            episode=request.value.episode_id,
+            markdown=request.value.markdown,
+            projects=services.projects,
         )
-    try:
-        parsed = parse_short_drama_episode(request.value.markdown)
-        durations = await _short_drama_split_durations(project, services)
-        script = convert_to_drama_script(
-            parsed, request.value.episode_id, supported_durations=durations
-        )
-        core = {k: v for k, v in script.items() if k != "short_drama_meta"}
-        DramaEpisodeScript.model_validate(core)  # 映射正确性自检
-    except ShortDramaTierUnavailable as exc:
-        return ToolOutcome(problem=ToolProblem("video_tier_unavailable", exc.detail))
-    except Exception as exc:
-        return ToolOutcome(problem=ToolProblem("short_drama_parse_failed", f"Markdown 解析失败: {exc}"))
-    try:
-        await asyncio.to_thread(
-            services.projects.save_script,
-            scope.project_name,
-            script,
-            episode_script_filename(request.value.episode_id),
-        )
-    except Exception as exc:
-        return ToolOutcome(problem=ToolProblem("short_drama_save_failed", f"剧本落盘失败: {exc}"))
-    assets = await _register_short_drama_assets(scope.project_name, services, script)
-    return ToolOutcome(
-        value={
-            "episode": request.value.episode_id,
-            "scenes": len(script["scenes"]),
-            **assets,
-            **_duration_shortfall(parsed, script),
-        }
-    )
+    except ShortDramaWorkflowError as exc:
+        return ToolOutcome(problem=ToolProblem(exc.code, exc.detail))
+    return ToolOutcome(value=result.as_dict())
 
 
 class ImportShortDramaEpisodeItem(BaseModel):
@@ -1244,17 +1120,10 @@ async def import_short_drama_series(
     底层复用 ``import_short_drama_script`` 的单集路径；各集通过 ``asyncio.gather`` 并发执行。
     并发安全性由 ``ProjectManager`` 保证：每集脚本文件有独立锁，账本 ``project.json`` 的同步走单项目锁，
     因此并发不会损坏数据，但同一项目内的账本更新会被串行化（墙钟时间不会线性下降）。
-
-    各集脚本落盘后，引用到的角色/场景/道具由**一次** ``update_project`` 在 ``gather`` 之后统一补登记
-    （与单集路径登记的字段与口径一致），避免逐集并发登记 ``project.json`` 的读-改-写竞态与 N 倍项目锁竞争。
     """
-    from lib.episode.episode_paths import episode_script_filename
-    from lib.project.asset_types import register_missing_assets
-    from lib.script.script_models import DramaEpisodeScript
-    from lib.script.short_drama_import import (
-        convert_to_drama_script,
-        parse_short_drama_episode,
-        referenced_asset_names,
+    from server.services.short_drama_workflow import (
+        ShortDramaWorkflowError,
+        import_short_drama_episode,
     )
 
     try:
@@ -1265,37 +1134,17 @@ async def import_short_drama_series(
         return ToolOutcome(
             problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
         )
-    # 档位整批解析一次：各集同一项目同一模型，没必要每集各查一遍。拿不到档位整批中止，
-    # 不逐集降级——否则同一项目会落一批时长口径不一致的剧本。
-    try:
-        split_durations = await _short_drama_split_durations(project, services)
-    except ShortDramaTierUnavailable as exc:
-        return ToolOutcome(problem=ToolProblem("video_tier_unavailable", exc.detail))
-
     async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
         try:
-            parsed = parse_short_drama_episode(item.markdown)
-            script = convert_to_drama_script(
-                parsed, item.episode_id, supported_durations=split_durations
+            result = await import_short_drama_episode(
+                project_name=scope.project_name,
+                episode=item.episode_id,
+                markdown=item.markdown,
+                projects=services.projects,
             )
-            core = {k: v for k, v in script.items() if k != "short_drama_meta"}
-            DramaEpisodeScript.model_validate(core)
-            await asyncio.to_thread(
-                services.projects.save_script,
-                scope.project_name,
-                script,
-                episode_script_filename(item.episode_id),
-            )
-            return {
-                "episode": item.episode_id,
-                "scenes": len(script["scenes"]),
-                "ok": True,
-                # `_script` 仅供落盘后的资产登记单趟使用，不进入回执
-                "_script": script,
-                **_duration_shortfall(parsed, script),
-            }
-        except Exception as exc:
-            return {"episode": item.episode_id, "ok": False, "error": str(exc)}
+            return {**result.as_dict(), "ok": True}
+        except ShortDramaWorkflowError as exc:
+            return {"episode": item.episode_id, "ok": False, "error": exc.detail}
 
     results = await asyncio.gather(*(_import_one(item) for item in request.value.episodes))
     failed = [r for r in results if not r["ok"]]
@@ -1306,36 +1155,6 @@ async def import_short_drama_series(
                 f"{len(failed)}/{len(results)} 集导入失败：" + "; ".join(r.get("error", "") for r in failed),
             )
         )
-
-    # 资产登记单趟补做：收集各成功集引用到的角色/场景/道具，在 gather 之后用一次
-    # update_project 登记，避免「每集并发 update_project」的读-改-写竞态与 N 倍项目锁竞争
-    # （同一 project.json 的写被单项目锁串行化，并发只会徒增墙钟时间且可能丢更新）。
-    asset_outcome: dict[str, Any] = {}
-    ok_scripts = [cast(dict, r.pop("_script")) for r in results if r.get("ok")]
-    if ok_scripts:
-        merged: dict[str, list[str]] = {"character": [], "scene": [], "prop": []}
-        for script in ok_scripts:
-            for asset_type, names in referenced_asset_names(script).items():
-                seen = merged[asset_type]
-                for name in names:
-                    if name not in seen:
-                        seen.append(name)
-
-        def _mutate(project: dict) -> None:
-            registered, conflicts = register_missing_assets(project, merged)
-            if registered:
-                asset_outcome["registered_assets"] = registered
-            if conflicts:
-                asset_outcome["asset_conflicts"] = conflicts
-
-        try:
-            await asyncio.to_thread(services.projects.update_project, scope.project_name, _mutate)
-        except Exception as exc:  # 登记失败不推翻已落盘的剧本
-            asset_outcome["asset_registration_failed"] = str(exc)
-    for r in results:
-        if r.get("ok"):
-            r.update(asset_outcome)
-
     return ToolOutcome(
         value={
             "imported": sum(1 for r in results if r["ok"]),
@@ -2673,7 +2492,7 @@ def _patch_episode_script_sync(
     except Exception as exc:
         return ToolOutcome(problem=ToolProblem("internal_error", f"patch_episode_script 失败: {exc}"))
 
-    # base_revision 省略即按服务端当前 revision 执行：不拿一个无从得知的值去逼调用方编造。
+    # 省略 revision 时以当前服务端版本执行；显式提供时保持并发冲突保护。
     requested_revision = request.value.base_revision
     expected_revision = requested_revision if requested_revision is not None else script_revision(current)
 

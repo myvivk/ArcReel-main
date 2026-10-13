@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "故事规划已被其他操作更新，请重新加载后再保存。",
+    "story_plan_invalid": "记录内容不完整或引用已失效，请检查所属集、角色和记录内容。",
+    "story_plan_source_changed": "记录的来源剧本已变化，请重新提取后再确认。",
     "episode_position_name": "第 {position} 集",
     "episode_unlisted_name": "未命名集",
     "episode_script_name": "「{name}」的剧本",
@@ -260,6 +263,9 @@ MESSAGES = {
     "ad_script_task_active": "本集已有进行中的脚本生成任务，请等待完成后再提交",
     "ad_script_refused": "AI 生成脚本未能提交：{reason}",
     "short_drama_import_refused": "短剧工厂剧本导入失败：{reason}",
+    "short_drama_source_missing": "本集没有已保存的 Markdown 源稿",
+    "short_drama_source_conflict": "Markdown 源稿已被其他修改更新，请刷新后重试",
+    "short_drama_reimport_confirmation_required": "本集已有分镜图或视频，重新导入前需要确认这些产物将变为过期状态",
     "script_plan_task_active": "本集已有进行中的脚本规划任务，请等待完成后再提交",
     "script_plan_refused": "脚本规划未能提交：{reason}",
     "episode_planning_task_active": "分集规划正在进行，请等待完成或停止后再提交",

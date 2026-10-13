@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "Kế hoạch đã thay đổi ở nơi khác. Tải lại trước khi lưu.",
+    "story_plan_invalid": "Bản ghi chưa đầy đủ hoặc tham chiếu không còn tồn tại. Kiểm tra tập, nhân vật và nội dung.",
+    "story_plan_source_changed": "Kịch bản nguồn đã đổi. Trích lại sự kiện trước khi xác nhận.",
     "episode_position_name": "Tập {position}",
     "episode_unlisted_name": "Tập chưa đặt tên",
     "episode_script_name": "Kịch bản của “{name}”",
@@ -271,6 +274,9 @@ MESSAGES = {
     "ad_script_task_active": "Tập này đang có tác vụ tạo kịch bản chưa hoàn tất. Hãy đợi tác vụ xong rồi gửi lại",
     "ad_script_refused": "Không thể gửi yêu cầu tạo kịch bản bằng AI: {reason}",
     "short_drama_import_refused": "Nhập kịch bản short-drama-factory thất bại: {reason}",
+    "short_drama_source_missing": "Tập này chưa có nguồn Markdown đã lưu",
+    "short_drama_source_conflict": "Nguồn Markdown đã được cập nhật ở nơi khác; hãy làm mới và thử lại",
+    "short_drama_reimport_confirmation_required": "Tập này đã có storyboard hoặc video; hãy xác nhận rằng nhập lại sẽ làm các sản phẩm đó trở nên lỗi thời",
     "script_plan_task_active": "Tập này đang có tác vụ lập kế hoạch kịch bản chưa hoàn tất. Hãy đợi tác vụ xong rồi gửi lại",
     "script_plan_refused": "Không thể gửi yêu cầu lập kế hoạch kịch bản: {reason}",
     "episode_planning_task_active": "Đang lập kế hoạch phân tập. Hãy đợi hoàn tất hoặc dừng lại rồi gửi lại",

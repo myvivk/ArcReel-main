@@ -18,19 +18,26 @@ export interface ShortDramaImportDetail {
   ok: boolean;
   scenes?: number;
   error?: string;
-  /** 声明时长与落盘实得时长不一致时由后端回执（剧本可能悄悄变短）。 */
+  /** 声明时长与落盘实得时长不一致时由后端回执。 */
   declared_seconds?: number;
   actual_seconds?: number;
   duration_shortfall?: boolean;
   registered_assets?: Record<string, string[]>;
   asset_conflicts?: Array<Record<string, string>>;
-  asset_registration_failed?: string;
 }
 
 export interface ShortDramaImportResult {
   imported: number;
   failed: number;
   details: ShortDramaImportDetail[];
+}
+
+export interface ShortDramaSource {
+  episode: number;
+  path: string;
+  markdown: string;
+  revision: string | null;
+  exists: boolean;
 }
 
 export interface ShortDramaImportOneResult {
@@ -41,7 +48,6 @@ export interface ShortDramaImportOneResult {
   duration_shortfall?: boolean;
   registered_assets?: Record<string, string[]>;
   asset_conflicts?: Array<Record<string, string>>;
-  asset_registration_failed?: string;
 }
 
 /** 导入一集短剧工厂剧本，成功/失败均弹提示。 */
@@ -96,6 +102,36 @@ export async function importShortDramaSeries(
         .pushToast(i18n.t("dashboard:short_drama_imported_batch", { imported: res.imported, failed: res.failed }), "warning");
     }
     return res;
+  } catch (err) {
+    useAppStore.getState().pushToast(errMsg(err), "error");
+    throw err;
+  }
+}
+
+/** 从已保存的 Markdown 源稿重建正式脚本；视觉提示词与媒体仍由用户后续显式生成。 */
+export async function reimportShortDramaSource(
+  projectName: string,
+  episode: number,
+  sourceRevision: string,
+  confirmArtifacts: boolean,
+): Promise<{ episode: number; scenes: number; source_path: string; source_revision: string }> {
+  try {
+    const result = await API.reimportShortDramaSource(
+      projectName,
+      episode,
+      sourceRevision,
+      confirmArtifacts,
+    );
+    useAppStore
+      .getState()
+      .pushToast(
+        i18n.t("dashboard:short_drama_source_reimported", {
+          episode: result.episode,
+          scenes: result.scenes,
+        }),
+        "success",
+      );
+    return result;
   } catch (err) {
     useAppStore.getState().pushToast(errMsg(err), "error");
     throw err;

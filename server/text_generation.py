@@ -106,6 +106,7 @@ from lib.script.script_models import (
 from lib.script.storyboard_mentions import render_storyboard_mention_warnings, storyboard_mention_warnings
 from lib.speech.speech_composition import admit_script_unit
 from lib.speech.speech_rate import project_speech_rate_override
+from lib.story.story_planning import plan_from_project, project_authoring_context, stale_record_ids
 from lib.workflow.operation_admission import (
     AdmissionReason,
     OperationAdmission,
@@ -483,11 +484,22 @@ def _load_script_plan_source_with_basis(
     """Freeze the exact source text and project semantics consumed by a script_plan request."""
 
     novel_text = load_novel_source(project_path, source, episode=episode)
+    story_context = ""
+    if expected_variant == "drama":
+        pm = ProjectManager.for_project_dir(project_path)
+        plan = plan_from_project(project)
+        stale = stale_record_ids(
+            project,
+            plan,
+            lambda filename: pm.load_script_readonly(project_path.name, filename),
+        )
+        story_context = project_authoring_context(project, episode, stale_ids=stale)
     prompt_inputs, basis = build_script_plan_request(
         novel_text,
         episode=episode,
         project=project,
         expected_variant=expected_variant,
+        story_context=story_context,
     )
     return novel_text, prompt_inputs, basis
 
@@ -924,6 +936,10 @@ async def generate_drama_script_plan(
             episode_target_duration=cast(int | None, prompt_inputs["episode_target_duration"]),
             instructions=instructions,
         )
+
+        context = cast(str, prompt_inputs.get("story_context", ""))
+        if context:
+            prompt += "\n\n" + context
 
         if request.dry_run:
             return TextGenerationResult(

@@ -8,7 +8,7 @@ import { useTasksStore } from "@/stores/tasks-store";
 import { useWorkflowStore, workflowPlanKey } from "@/stores/workflow-store";
 import { makePlan, makeStatus, makeTask } from "@/test/factories";
 import { TimelineCanvas } from "./TimelineCanvas";
-import type { NarrationEpisodeScript, ProjectData } from "@/types";
+import type { DramaEpisodeScript, NarrationEpisodeScript, ProjectData } from "@/types";
 
 vi.mock("./ScriptReviewGate", async () => {
   const { scriptReviewGateMock } = await import("@/__mocks__/ScriptReviewGate");
@@ -103,6 +103,54 @@ describe("TimelineCanvas", () => {
     );
 
     expect(screen.getByTestId("shot-split-view")).toBeInTheDocument();
+  });
+
+  it("hides content creation actions after a short-drama source has been imported", () => {
+    const script: DramaEpisodeScript = {
+      episode: 1,
+      title: "EP1",
+      content_mode: "drama",
+      novel: { title: "n", chapter: "1" },
+      short_drama_meta: { source_path: "source/short_drama/episode_1.md" },
+      scenes: [
+        {
+          scene_id: "E1S1",
+          duration_seconds: 8,
+          segment_break: true,
+          characters_in_scene: [],
+          scenes: [],
+          props: [],
+          image_prompt: null,
+          video_prompt: null,
+          utterances: [],
+          generated_assets: {
+            storyboard_image: null,
+            storyboard_last_image: null,
+            grid_id: null,
+            grid_cell_index: null,
+            video_clip: null,
+            video_thumbnail: null,
+            video_uri: null,
+            status: "pending",
+          },
+          pending_authoring: true,
+        },
+      ],
+    };
+    render(
+      <TimelineCanvas
+        {...BOARD}
+        projectName="demo"
+        episode={1}
+        episodeScript={script}
+        projectData={{ ...makeProjectData(), content_mode: "drama" }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "AI 原创剧本" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "导入短剧工厂剧本" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "AI 生成剧本" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "编写提示词" })).toBeInTheDocument();
   });
 
   it("shows a script-not-ready hint instead of a blank screen when the script reverts while the timeline tab stays active", () => {

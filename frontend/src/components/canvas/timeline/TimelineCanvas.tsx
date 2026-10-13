@@ -206,6 +206,9 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   const handleGenNarration = onGenerateNarration
     ? (segId: string) => onGenerateNarration(segId, scriptFile)
     : undefined;
+  const importedShortDrama =
+    editorContentMode === "drama" &&
+    (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -214,7 +217,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
           {editorContentMode === "ad" && !demoReadOnly && (
             <AdScriptButton projectName={projectName} episode={episode} regenerate />
           )}
-          {editorContentMode === "drama" && !demoReadOnly && (
+          {editorContentMode === "drama" && !demoReadOnly && !importedShortDrama && (
             <>
               <ShortDramaGenerateButton projectName={projectName} episode={episode} />
               <ShortDramaImportButton projectName={projectName} episode={episode} />

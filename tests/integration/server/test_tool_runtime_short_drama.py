@@ -1,7 +1,7 @@
 """short-drama-factory 剧本导入的专项测试。
 
 覆盖：Markdown 解析结构、转写产物形状（short_drama_meta / pending_authoring / 视觉层留空）、
-单集导入登记资产、批量导入跨集登记资产、视频时长档位不可用时中止（不落盘）、
+单集导入登记资产、批量导入跨集登记资产、导入不依赖视频供应商、
 以及声明时长与实际切幕时长不一致时的 duration_shortfall 回执。
 
 这些场景跨越 Agent 工具、后端转写与项目资产表，是 short-drama 流程最易回归的部分。
@@ -12,16 +12,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from lib.episode.episode_management import create_episode
 from lib.project.project_manager import ProjectManager
 from lib.script.short_drama_import import (
-    ParsedEpisode,
     convert_to_drama_script,
     parse_short_drama_episode,
 )
-from server import tool_runtime as tool_runtime_module
 from server.tool_runtime import (
     CallerContext,
     CreateProjectToolRequest,
@@ -49,10 +45,10 @@ class _FakeCapabilities:
 
 
 class _NoTierCapabilities:
-    """模拟未选定视频模型：capabilities 解析直接抛配置类错误。"""
+    """任何能力查询都说明导入工作流错误地依赖了视频供应商。"""
 
     async def video_capabilities_for_project(self, project: dict[str, Any]) -> dict[str, Any]:
-        raise ValueError("no video model selected")
+        raise AssertionError("short-drama import must not resolve video capabilities")
 
 
 def _services(tmp_path: Path, capabilities: Any = None) -> Services:
@@ -144,28 +140,6 @@ def test_convert_to_drama_script_sets_short_drama_meta_and_pending_authoring() -
 
 
 # --------------------------------------------------------------------------- #
-# 后端：duration shortfall 回执
-# --------------------------------------------------------------------------- #
-
-
-def test_duration_shortfall_reported_when_actual_under_declared() -> None:
-    parsed = ParsedEpisode(episode_number=1, title="", total_duration=120)
-    script = {"scenes": [{"duration_seconds": 60}, {"duration_seconds": 30}]}
-    out = tool_runtime_module._duration_shortfall(parsed, script)
-    assert out == {
-        "declared_seconds": 120,
-        "actual_seconds": 90,
-        "duration_shortfall": True,
-    }
-
-
-def test_duration_shortfall_empty_when_matched() -> None:
-    parsed = ParsedEpisode(episode_number=1, title="", total_duration=90)
-    script = {"scenes": [{"duration_seconds": 60}, {"duration_seconds": 30}]}
-    assert tool_runtime_module._duration_shortfall(parsed, script) == {}
-
-
-# --------------------------------------------------------------------------- #
 # 后端：单集导入登记资产
 # --------------------------------------------------------------------------- #
 
@@ -196,7 +170,8 @@ async def test_import_short_drama_script_registers_assets(tmp_path: Path) -> Non
     assert outcome.value["episode"] == 1
     assert "registered_assets" in outcome.value
     reg = outcome.value["registered_assets"]
-    assert "林辰" in reg.get("character", []) and "陈峰" in reg.get("character", [])
+    assert "林辰" in reg.get("character", [])
+    assert "陈峰" in reg.get("character", [])
     assert "豪宅客厅" in reg.get("scene", [])
     project = services.projects.load_project(scope.project_name)
     assert "林辰" in project["characters"]
@@ -249,11 +224,11 @@ async def test_import_short_drama_series_registers_assets_across_episodes(tmp_pa
 
 
 # --------------------------------------------------------------------------- #
-# 后端：视频时长档位不可用 → 中止导入，不落盘
+# 后端：未配置视频供应商也能导入
 # --------------------------------------------------------------------------- #
 
 
-async def test_import_short_drama_aborts_when_video_tier_unavailable(tmp_path: Path) -> None:
+async def test_import_short_drama_does_not_resolve_video_capabilities(tmp_path: Path) -> None:
     services = _services(tmp_path, capabilities=_NoTierCapabilities())
     scope = await _setup_drama_project(services)
     caller = CallerContext(user_id="test", source="mcp")
@@ -268,10 +243,10 @@ async def test_import_short_drama_aborts_when_video_tier_unavailable(tmp_path: P
         caller,
         services,
     )
-    assert outcome.problem is not None
-    assert outcome.problem.code == "video_tier_unavailable"
+    assert outcome.problem is None
     script_path = services.projects.get_project_path(scope.project_name) / "scripts" / "episode_1.json"
-    assert not script_path.exists()
+    assert script_path.exists()
+    assert services.projects.load_script(scope.project_name, "episode_1.json")["scenes"][0]["duration_seconds"] == 8
 
 
 # --------------------------------------------------------------------------- #

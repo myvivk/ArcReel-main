@@ -165,6 +165,7 @@ import type {
   StoryboardBatchPreview,
   StoryboardBatchSubmitted,
 } from "@/types/storyboard-batch";
+import type { StoryPlan, StorySnapshot } from "@/types/story-planning";
 import type {
   AgentCredential,
   CreateAgentCredentialRequest,
@@ -367,6 +368,26 @@ function agentMemoryBase(scope: AgentMemoryScope): string {
 // ==================== API class ====================
 
 class API {
+  static async getStoryPlanning(projectName: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, options);
+  }
+
+  static async getStoryContext(projectName: string, episode: number, options: { signal?: AbortSignal } = {}): Promise<{ context: string }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/context/${episode}`, options);
+  }
+
+  static async saveStoryPlanning(projectName: string, plan: StoryPlan, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, {
+      method: "PUT", body: JSON.stringify({ plan, revision }), signal: options.signal,
+    });
+  }
+
+  static async extractStoryPlanning(projectName: string, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/extract`, {
+      method: "POST", body: JSON.stringify({ revision }), signal: options.signal,
+    });
+  }
+
   /**
    * 通用请求方法
    */
@@ -1485,6 +1506,65 @@ class API {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/short-drama/import-batch`,
       { method: "POST", body: JSON.stringify({ episodes, continue_on_error: continueOnError }) },
+    );
+  }
+
+  /** 读取本集短剧工厂 Markdown 源稿；历史导入未保留源稿时 exists=false。 */
+  static async getShortDramaSource(
+    projectName: string,
+    episode: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{
+    episode: number;
+    path: string;
+    markdown: string;
+    revision: string | null;
+    exists: boolean;
+  }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source`,
+      { signal: options.signal },
+    );
+  }
+
+  /** 只保存 Markdown 源稿，不改正式剧本。 */
+  static async updateShortDramaSource(
+    projectName: string,
+    episode: number,
+    markdown: string,
+    expectedRevision: string | null,
+  ): Promise<{
+    episode: number;
+    path: string;
+    markdown: string;
+    revision: string;
+    exists: true;
+  }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ markdown, expected_revision: expectedRevision }),
+      },
+    );
+  }
+
+  /** 从已保存的 Markdown 源稿重建正式剧本，不自动生成视觉提示词、分镜图或视频。 */
+  static async reimportShortDramaSource(
+    projectName: string,
+    episode: number,
+    sourceRevision: string,
+    confirmArtifacts: boolean,
+  ): Promise<{ episode: number; scenes: number; source_path: string; source_revision: string }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source/reimport`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          source_revision: sourceRevision,
+          confirm_artifacts: confirmArtifacts,
+        }),
+      },
     );
   }
 

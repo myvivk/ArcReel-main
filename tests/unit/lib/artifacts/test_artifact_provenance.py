@@ -348,6 +348,30 @@ def test_episode_script_basis_ignores_asset_fields_not_rendered_into_prompt_auth
     assert updated.digest == baseline.digest
 
 
+def test_story_context_changes_only_the_structured_artifact_that_consumes_it() -> None:
+    project = {
+        "content_mode": "drama",
+        "generation_mode": "storyboard",
+        "episodes": [{"episode": 1, "script_file": "scripts/episode_1.json"}],
+    }
+    script_plan = build_script_plan_basis("source", episode=1, project=project)
+    script_plan_with_story = build_script_plan_basis(
+        "source",
+        episode=1,
+        project=project,
+        story_context="[人物关系] 甲信任乙",
+    )
+    script = build_episode_script_basis(project=project)
+    script_with_story = build_episode_script_basis(
+        project=project,
+        story_context="[人物关系] 甲信任乙",
+    )
+
+    assert script_plan_with_story.digest != script_plan.digest
+    assert script_with_story.digest != script.digest
+    assert build_episode_script_basis(project=project).digest == script.digest
+
+
 def test_structured_basis_rejects_malformed_formal_inputs() -> None:
     with pytest.raises(ValueError, match="content_mode"):
         build_script_plan_basis(

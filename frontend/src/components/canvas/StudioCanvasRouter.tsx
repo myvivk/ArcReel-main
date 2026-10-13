@@ -50,6 +50,7 @@ import type { EpisodeScript } from "@/types/script";
 // （TimelineCanvas）与资产、分集页面保持随工作区加载。
 const ReferenceVideoCanvas = lazyNamed(() => import("./reference/ReferenceVideoCanvas"), "ReferenceVideoCanvas");
 const GridImageToVideoCanvas = lazyNamed(() => import("./grid/GridImageToVideoCanvas"), "GridImageToVideoCanvas");
+const StoryPlanningCanvas = lazyNamed(() => import("./story/StoryPlanningCanvas"), "StoryPlanningCanvas");
 
 /** 集级路由 path，与渲染该集的 `<Route>` 共用一份。 */
 const EPISODE_ROUTE_PATH = `/${WORKSPACE_ROUTE_EPISODES}/:episodeId`;
@@ -456,6 +457,14 @@ export function StudioCanvasRouter() {
           onRefreshProject={refreshAfterAction}
           generatingCharacterNames={generatingCharacterNames}
         />
+      </Route>
+
+      <Route path="/story">
+        {demoMode || currentProjectData?.content_mode !== "drama" ? <Redirect to="/" /> : (
+          <LazyBoundary variant="pane">
+            <StoryPlanningCanvas key={currentProjectName} projectName={currentProjectName} />
+          </LazyBoundary>
+        )}
       </Route>
 
       <Route path={`/${WORKSPACE_ROUTE_SCENES}`}>

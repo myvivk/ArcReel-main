@@ -94,6 +94,7 @@ from server.routers import (
     script_review,
     short_drama,
     shot_uploads,
+    story_planning,
     storyboard_batches,
     system,
     system_config,
@@ -620,6 +621,7 @@ async def request_logging_middleware(
 # 端点签名里的 CurrentUser 只表示「处理函数要用用户对象」，不承担授权职责。
 # 不挂依赖的两组另有说明，见下方分组注释。
 app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["项目管理"])
+app.include_router(story_planning.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["故事规划"])
 app.include_router(characters.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["角色管理"])
 app.include_router(scenes.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["场景管理"])
 app.include_router(props.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["道具管理"])

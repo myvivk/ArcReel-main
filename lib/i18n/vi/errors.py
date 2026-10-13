@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "Kế hoạch đã thay đổi ở nơi khác. Tải lại trước khi lưu.",
+    "story_plan_invalid": "Bản ghi chưa đầy đủ hoặc tham chiếu không còn tồn tại. Kiểm tra tập, nhân vật và nội dung.",
+    "story_plan_source_changed": "Kịch bản nguồn đã đổi. Trích lại sự kiện trước khi xác nhận.",
     "episode_position_name": "Tập {position}",
     "episode_unlisted_name": "Tập chưa đặt tên",
     "episode_script_name": "Kịch bản của “{name}”",

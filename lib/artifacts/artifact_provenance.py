@@ -44,11 +44,12 @@ def build_script_plan_basis(
     *,
     episode: int,
     project: Mapping[str, object],
+    story_context: str = "",
 ) -> ArtifactBasis:
     """Describe every durable prompt input consumed by one script_plan artifact."""
 
     content_mode, generation_mode = _content_axes(project)
-    prompt_inputs = project_script_plan_prompt_inputs(episode, project=project)
+    prompt_inputs = project_script_plan_prompt_inputs(episode, project=project, story_context=story_context)
     return _build_script_plan_basis(
         source_content,
         content_mode=content_mode,
@@ -63,6 +64,7 @@ def build_script_plan_request(
     episode: int,
     project: Mapping[str, object],
     expected_variant: ScriptPlanPromptVariant,
+    story_context: str = "",
 ) -> tuple[dict[str, object], ArtifactBasis]:
     """Freeze the prompt projection and basis for one route-specific script_plan request."""
 
@@ -71,6 +73,7 @@ def build_script_plan_request(
         episode,
         project=project,
         expected_variant=expected_variant,
+        story_context=story_context,
     )
     basis = _build_script_plan_basis(
         source_content,
@@ -116,6 +119,7 @@ def project_script_plan_prompt_inputs(
     *,
     project: Mapping[str, object],
     expected_variant: ScriptPlanPromptVariant | None = None,
+    story_context: str = "",
 ) -> dict[str, object]:
     """Project persisted fields passed to the selected script_plan prompt builder.
 
@@ -178,6 +182,8 @@ def project_script_plan_prompt_inputs(
                 "style": _optional_string(project.get("style"), "style"),
             }
         )
+        if story_context:
+            inputs["story_context"] = story_context
     elif variant == "reference_video":
         # 小说时提示词与不带类型时逐字相同，不进 basis：存量参考生视频脚本规划的依据因此不变。
         # 剧本时提示词走提取分支，冻结的基线随之不同。
@@ -258,7 +264,7 @@ def _script_plan_prompt_variant(content_mode: str, generation_mode: str) -> Scri
     return "narration"
 
 
-def build_episode_script_basis(*, project: Mapping[str, object]) -> ArtifactBasis:
+def build_episode_script_basis(*, project: Mapping[str, object], story_context: str = "") -> ArtifactBasis:
     """Describe the durable project inputs rendered into an episode script's prompt authoring.
 
     The formal script is the episode's own content truth once content review has
@@ -273,12 +279,16 @@ def build_episode_script_basis(*, project: Mapping[str, object]) -> ArtifactBasi
         inputs={
             "content_mode": content_mode,
             "generation_mode": generation_mode,
-            "prompt_context": project_episode_script_prompt_inputs(project),
+            "prompt_context": project_episode_script_prompt_inputs(project, story_context=story_context),
         },
     )
 
 
-def project_episode_script_prompt_inputs(project: Mapping[str, object]) -> dict[str, object]:
+def project_episode_script_prompt_inputs(
+    project: Mapping[str, object],
+    *,
+    story_context: str = "",
+) -> dict[str, object]:
     """Project the persisted project fields rendered into non-ad prompt_authoring prompts.
 
     Provider/model capabilities and one-shot user instructions are execution
@@ -296,7 +306,7 @@ def project_episode_script_prompt_inputs(project: Mapping[str, object]) -> dict[
     if not isinstance(target_language, str):
         raise ValueError("episode script source_language must be a string or null")
 
-    return {
+    inputs: dict[str, object] = {
         "overview": {field: overview.get(field, "") for field in (*_AD_OVERVIEW_FIELDS, "world_setting")},
         "style": _optional_string(project.get("style"), "style"),
         "style_description": _optional_string(project.get("style_description"), "style_description"),
@@ -306,6 +316,9 @@ def project_episode_script_prompt_inputs(project: Mapping[str, object]) -> dict[
         "scenes": _project_prompt_authoring_assets(project.get("scenes"), generation_mode=generation_mode),
         "props": _project_prompt_authoring_assets(project.get("props"), generation_mode=generation_mode),
     }
+    if content_mode == "drama" and story_context:
+        inputs["story_context"] = story_context
+    return inputs
 
 
 def build_ad_episode_script_basis(episode: int, *, project: Mapping[str, object]) -> ArtifactBasis:

@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "Story planning changed elsewhere. Reload before saving.",
+    "story_plan_invalid": "A record is incomplete or its references no longer exist. Check its episode, characters and content.",
+    "story_plan_source_changed": "The source script changed. Extract the event again before confirming.",
     "episode_position_name": "Episode {position}",
     "episode_unlisted_name": "Untitled episode",
     "episode_script_name": "Script for “{name}”",

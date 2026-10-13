@@ -108,6 +108,7 @@ from lib.speech.speech_presentation import (
     materialize_speech_presentation,
     presentation_artifact_paths,
 )
+from lib.story.story_planning import plan_from_project, project_authoring_context, stale_record_ids
 
 #: 清单激活把项目提升到的版本。它是 v7→v8 这一步的落点，与「项目是否为当前版本」是两件事：
 #: 后者随 ``CURRENT_PROJECT_SCHEMA_VERSION`` 走，把两者绑成一个常量会让每次 schema 升版都
@@ -659,12 +660,24 @@ class TargetStatePlanner:
         if self.project.get("content_mode") not in {"narration", "drama"}:
             self._planned.add("structured-content")
             return
-        try:
-            script_basis = build_episode_script_basis(project=self.project)
-        except (TypeError, ValueError):
-            script_basis = None
-        if script_basis is not None:
-            for episode in self.episodes:
+        for episode in self.episodes:
+            try:
+                characters: set[str] = set()
+                for item in episode.items:
+                    raw_characters = item.get("characters_in_scene")
+                    if isinstance(raw_characters, list):
+                        characters.update(name for name in raw_characters if isinstance(name, str))
+                script_basis = build_episode_script_basis(
+                    project=self.project,
+                    story_context=self._story_context(
+                        episode.episode,
+                        characters=characters,
+                        visual=True,
+                    ),
+                )
+            except (TypeError, ValueError):
+                continue
+            else:
                 self._add_if_present(
                     ArtifactKey.episode_script(episode.episode),
                     episode.script_file,
@@ -707,11 +720,45 @@ class TargetStatePlanner:
                     source_content,
                     episode=binding.episode,
                     project=self.project,
+                    story_context=self._story_context(binding.episode),
                 )
             except (TypeError, ValueError):
                 pass
             else:
                 self._add_if_present(script_plan_key, script_plan_rel, script_plan_basis)
+
+    def _story_context(
+        self,
+        episode: int,
+        *,
+        characters: set[str] | None = None,
+        visual: bool = False,
+    ) -> str:
+        plan = plan_from_project(self.project)
+        bindings = {binding.script_file.removeprefix("scripts/"): binding.script_file for binding in self.bindings}
+        cache: dict[str, dict[str, Any]] = {}
+
+        def load_script(filename: str) -> dict[str, Any]:
+            if filename in cache:
+                return cache[filename]
+            rel = bindings.get(filename)
+            if rel is None:
+                raise FileNotFoundError(filename)
+            raw = self._read_dependency(rel, "story planning source script")
+            parsed = self._parse_json(raw, f"story planning source script {rel}")
+            if not isinstance(parsed, dict):
+                raise ValueError(f"story planning source script {rel} must contain an object")
+            cache[filename] = cast(dict[str, Any], parsed)
+            return cache[filename]
+
+        stale = stale_record_ids(self.project, plan, load_script)
+        return project_authoring_context(
+            self.project,
+            episode,
+            stale_ids=stale,
+            characters=characters,
+            visual=visual,
+        )
 
     def _plan_storyboards(self) -> None:
         if "storyboards" in self._planned:

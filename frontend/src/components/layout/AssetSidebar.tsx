@@ -92,6 +92,9 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
 
   const navItems: NavItem[] = [
     { key: "overview", path: "/", label: t("dashboard:workspace_nav_overview"), icon: LayoutDashboard },
+    ...(demoMode || currentProjectData?.content_mode !== "drama" ? [] : [
+      { key: "story", path: "/story", label: t("dashboard:story_title"), icon: BookOpen },
+    ]),
     // 演示项目后端不存在，广告/短片恒单集、不经分集：隐藏入口而非渲染必然报错或无意义的页面
     ...(demoMode || isAd
       ? []

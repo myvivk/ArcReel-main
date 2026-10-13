@@ -165,6 +165,7 @@ import type {
   StoryboardBatchPreview,
   StoryboardBatchSubmitted,
 } from "@/types/storyboard-batch";
+import type { StoryPlan, StorySnapshot } from "@/types/story-planning";
 import type {
   AgentCredential,
   CreateAgentCredentialRequest,
@@ -367,6 +368,26 @@ function agentMemoryBase(scope: AgentMemoryScope): string {
 // ==================== API class ====================
 
 class API {
+  static async getStoryPlanning(projectName: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, options);
+  }
+
+  static async getStoryContext(projectName: string, episode: number, options: { signal?: AbortSignal } = {}): Promise<{ context: string }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/context/${episode}`, options);
+  }
+
+  static async saveStoryPlanning(projectName: string, plan: StoryPlan, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, {
+      method: "PUT", body: JSON.stringify({ plan, revision }), signal: options.signal,
+    });
+  }
+
+  static async extractStoryPlanning(projectName: string, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/extract`, {
+      method: "POST", body: JSON.stringify({ revision }), signal: options.signal,
+    });
+  }
+
   /**
    * 通用请求方法
    */

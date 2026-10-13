@@ -1,4 +1,7 @@
 MESSAGES = {
+    "story_plan_conflict": "故事规划已被其他操作更新，请重新加载后再保存。",
+    "story_plan_invalid": "记录内容不完整或引用已失效，请检查所属集、角色和记录内容。",
+    "story_plan_source_changed": "记录的来源剧本已变化，请重新提取后再确认。",
     "episode_position_name": "第 {position} 集",
     "episode_unlisted_name": "未命名集",
     "episode_script_name": "「{name}」的剧本",

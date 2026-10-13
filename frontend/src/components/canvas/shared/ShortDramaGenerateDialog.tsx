@@ -1,4 +1,6 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { API } from "@/api";
+import { errMsg } from "@/utils/async";
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useTranslation } from "react-i18next";
 import { Bot, ChevronDown, Sparkles, X } from "lucide-react";
@@ -115,7 +117,7 @@ function SuggestField({
   const { t } = useTranslation("dashboard");
   const options = useMemo(
     () =>
-      (t(optionsKey) as string)
+      t(optionsKey)
         .split(",")
         .map((option) => option.trim())
         .filter(Boolean),
@@ -188,10 +190,10 @@ function FormatSelect({
       value={value}
       disabled={disabled}
       onValueChange={(next) => {
-        if (next !== null) onChange(next as ShortDramaFormat);
+        if (next !== null) onChange(next);
       }}
     >
-      <SelectTrigger size="sm" aria-label={t("short_drama_generate_format_label")} className="w-full sm:w-64">
+      <SelectTrigger id={id} size="sm" aria-label={t("short_drama_generate_format_label")} className="w-full @sm/canvas:w-64">
         <SelectValue />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align="start" className="w-auto max-w-xs">
@@ -244,12 +246,35 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
 
   const canSubmit = genre.trim().length > 0 && count >= 1;
 
+  const storyController = useRef(new AbortController());
+  useEffect(() => {
+    storyController.current = new AbortController();
+    return () => storyController.current.abort();
+  }, []);
   const handOff = async () => {
     if (!canSubmit || submitting) return;
-    // 创建模式下先透明建好目标集（import 工具要求目标集已存在）；用户不在界面上执行「建集」。
+    setSubmitting(true);
+    const contextEpisode = createMode
+      ? Math.max(0, ...ledger.map((entry) => entry.episode)) + 1
+      : Number(episode);
+    let storyContext: string;
+    try {
+      // 先读取上下文再创建空白集，失败重试不会留下重复集。
+      const result = await API.getStoryContext(request.projectName, contextEpisode, {
+        signal: storyController.current.signal,
+      });
+      storyController.current.signal.throwIfAborted();
+      storyContext = result.context;
+    } catch (err) {
+      if (!storyController.current.signal.aborted) {
+        useAppStore.getState().pushToast(errMsg(err), "error");
+        setSubmitting(false);
+      }
+      return;
+    }
+    // 创建模式下透明建好目标集；import 工具要求目标集已存在。
     let episodes: number[];
     if (createMode) {
-      setSubmitting(true);
       try {
         episodes = await createBlankEpisodes(request.projectName, Number(count));
       } catch {
@@ -259,7 +284,8 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     } else {
       episodes = [Number(episode)];
     }
-    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format });
+    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format }) +
+      (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);
     setSubmitting(false);
@@ -280,10 +306,10 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
+            <div className="flex flex-col gap-3 @sm/canvas:flex-row @sm/canvas:gap-4">
               {createMode ? (
                 <>
-                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
                     <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
                     <SuggestField
                       id={`${fieldId}-genre`}
@@ -293,7 +319,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       optionsKey="short_drama_genre_options"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
                     <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
                     <input
                       id={`${fieldId}-count`}
@@ -312,7 +338,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                 </>
               ) : (
                 <>
-                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
                     <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
                     <SuggestField
                       id={`${fieldId}-genre`}
@@ -322,7 +348,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       optionsKey="short_drama_genre_options"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5 sm:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
                     <Label htmlFor={`${fieldId}-episode`}>{t("short_drama_generate_episode_label")}</Label>
                     <select
                       id={`${fieldId}-episode`}

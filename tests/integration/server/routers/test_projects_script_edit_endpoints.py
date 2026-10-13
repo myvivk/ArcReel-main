@@ -33,10 +33,18 @@ class TestProjectsRouter:
         with client:
             patch_scene = client.patch(
                 "/api/v1/projects/ready/script-scenes/001",
-                json={"script_file": "episode_1.json", "updates": {"duration_seconds": 6, "segment_break": True}},
+                json={
+                    "script_file": "episode_1.json",
+                    "updates": {
+                        "duration_seconds": 6,
+                        "segment_break": True,
+                        "scene_description": "雨夜门前。",
+                    },
+                },
             )
             assert patch_scene.status_code == 200
             assert patch_scene.json()["scene"]["duration_seconds"] == 6
+            assert patch_scene.json()["scene"]["scene_description"] == "雨夜门前。"
 
             patch_scene_missing = client.patch(
                 "/api/v1/projects/ready/script-scenes/404",

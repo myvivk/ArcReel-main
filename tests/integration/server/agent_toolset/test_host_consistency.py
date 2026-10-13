@@ -62,6 +62,7 @@ from server.agent_toolset.repair_channel import MERGE_ASSET
 from server.agent_toolset.script_authoring import (
     CONFIRM_SCRIPT_REVIEW,
     GENERATE_EPISODE_SCRIPT,
+    IMPORT_SHORT_DRAMA_SCRIPT,
     OPEN_DRAFT,
     PATCH_DRAFT,
     PROMOTE_DRAFT,
@@ -118,6 +119,11 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "generate_episode_script": {"episode_id": 1, "dry_run": True},
     "generate_script_plan": {"episode_id": 1, "dry_run": True},
     "confirm_script_review": {"episode_id": 1},
+    "import_short_drama_script": {"episode_id": 1, "markdown": "第【1】集：测试"},
+    "import_short_drama_series": {
+        "episodes": [{"episode_id": 1, "markdown": "第【1】集：测试"}],
+        "continue_on_error": True,
+    },
     "open_draft": {"episode_id": 1, "doc_type": "drama_script_plan"},
     "patch_draft": {
         "episode_id": 1,
@@ -539,6 +545,7 @@ _PROBLEM_ON_SAMPLE = frozenset(
         OPEN_DRAFT.name,
         PATCH_DRAFT.name,
         PROMOTE_DRAFT.name,
+        IMPORT_SHORT_DRAMA_SCRIPT.name,
         PATCH_EPISODE_SCRIPT.name,
         SPLIT_GRIDS.name,
         SELECT_VIDEO_VERSION.name,

@@ -2291,6 +2291,7 @@ export default {
   'short_drama_generate_count_label': 'Episodes to write',
   'short_drama_generate_count_hint': 'Greater than 1 writes multiple episodes and imports each',
   'short_drama_generate_create_hint': 'A new episode will be created automatically on generation (no manual step needed); episodes to write: 1~100.',
+  'short_drama_generate_reuse_hint': 'Found {{count}} blank episode(s); they are filled first and only the remainder is created.',
   'short_drama_generate_submit': 'Hand off to Agent',
   'short_drama_visual_open': 'AI generate script',
   'short_drama_visual_title': 'AI generate script (visual layer)',

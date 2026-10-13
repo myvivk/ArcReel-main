@@ -2290,6 +2290,7 @@ export default {
   'short_drama_generate_count_label': '连写集数',
   'short_drama_generate_count_hint': '大于 1 时按简报连写多集并逐集导入',
   'short_drama_generate_create_hint': '生成时将自动创建新集（无需先手动建集）；连写集数范围 1~100。',
+  'short_drama_generate_reuse_hint': '检测到 {{count}} 个空白集，会优先填充它们，不足的部分再新建。',
   'short_drama_generate_submit': '交给 Agent 生成',
   'short_drama_visual_open': 'AI 生成剧本',
   'short_drama_visual_title': 'AI 生成剧本（补视觉层）',

@@ -2388,6 +2388,7 @@ export default {
   'short_drama_generate_count_label': 'Số tập viết',
   'short_drama_generate_count_hint': 'Lớn hơn 1 sẽ viết nhiều tập và nhập từng tập',
   'short_drama_generate_create_hint': 'Tập mới sẽ được tạo tự động khi tạo (không cần tạo thủ công); số tập viết: 1~100.',
+  'short_drama_generate_reuse_hint': 'Phát hiện {{count}} tập trống; các tập này được điền trước, phần còn thiếu mới tạo mới.',
   'short_drama_generate_submit': 'Giao cho Agent',
   'short_drama_visual_open': 'AI tạo kịch bản',
   'short_drama_visual_title': 'AI tạo kịch bản (lớp hình ảnh)',

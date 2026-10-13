@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Bot, Sparkles } from "lucide-react";
 
 import { StartBlankScriptButton } from "@/components/canvas/shared/StartBlankScriptButton";
+import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,18 +21,29 @@ interface ScriptPlanStartProps {
    * 规划读的是已保存的内容，修改没落定就提交会按旧内容规划。
    */
   prepare?: () => Promise<boolean>;
+  /**
+   * 剧情演绎（drama）时额外给出「AI 原创剧本」入口：按创意简报走短剧工厂连写，
+   * 不要求本集先有原文。其余模式沿用「本集原文 → 规划」的起步区。
+   */
+  contentMode?: "narration" | "drama";
 }
 
 /**
- * 首次规划脚本的唯一入口：说明、附加指令、「交给 Agent」「AI 规划」，以及不用 AI 的「从空白开始」。
- * 规划在跑时换成状态说明。制作进度点名「脚本规划」时把焦点交给附加指令。
+ * 首次规划脚本的入口：说明、附加指令、「交给 Agent」「AI 规划」，以及不用 AI 的「从空白开始」。
+ * 剧情演绎还给出「AI 原创剧本」。规划在跑时换成状态说明。制作进度点名「脚本规划」时把焦点交给附加指令。
  */
 export function ScriptPlanStart(props: ScriptPlanStartProps) {
   // 换集时整块重建：集页直接切到另一集不会重新挂载，附加指令草稿会被当成下一集的指令提交并保存
   return <ScriptPlanStartForm key={`${props.projectName}:${props.episode}`} {...props} />;
 }
 
-function ScriptPlanStartForm({ projectName, episode, savedInstructions, prepare }: ScriptPlanStartProps) {
+function ScriptPlanStartForm({
+  projectName,
+  episode,
+  savedInstructions,
+  prepare,
+  contentMode,
+}: ScriptPlanStartProps) {
   const { t } = useTranslation("dashboard");
   const titleId = useId();
   const fieldId = useId();
@@ -113,6 +125,9 @@ function ScriptPlanStartForm({ projectName, episode, savedInstructions, prepare 
               <Sparkles aria-hidden data-icon="inline-start" />
               {t("script_plan_ai_plan")}
             </Button>
+            {contentMode === "drama" && (
+              <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+            )}
             <StartBlankScriptButton
               projectName={projectName}
               episode={episode}

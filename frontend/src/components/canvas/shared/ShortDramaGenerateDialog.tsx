@@ -28,8 +28,10 @@ import { useEpisodeLedger } from "@/hooks/useEpisodeLedger";
 import { createBlankEpisodes } from "@/actions/shortDrama";
 import { useAppStore } from "@/stores/app-store";
 import { useAssistantStore } from "@/stores/assistant-store";
+import { useProjectsStore } from "@/stores/projects-store";
 import { useShortDramaGenerateStore, type ShortDramaGenerateOpenRequest } from "@/stores/short-drama-generate-store";
 import { episodeDisplayName } from "@/utils/episode-display";
+import { trailingBlankEpisodes } from "@/utils/episode-blank";
 
 export type ShortDramaFormat = "standard" | "long" | "manju";
 
@@ -234,6 +236,9 @@ interface DialogProps {
 function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const { t } = useTranslation("dashboard");
   const ledger = useEpisodeLedger();
+  const episodeMetas = useProjectsStore((s) => s.currentProjectData?.episodes);
+  // 创建模式下优先填末尾已有的空白集，避免留下永久空集让剧集从第 2 集才开始。
+  const reusable = useMemo(() => trailingBlankEpisodes(episodeMetas), [episodeMetas]);
   const fieldId = useId();
   const createMode = request.episode === 0;
   const [episode, setEpisode] = useState<number>(request.episode);
@@ -254,8 +259,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const handOff = async () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
+    // 创建模式：优先复用末尾的空白集，不够再补建；上下文取这批目标集之前的内容，
+    // 保证连写从正确的位置接着写（填第 1 集时上下文为空，等于从头起故事）。
+    const reused = createMode ? reusable.slice(0, Number(count)) : [];
     const contextEpisode = createMode
-      ? Math.max(0, ...ledger.map((entry) => entry.episode)) + 1
+      ? reused[0] ?? Math.max(0, ...ledger.map((entry) => entry.episode)) + 1
       : Number(episode);
     let storyContext: string;
     try {
@@ -272,14 +280,19 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       }
       return;
     }
-    // 创建模式下透明建好目标集；import 工具要求目标集已存在。
+    // 创建模式下补足目标集；import 工具要求目标集已存在。
     let episodes: number[];
     if (createMode) {
-      try {
-        episodes = await createBlankEpisodes(request.projectName, Number(count));
-      } catch {
-        setSubmitting(false);
-        return;
+      const remaining = Number(count) - reused.length;
+      if (remaining > 0) {
+        try {
+          episodes = [...reused, ...(await createBlankEpisodes(request.projectName, remaining))];
+        } catch {
+          setSubmitting(false);
+          return;
+        }
+      } else {
+        episodes = reused;
       }
     } else {
       episodes = [Number(episode)];
@@ -374,6 +387,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
 
             {createMode && (
               <p className="text-xs text-muted-foreground">{t("short_drama_generate_create_hint")}</p>
+            )}
+            {createMode && reusable.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {t("short_drama_generate_reuse_hint", { count: Math.min(reusable.length, count) })}
+              </p>
             )}
 
             <div className="flex flex-col gap-1.5">

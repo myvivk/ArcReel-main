@@ -416,11 +416,14 @@ export function EpisodeSourceReview({
   projectName,
   episode,
   episodes,
+  contentMode,
   sourceOnly = false,
 }: {
   projectName: string;
   episode: number;
   episodes: EpisodeMeta[];
+  /** 内容模式；剧情演绎（drama）时起步区额外给出「AI 原创剧本」入口。 */
+  contentMode?: "narration" | "drama";
   /** 只读改本集原文：不渲染脚本规划入口（集页「原文」视图用，这一集多半已有脚本）。 */
   sourceOnly?: boolean;
 }) {
@@ -445,6 +448,7 @@ export function EpisodeSourceReview({
               episode={episode}
               savedInstructions={meta?.script_plan_instructions ?? ""}
               prepare={saveSource}
+              contentMode={contentMode}
             />
           )}
           {guide && <GuideCollapsible key={episode} meta={meta} className="@min-[860px]/plan-start:hidden" />}

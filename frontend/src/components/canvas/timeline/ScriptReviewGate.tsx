@@ -611,7 +611,12 @@ export function ScriptReviewGate({
     if (status === "no_script_plan" && !formalScript) {
       return (
         <div className="mx-auto w-full max-w-190">
-          <ScriptPlanStart projectName={projectName} episode={episode} savedInstructions={savedInstructions} />
+          <ScriptPlanStart
+            projectName={projectName}
+            episode={episode}
+            savedInstructions={savedInstructions}
+            contentMode={contentMode}
+          />
         </div>
       );
     }

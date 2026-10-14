@@ -515,9 +515,7 @@ class TestAssetAiFill:
 
         app = FastAPI()
         register_error_handlers(app)
-        app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(
-            id="default", sub="testuser", role="admin"
-        )
+        app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
         app.include_router(characters.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
         return TestClient(app), fake_pm
 
@@ -574,7 +572,9 @@ class TestAssetAiFill:
         assert entry["aliases"] == ["旧称"]
 
     def test_404_when_asset_missing(self, monkeypatch):
-        client, _fake_pm = self._client_with_generator(monkeypatch, {"description": "x", "aliases": [], "derivatives": []})
+        client, _fake_pm = self._client_with_generator(
+            monkeypatch, {"description": "x", "aliases": [], "derivatives": []}
+        )
         with client:
             resp = client.post("/api/v1/projects/demo/characters/Ghost/ai-fill")
         assert resp.status_code == 404

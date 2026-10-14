@@ -175,18 +175,20 @@ export function AssetDetailEditor({
     });
   };
 
-  const fill = async () => {
+  const fill = () => {
     if (busy) return;
     setFillError(null);
     setFilling(true);
-    try {
-      await API.fillAssetFields(projectName, assetType, name);
-      await refreshAfterWrite(projectName, t);
-    } catch {
-      setFillError(t("assets:ai_fill_failed"));
-    } finally {
-      setFilling(false);
-    }
+    void (async () => {
+      try {
+        await API.fillAssetFields(projectName, assetType, name);
+        await refreshAfterWrite(projectName, t);
+      } catch {
+        setFillError(t("assets:ai_fill_failed"));
+      } finally {
+        setFilling(false);
+      }
+    })();
   };
 
   const setField = <K extends keyof AssetFields>(key: K, next: AssetFields[K]) =>

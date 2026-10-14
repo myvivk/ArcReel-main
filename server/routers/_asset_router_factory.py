@@ -52,6 +52,7 @@ from lib.project.asset_types import (
     ALIASES_FIELD,
     ASSET_SPECS,
     DERIVATIVES_FIELD,
+    AssetSpec,
     ProjectAssetNameConflictError,
     localize_asset_type,
     record_asset_aliases,
@@ -332,6 +333,75 @@ def localize_project_asset_name_conflict(exc: ProjectAssetNameConflictError, tra
     )
 
 
+async def _run_ai_fill(
+    manager: ProjectManager,
+    project: dict[str, Any],
+    project_name: str,
+    asset_type: str,
+    spec: AssetSpec,
+    entry_name: str,
+) -> dict[str, Any] | None:
+    """用项目文本模型补全单个资产尚为空白的字段（描述 / 声音风格 / 别名 / 衍生）。
+
+    只写回为空的字段，不覆盖已有内容，与导入「已登记资产不覆盖」不变量一致。已含描述则跳过
+    并返回 ``None``；找不到条目返回 ``None``；生成或写入失败抛出，由调用方决定是否整批中止或
+    单条记录失败（批量补全入口借此隔离单条失败）。
+    """
+    bucket = project.get(spec.bucket_key) or {}
+    key = resolve_asset_key(bucket, entry_name)
+    if key is None:
+        return None
+    entry = bucket[key]
+    if entry.get("description"):
+        return None
+
+    try:
+        context = _collect_asset_context(manager.get_project_path(project_name), project, asset_type, entry_name, entry)
+    except Exception:
+        logger.exception("ai-fill context gathering failed; falling back to empty context")
+        context = {
+            "title": project.get("title") or "",
+            "premise": project.get("premise") or project.get("logline") or "",
+            "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
+            "excerpts": [],
+        }
+    prompt = _build_ai_fill_prompt(asset_type, entry_name, context)
+
+    generator = await TextGenerator.create(
+        TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
+    )
+    raw = await generator.generate(
+        BackendTextGenerationRequest(prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000),
+        project_name=project_name,
+    )
+    parsed = _AssetFillResponse.model_validate(_extract_json(raw.text))
+
+    def _write() -> dict[str, Any]:
+        def _mutate(entry: dict[str, Any]) -> None:
+            if not entry.get("description") and parsed.description:
+                entry["description"] = parsed.description
+            if asset_type == "character" and not entry.get("voice_style") and parsed.voice_style:
+                entry["voice_style"] = parsed.voice_style
+            if not (entry.get(ALIASES_FIELD) or []) and parsed.aliases:
+                entry[ALIASES_FIELD] = []
+                record_asset_aliases(entry, list(parsed.aliases), asset_name=entry_name)
+            if asset_type == "character" and spec.supports_derivatives:
+                table = entry.get(DERIVATIVES_FIELD) or {}
+                if not table and parsed.derivatives:
+                    for d in parsed.derivatives:
+                        dname = (d.name or "").strip()
+                        if not dname:
+                            continue
+                        dkey = resolve_asset_key(table, dname) or dname
+                        table[dkey] = {"description": d.description or "", spec.sheet_field: ""}
+                    entry[DERIVATIVES_FIELD] = table
+
+        with project_change_source("webui"):
+            return manager.update_asset_entry(asset_type, project_name, entry_name, _mutate)
+
+    return await asyncio.to_thread(_write)
+
+
 def build_asset_router(
     *,
     asset_type: str,
@@ -510,70 +580,17 @@ def build_asset_router(
         key = resolve_asset_key(bucket, entry_name)
         if key is None:
             raise HTTPException(status_code=404, detail=_t(keys["not_found"], name=entry_name))
-        entry = bucket[key]
 
         try:
-            context = _collect_asset_context(
-                manager.get_project_path(project_name), project, asset_type, entry_name, entry
-            )
-        except Exception:
-            logger.exception("ai-fill context gathering failed; falling back to empty context")
-            context = {
-                "title": project.get("title") or "",
-                "premise": project.get("premise") or project.get("logline") or "",
-                "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
-                "excerpts": [],
-            }
-        prompt = _build_ai_fill_prompt(asset_type, entry_name, context)
-
-        try:
-            generator = await TextGenerator.create(
-                TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
-            )
-            raw = await generator.generate(
-                BackendTextGenerationRequest(prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000),
-                project_name=project_name,
-            )
-            parsed = _AssetFillResponse.model_validate(_extract_json(raw.text))
+            updated = await _run_ai_fill(manager, project, project_name, asset_type, spec, entry_name)
         except TextOutputTruncatedError as exc:
             raise HTTPException(status_code=502, detail="资产字段补全被模型截断，请稍后重试") from exc
         except Exception as exc:
-            logger.exception("ai-fill generation failed")
+            logger.exception("ai-fill failed")
             raise HTTPException(status_code=502, detail="资产字段补全生成失败，请稍后重试") from exc
 
-        def _write() -> dict[str, Any]:
-            mgr = pm_getter()
-
-            def _mutate(entry: dict[str, Any]) -> None:
-                if not entry.get("description") and parsed.description:
-                    entry["description"] = parsed.description
-                if asset_type == "character" and not entry.get("voice_style") and parsed.voice_style:
-                    entry["voice_style"] = parsed.voice_style
-                if not (entry.get(ALIASES_FIELD) or []) and parsed.aliases:
-                    entry[ALIASES_FIELD] = []
-                    record_asset_aliases(entry, list(parsed.aliases), asset_name=entry_name)
-                if asset_type == "character" and spec.supports_derivatives:
-                    table = entry.get(DERIVATIVES_FIELD) or {}
-                    if not table and parsed.derivatives:
-                        for d in parsed.derivatives:
-                            dname = (d.name or "").strip()
-                            if not dname:
-                                continue
-                            dkey = resolve_asset_key(table, dname) or dname
-                            table[dkey] = {"description": d.description or "", spec.sheet_field: ""}
-                        entry[DERIVATIVES_FIELD] = table
-
-            with project_change_source("webui"):
-                return mgr.update_asset_entry(asset_type, project_name, entry_name, _mutate)
-
-        try:
-            updated = await asyncio.to_thread(_write)
-        except KeyError:
-            raise HTTPException(status_code=404, detail=_t(keys["not_found"], name=entry_name)) from None
-        except Exception as exc:
-            logger.exception("ai-fill write failed")
-            raise HTTPException(status_code=500, detail="写入资产字段失败") from exc
-
+        if updated is None:
+            updated = bucket[resolve_asset_key(bucket, entry_name)]
         return {"success": True, result_key: updated}
 
     @router.post(f"/projects/{{project_name}}/{spec.subdir}/{{entry_name}}/rename")

@@ -118,6 +118,8 @@ export default {
   "sheet_description_required": "Fill in the description first",
   "ai_fill": "AI Fill",
   "ai_fill_failed": "Failed to auto-fill asset fields. Please try again.",
+  "batch_ai_fill": "Fill missing descriptions",
+  "batch_ai_fill_done": "Filled {{filled}}, skipped {{skipped}}, failed {{failed}}",
   "sheet_filter_label": "Filter by sheet status",
   "sheet_filter_all": "All",
   "sheet_filter_pending": "Pending",

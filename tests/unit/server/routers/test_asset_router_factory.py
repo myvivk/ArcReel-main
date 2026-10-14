@@ -578,3 +578,88 @@ class TestAssetAiFill:
         with client:
             resp = client.post("/api/v1/projects/demo/characters/Ghost/ai-fill")
         assert resp.status_code == 404
+
+
+class TestFillMissingDescriptionsBatch:
+    """批量补全缺描述资产：跨类型遍历，只补空描述，已有描述的跳过；支持按类型过滤。"""
+
+    def _client(self, monkeypatch):
+        from server.routers import _asset_router_factory as factory_mod
+        from server.routers import assets
+
+        fake_pm = _FakePM()
+        monkeypatch.setattr(assets, "get_project_manager", lambda: fake_pm)
+
+        class _FakeGenerator:
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls()
+
+            async def generate(self, request, project_name=None, *, require_complete=False):
+                payload = {"description": "补出来的描述", "voice_style": "", "aliases": [], "derivatives": []}
+                return SimpleNamespace(text=json.dumps(payload))
+
+        monkeypatch.setattr(factory_mod, "TextGenerator", _FakeGenerator)
+
+        app = FastAPI()
+        register_error_handlers(app)
+        app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
+        app.include_router(assets.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
+        return TestClient(app), fake_pm
+
+    def test_fills_only_blank_across_types(self, monkeypatch):
+        client, fake_pm = self._client(monkeypatch)
+        proj = fake_pm.projects["demo"]
+        proj["characters"]["柳玉茹"] = {
+            "description": "",
+            "character_sheet": "",
+            "voice_style": "",
+            "aliases": [],
+            "derivatives": {},
+        }
+        proj["characters"]["陈峰"] = {
+            "description": "已有描述",
+            "character_sheet": "",
+            "voice_style": "",
+            "aliases": [],
+            "derivatives": {},
+        }
+        proj["scenes"]["祠堂"] = {"description": "", "scene_sheet": ""}
+        proj["props"]["旧戒指"] = {"description": "", "prop_sheet": ""}
+
+        with client:
+            resp = client.post("/api/v1/assets/projects/demo/ai-fill-missing-descriptions")
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        filled = {(f["asset_type"], f["name"]) for f in data["filled"]}
+        assert filled == {("character", "柳玉茹"), ("scene", "祠堂"), ("prop", "旧戒指")}
+        # 写回生效：空描述被补上，已有描述不被覆盖
+        assert proj["characters"]["柳玉茹"]["description"] == "补出来的描述"
+        assert proj["characters"]["陈峰"]["description"] == "已有描述"
+
+    def test_filters_by_asset_type(self, monkeypatch):
+        client, fake_pm = self._client(monkeypatch)
+        proj = fake_pm.projects["demo"]
+        proj["characters"]["柳玉茹"] = {
+            "description": "",
+            "character_sheet": "",
+            "voice_style": "",
+            "aliases": [],
+            "derivatives": {},
+        }
+        proj["scenes"]["祠堂"] = {"description": "", "scene_sheet": ""}
+
+        with client:
+            resp = client.post("/api/v1/assets/projects/demo/ai-fill-missing-descriptions?asset_type=scene")
+
+        assert resp.status_code == 200, resp.text
+        filled = {(f["asset_type"], f["name"]) for f in resp.json()["filled"]}
+        assert filled == {("scene", "祠堂")}
+        assert proj["characters"]["柳玉茹"]["description"] == ""
+
+    def test_invalid_asset_type_returns_400(self, monkeypatch):
+        client, _fake_pm = self._client(monkeypatch)
+        with client:
+            resp = client.post("/api/v1/assets/projects/demo/ai-fill-missing-descriptions?asset_type=bogus")
+        assert resp.status_code == 400

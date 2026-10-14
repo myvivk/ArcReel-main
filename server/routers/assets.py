@@ -46,7 +46,7 @@ from lib.project.asset_types import (
 from lib.project.project_manager import ProjectManager, get_project_manager
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE
 from server.i18n import Translator
-from server.routers._asset_router_factory import localize_project_asset_name_conflict
+from server.routers._asset_router_factory import _run_ai_fill, localize_project_asset_name_conflict
 
 logger = logging.getLogger(__name__)
 
@@ -864,3 +864,53 @@ async def apply_to_project(
     succeeded.extend({"id": plan["asset"].id, "name": plan["desired_name"]} for plan in plans)
 
     return {"succeeded": succeeded, "skipped": skipped, "failed": failed}
+
+
+@router.post("/projects/{project_name}/ai-fill-missing-descriptions")
+async def ai_fill_missing_descriptions(
+    project_name: str,
+    _t: Translator,
+    asset_type: str | None = Query(
+        default=None, description="限定只补全某类资产（character/scene/prop/product），缺省补全全部"
+    ),
+):
+    """批量补全项目中缺描述资产的空白字段（描述 / 声音风格 / 别名 / 衍生）。
+
+    遍历指定类型（或全部）资产，对描述为空者逐条用文本模型补全并写回。单条生成或写入失败不影响
+    其余条目，汇总进 failed；已含描述的条目跳过。与导入「已登记资产不覆盖」不变量一致，只写空白字段。
+    """
+    manager = get_project_manager()
+    try:
+        project = manager.load_project(project_name)
+    except FileNotFoundError as exc:
+        raise NotFoundError("project_not_found", name=project_name) from exc
+    except Exception as exc:
+        logger.exception("batch ai-fill load project failed")
+        raise HTTPException(status_code=500, detail="读取项目失败") from exc
+
+    if asset_type is not None and asset_type not in ASSET_SPECS:
+        raise HTTPException(status_code=400, detail=_t("asset_invalid_type"))
+
+    specs = (
+        [ASSET_SPECS[asset_type]] if asset_type else sorted(ASSET_SPECS.values(), key=lambda s: s.namespace_priority)
+    )
+
+    filled: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
+    for spec in specs:
+        bucket = project.get(spec.bucket_key) or {}
+        if not isinstance(bucket, dict):
+            continue
+        for raw_name in bucket:
+            try:
+                updated = await _run_ai_fill(manager, project, project_name, spec.asset_type, spec, raw_name)
+            except Exception:
+                logger.exception("batch ai-fill failed for %s/%s", spec.asset_type, raw_name)
+                failed.append({"asset_type": spec.asset_type, "name": raw_name})
+                continue
+            if updated is None:
+                skipped.append({"asset_type": spec.asset_type, "name": raw_name})
+            else:
+                filled.append({"asset_type": spec.asset_type, "name": raw_name})
+    return {"success": True, "filled": filled, "skipped": skipped, "failed": failed}

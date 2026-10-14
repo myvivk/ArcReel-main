@@ -120,6 +120,8 @@ export default {
   "sheet_description_required": "需要先填写描述",
   "ai_fill": "AI 补全",
   "ai_fill_failed": "资产字段补全失败，请稍后重试",
+  "batch_ai_fill": "补全缺描述资产",
+  "batch_ai_fill_done": "已补全 {{filled}} 个、跳过 {{skipped}} 个、失败 {{failed}} 个",
   "sheet_filter_label": "按资产图状态筛选",
   "sheet_filter_all": "全部",
   "sheet_filter_pending": "待生成",

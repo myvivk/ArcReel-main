@@ -937,6 +937,26 @@ class API {
     );
   }
 
+  /**
+   * 批量补全项目中缺描述资产的空白字段（描述 / 声音风格 / 别名 / 衍生）。
+   * 仅写回为空的字段，不覆盖已有内容；assetType 缺省时补全全部类型。
+   */
+  static async fillMissingAssetDescriptions(
+    projectName: string,
+    assetType?: string
+  ): Promise<{
+    success: boolean;
+    filled: Array<{ asset_type: string; name: string }>;
+    skipped: Array<{ asset_type: string; name: string }>;
+    failed: Array<{ asset_type: string; name: string }>;
+  }> {
+    const query = assetType ? `?asset_type=${encodeURIComponent(assetType)}` : "";
+    return this.request(
+      `/assets/projects/${encodeURIComponent(projectName)}/ai-fill-missing-descriptions${query}`,
+      { method: "POST" }
+    );
+  }
+
   // ==================== 角色衍生管理 ====================
 
   /**

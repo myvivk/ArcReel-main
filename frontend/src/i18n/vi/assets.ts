@@ -120,6 +120,8 @@ export default {
   "sheet_description_required": "Cần điền mô tả trước",
   "ai_fill": "Điền bằng AI",
   "ai_fill_failed": "Không thể tự động điền trường tài sản. Vui lòng thử lại.",
+  "batch_ai_fill": "Điền mô tả còn thiếu",
+  "batch_ai_fill_done": "Đã điền {{filled}}, bỏ qua {{skipped}}, thất bại {{failed}}",
   "sheet_filter_label": "Lọc theo trạng thái hình tài sản",
   "sheet_filter_all": "Tất cả",
   "sheet_filter_pending": "Chờ tạo",

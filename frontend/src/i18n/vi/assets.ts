@@ -118,6 +118,8 @@ export default {
   "derivative_busy_hint": "Đang tạo hoặc chỉnh sửa, chưa thể thay đổi phái sinh",
   "library_derivative_thumb": "Hình của phái sinh \"{{name}}\"",
   "sheet_description_required": "Cần điền mô tả trước",
+  "ai_fill": "Điền bằng AI",
+  "ai_fill_failed": "Không thể tự động điền trường tài sản. Vui lòng thử lại.",
   "sheet_filter_label": "Lọc theo trạng thái hình tài sản",
   "sheet_filter_all": "Tất cả",
   "sheet_filter_pending": "Chờ tạo",

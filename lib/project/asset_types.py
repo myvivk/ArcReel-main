@@ -329,12 +329,18 @@ def register_missing_assets(
     names_by_type: Mapping[str, Iterable[str]],
     *,
     description: str = "",
+    descriptions_by_type: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[dict[str, list[str]], list[dict[str, str]]]:
     """把还没登记的名字补进项目资产表，返回 ``(本次登记, 冲突)``。
 
     已登记的名字（判等键命中）一律不动——描述与资产图是用户资产，批量导入不该覆盖；
     名字被别的资产类型占着时跳过并记入冲突，由调用方如实回执，不中断导入。
+
+    ``descriptions_by_type`` 为可选的「类型 → 名字 → 描述」映射：登记新资产时若有对应
+    描述则写入，缺省回落到全局 ``description``（通常为空串）。仅作用于本次新登记条目，
+    绝不覆盖已登记资产的描述。
     """
+    descriptions_by_type = descriptions_by_type or {}
     registered: dict[str, list[str]] = {}
     conflicts: list[dict[str, str]] = []
     for asset_type, names in names_by_type.items():
@@ -344,6 +350,7 @@ def register_missing_assets(
         bucket = project.setdefault(spec.bucket_key, {})
         if not isinstance(bucket, dict):
             continue
+        type_descriptions = descriptions_by_type.get(asset_type) or {}
         for raw_name in names or ():
             if not isinstance(raw_name, str) or not raw_name.strip():
                 continue
@@ -365,7 +372,7 @@ def register_missing_assets(
                     }
                 )
                 continue
-            bucket[name] = build_asset_entry(asset_type, description)
+            bucket[name] = build_asset_entry(asset_type, type_descriptions.get(name, description))
             registered.setdefault(asset_type, []).append(name)
     return registered, conflicts
 

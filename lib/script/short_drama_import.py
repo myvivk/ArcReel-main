@@ -206,9 +206,7 @@ def parse_short_drama_episode(markdown: str) -> ParsedEpisode:
                 speaker = dialogue_match.group("speaker").strip()
                 stage = (dialogue_match.group("stage") or "").strip() or None
                 text = dialogue_match.group("text").strip().strip("\"'“”")
-                current.beats.append(
-                    _Beat(kind="dialogue", text=text, speaker=speaker, stage=stage, raw=raw)
-                )
+                current.beats.append(_Beat(kind="dialogue", text=text, speaker=speaker, stage=stage, raw=raw))
                 continue
             # 非结构化的其它行（动作续写/环境描写）并入当前块的动作
             current.beats.append(_Beat(kind="action", text=line, raw=raw))
@@ -529,7 +527,7 @@ def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
     return collected
 
 
-def referenced_asset_descriptions(parsed: "ParsedEpisode") -> dict[str, dict[str, str]]:
+def referenced_asset_descriptions(parsed: ParsedEpisode) -> dict[str, dict[str, str]]:
     """从解析结果抽取已写明的角色 / 场景外观描述（落在被导入的 Markdown 内）。
 
     与 :func:`referenced_asset_names` 互补：名字用于登记，描述用于填充登记条目的

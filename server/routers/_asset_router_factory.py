@@ -26,6 +26,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from lib.backends.providers import CallPurpose
+from lib.backends.text_backends.base import (
+    TextGenerationRequest as BackendTextGenerationRequest,
+)
+from lib.backends.text_backends.base import (
+    TextOutputTruncatedError,
+    TextTaskType,
+)
+from lib.backends.text_generator import TextGenerator
 from lib.infra.api_errors import NotFoundError, UnprocessableError
 from lib.project.asset_merge import (
     MERGEABLE_ASSET_TYPES,
@@ -39,13 +48,6 @@ from lib.project.asset_rename import (
     AssetRenameHistoryCollisionError,
     AssetRenameNotFoundError,
 )
-from lib.backends.providers import CallPurpose
-from lib.backends.text_backends.base import (
-    TextGenerationRequest as BackendTextGenerationRequest,
-    TextOutputTruncatedError,
-    TextTaskType,
-)
-from lib.backends.text_generator import TextGenerator
 from lib.project.asset_types import (
     ALIASES_FIELD,
     ASSET_SPECS,
@@ -202,8 +204,7 @@ def _scene_mentions(scene: dict[str, Any], asset_type: str, name: str) -> bool:
     if asset_type == "character":
         in_cast = name in (scene.get("characters_in_scene") or [])
         in_dialogue = any(
-            isinstance(line, dict) and line.get("speaker") == name
-            for line in (scene.get("dialogue") or [])
+            isinstance(line, dict) and line.get("speaker") == name for line in (scene.get("dialogue") or [])
         )
         return in_cast or in_dialogue
     if asset_type == "scene":
@@ -220,9 +221,7 @@ def _collect_asset_context(
     context: dict[str, Any] = {
         "title": project.get("title") or "",
         "premise": project.get("premise") or project.get("logline") or "",
-        "existing": {
-            k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)
-        },
+        "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
         "excerpts": [],
     }
     total_chars = 0
@@ -277,11 +276,14 @@ def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -
     existing_block = "\n".join(existing_parts) if existing_parts else "（无已有内容）"
 
     excerpts = context.get("excerpts") or []
-    excerpt_block = "\n\n".join(
-        f"【场景】{ex.get('scene', '')}\n场景描写：{ex.get('scene_description', '')}\n"
-        + "\n".join(ex.get("dialogue") or [])
-        for ex in excerpts
-    ) or "（剧本中未检索到该资产的直接引用）"
+    excerpt_block = (
+        "\n\n".join(
+            f"【场景】{ex.get('scene', '')}\n场景描写：{ex.get('scene_description', '')}\n"
+            + "\n".join(ex.get("dialogue") or [])
+            for ex in excerpts
+        )
+        or "（剧本中未检索到该资产的直接引用）"
+    )
 
     scope = (
         "1) description：该资产的视觉外观描写（中文，客观具体，可作为作画/资产图参考，突出可辨认特征）。\n"
@@ -498,8 +500,8 @@ def build_asset_router(
         try:
             manager = pm_getter()
             project = manager.load_project(project_name)
-        except FileNotFoundError:
-            raise NotFoundError("project_not_found", name=project_name)
+        except FileNotFoundError as exc:
+            raise NotFoundError("project_not_found", name=project_name) from exc
         except Exception as exc:
             logger.exception("ai-fill load project failed")
             raise HTTPException(status_code=500, detail="读取项目失败") from exc
@@ -519,9 +521,7 @@ def build_asset_router(
             context = {
                 "title": project.get("title") or "",
                 "premise": project.get("premise") or project.get("logline") or "",
-                "existing": {
-                    k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)
-                },
+                "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
                 "excerpts": [],
             }
         prompt = _build_ai_fill_prompt(asset_type, entry_name, context)
@@ -531,9 +531,7 @@ def build_asset_router(
                 TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
             )
             raw = await generator.generate(
-                BackendTextGenerationRequest(
-                    prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000
-                ),
+                BackendTextGenerationRequest(prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000),
                 project_name=project_name,
             )
             parsed = _AssetFillResponse.model_validate(_extract_json(raw.text))
@@ -636,6 +634,7 @@ def build_asset_router(
             raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
     if asset_type in MERGEABLE_ASSET_TYPES:
+
         @router.post(f"/projects/{{project_name}}/{spec.subdir}/{{entry_name}}/merge")
         async def merge_entry(
             project_name: str,

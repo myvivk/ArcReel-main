@@ -111,6 +111,8 @@ export function AssetDetailEditor({
   const sellingPointsId = useId();
   const [viewingSheet, setViewingSheet] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [filling, setFilling] = useState(false);
+  const [fillError, setFillError] = useState<string | null>(null);
   const voiceBinding = useProjectsStore(
     (s) => s.currentProjectData?.character_voice_binding ?? DEFAULT_CHARACTER_VOICE_BINDING,
   );
@@ -171,6 +173,20 @@ export function AssetDetailEditor({
         return !rejectIfAssetBusy(assetType, projectName, name, t, "assets:gallery_busy_hint");
       },
     });
+  };
+
+  const fill = async () => {
+    if (busy) return;
+    setFillError(null);
+    setFilling(true);
+    try {
+      await API.fillAssetFields(projectName, assetType, name);
+      await refreshAfterWrite(projectName, t);
+    } catch {
+      setFillError(t("assets:ai_fill_failed"));
+    } finally {
+      setFilling(false);
+    }
   };
 
   const setField = <K extends keyof AssetFields>(key: K, next: AssetFields[K]) =>
@@ -253,6 +269,16 @@ export function AssetDetailEditor({
                   label={generateLabel}
                   className="w-full"
                 />
+                <GenerateButton
+                  onClick={fill}
+                  loading={filling}
+                  disabled={busy}
+                  label={t("assets:ai_fill")}
+                  className="w-full"
+                />
+                {fillError ? (
+                  <p className="text-xs text-destructive">{fillError}</p>
+                ) : null}
                 {describable ? null : (
                   <p className="text-xs text-muted-foreground">{t("assets:sheet_description_required")}</p>
                 )}

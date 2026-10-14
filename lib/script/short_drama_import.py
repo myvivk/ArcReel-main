@@ -50,7 +50,9 @@ class _Beat:
 @dataclass
 class _Block:
     location: str = ""
+    scene_appearance: str = ""
     characters: list[str] = field(default_factory=list)
+    character_appearances: dict[str, str] = field(default_factory=dict)
     beats: list[_Beat] = field(default_factory=list)
 
 
@@ -93,17 +95,51 @@ _NARRATION_HINTS = ("旁白", "画外音", "解说", "narrator", "vo")
 STORY_SCENE_WINDOW_SECONDS: tuple[int, int] = (12, 15)
 
 
-def _split_character_names(line: str) -> list[str]:
-    """``林辰（隐忍龙王）、陈峰（嚣张富二代）`` → ``["林辰", "陈峰"]``。"""
-    names: list[str] = []
-    for part in re.split(r"[、,，]", line):
-        part = part.strip()
-        if not part:
-            continue
-        name = re.split(r"[（(]", part)[0].strip()
-        if name:
-            names.append(name)
-    return names
+def _parse_character_entry(token: str) -> tuple[str, str]:
+    """解析单个 ``名（状态标签｜外观）`` 片段，返回 ``(名字, 外观)``。"""
+    token = token.strip()
+    name = re.split(r"[（(]", token, maxsplit=1)[0].strip()
+    appearance = ""
+    if not name:
+        return (name, appearance)
+    match = re.search(r"[（(]([^）)]*)[）)]", token)
+    if match:
+        inner = match.group(1).strip()
+        for sep in ("｜", "|"):
+            if sep in inner:
+                appearance = inner.split(sep, 1)[1].strip()
+                break
+    return (name, appearance)
+
+
+def _split_character_entries(line: str) -> list[tuple[str, str]]:
+    """``林辰（隐忍龙王｜鹅蛋脸、杏眼、青衣）、陈峰（嚣张富二代）`` →
+    ``[("林辰", "鹅蛋脸、杏眼、青衣"), ("陈峰", "")]``。
+
+    括号内用 ``｜``（半角 ``|`` 亦可）分隔「状态标签」与可选的「外观描述」；
+    无 ``｜`` 时整段视作状态标签，外观留空。名字恒在括号之前。
+
+    按括号深度切分，避免把括号内的顿号（外观描写里常见）误判为角色分隔符。
+    """
+    entries: list[tuple[str, str]] = []
+    depth = 0
+    current = ""
+    for ch in line:
+        if ch in "（(":
+            depth += 1
+            current += ch
+        elif ch in "）)":
+            depth -= 1
+            current += ch
+        elif ch in "、,，" and depth == 0:
+            if current.strip():
+                entries.append(_parse_character_entry(current))
+            current = ""
+        else:
+            current += ch
+    if current.strip():
+        entries.append(_parse_character_entry(current))
+    return entries
 
 
 def parse_short_drama_episode(markdown: str) -> ParsedEpisode:
@@ -138,13 +174,26 @@ def parse_short_drama_episode(markdown: str) -> ParsedEpisode:
 
         scene_match = _SCENE_RE.match(line)
         if scene_match:
-            current = _Block(location=scene_match.group(1).strip())
+            location = scene_match.group(1).strip()
+            appearance = ""
+            for sep in ("｜", "|"):
+                if sep in location:
+                    location, appearance = location.split(sep, 1)
+                    location = location.strip()
+                    appearance = appearance.strip()
+                    break
+            current = _Block(location=location, scene_appearance=appearance)
             parsed.blocks.append(current)
             continue
 
         person_match = _PERSON_RE.match(line)
         if person_match:
-            current.characters = _split_character_names(person_match.group(1))
+            for name, appearance in _split_character_entries(person_match.group(1)):
+                if not name:
+                    continue
+                current.characters.append(name)
+                if appearance:
+                    current.character_appearances.setdefault(name, appearance)
             continue
 
         if line.startswith(_ACTION_PREFIX):
@@ -478,6 +527,27 @@ def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
                 if isinstance(name, str) and name and name not in collected[asset_type]:
                     collected[asset_type].append(name)
     return collected
+
+
+def referenced_asset_descriptions(parsed: "ParsedEpisode") -> dict[str, dict[str, str]]:
+    """从解析结果抽取已写明的角色 / 场景外观描述（落在被导入的 Markdown 内）。
+
+    与 :func:`referenced_asset_names` 互补：名字用于登记，描述用于填充登记条目的
+    ``description``。工厂没写外观时对应项不出现在本字典里，调用方回落到空串。
+
+    角色外观来自每集 ``[人物]`` 行括号内的 ``状态标签｜外观``；场景外观来自 ``[场景]``
+    行 ``地点｜场景视觉描写``。两者都只在被导入的那份单集 Markdown 里才抽得到——
+    工厂的人物圣经是独立工作文档，不在此范围内，要把外观带进导入就得写在这两份标记行里。
+    """
+    characters: dict[str, str] = {}
+    scenes: dict[str, str] = {}
+    for block in parsed.blocks:
+        for name, appearance in block.character_appearances.items():
+            if appearance and name not in characters:
+                characters[name] = appearance
+        if block.location and block.scene_appearance:
+            scenes[block.location] = block.scene_appearance
+    return {"character": characters, "scene": scenes, "prop": {}}
 
 
 def convert_to_drama_script(

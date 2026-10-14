@@ -15,6 +15,7 @@ from lib.script.short_drama_import import (
     STORY_SCENE_WINDOW_SECONDS,
     convert_to_drama_script,
     parse_short_drama_episode,
+    referenced_asset_descriptions,
     referenced_asset_names,
 )
 from lib.script.short_drama_source import (
@@ -158,6 +159,7 @@ async def import_short_drama_episode(
     meta["source_path"] = source.path
     meta["source_revision"] = source.revision
     names = referenced_asset_names(script)
+    descriptions = referenced_asset_descriptions(parsed)
     registered: dict[str, list[str]] = {}
     conflicts: list[dict[str, str]] = []
 
@@ -165,7 +167,11 @@ async def import_short_drama_episode(
         current_source = load_short_drama_source(projects, project_name, episode)
         if current_source is None or current_source.revision != source.revision:
             raise ShortDramaSourceConflict("short drama source changed during script commit")
-        new_assets, new_conflicts = register_missing_assets(current_project, names)
+        new_assets, new_conflicts = register_missing_assets(
+            current_project,
+            names,
+            descriptions_by_type=descriptions,
+        )
         registered.update(new_assets)
         conflicts.extend(new_conflicts)
 

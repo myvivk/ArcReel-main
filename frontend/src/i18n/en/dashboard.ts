@@ -2290,6 +2290,8 @@ export default {
   'short_drama_tone_options': 'Cold and Oppressive,Sweet Rom-com,Hot-blooded Comeback,Suspenseful,Everyday Grit,Heartbreaking Tearjerker,Light and Relaxing,Extra Sweet,Scheming and Heavy,Dark Comedy',
   'short_drama_generate_count_label': 'Episodes to write',
   'short_drama_generate_count_hint': 'Greater than 1 writes multiple episodes and imports each',
+  'short_drama_generate_total_label': 'Total episodes',
+  'short_drama_generate_total_hint': 'Planned total length of the series (not the default 60/80/100). Keep a cliffhanger if this batch does not reach the total; close the arc when it does.',
   'short_drama_generate_create_hint': 'A new episode will be created automatically on generation (no manual step needed); episodes to write: 1~100.',
   'short_drama_generate_reuse_hint': 'Found {{count}} blank episode(s); they are filled first and only the remainder is created.',
   'short_drama_generate_submit': 'Hand off to Agent',

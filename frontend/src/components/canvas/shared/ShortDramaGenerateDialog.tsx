@@ -38,6 +38,8 @@ export type ShortDramaFormat = "standard" | "long" | "manju";
 export interface OriginalScriptBrief {
   /** 目标集号列表：单集导入时长度为 1；连写多集时为各集号。 */
   episodes: number[];
+  /** 全剧规划总集数：供 Agent 铺排四幕/付费墙与收尾位置；连写未达总集数时保持断章续写，达到时收尾闭环。 */
+  totalEpisodes: number;
   genre: string;
   brief: string;
   tone: string;
@@ -52,10 +54,21 @@ const FORMAT_LENGTH: Record<ShortDramaFormat, string> = {
   manju: "漫剧档 60~90 秒",
 };
 
-/** 按档位给出短剧工厂的撰写指令：长档用 /写长档、/连写 长档。 */
-function formatWriteCommand(format: ShortDramaFormat, single: boolean, episode: number): string {
-  if (single) return format === "long" ? `/写长档 第${episode}集` : `/写剧本 第${episode}集`;
-  return format === "long" ? "/连写 长档" : "/连写";
+/** 把集号列表压缩成连写范围标签：连续则「起-止」，否则逐集列举。 */
+function episodeRangeLabel(episodes: number[]): string {
+  if (episodes.length === 1) return String(episodes[0]);
+  const sorted = [...episodes].sort((a, b) => a - b);
+  if (sorted.every((value, index) => value === sorted[0] + index)) {
+    return `${sorted[0]}-${sorted[sorted.length - 1]}`;
+  }
+  return sorted.join("、");
+}
+
+/** 按档位与集号给出短剧工厂的撰写指令：长档用 /写长档、/连写 长档，并带连写范围。 */
+function formatWriteCommand(format: ShortDramaFormat, single: boolean, episodes: number[]): string {
+  if (single) return format === "long" ? `/写长档 第${episodes[0]}集` : `/写剧本 第${episodes[0]}集`;
+  const range = episodeRangeLabel(episodes);
+  return format === "long" ? `/连写 长档 第${range}集` : `/连写 第${range}集`;
 }
 
 /**
@@ -66,7 +79,7 @@ function formatWriteCommand(format: ShortDramaFormat, single: boolean, episode: 
 export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   const episodes = b.episodes;
   const single = episodes.length === 1;
-  const command = formatWriteCommand(b.format, single, episodes[0]);
+  const command = formatWriteCommand(b.format, single, episodes);
   const tool = single ? "import_short_drama_script" : "import_short_drama_series";
   const toneLine = b.tone.trim() ? b.tone.trim() : "（按题材默认基调）";
   const lines = [
@@ -88,10 +101,21 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
       `4. 第 ${episodes[0]} 集已存在，直接导入即可。`,
     );
   } else {
+    const total = b.totalEpisodes;
+    const first = Math.min(...episodes);
+    const last = Math.max(...episodes);
+    const reachesEnd = last >= total;
     lines.push(
       `2. 生成后逐集调用 ${tool} 工具，把各集 Markdown 分别导入本项目的第 ${episodes.join("、")} 集（episode_id 对应）。`,
       "3. 视觉层（image_prompt / video_prompt）保持为空，留给后续 generate_episode_script 补出；不要臆造画面提示词。",
       `4. 第 ${episodes.join("、")} 集均已存在，逐集导入即可。`,
+      "",
+      "【全剧规划】",
+      `- 全剧规划总集数为 ${total} 集：据此重新规划四幕与付费墙位置，不要套用默认的 60/80/100 长档结构。`,
+      `- 本次连写覆盖第 ${first}~${last} 集（共 ${episodes.length} 集）。`,
+      reachesEnd
+        ? "- 本批次写到全剧结尾：最后一集必须收尾闭环、兑现情绪契约，主线不留未收束的悬钩。"
+        : "- 本批次未达全剧结尾：每集保持断章钩子、留续写空间，不要在本批次内提前收尾或闭环主线。",
     );
   }
   return lines.join("\n");
@@ -246,6 +270,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const [brief, setBrief] = useState("");
   const [tone, setTone] = useState("");
   const [count, setCount] = useState(1);
+  const [total, setTotal] = useState(1);
   const [format, setFormat] = useState<ShortDramaFormat>("standard");
   const [submitting, setSubmitting] = useState(false);
 
@@ -297,7 +322,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     } else {
       episodes = [Number(episode)];
     }
-    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format }) +
+    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format, totalEpisodes: createMode ? total : episodes[0] }) +
       (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);
@@ -322,7 +347,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
             <div className="flex flex-col gap-3 @sm/canvas:flex-row @sm/canvas:gap-4">
               {createMode ? (
                 <>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
                     <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
                     <SuggestField
                       id={`${fieldId}-genre`}
@@ -332,7 +357,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       optionsKey="short_drama_genre_options"
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
                     <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
                     <input
                       id={`${fieldId}-count`}
@@ -342,9 +367,28 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                       className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
                       value={count}
                       onChange={(event) => {
-                        const next = Number(event.target.value);
-                        // 硬钳制到 1~100：HTML min/max 只管步进按钮，键入必须在这里拦
-                        setCount(Math.min(100, Math.max(1, Number.isFinite(next) ? Math.floor(next) : 1)));
+                        const raw = Number(event.target.value);
+                        const next = Math.min(100, Math.max(1, Number.isFinite(raw) ? Math.floor(raw) : 1));
+                        // 连写集数上调时同步抬高总集数下限，避免总集数小于本批数量
+                        setCount(next);
+                        if (total < next) setTotal(next);
+                      }}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                    <Label htmlFor={`${fieldId}-total`}>{t("short_drama_generate_total_label")}</Label>
+                    <input
+                      id={`${fieldId}-total`}
+                      type="number"
+                      min={count}
+                      max={100}
+                      className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+                      value={total}
+                      onChange={(event) => {
+                        const raw = Number(event.target.value);
+                        // 总集数下限为连写集数：HTML min 只管步进按钮，键入必须在这里拦
+                        const next = Math.min(100, Math.max(Number(count), Number.isFinite(raw) ? Math.floor(raw) : Number(count)));
+                        setTotal(next);
                       }}
                     />
                   </div>
@@ -387,6 +431,9 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
 
             {createMode && (
               <p className="text-xs text-muted-foreground">{t("short_drama_generate_create_hint")}</p>
+            )}
+            {createMode && (
+              <p className="text-xs text-muted-foreground">{t("short_drama_generate_total_hint")}</p>
             )}
             {createMode && reusable.length > 0 && (
               <p className="text-xs text-muted-foreground">

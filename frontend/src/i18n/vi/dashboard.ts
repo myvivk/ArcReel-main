@@ -2387,6 +2387,8 @@ export default {
   'short_drama_tone_options': 'Lạnh lẽo áp bức,Ngọt ngào hài hước,Nhiệt huyết lội ngược,Căng thẳng trinh thám,Khói bếp đời thường,Ngược tâm dụi mắt,Nhẹ nhàng thư giãn,Ngọt lịm,Sâu nặng mưu lược,Hài kịch đen',
   'short_drama_generate_count_label': 'Số tập viết',
   'short_drama_generate_count_hint': 'Lớn hơn 1 sẽ viết nhiều tập và nhập từng tập',
+  'short_drama_generate_total_label': 'Tổng số tập',
+  'short_drama_generate_total_hint': 'Tổng số tập dự kiến của toàn bộ phim (không phải mặc định 60/80/100). Giữ cú chốt nếu đợt viết này chưa tới tập cuối; khép lại mạch truyện khi đã tới.',
   'short_drama_generate_create_hint': 'Tập mới sẽ được tạo tự động khi tạo (không cần tạo thủ công); số tập viết: 1~100.',
   'short_drama_generate_reuse_hint': 'Phát hiện {{count}} tập trống; các tập này được điền trước, phần còn thiếu mới tạo mới.',
   'short_drama_generate_submit': 'Giao cho Agent',

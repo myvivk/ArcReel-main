@@ -4,7 +4,11 @@ scenes/props 的 CRUD 行为由 test_scenes_router / test_props_router 覆盖；
 factory 引入的新能力（character extras + extra='allow' 创建语义）。
 """
 
+import json
+import tempfile
 import unicodedata
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -45,6 +49,9 @@ class _FakePM(FakeProjectAssetMutationMixin):
         if project_name not in self.projects:
             raise FileNotFoundError(project_name)
         return self.projects[project_name]
+
+    def get_project_path(self, project_name):
+        return Path(tempfile.gettempdir()) / "fake_pm" / project_name
 
     def rename_asset(self, project_name, table, old_name, new_name, *, dry_run=False):
         from lib.project.asset_rename import AssetRenameConflictError, AssetRenameNotFoundError, AssetRenameReport
@@ -485,3 +492,89 @@ class TestDeleteDryRun:
             "episodes": [{"episode": 1, "references": 2}, {"episode": 4, "references": 1}],
         }
         assert "Bob" in fake_pm.projects["demo"]["characters"]
+
+
+class TestAssetAiFill:
+    """ai-fill 端点：用 mock 的文本生成器补全空白字段，且不覆盖已有内容。"""
+
+    def _client_with_generator(self, monkeypatch, payload):
+        from server.routers import _asset_router_factory as factory_mod
+
+        fake_pm = _FakePM()
+        monkeypatch.setattr(characters, "get_project_manager", lambda: fake_pm)
+
+        class _FakeGenerator:
+            @classmethod
+            async def create(cls, *args, **kwargs):
+                return cls()
+
+            async def generate(self, request, project_name=None, *, require_complete=False):
+                return SimpleNamespace(text=json.dumps(payload))
+
+        monkeypatch.setattr(factory_mod, "TextGenerator", _FakeGenerator)
+
+        app = FastAPI()
+        register_error_handlers(app)
+        app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(
+            id="default", sub="testuser", role="admin"
+        )
+        app.include_router(characters.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
+        return TestClient(app), fake_pm
+
+    @staticmethod
+    def _blank_character(description="", voice_style="", aliases=None, derivatives=None):
+        return {
+            "description": description,
+            "character_sheet": "",
+            "voice_style": voice_style,
+            "reference_image": "",
+            "aliases": aliases if aliases is not None else [],
+            "derivatives": derivatives if derivatives is not None else {},
+        }
+
+    def test_fills_empty_character_fields(self, monkeypatch):
+        payload = {
+            "description": "鹅蛋脸、杏眼、淡青绣花罗裙的隐忍贵女",
+            "voice_style": "低沉含蓄、语速偏慢",
+            "aliases": ["玉茹", "柳姑娘"],
+            "derivatives": [{"name": "盛装", "description": "凤冠霞帔的婚礼造型"}],
+        }
+        client, fake_pm = self._client_with_generator(monkeypatch, payload)
+        fake_pm.projects["demo"]["characters"]["柳玉茹"] = self._blank_character()
+
+        with client:
+            resp = client.post("/api/v1/projects/demo/characters/柳玉茹/ai-fill")
+
+        assert resp.status_code == 200, resp.text
+        entry = fake_pm.projects["demo"]["characters"]["柳玉茹"]
+        assert entry["description"] == payload["description"]
+        assert entry["voice_style"] == payload["voice_style"]
+        assert entry["aliases"] == ["玉茹", "柳姑娘"]
+        assert entry["derivatives"]["盛装"]["description"] == "凤冠霞帔的婚礼造型"
+
+    def test_does_not_overwrite_existing_fields(self, monkeypatch):
+        payload = {
+            "description": "新描述",
+            "voice_style": "新声音",
+            "aliases": ["X"],
+            "derivatives": [{"name": "变体", "description": "y"}],
+        }
+        client, fake_pm = self._client_with_generator(monkeypatch, payload)
+        fake_pm.projects["demo"]["characters"]["柳玉茹"] = self._blank_character(
+            description="已有描述", voice_style="已有声音", aliases=["旧称"]
+        )
+
+        with client:
+            resp = client.post("/api/v1/projects/demo/characters/柳玉茹/ai-fill")
+
+        assert resp.status_code == 200, resp.text
+        entry = fake_pm.projects["demo"]["characters"]["柳玉茹"]
+        assert entry["description"] == "已有描述"
+        assert entry["voice_style"] == "已有声音"
+        assert entry["aliases"] == ["旧称"]
+
+    def test_404_when_asset_missing(self, monkeypatch):
+        client, _fake_pm = self._client_with_generator(monkeypatch, {"description": "x", "aliases": [], "derivatives": []})
+        with client:
+            resp = client.post("/api/v1/projects/demo/characters/Ghost/ai-fill")
+        assert resp.status_code == 404

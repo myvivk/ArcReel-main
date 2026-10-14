@@ -920,6 +920,23 @@ class API {
     );
   }
 
+  /**
+   * 用项目文本模型补全某个资产尚为空白的手动字段（描述 / 声音风格 / 别名 / 衍生）。
+   * 仅写回当前为空的字段，不覆盖已有内容。
+   */
+  static async fillAssetFields(
+    projectName: string,
+    assetType: string,
+    name: string
+  ): Promise<{ success: boolean }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/${assetType}s/${encodeURIComponent(name)}/ai-fill`,
+      {
+        method: "POST",
+      }
+    );
+  }
+
   // ==================== 角色衍生管理 ====================
 
   /**

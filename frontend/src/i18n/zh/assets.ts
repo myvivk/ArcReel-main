@@ -118,6 +118,8 @@ export default {
   "derivative_busy_hint": "生成或编辑进行中，暂无法修改衍生",
   "library_derivative_thumb": "衍生「{{name}}」的资产图",
   "sheet_description_required": "需要先填写描述",
+  "ai_fill": "AI 补全",
+  "ai_fill_failed": "资产字段补全失败，请稍后重试",
   "sheet_filter_label": "按资产图状态筛选",
   "sheet_filter_all": "全部",
   "sheet_filter_pending": "待生成",

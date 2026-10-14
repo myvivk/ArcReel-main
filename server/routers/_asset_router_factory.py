@@ -16,13 +16,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from lib.infra.api_errors import NotFoundError, UnprocessableError
 from lib.project.asset_merge import (
@@ -37,6 +39,13 @@ from lib.project.asset_rename import (
     AssetRenameHistoryCollisionError,
     AssetRenameNotFoundError,
 )
+from lib.backends.providers import CallPurpose
+from lib.backends.text_backends.base import (
+    TextGenerationRequest as BackendTextGenerationRequest,
+    TextOutputTruncatedError,
+    TextTaskType,
+)
+from lib.backends.text_generator import TextGenerator
 from lib.project.asset_types import (
     ALIASES_FIELD,
     ASSET_SPECS,
@@ -44,6 +53,7 @@ from lib.project.asset_types import (
     ProjectAssetNameConflictError,
     localize_asset_type,
     record_asset_aliases,
+    resolve_asset_key,
     validate_asset_name,
 )
 from lib.project.project_change_hints import project_change_source
@@ -156,6 +166,149 @@ def merge_report_payload(report: AssetMergeReport) -> dict[str, Any]:
             for item in report.episodes
         ],
     }
+
+
+class _AssetDerivativeFill(BaseModel):
+    """AI 补全时为角色生成的单个外观变体。"""
+
+    name: str
+    description: str = ""
+
+
+class _AssetFillResponse(BaseModel):
+    """AI 补全的结构化回执。空白字段返回空串/空数组，调用方只应用到尚为空的字段。"""
+
+    description: str = ""
+    voice_style: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    derivatives: list[_AssetDerivativeFill] = Field(default_factory=list)
+
+
+def _extract_json(text: str) -> Any:
+    """从模型回执里取出 JSON 对象，容忍 ```json 围栏与前后说明文字。"""
+    text = (text or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
+
+
+def _scene_mentions(scene: dict[str, Any], asset_type: str, name: str) -> bool:
+    """判断某场景是否引用了该资产（用于截取补全上下文）。"""
+    if asset_type == "character":
+        in_cast = name in (scene.get("characters_in_scene") or [])
+        in_dialogue = any(
+            isinstance(line, dict) and line.get("speaker") == name
+            for line in (scene.get("dialogue") or [])
+        )
+        return in_cast or in_dialogue
+    if asset_type == "scene":
+        return name in (scene.get("scene") or "") or name in (scene.get("scene_description") or "")
+    if asset_type == "prop":
+        return name in (scene.get("props_in_scene") or [])
+    return False
+
+
+def _collect_asset_context(
+    project_dir: Path, project: dict[str, Any], asset_type: str, name: str, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """从项目剧本里搜集该资产出现过的场景描写与台词，作为补全提示的上下文。"""
+    context: dict[str, Any] = {
+        "title": project.get("title") or "",
+        "premise": project.get("premise") or project.get("logline") or "",
+        "existing": {
+            k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)
+        },
+        "excerpts": [],
+    }
+    total_chars = 0
+    for ep in project.get("episodes") or []:
+        if not isinstance(ep, dict):
+            continue
+        script_file = ep.get("script_file")
+        if not isinstance(script_file, str):
+            continue
+        path = project_dir / "scripts" / script_file
+        if not path.exists():
+            continue
+        try:
+            script = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for scene in script.get("scenes") or []:
+            if not isinstance(scene, dict) or not _scene_mentions(scene, asset_type, name):
+                continue
+            excerpt = {
+                "scene": scene.get("scene", ""),
+                "scene_description": scene.get("scene_description", ""),
+                "dialogue": [
+                    f"{line.get('speaker', '')}: {line.get('line', '')}"
+                    for line in (scene.get("dialogue") or [])
+                    if isinstance(line, dict) and line.get("line")
+                ],
+            }
+            context["excerpts"].append(excerpt)
+            total_chars += len(str(excerpt))
+            if len(context["excerpts"]) >= 6 or total_chars > 6000:
+                break
+        if len(context["excerpts"]) >= 6 or total_chars > 6000:
+            break
+    return context
+
+
+def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -> str:
+    """构造资产字段补全提示词：只补空白字段，给出剧本上下文与期望的 JSON 结构。"""
+    type_label = {"character": "角色", "scene": "场景", "prop": "道具", "product": "商品"}.get(asset_type, asset_type)
+    existing = context.get("existing") or {}
+    existing_parts: list[str] = []
+    if existing.get("description"):
+        existing_parts.append(f"- description（已有，勿改）：{existing['description']}")
+    if asset_type == "character" and existing.get("voice_style"):
+        existing_parts.append(f"- voice_style（已有，勿改）：{existing['voice_style']}")
+    if existing.get(ALIASES_FIELD):
+        existing_parts.append(f"- aliases（已有，勿改）：{', '.join(existing[ALIASES_FIELD])}")
+    if existing.get(DERIVATIVES_FIELD):
+        derivs = ", ".join(f"{k}（{v.get('description', '')}）" for k, v in existing[DERIVATIVES_FIELD].items())
+        existing_parts.append(f"- derivatives（已有，勿改）：{derivs}")
+    existing_block = "\n".join(existing_parts) if existing_parts else "（无已有内容）"
+
+    excerpts = context.get("excerpts") or []
+    excerpt_block = "\n\n".join(
+        f"【场景】{ex.get('scene', '')}\n场景描写：{ex.get('scene_description', '')}\n"
+        + "\n".join(ex.get("dialogue") or [])
+        for ex in excerpts
+    ) or "（剧本中未检索到该资产的直接引用）"
+
+    scope = (
+        "1) description：该资产的视觉外观描写（中文，客观具体，可作为作画/资产图参考，突出可辨认特征）。\n"
+        "2) aliases：剧本中对该资产的其他称呼（别称、外号、代称）；不要把资产名本身算作别名。\n"
+    )
+    if asset_type == "character":
+        scope += (
+            "3) voice_style：该角色的声音/台词风格（语速、语气、音色倾向），用于配音参考。\n"
+            "4) derivatives：该角色可能出现的外观变体（如不同服装/年龄/状态），每条含 name 与 description；"
+            "没有合适变体时返回空数组。\n"
+        )
+    else:
+        scope += "（voice_style、derivatives 不适用，返回空字符串/空数组即可。）\n"
+
+    return (
+        "你是短视频创作平台的资产字段补全助手。下面给出一个项目资产的信息与剧本上下文，"
+        "请补全其中尚为空白的字段。\n\n"
+        f"资产类型：{type_label}\n资产名：{name}\n"
+        f"项目标题：{context.get('title') or '（未知）'}\n"
+        f"项目前提：{context.get('premise') or '（未知）'}\n\n"
+        f"已有字段（保留，不要修改或重复）：\n{existing_block}\n\n"
+        f"剧本上下文：\n{excerpt_block}\n\n"
+        "请补全以下空白字段（已有内容绝不覆盖）：\n"
+        f"{scope}\n"
+        "只输出一个 JSON 对象，结构如下（不输出任何解释文字）：\n"
+        '{"description": "", "voice_style": "", "aliases": [], "derivatives": [{"name": "", "description": ""}]}'
+    )
 
 
 class _CreateRequest(BaseModel):
@@ -336,6 +489,95 @@ def build_asset_router(
             logger.exception("请求处理失败")
             raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
+    @router.post(f"/projects/{{project_name}}/{spec.subdir}/{{entry_name}}/ai-fill")
+    async def ai_fill_entry(project_name: str, entry_name: str, _t: Translator):
+        """用项目的文本模型补全该资产尚为空白的手动字段（描述 / 声音风格 / 别名 / 衍生）。
+
+        只写回当前为空的字段，绝不覆盖已有内容；与导入「已登记资产不覆盖」不变量一致。
+        """
+        try:
+            manager = pm_getter()
+            project = manager.load_project(project_name)
+        except FileNotFoundError:
+            raise NotFoundError("project_not_found", name=project_name)
+        except Exception as exc:
+            logger.exception("ai-fill load project failed")
+            raise HTTPException(status_code=500, detail="读取项目失败") from exc
+
+        bucket = project.get(spec.bucket_key) or {}
+        key = resolve_asset_key(bucket, entry_name)
+        if key is None:
+            raise HTTPException(status_code=404, detail=_t(keys["not_found"], name=entry_name))
+        entry = bucket[key]
+
+        try:
+            context = _collect_asset_context(
+                manager.get_project_path(project_name), project, asset_type, entry_name, entry
+            )
+        except Exception:
+            logger.exception("ai-fill context gathering failed; falling back to empty context")
+            context = {
+                "title": project.get("title") or "",
+                "premise": project.get("premise") or project.get("logline") or "",
+                "existing": {
+                    k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)
+                },
+                "excerpts": [],
+            }
+        prompt = _build_ai_fill_prompt(asset_type, entry_name, context)
+
+        try:
+            generator = await TextGenerator.create(
+                TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
+            )
+            raw = await generator.generate(
+                BackendTextGenerationRequest(
+                    prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000
+                ),
+                project_name=project_name,
+            )
+            parsed = _AssetFillResponse.model_validate(_extract_json(raw.text))
+        except TextOutputTruncatedError as exc:
+            raise HTTPException(status_code=502, detail="资产字段补全被模型截断，请稍后重试") from exc
+        except Exception as exc:
+            logger.exception("ai-fill generation failed")
+            raise HTTPException(status_code=502, detail="资产字段补全生成失败，请稍后重试") from exc
+
+        def _write() -> dict[str, Any]:
+            mgr = pm_getter()
+
+            def _mutate(entry: dict[str, Any]) -> None:
+                if not entry.get("description") and parsed.description:
+                    entry["description"] = parsed.description
+                if asset_type == "character" and not entry.get("voice_style") and parsed.voice_style:
+                    entry["voice_style"] = parsed.voice_style
+                if not (entry.get(ALIASES_FIELD) or []) and parsed.aliases:
+                    entry[ALIASES_FIELD] = []
+                    record_asset_aliases(entry, list(parsed.aliases), asset_name=entry_name)
+                if asset_type == "character" and spec.supports_derivatives:
+                    table = entry.get(DERIVATIVES_FIELD) or {}
+                    if not table and parsed.derivatives:
+                        for d in parsed.derivatives:
+                            dname = (d.name or "").strip()
+                            if not dname:
+                                continue
+                            dkey = resolve_asset_key(table, dname) or dname
+                            table[dkey] = {"description": d.description or "", spec.sheet_field: ""}
+                        entry[DERIVATIVES_FIELD] = table
+
+            with project_change_source("webui"):
+                return mgr.update_asset_entry(asset_type, project_name, entry_name, _mutate)
+
+        try:
+            updated = await asyncio.to_thread(_write)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=_t(keys["not_found"], name=entry_name)) from None
+        except Exception as exc:
+            logger.exception("ai-fill write failed")
+            raise HTTPException(status_code=500, detail="写入资产字段失败") from exc
+
+        return {"success": True, result_key: updated}
+
     @router.post(f"/projects/{{project_name}}/{spec.subdir}/{{entry_name}}/rename")
     async def rename_entry(
         project_name: str,
@@ -394,7 +636,6 @@ def build_asset_router(
             raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
     if asset_type in MERGEABLE_ASSET_TYPES:
-
         @router.post(f"/projects/{{project_name}}/{spec.subdir}/{{entry_name}}/merge")
         async def merge_entry(
             project_name: str,

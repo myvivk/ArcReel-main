@@ -116,6 +116,8 @@ export default {
   "derivative_busy_hint": "Generation or editing in progress — cannot change derivatives",
   "library_derivative_thumb": "Sheet for derivative \"{{name}}\"",
   "sheet_description_required": "Fill in the description first",
+  "ai_fill": "AI Fill",
+  "ai_fill_failed": "Failed to auto-fill asset fields. Please try again.",
   "sheet_filter_label": "Filter by sheet status",
   "sheet_filter_all": "All",
   "sheet_filter_pending": "Pending",

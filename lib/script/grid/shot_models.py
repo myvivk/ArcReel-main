@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 class ShotGridCell:
     index: int
     prompt: str = ""
+    time_ratio: float = 0.0
+    continuity_notes: str = ""
     image_path: str | None = None
     confirmed: bool = False
 
@@ -18,15 +20,19 @@ class ShotGridCell:
         return {
             "index": self.index,
             "prompt": self.prompt,
+            "time_ratio": self.time_ratio,
+            "continuity_notes": self.continuity_notes,
             "image_path": self.image_path,
             "confirmed": self.confirmed,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ShotGridCell":
+    def from_dict(cls, data: dict) -> ShotGridCell:
         return cls(
             index=int(data["index"]),
             prompt=str(data.get("prompt", "")),
+            time_ratio=float(data.get("time_ratio", 0.0)),
+            continuity_notes=str(data.get("continuity_notes", "")),
             image_path=data.get("image_path"),
             confirmed=bool(data.get("confirmed", False)),
         )
@@ -66,14 +72,14 @@ class ShotGrid:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ShotGrid":
+    def from_dict(cls, data: dict) -> ShotGrid:
         return cls(
             id=str(data["id"]),
             episode=int(data["episode"]),
             script_file=str(data["script_file"]),
             shot_id=str(data["shot_id"]),
-            rows=int(data.get("rows", 2)),
-            cols=int(data.get("cols", 2)),
+            rows=int(data.get("rows", 3)),
+            cols=int(data.get("cols", 3)),
             cells=[ShotGridCell.from_dict(cell) for cell in data.get("cells", [])],
             composite_path=data.get("composite_path"),
             status=str(data.get("status", "draft")),
@@ -84,7 +90,7 @@ class ShotGrid:
         )
 
     @classmethod
-    def create(cls, *, episode: int, script_file: str, shot_id: str, rows: int, cols: int) -> "ShotGrid":
+    def create(cls, *, episode: int, script_file: str, shot_id: str, rows: int, cols: int) -> ShotGrid:
         now = datetime.now(UTC).isoformat()
         return cls(
             id=f"shot_grid_{uuid.uuid4().hex[:12]}",

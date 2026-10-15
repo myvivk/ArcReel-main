@@ -8,9 +8,9 @@ import asyncio
 import copy
 import logging
 import math
-from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from lib.artifacts.artifact_activation import (
     bind_artifact_input_claims_to_frozen_visuals,
     resolve_usable_episode_script_input,
     resolve_usable_storyboard_video_inputs,
+    resolve_usable_storyboard_video_reference_images,
 )
 from lib.artifacts.artifact_manifest import (
     ArtifactBasisDescriptor,
@@ -83,10 +84,10 @@ from lib.project.project_manager import (
     resolve_episode_script_binding,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
-from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.prompts.reference_image_numbering import clamp_reference_images
+from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.reference_video.execution_checkpoint import (
     ProviderMediaInput,
     StagedProviderMedia,
@@ -134,9 +135,9 @@ from server.services.tasks.formal_image_commit import (
     StagedImageCommit,
     get_aspect_ratio,
     grid_formal_image_callback,
-    shot_grid_formal_image_callback,
     run_asset_sheet_image_task,
     run_formal_image_task,
+    shot_grid_formal_image_callback,
     storyboard_formal_image_callback,
 )
 from server.services.tasks.generation_context import (
@@ -1088,6 +1089,15 @@ async def execute_video_task(
         resolver=currency_resolver,
         claims=formal_input_claims,
     )
+    reference_images = resolve_usable_storyboard_video_reference_images(
+        project_path=project_path,
+        project=project,
+        episode=artifact_episode,
+        resource_id=resource_id,
+        item=item,
+        resolver=currency_resolver,
+        claims=formal_input_claims,
+    )
     aspect_ratio = get_aspect_ratio(project, "videos")
     seed = payload.get("seed")
 
@@ -1192,6 +1202,17 @@ async def execute_video_task(
                 kind="first_frame",
             )
         ]
+        media_inputs.extend(
+            ProviderMediaInput(
+                path=image,
+                role="reference_image",
+                logical_type="storyboard_grid",
+                logical_name=f"{resource_id}:K{index}",
+                kind=f"grid_cell_{index}",
+            )
+            for index, image in enumerate(reference_images)
+            if image != storyboard_file
+        )
         if end_image is not None:
             media_inputs.append(
                 ProviderMediaInput(
@@ -1311,6 +1332,12 @@ async def execute_video_task(
             resource_id=resource_id,
             start_image=provider_start_image,
             end_image=provider_end_image,
+            reference_images=[
+                safe_join(project_path, media.staged_locator, require_file=True)
+                for media in staged_media
+                if media.role == "reference_image"
+            ]
+            or list(reference_images),
             aspect_ratio=aspect_ratio,
             duration_seconds=duration_seconds,
             resolution=resolution,
@@ -1555,13 +1582,9 @@ async def execute_shot_grid_task(
         raise ValueError("confirmed shot grid cannot be regenerated")
 
     prompt_parts = [
-        "Create a clean 2 by 2 cinematic storyboard contact sheet. Use four equal panels with clear straight boundaries, no text, no labels, no gutters, consistent characters and visual style across panels."
+        "Create a clean 3 by 3 cinematic continuous-story storyboard contact sheet. Use nine equal panels in strict left-to-right, top-to-bottom time order, with clear straight boundaries, no text, no labels, no gutters. The nine panels are consecutive moments from one shot, not nine unrelated scenes. Preserve identical characters, wardrobe, props, setting, lighting, and visual style across all panels. Panel 1 is the opening state, panel 5 is the key action or emotional beat, and panel 9 is the resolved ending state. Show gradual action continuity between adjacent panels and do not introduce events absent from the shot description."
     ]
-    prompt_parts.extend(
-        f"Panel {cell.index + 1}: {cell.prompt.strip()}"
-        for cell in grid.cells
-        if cell.prompt.strip()
-    )
+    prompt_parts.extend(f"Panel {cell.index + 1}: {cell.prompt.strip()}" for cell in grid.cells if cell.prompt.strip())
     prompt = "\n".join(prompt_parts)
     grid.status = "generating"
     grid.error_message = None

@@ -253,16 +253,31 @@ export interface ImagePrompt {
   composition: Composition;
 }
 
+export interface VideoPromptShot {
+  title?: string;
+  timeline?: string;
+  shot_size?: string;
+  lens?: string;
+  angle?: string;
+  composition?: string;
+  references?: string[];
+  description?: string;
+  camera_motion?: string;
+  audio?: string;
+}
+
 export interface VideoPrompt {
   action: string;
   camera_motion: CameraMotion;
   ambiance_audio: string;
   dialogue: Dialogue[];
+  shot_sequence?: VideoPromptShot[];
 }
 
 export interface GeneratedAssets {
   storyboard_image: string | null;
   storyboard_last_image: string | null;  // grid mode last frame
+  storyboard_grid_images?: string[];     // complete ordered K0..Kn references
   grid_id: string | null;                // source grid ID
   grid_cell_index: number | null;        // cell index in source grid
   video_clip: string | null;

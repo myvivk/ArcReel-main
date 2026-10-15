@@ -6,10 +6,40 @@ from lib.script.storyboard_sequence import (
     build_storyboard_dependency_plan,
     get_storyboard_items,
     resolve_previous_storyboard_path,
+    resolve_storyboard_video_inputs,
 )
 
 
 class TestStoryboardSequence:
+    def test_resolve_storyboard_video_inputs_uses_grid_start_and_end_cells(self, tmp_path: Path):
+        project_path = tmp_path / "demo"
+        storyboard_dir = project_path / "storyboards"
+        storyboard_dir.mkdir(parents=True)
+        cells = []
+        for index in range(9):
+            path = storyboard_dir / f"grid-{index}.png"
+            path.write_bytes(b"png")
+            cells.append(f"storyboards/grid-{index}.png")
+
+        start, end = resolve_storyboard_video_inputs(
+            project_path=project_path,
+            resource_id="E1S01",
+            item={
+                "generated_assets": {
+                    "storyboard_image": cells[0],
+                    "shot_grid": {
+                        "cell_paths": cells,
+                        "start_cell": 0,
+                        "end_cell": 8,
+                        "video_reference_mode": "start_end_cells",
+                    },
+                }
+            },
+        )
+
+        assert start == storyboard_dir / "grid-0.png"
+        assert end == storyboard_dir / "grid-8.png"
+
     def test_resolve_previous_storyboard_path_respects_first_item_and_segment_break(self, tmp_path: Path):
         project_path = tmp_path / "demo"
         (project_path / "storyboards").mkdir(parents=True)

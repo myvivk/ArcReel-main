@@ -463,6 +463,7 @@ class MediaGenerator:
         build_and_call: "Callable[[list[CompressedRef]], Awaitable[Any]]",
         before_submit: Callable[[], Awaitable[None]] | None = None,
         provider_resubmit_is_unsafe: Callable[[], bool] | None = None,
+        preserve_all_references: bool = False,
     ) -> Any:
         """对参考上传副本做主动压缩 + 预检降档 + 被动 413 兜底，再调用 backend。
 
@@ -490,6 +491,9 @@ class MediaGenerator:
 
         if not specs:
             return await _call_once([])
+
+        if preserve_all_references:
+            return await _call_once([CompressedRef(path=spec.source, role=spec.role) for spec in specs])
 
         limits = await self._reference_limits(provider_id)
         step = 0
@@ -1039,6 +1043,7 @@ class MediaGenerator:
                     build_and_call=_call_video,
                     before_submit=_before_first_submit if before_submit is not None else None,
                     provider_resubmit_is_unsafe=lambda: provider_resubmit_unsafe,
+                    preserve_all_references=True,
                 )
             except BaseException:
                 if staged_output_path is not None:

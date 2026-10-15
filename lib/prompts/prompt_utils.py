@@ -171,6 +171,40 @@ def video_prompt_to_yaml(video_prompt: dict) -> str:
     return builtin_templates.render("storyboard/video", body=_dump_prompt_yaml(ordered).rstrip()) + "\n"
 
 
+def _render_shot_sequence_prompt(prompt: dict[str, Any]) -> str:
+    shots = prompt.get("shot_sequence")
+    if not isinstance(shots, list) or not shots:
+        raise ValueError("prompt.shot_sequence must be a non-empty array")
+    lines: list[str] = []
+    for index, raw_shot in enumerate(shots, start=1):
+        if not isinstance(raw_shot, Mapping):
+            continue
+        title = str(raw_shot.get("title") or f"镜头{index}").strip()
+        lines.append(f"{title}：")
+        fields = (
+            ("时间线", "timeline"),
+            ("景别", "shot_size"),
+            ("焦段", "lens"),
+            ("角度", "angle"),
+            ("构图", "composition"),
+            ("参考图", "references"),
+            ("画面描述", "description"),
+            ("运镜", "camera_motion"),
+            ("声音/对白", "audio"),
+        )
+        for label, key in fields:
+            value = raw_shot.get(key)
+            if isinstance(value, list):
+                value = ", ".join(str(entry) for entry in value if str(entry).strip())
+            if value is not None and str(value).strip():
+                lines.append(f"{label}：{str(value).strip()}")
+        lines.append("")
+    rendered = "\n".join(lines).strip()
+    if not rendered:
+        raise ValueError("prompt.shot_sequence must contain a valid shot")
+    return rendered
+
+
 def normalize_video_prompt(prompt: object) -> str:
     """Normalize the exact text sent to a video provider."""
 
@@ -181,6 +215,8 @@ def normalize_video_prompt(prompt: object) -> str:
         return builtin_templates.render("storyboard/video", body=body.rstrip())
     if not isinstance(prompt, dict):
         raise ValueError("prompt must be a string or object")
+    if "shot_sequence" in prompt:
+        return builtin_templates.render("storyboard/video", body=_render_shot_sequence_prompt(prompt).rstrip())
     if not is_structured_video_prompt(prompt):
         raise ValueError("prompt must be a string or include action/camera_motion")
 
@@ -230,6 +266,8 @@ def render_storyboard_video_prompt(
     """
 
     if isinstance(prompt, dict):
+        if "shot_sequence" in prompt:
+            return normalize_video_prompt(prompt)
         prompt = strip_voice_profiles(prompt)
         if content_mode == "drama":
             if isinstance(item, Mapping) and "utterances" in item:

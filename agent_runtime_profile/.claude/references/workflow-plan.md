@@ -113,7 +113,7 @@ ID 参数时，前者传入，后者必须**省略该参数**，不得把 `[]` �
 | `generate_script` | dispatch `create-episode-script` 子智能体（ad 直接调 `mcp__arcreel__generate_episode_script`） |
 | `add_script_items` | 正式脚本为空：引导用户在 Web 端添加条目，或经 `mcp__arcreel__patch_episode_script` 插入 |
 | `author_prompts` | 正式剧本里有待编写条目，`requested_ids` 列出这些条目：调 `mcp__arcreel__generate_episode_script`，不传 `entry_ids`，即编写全部待编写条目（见 generate-script skill） |
-| `generate_asset_sheets` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_assets({"episode_id": <args.episode_id>})` 一次生成本集引用、仍缺资产图的资产。因缺少 description 记为 `blocked` 的资产（`fix_input`）：依据原文写好描述，经 `mcp__arcreel__patch_project` 补上后重跑同一调用；原文没有依据时向用户确认描述，或请用户在 Web 端上传资产图。衍生报 `generation_dependency_failed` / `derivative_owner_sheet_missing` 时先解决本体资产图 |
+| `generate_asset_sheets` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_assets({"episode_id": <args.episode_id>})` 一次生成本集引用、仍缺资产图的资产。因缺少 description 记为 `blocked` 的资产（`fix_input`）：角色描述按 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md` 的标准，依据原文写好后经 `mcp__arcreel__patch_project` 补上并重跑同一调用；原文没有依据时向用户确认描述，或请用户在 Web 端上传资产图。衍生报 `generation_dependency_failed` / `derivative_owner_sheet_missing` 时先解决本体资产图 |
 | `generate_storyboards` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_storyboards` 并传 `segment_ids` |
 | `generate_grid` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_grid`，不传 `scene_ids`（缺失即生成）；联合图就绪后经用户审阅同意，再调 `mcp__arcreel__split_grids` |
 | `repair_video_units` | `mcp__arcreel__get_episode_script` + `mcp__arcreel__patch_episode_script` 一次改完，再点名重做 |

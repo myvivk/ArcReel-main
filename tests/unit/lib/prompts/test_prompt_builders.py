@@ -26,7 +26,20 @@ class TestCharacterPrompt:
         assert "黑发，冷静神态。" in prompt
         assert "Style: 古风" in prompt
         assert "Visual style: Cinematic, low-key lighting" in prompt
-        assert prompt.endswith("Avoid: 水印、多余文字、Logo")
+        assert prompt.endswith(
+            "Avoid: black background, dark background, gray background, colored background, environmental scenery, "
+            "furniture, background props, background texture, visible studio wall, horizon line, gradient background, "
+            "vignette, low-key lighting, volumetric lighting, dramatic spotlight, strong rim light, broad cast shadows, "
+            "cinematic color tint, shallow depth of field, blurred panels, overexposed pale clothing, body blending into "
+            "background, dark outline around the body, inconsistent face, inconsistent hairstyle, inconsistent clothing, "
+            "inconsistent accessories, extra characters, extra limbs, cropped body, dynamic pose, text, labels, watermark, logo, "
+            "水印、多余文字、Logo"
+        )
+        assert "16:9 horizontal professional character reference sheet on a pure white seamless studio background." in prompt
+        assert "左侧为正脸头肩特写" in prompt
+        assert "年龄、性别、身高和体型" in prompt
+        assert "sharp focus" in prompt
+        assert "Maintain cinematic-quality facial details" in prompt
         assert "Cinematic, low-key lighting" in prompt
 
 

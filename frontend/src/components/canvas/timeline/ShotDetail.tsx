@@ -48,6 +48,7 @@ import { ReferencesSection } from "./ReferencesSection";
 import { StatusBadge, statusFromAssets } from "./StatusBadge";
 import { ShotStructureActions, type InsertShotHandler } from "./ShotStructureActions";
 import { SegmentBreakToggle } from "./SegmentBreakToggle";
+import { ShotGridPlanner } from "./ShotGridPlanner";
 import { API } from "@/api";
 import { useAppStore } from "@/stores/app-store";
 import { isResourceBusy, isScriptFileBusy } from "@/stores/tasks-store";
@@ -1083,7 +1084,12 @@ export function ShotDetail({
           </>
         }
         media={
-          <ShotMediaGrid aspectRatio={aspectRatio} storyboard={storyboardMedia} video={videoMedia} audio={audioMedia} />
+          <>
+            <ShotMediaGrid aspectRatio={aspectRatio} storyboard={storyboardMedia} video={videoMedia} audio={audioMedia} />
+            {isDrama ? (
+              <ShotGridPlanner projectName={projectName} scriptFile={scriptFile} episode={episode} shotId={segmentId} />
+            ) : null}
+          </>
         }
       />
       <AlertDialog open={pendingStructSwitch !== null} onOpenChange={(next) => !next && setPendingStructSwitch(null)}>

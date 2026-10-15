@@ -8,6 +8,7 @@ import asyncio
 import copy
 import logging
 import math
+from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,6 +83,7 @@ from lib.project.project_manager import (
     resolve_episode_script_binding,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
+from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.prompts.reference_image_numbering import clamp_reference_images
@@ -132,6 +134,7 @@ from server.services.tasks.formal_image_commit import (
     StagedImageCommit,
     get_aspect_ratio,
     grid_formal_image_callback,
+    shot_grid_formal_image_callback,
     run_asset_sheet_image_task,
     run_formal_image_task,
     storyboard_formal_image_callback,
@@ -1535,6 +1538,85 @@ async def execute_product_task(
     )
 
 
+async def execute_shot_grid_task(
+    project_name: str,
+    resource_id: str,
+    payload: dict[str, Any],
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    project_path = get_project_manager().get_project_path(project_name)
+    manager = ShotGridManager(project_path)
+    grid = manager.get(resource_id)
+    if grid is None:
+        raise ValueError(f"shot grid not found: {resource_id}")
+    if grid.status == "confirmed":
+        raise ValueError("confirmed shot grid cannot be regenerated")
+
+    prompt_parts = [
+        "Create a clean 2 by 2 cinematic storyboard contact sheet. Use four equal panels with clear straight boundaries, no text, no labels, no gutters, consistent characters and visual style across panels."
+    ]
+    prompt_parts.extend(
+        f"Panel {cell.index + 1}: {cell.prompt.strip()}"
+        for cell in grid.cells
+        if cell.prompt.strip()
+    )
+    prompt = "\n".join(prompt_parts)
+    grid.status = "generating"
+    grid.error_message = None
+    grid.updated_at = datetime.now(UTC).isoformat()
+    manager.save(grid)
+
+    outcome_box: list[FormalImageCommitOutcome] = []
+    try:
+        project = await asyncio.to_thread(get_project_manager().load_project, project_name)
+        context = await resolve_generation_context(
+            project_name,
+            payload,
+            project=project,
+            project_path=project_path,
+            user_id=user_id,
+            image=ImageLaneRequest(generation_type="t2i"),
+        )
+        generator = context.generator
+        outcome_box = []
+        await generator.generate_image_async(
+            prompt=prompt,
+            resource_type="shot_grids",
+            resource_id=grid.id,
+            reference_images=None,
+            aspect_ratio="16:9",
+            image_size=context.image.resolution,
+            formal_output=True,
+            task_id=task_id,
+            commit_formal_output=shot_grid_formal_image_callback(
+                project_path=project_path,
+                grid_manager=manager,
+                grid=grid,
+                resource_id=grid.id,
+                prompt=prompt,
+                versions=generator.versions,
+                task_id=task_id,
+                outcome_box=outcome_box,
+            ),
+        )
+        return {
+            "file_path": f"shot_grids/{grid.id}.png",
+            "resource_type": "shot_grids",
+            "resource_id": grid.id,
+            "status": "completed",
+        }
+    except Exception as exc:
+        failed = manager.get(resource_id)
+        if failed is not None and failed.status != "completed":
+            failed.status = "failed"
+            failed.error_message = str(exc)
+            failed.updated_at = datetime.now(UTC).isoformat()
+            manager.save(failed)
+        raise
+
+
 async def execute_grid_task(
     project_name: str,
     resource_id: str,
@@ -1781,6 +1863,7 @@ _TASK_EXECUTORS = {
     "prop": execute_prop_task,
     "product": execute_product_task,
     "grid": execute_grid_task,
+    "shot_grid": execute_shot_grid_task,
     "reference_video": execute_reference_video_task,
     "image_edit": execute_image_edit_task,
     DERIVATIVE_TASK_TYPE: execute_character_derivative_task,

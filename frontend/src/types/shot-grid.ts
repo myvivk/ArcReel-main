@@ -3,6 +3,8 @@ export type ShotGridStatus = "draft" | "generating" | "completed" | "confirmed" 
 export interface ShotGridCell {
   index: number;
   prompt: string;
+  time_ratio: number;
+  continuity_notes: string;
   image_path: string | null;
   confirmed: boolean;
 }

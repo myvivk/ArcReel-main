@@ -39,6 +39,7 @@ from lib.artifacts.artifact_input_claims import (
     resolve_usable_artifact_input_claim,
     resolve_usable_episode_script_input,
     resolve_usable_storyboard_video_inputs,
+    resolve_usable_storyboard_video_reference_images,
     snapshot_usable_artifact_input_claim,
 )
 from lib.artifacts.artifact_manifest import (
@@ -564,6 +565,7 @@ __all__ = [
     "resolve_usable_artifact_input_claim",
     "resolve_usable_episode_script_input",
     "resolve_usable_storyboard_video_inputs",
+    "resolve_usable_storyboard_video_reference_images",
     "snapshot_preserved_artifact_manifest",
     "snapshot_usable_artifact_input_claim",
 ]

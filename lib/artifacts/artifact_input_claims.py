@@ -33,7 +33,11 @@ from lib.artifacts.formal_write import project_metadata_lock
 from lib.artifacts.visual_artifact_provenance import (
     VisualReference,
 )
-from lib.script.storyboard_sequence import StoryboardImageUnavailable, resolve_storyboard_video_inputs
+from lib.script.storyboard_sequence import (
+    StoryboardImageUnavailable,
+    resolve_storyboard_video_inputs,
+    resolve_storyboard_video_reference_images,
+)
 
 
 def _assert_input_claim_content_unchanged(
@@ -310,3 +314,36 @@ def resolve_usable_storyboard_video_inputs(
     ):
         raise StoryboardImageUnavailable(f"storyboard is not registered: {storyboard_rel}")
     return storyboard_file, end_frame
+
+
+def resolve_usable_storyboard_video_reference_images(
+    *,
+    project_path: Path,
+    project: Mapping[str, object],
+    episode: int,
+    resource_id: str,
+    item: dict[str, object],
+    resolver: ArtifactCurrencyResolver | None = None,
+    claims: list[ArtifactInputClaim] | None = None,
+) -> tuple[Path, ...]:
+    """Resolve and validate the complete ordered storyboard reference sequence."""
+    if type(episode) is not int or episode < 1:
+        raise ValueError("script episode must be a positive integer")
+    images = resolve_storyboard_video_reference_images(
+        project_path=project_path,
+        resource_id=resource_id,
+        item=item,
+    )
+    if resolver is None:
+        resolver = active_artifact_currency_resolver(project_path, project)
+    key = ArtifactKey.episode_storyboard(episode, resource_id)
+    for image in images:
+        relative = image.relative_to(project_path).as_posix()
+        if not artifact_input_is_usable(
+            resolver=resolver,
+            key=key,
+            artifact_path=relative,
+            claims=claims,
+        ):
+            raise StoryboardImageUnavailable(f"storyboard reference is not registered: {relative}")
+    return images

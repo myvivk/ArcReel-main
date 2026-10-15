@@ -29,7 +29,7 @@ export function ShotGridPlanner({
     void API.getShotGrid(projectName, scriptFile, shotId, { signal: controller.signal })
       .then((next) => {
         setPlan(next);
-        setPrompts(next?.cells.map((cell) => cell.prompt) ?? ["", "", "", ""]);
+        setPrompts(next?.cells.map((cell) => cell.prompt) ?? Array.from({ length: 9 }, () => ""));
       })
       .catch((cause) => {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "加载镜头规划失败");
@@ -46,8 +46,8 @@ export function ShotGridPlanner({
         script_file: scriptFile,
         episode,
         shot_id: shotId,
-        rows: 2,
-        cols: 2,
+        rows: 3,
+        cols: 3,
         cells: prompts.map((prompt, index) => ({ index, prompt })),
       });
       setPlan(next);
@@ -106,14 +106,14 @@ export function ShotGridPlanner({
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold">镜头宫格</h3>
-          <p className="text-xs text-muted-foreground">一个分镜内规划多个镜头，确认后再写入镜头资产。</p>
+          <p className="text-xs text-muted-foreground">一个分镜内规划连续剧情的 3×3 关键帧，确认后作为视频视觉依据。</p>
         </div>
         <Badge variant="outline">{plan?.status ?? "draft"}</Badge>
       </div>
-      <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 @min-[560px]:grid-cols-3">
         {prompts.map((prompt, index) => (
           <div key={index} className="min-w-0">
-            <div className="mb-1 text-xs text-muted-foreground">镜头 {index + 1}</div>
+            <div className="mb-1 text-xs text-muted-foreground">关键帧 {index + 1} · {Math.round(index / 8 * 100)}%</div>
             <Textarea
               value={prompt}
               onChange={(event) => setPrompts((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}

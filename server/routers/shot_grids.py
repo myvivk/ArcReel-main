@@ -7,16 +7,15 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from PIL import Image
-
 from pydantic import BaseModel, Field
 
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.path_safety import safe_join
 from lib.project.project_manager import get_project_manager
 from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid, ShotGridCell
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.auth import CurrentUser
-from lib.script.grid.shot_models import ShotGrid, ShotGridCell
 
 router = APIRouter(prefix="/projects/{project_name}/shot-grids", tags=["分镜镜头宫格"])
 
@@ -30,8 +29,8 @@ class SaveShotGridRequest(BaseModel):
     script_file: str
     episode: int = Field(ge=1)
     shot_id: str = Field(min_length=1, max_length=200)
-    rows: int = Field(default=2, ge=1, le=4)
-    cols: int = Field(default=2, ge=1, le=4)
+    rows: int = Field(default=3, ge=3, le=3)
+    cols: int = Field(default=3, ge=3, le=3)
     cells: list[ShotGridCellInput] = Field(default_factory=list)
 
 
@@ -44,7 +43,9 @@ def get_shot_grid(project_name: str, script_file: str, shot_id: str, request: Re
         return None
     result = grid.to_dict()
     if grid.composite_path:
-        result["composite_url"] = f"{request.scope.get('root_path', '')}/api/v1/projects/{project_name}/shot-grids/{grid.id}/image"
+        result["composite_url"] = (
+            f"{request.scope.get('root_path', '')}/api/v1/projects/{project_name}/shot-grids/{grid.id}/image"
+        )
     return result
 
 
@@ -75,11 +76,13 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest):
     elif grid.status in {"generating", "confirming"}:
         raise HTTPException(status_code=409, detail="镜头宫格正在处理中")
 
-    if len(req.cells) > req.rows * req.cols:
-        raise HTTPException(status_code=400, detail="镜头格数量超过布局容量")
+    if (req.rows, req.cols) != (3, 3):
+        raise HTTPException(status_code=400, detail="单分镜宫格必须使用 3×3 布局")
+    if len(req.cells) != 9:
+        raise HTTPException(status_code=400, detail="3×3 单分镜宫格必须提供 9 个镜头格")
     by_index = {cell.index: cell for cell in req.cells}
-    if any(index >= req.rows * req.cols for index in by_index):
-        raise HTTPException(status_code=400, detail="镜头格索引超出布局范围")
+    if len(by_index) != 9 or set(by_index) != set(range(9)):
+        raise HTTPException(status_code=400, detail="镜头格索引必须完整覆盖 0 到 8")
     grid.rows, grid.cols = req.rows, req.cols
     grid.cells = [
         ShotGridCell(index=index, prompt=by_index[index].prompt if index in by_index else "")
@@ -177,8 +180,22 @@ def confirm_shot_grid(project_name: str, grid_id: str):
     existing = assets.get("storyboard_image", {})
     if not isinstance(existing, dict):
         existing = {}
+    if not paths[0] or not paths[8]:
+        raise HTTPException(status_code=422, detail="第 1 格和第 9 格必须有可用图像，才能作为视频首尾参考")
+    cell_paths = paths
     existing["grid_images"] = [path for path in paths if path]
-    assets["storyboard_image"] = existing
+    assets["storyboard_image"] = paths[0]
+    assets["shot_grid"] = {
+        "grid_id": grid.id,
+        "layout": "3x3",
+        "composite_path": grid.composite_path,
+        "cell_paths": cell_paths,
+        "start_cell": 0,
+        "key_cell": 4,
+        "end_cell": 8,
+        "video_reference_mode": "start_end_cells",
+        "confirmed_at": datetime.now(UTC).isoformat(),
+    }
     project_manager.save_script(project_name, grid.script_file, script)
 
     grid.status = "confirmed"

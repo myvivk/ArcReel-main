@@ -114,6 +114,42 @@ def resolve_storyboard_image_ref(project_path: Path, storyboard_rel: object) -> 
     return storyboard_file
 
 
+def resolve_storyboard_video_reference_images(
+    *,
+    project_path: Path,
+    resource_id: str,
+    item: dict[str, object],
+) -> tuple[Path, ...]:
+    """Resolve every ordered storyboard-grid image used as video context.
+
+    Grid bindings are deliberately not reduced to provider limits. The order in
+    ``cell_paths`` is the stable ``K0``, ``K1`` ... order exposed to prompt text.
+    """
+    assets = get_generated_assets(item)
+    grid = assets.get("shot_grid")
+    if isinstance(grid, dict) and isinstance(grid.get("cell_paths"), list):
+        cell_paths = grid.get("cell_paths")
+        if not isinstance(cell_paths, list) or not cell_paths:
+            raise StoryboardImageBindingRequired(f"shot grid cell bindings missing: {resource_id}")
+        resolved: list[Path] = []
+        for raw_path in cell_paths:
+            path = resolve_storyboard_image_ref(project_path, raw_path)
+            if path is None:
+                raise StoryboardImageBindingRequired(f"shot grid cell binding missing: {resource_id}")
+            if not path.is_file():
+                raise StoryboardImageUnavailable(f"storyboard not found: {path.name}")
+            resolved.append(path)
+        return tuple(resolved)
+
+    storyboard_rel = assets.get("storyboard_image")
+    storyboard_file = resolve_storyboard_image_ref(project_path, storyboard_rel)
+    if storyboard_file is None:
+        raise StoryboardImageBindingRequired(f"storyboard binding missing: {resource_id}")
+    if not storyboard_file.is_file():
+        raise StoryboardImageUnavailable(f"storyboard not found: {storyboard_file.name}")
+    return (storyboard_file,)
+
+
 def resolve_storyboard_video_inputs(
     *,
     project_path: Path,
@@ -127,7 +163,32 @@ def resolve_storyboard_video_inputs(
     same-named file that nothing claims.
     """
 
-    storyboard_rel = get_generated_assets(item).get("storyboard_image")
+    assets = get_generated_assets(item)
+    grid = assets.get("shot_grid")
+    if isinstance(grid, dict) and grid.get("video_reference_mode") == "start_end_cells":
+        cell_paths = grid.get("cell_paths")
+        if not isinstance(cell_paths, list) or not cell_paths:
+            raise StoryboardImageBindingRequired(f"shot grid cell bindings missing: {resource_id}")
+        start_index = grid.get("start_cell", 0)
+        end_index = grid.get("end_cell", len(cell_paths) - 1)
+        if (
+            type(start_index) is not int
+            or type(end_index) is not int
+            or not 0 <= start_index < len(cell_paths)
+            or not 0 <= end_index < len(cell_paths)
+        ):
+            raise StoryboardImageBindingRequired(f"invalid shot grid video cells: {resource_id}")
+        storyboard_file = resolve_storyboard_image_ref(project_path, cell_paths[start_index])
+        end_frame_file = resolve_storyboard_image_ref(project_path, cell_paths[end_index])
+        if storyboard_file is None or end_frame_file is None:
+            raise StoryboardImageBindingRequired(f"shot grid video bindings missing: {resource_id}")
+        if not storyboard_file.is_file():
+            raise StoryboardImageUnavailable(f"storyboard not found: {storyboard_file.name}")
+        if not end_frame_file.is_file():
+            raise EndFrameImageUnavailable(f"shot grid end cell not found: {end_frame_file.name}")
+        return storyboard_file, end_frame_file
+
+    storyboard_rel = assets.get("storyboard_image")
     storyboard_file = resolve_storyboard_image_ref(project_path, storyboard_rel)
     if storyboard_file is None:
         raise StoryboardImageBindingRequired(f"storyboard binding missing: {resource_id}")

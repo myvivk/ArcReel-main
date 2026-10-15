@@ -145,7 +145,7 @@ def _is_413(exc: BaseException) -> bool:
 # 持有同一份白名单，用于给进行中的任务行判定分镜标签；这里增删资源类型时一并改那一处，
 # 否则任务进行中与落库后的目标标签会对不上。
 _SEGMENT_ID_ALLOWED_RESOURCE_TYPES: dict[CallType, frozenset[str]] = {
-    "image": frozenset({"storyboards", "videos", "grids"}),
+    "image": frozenset({"storyboards", "videos", "grids", "shot_grids"}),
     "video": frozenset({"storyboards", "videos", "reference_videos"}),
 }
 

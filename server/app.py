@@ -75,6 +75,7 @@ from server.routers import (
     files,
     generate,
     grids,
+    shot_grids,
     market,
     market_submissions,
     official_service,
@@ -747,6 +748,12 @@ app.include_router(
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["多宫格分镜图"],
+)
+app.include_router(
+    shot_grids.router,
+    prefix="/api/v1",
+    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
+    tags=["分镜镜头宫格"],
 )
 app.include_router(
     reference_videos.router,

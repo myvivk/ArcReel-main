@@ -8,6 +8,7 @@ Manifest registration commit together, and a failed commit never leaves the new 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -494,6 +495,49 @@ async def run_asset_sheet_image_task(
             build_commit_callback=_build_commit,
             warnings=frozen.warnings,
         ),
+    )
+
+
+def shot_grid_formal_image_callback(
+    *,
+    project_path: Path,
+    grid_manager: Any,
+    grid: Any,
+    resource_id: str,
+    prompt: str,
+    versions: Any,
+    task_id: str | None,
+    outcome_box: list[FormalImageCommitOutcome],
+) -> StagedImageCommit:
+    artifact_path = f"shot_grids/{resource_id}.png"
+
+    def _commit_metadata(activate: Callable[[], None]) -> None:
+        def _complete(current_grid: Any) -> None:
+            current_grid.composite_path = artifact_path
+            current_grid.status = "completed"
+            current_grid.error_message = None
+            current_grid.updated_at = datetime.now(UTC).isoformat()
+
+        committed_grid = grid_manager.update_formal(resource_id, _complete, on_commit=activate)
+        if committed_grid is None:
+            raise ValueError(f"shot grid not found: {resource_id}")
+        grid.composite_path = committed_grid.composite_path
+        grid.status = committed_grid.status
+        grid.error_message = committed_grid.error_message
+        grid.updated_at = committed_grid.updated_at
+
+    return staged_formal_image_callback(
+        versions=versions,
+        project_path=project_path,
+        resource_type="shot_grids",
+        resource_id=resource_id,
+        script_file=None,
+        artifact_path=artifact_path,
+        prompt=prompt,
+        task_id=task_id,
+        basis=None,
+        outcome_box=outcome_box,
+        commit_metadata=_commit_metadata,
     )
 
 

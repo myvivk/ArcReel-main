@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
@@ -79,15 +80,65 @@ class _UntitledJsonSchema(GenerateJsonSchema):
         return json_schema
 
 
+_REF_PREFIX = "#/$defs/"
+
+
+class _RecursiveSchema(Exception):
+    """请求模型的 schema 自引用，无法内联展开。"""
+
+
+def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """把 ``$defs`` 内联到每个引用处，并去掉 OpenAPI 的 ``discriminator``。
+
+    判别联合（如 ``generate_videos`` 的 ``target``、``patch_episode_script`` 的 ``operations``）
+    在 pydantic 派生的 schema 里是 ``oneOf`` + ``$ref`` + ``discriminator``，而这两者都不是
+    纯 JSON Schema 关键字：不解析它们的客户端与模型看不到分支字段的真实类型，就把整数与数组
+    按字符串下发，请求模型的严格类型随即报「不是整数 / 不是列表」。内联后每个分支自带完整
+    字段定义，schema 回到客户端普遍能吃的形态。
+    """
+
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict) or not defs:
+        return schema
+
+    def expand(node: Any, path: tuple[str, ...]) -> Any:
+        if isinstance(node, list):
+            return [expand(item, path) for item in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith(_REF_PREFIX):
+            name = ref[len(_REF_PREFIX) :]
+            target = defs.get(name)
+            if not isinstance(target, dict):
+                return dict(node)
+            if name in path:
+                raise _RecursiveSchema(name)
+            # 引用处的兄弟键（description 等）比被引用处的同名键更具体，后写覆盖
+            merged = {**deepcopy(target), **{key: value for key, value in node.items() if key != "$ref"}}
+            path = (*path, name)
+        else:
+            merged = dict(node)
+        return {key: expand(value, path) for key, value in merged.items() if key != "discriminator"}
+
+    body = {key: value for key, value in schema.items() if key != "$defs"}
+    try:
+        inlined = expand(body, ())
+    except _RecursiveSchema:
+        return schema
+    return cast(dict[str, Any], inlined)
+
+
 def request_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     """由请求模型派生工具的参数 schema（顶层恒含 ``type`` 与 ``properties``）。
 
     工具用途只写在声明的 description 上，请求模型的 docstring 不进入 schema。
+    schema 内联 ``$defs`` 且不带 ``discriminator``：判别联合的每个分支自带字段定义。
     """
     schema = model.model_json_schema(schema_generator=_UntitledJsonSchema)
     schema.pop("description", None)
     schema.setdefault("properties", {})
-    return schema
+    return _inline_defs(schema)
 
 
 @dataclass(frozen=True, slots=True)

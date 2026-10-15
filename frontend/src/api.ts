@@ -118,6 +118,7 @@ import type {
   EpisodeItemRef,
 } from "@/types";
 import type { GridCapability, GridGeneration } from "@/types/grid";
+import type { SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
 import type {
   PresentationReadModel,
   PresentationRequestOptions,
@@ -3845,6 +3846,44 @@ class API {
   ): Promise<{ success: boolean; path: string; version: number; asset_fingerprints: Record<string, number> }> {
     const url = `/projects/${encodeURIComponent(projectName)}/grids/${encodeURIComponent(gridId)}/upload`;
     return API.postFileUpload(url, file);
+  }
+
+  // ==================== Per-shot multi-frame grid API ====================
+
+  static async getShotGrid(projectName: string, scriptFile: string, shotId: string, options: { signal?: AbortSignal } = {}): Promise<ShotGridPlan | null> {
+    const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
+    return this.request<ShotGridPlan | null>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids?${params.toString()}`,
+      { signal: options.signal },
+    );
+  }
+
+  static async saveShotGrid(projectName: string, payload: SaveShotGridPayload): Promise<ShotGridPlan> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  static async generateShotGrid(projectName: string, scriptFile: string, shotId: string) {
+    const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
+    return this.request<{ task_id: string; status: string }>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/generate?${params.toString()}`,
+      { method: "POST" },
+    );
+  }
+
+  static async getShotGridTask(projectName: string, taskId: string) {
+    return this.request<{ task_id: string; status: string; error?: string }>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/tasks/${encodeURIComponent(taskId)}`,
+    );
+  }
+
+  static async confirmShotGrid(projectName: string, gridId: string) {
+    return this.request<{ success: boolean; grid: ShotGridPlan }>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/${encodeURIComponent(gridId)}/confirm`,
+      { method: "POST" },
+    );
   }
 
   // ==================== Global Asset Library ====================

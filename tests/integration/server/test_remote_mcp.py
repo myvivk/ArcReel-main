@@ -425,12 +425,10 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
     )
     patch_schema = listed["patch_episode_script"].inputSchema
     operations_schema = patch_schema["properties"]["operations"]
-    operation_defs = patch_schema["$defs"]
-    operation_branches = [
-        operation_defs[branch["$ref"].rsplit("/", 1)[1]] for branch in operations_schema["items"]["oneOf"]
-    ]
+    # 判别联合内联展开：客户端与模型不必解析 $ref / discriminator 就能看到每个分支的字段
+    operation_branches = operations_schema["items"]["oneOf"]
     assert operations_schema["minItems"] == 1
-    assert operations_schema["items"]["discriminator"]["propertyName"] == "op"
+    assert "$defs" not in patch_schema
     assert {branch["properties"]["op"]["const"] for branch in operation_branches} == {
         "update",
         "insert",

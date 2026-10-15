@@ -530,6 +530,16 @@ class TestAssetAiFill:
             "derivatives": derivatives if derivatives is not None else {},
         }
 
+    def test_ai_fill_prompt_uses_shared_asset_description_rules(self):
+        from server.routers._asset_router_factory import _build_ai_fill_prompt
+
+        for asset_type in ("character", "scene", "prop", "product"):
+            prompt = _build_ai_fill_prompt(asset_type, "测试资产", {})
+            assert "只写原文或用户明确设定支持的事实" in prompt
+            assert "不得用抽象品性推断" in prompt
+            assert "不得依据场景名称补造" in prompt
+            assert "不推测品牌、型号、功能、材质" in prompt
+
     def test_fills_empty_character_fields(self, monkeypatch):
         payload = {
             "description": "鹅蛋脸、杏眼、淡青绣花罗裙的隐忍贵女",

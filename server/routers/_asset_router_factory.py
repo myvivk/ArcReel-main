@@ -285,8 +285,11 @@ def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -
         or "（剧本中未检索到该资产的直接引用）"
     )
 
+    from lib.prompts.prompt_templates.builtin import builtin_templates
+
+    description_rule = builtin_templates.read_partial("shared/asset_description_rule").source
     scope = (
-        "1) description：该资产的视觉外观描写（中文，客观具体，可作为作画/资产图参考，突出可辨认特征）。\n"
+        f"1) description：必须严格遵守以下资产描述规范，不得补充规范未支持的事实：\n{description_rule}\n"
         "2) aliases：剧本中对该资产的其他称呼（别称、外号、代称）；不要把资产名本身算作别名。\n"
     )
     if asset_type == "character":

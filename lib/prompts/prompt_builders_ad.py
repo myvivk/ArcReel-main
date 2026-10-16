@@ -284,7 +284,7 @@ def build_ad_shot_prompt_authoring_prompt(
     target_language: str = "中文",
     instructions: str | None = None,
 ) -> str:
-    """广告分镜的提示词编写 prompt：只为 ``target_ids`` 里的分镜产出 image_prompt / video_prompt。"""
+    """广告分镜的提示词编写 prompt：只为 ``target_ids`` 里的分镜产出本次 response_schema 要求的字段。"""
     return builtin_templates.render(
         "text/ad_storyboard_prompt_authoring",
         target_language=target_language,

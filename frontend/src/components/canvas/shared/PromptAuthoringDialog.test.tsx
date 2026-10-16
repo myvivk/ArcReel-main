@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { API, ApiRequestError } from "@/api";
-import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
+import { usePromptAuthoringStore, type PromptAuthoringOpenRequest } from "@/stores/prompt-authoring-store";
 import { useTasksStore } from "@/stores/tasks-store";
 import type { PromptOverwrite } from "@/types";
 import { PromptAuthoringHost } from "./PromptAuthoringDialog";
@@ -17,8 +17,11 @@ const SCRIPT = {
   ],
 };
 
-function openDialog(scope: "pending" | "current" | "custom" = "pending") {
-  usePromptAuthoringStore.getState().open({ projectName: "proj", episode: 1, scope });
+function openDialog(
+  scope: "pending" | "current" | "custom" = "pending",
+  request: Partial<PromptAuthoringOpenRequest> = {},
+) {
+  usePromptAuthoringStore.getState().open({ projectName: "proj", episode: 1, scope, ...request });
   render(<PromptAuthoringHost projectName="proj" episode={1} script={SCRIPT} />);
 }
 
@@ -48,6 +51,7 @@ describe("编写提示词", () => {
       expect(submit).toHaveBeenCalledWith("proj", 1, {
         entry_ids: ["E1S02", "E1S03"],
         rewrite: false,
+        fields: ["image_prompt"],
         instructions: null,
         overwrite_revision: null,
       }),
@@ -76,10 +80,57 @@ describe("编写提示词", () => {
       expect(submit).toHaveBeenLastCalledWith("proj", 1, {
         entry_ids: null,
         rewrite: true,
+        fields: ["image_prompt"],
         instructions: null,
         overwrite_revision: "rev-7",
       }),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+  });
+
+  it("当前条目可默认打开为 AI 重写，用于标准化已有提示词", async () => {
+    const user = userEvent.setup();
+    const submit = vi.spyOn(API, "authorPrompts").mockResolvedValue(ACCEPTED);
+    openDialog("current", { currentEntryId: "E1S02", defaultRewrite: true });
+
+    const dialog = await screen.findByRole("dialog", { name: "编写提示词" });
+    expect(within(dialog).getByRole("checkbox", { name: "覆盖已有提示词" })).toBeChecked();
+    await user.click(within(dialog).getByRole("button", { name: "AI 重写" }));
+
+    await waitFor(() =>
+      expect(submit).toHaveBeenCalledWith("proj", 1, {
+        entry_ids: ["E1S02"],
+        rewrite: true,
+        fields: ["image_prompt"],
+        instructions: null,
+        overwrite_revision: null,
+      }),
+    );
+  });
+
+  it("当前条目入口可锁定为只编写视频提示词", async () => {
+    const user = userEvent.setup();
+    const submit = vi.spyOn(API, "authorPrompts").mockResolvedValue(ACCEPTED);
+    openDialog("current", {
+      currentEntryId: "E1S02",
+      defaultRewrite: true,
+      defaultFields: ["video_prompt"],
+      lockFields: true,
+    });
+
+    const dialog = await screen.findByRole("dialog", { name: "编写提示词" });
+    expect(within(dialog).getByText("视频提示词")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("radio", { name: "分镜提示词" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "AI 重写" }));
+
+    await waitFor(() =>
+      expect(submit).toHaveBeenCalledWith("proj", 1, {
+        entry_ids: ["E1S02"],
+        rewrite: true,
+        fields: ["video_prompt"],
+        instructions: null,
+        overwrite_revision: null,
+      }),
+    );
   });
 });

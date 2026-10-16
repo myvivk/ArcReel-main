@@ -31,6 +31,7 @@ const ENQUEUE_METHODS = [
   "generateProjectScene",
   "generateReferenceVideoBatch",
   "generateReferenceVideoUnit",
+  "generateShotGrid",
   "generateStoryboard",
   "generateVideo",
   "planEpisodes",

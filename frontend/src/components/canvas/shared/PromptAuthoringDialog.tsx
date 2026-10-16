@@ -32,6 +32,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useAssistantStore } from "@/stores/assistant-store";
 import {
   usePromptAuthoringStore,
+  type PromptAuthoringField,
   type PromptAuthoringOpenRequest,
   type PromptAuthoringScope,
 } from "@/stores/prompt-authoring-store";
@@ -71,7 +72,7 @@ export function PromptAuthoringHost({ projectName, episode, script, savedInstruc
   return (
     <PromptAuthoringDialog
       // 每次打开都从请求重新初始化范围与指令，不沿用上一次弹窗里未提交的状态。
-      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}`}
+      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}:${request.defaultRewrite ? "rewrite" : "fill"}:${(request.defaultFields ?? []).join(",")}`}
       projectName={projectName}
       episode={episode}
       entries={entries}
@@ -107,6 +108,7 @@ export function PromptAuthoringDialog({
   const episodeLedger = useEpisodeLedger();
   const scopeLabelId = useId();
   const rewriteId = useId();
+  const fieldScopeId = useId();
   const fieldId = useId();
   const pendingCount = entries.filter((entry) => entry.pending).length;
   const currentEntryId =
@@ -120,7 +122,11 @@ export function PromptAuthoringDialog({
   const [selected, setSelected] = useState<string[]>(() =>
     currentEntryId ? [currentEntryId] : entries.filter((entry) => entry.pending).map((entry) => entry.id),
   );
-  const [rewrite, setRewrite] = useState(false);
+  const [rewrite, setRewrite] = useState(request.defaultRewrite === true);
+  const [fields, setFields] = useState<PromptAuthoringField[]>(
+    () => request.defaultFields ?? (unitMode ? [] : ["image_prompt"]),
+  );
+  const fieldsLocked = request.lockFields === true && !unitMode && fields.length === 1;
   const [instructions, setInstructions] = useState(savedInstructions);
   const [submitting, setSubmitting] = useState(false);
   const [overwrite, setOverwrite] = useState<PromptOverwrite | null>(null);
@@ -154,6 +160,7 @@ export function PromptAuthoringDialog({
       await enqueuePromptAuthoring(projectName, episode, {
         entry_ids: entryIds,
         rewrite,
+        fields: unitMode || fields.length === 0 ? null : fields,
         instructions: instructions.trim() || null,
         overwrite_revision: overwriteRevision,
       });
@@ -187,6 +194,7 @@ export function PromptAuthoringDialog({
         episodeRef: episodeAgentRef(episodeLedger, episode, t),
         scopeLabel,
         rewrite,
+        fields: unitMode || fields.length === 0 ? null : fields,
         instructions,
       }),
     );
@@ -294,6 +302,35 @@ export function PromptAuthoringDialog({
                   </p>
                 </div>
               </div>
+
+              {!unitMode ? (
+                <div className="flex flex-col gap-2">
+                  <span id={fieldScopeId} className="text-sm font-medium">
+                    {t("prompt_authoring_field_label")}
+                  </span>
+                  {fieldsLocked ? (
+                    <p className="text-sm text-muted-foreground">
+                      {t(fields[0] === "video_prompt" ? "prompt_authoring_field_video" : "prompt_authoring_field_image")}
+                    </p>
+                  ) : (
+                    <RadioGroup
+                      aria-labelledby={fieldScopeId}
+                      value={fields[0] ?? "image_prompt"}
+                      onValueChange={(next) => setFields([next as PromptAuthoringField])}
+                      disabled={submitting}
+                    >
+                      <Label>
+                        <RadioGroupItem value="image_prompt" />
+                        {t("prompt_authoring_field_image")}
+                      </Label>
+                      <Label>
+                        <RadioGroupItem value="video_prompt" />
+                        {t("prompt_authoring_field_video")}
+                      </Label>
+                    </RadioGroup>
+                  )}
+                </div>
+              ) : null}
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={fieldId}>{t("prompt_authoring_instructions_label")}</Label>

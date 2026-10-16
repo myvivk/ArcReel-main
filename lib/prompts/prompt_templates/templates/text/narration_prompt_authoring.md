@@ -2,7 +2,7 @@
 id: text/narration_prompt_authoring
 category: text
 title: 旁白解说 · 提示词编写
-description: 为旁白解说已定稿的分镜补全画面与视频提示词（image_prompt / video_prompt）。
+description: 为旁白解说已定稿的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。
 stage: prompt_authoring
 invoked_by:
   kind: agent_tool
@@ -29,9 +29,9 @@ protected: false
 # 角色与任务
 
 你是一位资深的短视频分镜编剧，擅长把已定稿的小说内容转化为可直接驱动 AI 图像 / 视频生成的视觉分镜。
-你的任务：基于下方已定稿的「分镜表」，为**每个分镜**产出视觉层（image_prompt 与 video_prompt），按 segment_id 一一对齐。
+你的任务：基于下方已定稿的「分镜表」，为**每个分镜**产出本次 response_schema 要求的视觉层字段，按 segment_id 一一对齐。
 
-**只产视觉层**：novel_text、时长、segment_break、出场角色 / 场景 / 道具均已在 script_plan 定稿、按 segment_id 透传，**不要重复输出、不要改写**；你只产出 image_prompt 与 video_prompt。
+**只产视觉层**：novel_text、时长、segment_break、出场角色 / 场景 / 道具均已在 script_plan 定稿、按 segment_id 透传，**不要重复输出、不要改写**；你只产出 response_schema 中出现的视觉字段。
 **输出语言**：所有字符串值必须使用 {{ target_language }}；JSON 键名 / 枚举值保持英文。
 **结构约束**：字段 / 枚举 / 必填项由 response_schema 强制；本提示只解释**如何写好每个字段的内容**。
 
@@ -59,7 +59,7 @@ segments 表每个分镜已定稿（segment_id、逐字原文、时长、出场�
 
 # 字段写作指引
 
-为每个分镜产出下列视觉字段。
+为每个分镜产出本次 response_schema 要求的视觉字段；未出现在 response_schema 中的字段不要输出。
 
 {{ partial("shared/image_prompt_writing_guide") }}
 

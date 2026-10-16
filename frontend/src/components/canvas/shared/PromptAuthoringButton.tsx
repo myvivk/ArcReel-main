@@ -2,7 +2,11 @@ import { useTranslation } from "react-i18next";
 import { PenLine } from "lucide-react";
 import { promptAuthoringResourceId } from "@/actions/generation";
 import { Button } from "@/components/ui/button";
-import { usePromptAuthoringStore, type PromptAuthoringScope } from "@/stores/prompt-authoring-store";
+import {
+  usePromptAuthoringStore,
+  type PromptAuthoringField,
+  type PromptAuthoringScope,
+} from "@/stores/prompt-authoring-store";
 import { useActiveResourceIds } from "@/stores/tasks-store";
 
 interface Props {
@@ -11,10 +15,24 @@ interface Props {
   scope: PromptAuthoringScope;
   currentEntryId?: string | null;
   variant?: "outline" | "ghost";
+  defaultRewrite?: boolean;
+  defaultFields?: PromptAuthoringField[];
+  lockFields?: boolean;
+  label?: string;
 }
 
 /** 打开「编写提示词」弹窗的入口；本集的提示词编写在跑时禁用。 */
-export function PromptAuthoringButton({ projectName, episode, scope, currentEntryId, variant = "outline" }: Props) {
+export function PromptAuthoringButton({
+  projectName,
+  episode,
+  scope,
+  currentEntryId,
+  variant = "outline",
+  defaultRewrite,
+  defaultFields,
+  lockFields,
+  label,
+}: Props) {
   const { t } = useTranslation("dashboard");
   const open = usePromptAuthoringStore((s) => s.open);
   const busy = useActiveResourceIds("text_episode_script", projectName).has(promptAuthoringResourceId(episode));
@@ -24,10 +42,12 @@ export function PromptAuthoringButton({ projectName, episode, scope, currentEntr
       size="sm"
       disabled={busy}
       title={busy ? t("prompt_authoring_busy") : undefined}
-      onClick={() => open({ projectName, episode, scope, currentEntryId })}
+      onClick={() => open({
+        projectName, episode, scope, currentEntryId, defaultRewrite, defaultFields, lockFields,
+      })}
     >
       <PenLine aria-hidden data-icon="inline-start" />
-      {t("prompt_authoring_open")}
+      {label ?? t("prompt_authoring_open")}
     </Button>
   );
 }

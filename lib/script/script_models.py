@@ -403,6 +403,24 @@ class NarrationVisualSegment(BaseModel):
     video_prompt: VideoPrompt = Field(description="视频生成提示词")
 
 
+class NarrationImageVisualSegment(BaseModel):
+    """prompt_authoring 只生成 image_prompt 的旁白视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    segment_id: str = Field(min_length=1, description="对齐锚：必须取自 script_plan 分镜表，逐一对应、不增不减")
+    image_prompt: ImagePrompt = Field(description="分镜图生成提示词")
+
+
+class NarrationVideoVisualSegment(BaseModel):
+    """prompt_authoring 只生成 video_prompt 的旁白视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    segment_id: str = Field(min_length=1, description="对齐锚：必须取自 script_plan 分镜表，逐一对应、不增不减")
+    video_prompt: VideoPrompt = Field(description="视频生成提示词")
+
+
 class NarrationVisualEpisodeScript(BaseModel):
     """prompt_authoring 视觉层的 LLM ``response_schema``：剧集标题 + 各分镜视觉层。
 
@@ -412,6 +430,20 @@ class NarrationVisualEpisodeScript(BaseModel):
 
     title: str = Field(description="剧集标题")
     segments: list[NarrationVisualSegment] = Field(description="各分镜的视觉层，按 segment_id 一一对齐 script_plan")
+
+
+class NarrationImageVisualEpisodeScript(BaseModel):
+    """只补 image_prompt 的旁白视觉层响应。"""
+
+    title: str = Field(description="剧集标题")
+    segments: list[NarrationImageVisualSegment] = Field(description="各分镜的图片提示词，按 segment_id 一一对齐")
+
+
+class NarrationVideoVisualEpisodeScript(BaseModel):
+    """只补 video_prompt 的旁白视觉层响应。"""
+
+    title: str = Field(description="剧集标题")
+    segments: list[NarrationVideoVisualSegment] = Field(description="各分镜的视频提示词，按 segment_id 一一对齐")
 
 
 # ============ 剧情演绎（Drama） ============
@@ -648,6 +680,24 @@ class DramaSceneVisual(BaseModel):
     video_prompt: DramaVideoPrompt = Field(description="视频生成提示词（无 dialogue，口播在 script_plan utterances）")
 
 
+class DramaSceneImageVisual(BaseModel):
+    """prompt_authoring 只生成 image_prompt 的 drama 视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    scene_id: str = Field(min_length=1, description="对齐锚：必须等于 script_plan 已定分镜的 scene_id")
+    image_prompt: ImagePrompt = Field(description="分镜图生成提示词")
+
+
+class DramaSceneVideoVisual(BaseModel):
+    """prompt_authoring 只生成 video_prompt 的 drama 视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    scene_id: str = Field(min_length=1, description="对齐锚：必须等于 script_plan 已定分镜的 scene_id")
+    video_prompt: DramaVideoPrompt = Field(description="视频生成提示词（无 dialogue，口播在 script_plan utterances）")
+
+
 class DramaVisualScript(BaseModel):
     """prompt_authoring 视觉层剧本：各分镜视觉字段（按 scene_id 与 script_plan 内容对齐）。
 
@@ -656,6 +706,20 @@ class DramaVisualScript(BaseModel):
 
     title: str = Field(default="", description="剧集标题（可选，最终以 script_plan 内容为准）")
     scenes: list[DramaSceneVisual] = Field(description="各分镜视觉层（按 scene_id 对齐 script_plan 内容）")
+
+
+class DramaImageVisualScript(BaseModel):
+    """只补 image_prompt 的 drama 视觉层响应。"""
+
+    title: str = Field(default="", description="剧集标题（可选，最终以 script_plan 内容为准）")
+    scenes: list[DramaSceneImageVisual] = Field(description="各分镜图片提示词（按 scene_id 对齐 script_plan 内容）")
+
+
+class DramaVideoVisualScript(BaseModel):
+    """只补 video_prompt 的 drama 视觉层响应。"""
+
+    title: str = Field(default="", description="剧集标题（可选，最终以 script_plan 内容为准）")
+    scenes: list[DramaSceneVideoVisual] = Field(description="各分镜视频提示词（按 scene_id 对齐 script_plan 内容）")
 
 
 # ============ 广告/短片（Ad） ============
@@ -719,10 +783,40 @@ class AdShotVisual(BaseModel):
     video_prompt: VideoPrompt = Field(description="视频生成提示词")
 
 
+class AdShotImageVisual(BaseModel):
+    """prompt_authoring 只生成 image_prompt 的广告分镜视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    shot_id: str = Field(min_length=1, description="对齐锚：必须逐字等于待编写分镜的 shot_id")
+    image_prompt: ImagePrompt = Field(description="分镜图生成提示词")
+
+
+class AdShotVideoVisual(BaseModel):
+    """prompt_authoring 只生成 video_prompt 的广告分镜视觉层。"""
+
+    model_config = _STRICT_CONFIG
+
+    shot_id: str = Field(min_length=1, description="对齐锚：必须逐字等于待编写分镜的 shot_id")
+    video_prompt: VideoPrompt = Field(description="视频生成提示词")
+
+
 class AdVisualScript(BaseModel):
     """广告分镜提示词编写的 LLM ``response_schema``：各待编写分镜的视觉层。"""
 
     shots: list[AdShotVisual] = Field(description="各待编写分镜的视觉层，按 shot_id 一一对齐")
+
+
+class AdImageVisualScript(BaseModel):
+    """只补 image_prompt 的广告分镜提示词编写响应。"""
+
+    shots: list[AdShotImageVisual] = Field(description="各待编写分镜的图片提示词，按 shot_id 一一对齐")
+
+
+class AdVideoVisualScript(BaseModel):
+    """只补 video_prompt 的广告分镜提示词编写响应。"""
+
+    shots: list[AdShotVideoVisual] = Field(description="各待编写分镜的视频提示词，按 shot_id 一一对齐")
 
 
 class AdEpisodeScript(BaseModel):

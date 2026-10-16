@@ -1,4 +1,12 @@
 MESSAGES = {
+    "shot_grid_missing": "Không tìm thấy tư liệu tham chiếu. Hãy tải lại cảnh quay.",
+    "shot_grid_busy": "Tư liệu tham chiếu đang được xử lý. Hãy đợi hoàn tất.",
+    "shot_grid_layout_invalid": "Các bố cục được hỗ trợ là 2×2, 2×3 và 3×3.",
+    "shot_grid_cells_invalid": "Lưới cần {count} khung hình chính theo thứ tự. Hãy kiểm tra rồi thử lại.",
+    "shot_grid_not_ready": "Tư liệu tham chiếu chưa sẵn sàng. Hãy tạo trước.",
+    "shot_grid_split_failed": "Không thể tách tư liệu tham chiếu. Hãy tạo lại ảnh lưới.",
+    "shot_grid_register_failed": "Không thể đăng ký tư liệu tham chiếu. Hãy tạo lại.",
+    "shot_grid_shot_missing": "Không tìm thấy cảnh quay trong kịch bản. Hãy tải lại.",
     "story_plan_conflict": "Kế hoạch đã thay đổi ở nơi khác. Tải lại trước khi lưu.",
     "story_plan_invalid": "Bản ghi chưa đầy đủ hoặc tham chiếu không còn tồn tại. Kiểm tra tập, nhân vật và nội dung.",
     "story_plan_source_changed": "Kịch bản nguồn đã đổi. Trích lại sự kiện trước khi xác nhận.",

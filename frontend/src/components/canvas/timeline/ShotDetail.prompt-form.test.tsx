@@ -1,11 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ShotDetail } from "./ShotDetail";
 import { API } from "@/api";
 import type { ItemPromptPreview, NarrationSegment } from "@/types";
 import { makeNarrationSegment } from "@/test/factories";
 
 const RENDERED_IMAGE_PROMPT = "Style: Anime\n\nScene: 雨夜街道";
+
+beforeEach(() => {
+  vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
+});
 
 function makeSegment(overrides: Partial<NarrationSegment> = {}): NarrationSegment {
   return makeNarrationSegment({
@@ -50,65 +54,34 @@ function preview(): ItemPromptPreview {
   };
 }
 
-describe("ShotDetail 提示词形态切换", () => {
-  it("结构化 → 文本以后端渲染结果为初值，保存提交字符串形态", async () => {
-    const spy = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(preview());
+describe("ShotDetail 文本提示词编辑", () => {
+  it("不显示结构化切换；结构化存量只以主文本字段展示并保存为字符串", () => {
     const onUpdatePrompt = vi.fn();
     renderDetail(makeSegment(), { onUpdatePrompt });
 
-    const [imageToText] = screen.getAllByRole("button", { name: "文本" });
-    fireEvent.click(imageToText);
+    expect(screen.queryByRole("button", { name: "结构化" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "文本" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "分镜提示词" })).toHaveValue("雨夜街道");
+    expect(screen.getByRole("textbox", { name: "视频提示词" })).toHaveValue("撑伞走过");
 
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("demo", "E1S01", "episode_1.json"));
-    // 结构化编辑器让位给纯文本框，框里就是后端渲染的最终提示词
-    expect(await screen.findByDisplayValue(/Scene: 雨夜街道/)).toBeInTheDocument();
-    expect(screen.queryByDisplayValue("雨夜街道")).not.toBeInTheDocument();
-
+    fireEvent.change(screen.getByRole("textbox", { name: "分镜提示词" }), { target: { value: "改过的画面" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
-    expect(onUpdatePrompt).toHaveBeenCalledWith(
-      "E1S01",
-      expect.objectContaining({ image_prompt: RENDERED_IMAGE_PROMPT }),
-    );
+    expect(onUpdatePrompt).toHaveBeenCalledWith("E1S01", { image_prompt: "改过的画面" });
   });
 
-  it("文本 → 结构化须显式确认丢弃文本，确认后字段留空不做解析", () => {
-    renderDetail(makeSegment({ image_prompt: "一段纯文本提示词" }));
+  it("AI 已生成的标准文本原样回显并保存", () => {
+    const onUpdatePrompt = vi.fn();
+    renderDetail(makeSegment({
+      image_prompt: "【镜头1】雨夜街道中，林清@[林清]撑伞站在街角。",
+      video_prompt: "0-3秒：@林清缓缓抬头看向雨幕。\n3-6秒：镜头推近，伞沿雨水滴落。",
+    }), { onUpdatePrompt });
 
-    const [imageToStructured] = screen.getAllByRole("button", { name: "结构化" });
-    fireEvent.click(imageToStructured);
+    expect(screen.getByRole("textbox", { name: "分镜提示词" })).toHaveValue("【镜头1】雨夜街道中，林清@[林清]撑伞站在街角。");
+    expect(screen.getByRole("textbox", { name: "视频提示词" })).toHaveValue("0-3秒：@林清缓缓抬头看向雨幕。\n3-6秒：镜头推近，伞沿雨水滴落。");
+    fireEvent.change(screen.getByRole("textbox", { name: "分镜提示词" }), { target: { value: "雨后的街道" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
-    expect(screen.getByText("切换回结构化提示词？")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("一段纯文本提示词")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "丢弃并切换" }));
-
-    expect(screen.queryByDisplayValue("一段纯文本提示词")).not.toBeInTheDocument();
-    expect(screen.getByText("镜头")).toBeInTheDocument();
-  });
-
-  it("渲染不出最终提示词时不切换形态，就地给出后端的不可用原因", async () => {
-    const unavailable = { ...preview() };
-    unavailable.storyboard_image = { text: null, unavailable: "该分镜没有分镜图提示词", is_text_form: false, warnings: [] };
-    const spy = vi.spyOn(API, "previewScriptItemPrompts").mockResolvedValue(unavailable);
-    renderDetail(makeSegment());
-
-    const [imageToText] = screen.getAllByRole("button", { name: "文本" });
-    fireEvent.click(imageToText);
-
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    expect(await screen.findByText("该分镜没有分镜图提示词")).toBeInTheDocument();
-    // 结构化编辑器留在原地：空正文的文本形态既丢原因、又只会在保存时被非空校验拒掉
-    expect(screen.getByDisplayValue("雨夜街道")).toBeInTheDocument();
-  });
-
-  it("有未保存改动时禁用形态切换：初值取自已保存内容，切换会静默丢弃改动", () => {
-    renderDetail(makeSegment());
-
-    fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "改过的画面" } });
-
-    for (const button of screen.getAllByRole("button", { name: "文本" })) {
-      expect(button).toBeDisabled();
-    }
+    expect(onUpdatePrompt).toHaveBeenCalledWith("E1S01", { image_prompt: "雨后的街道" });
   });
 });
 
@@ -138,7 +111,7 @@ describe("ShotDetail 最终提示词预览", () => {
     const dialog = await screen.findByRole("dialog", { name: "分镜图最终提示词" });
     expect(await within(dialog).findByText(/Scene: 雨夜街道/)).toBeInTheDocument();
     expect(save.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder[0]);
-    expect(save).toHaveBeenCalledWith("E1S01", expect.objectContaining({ image_prompt: expect.objectContaining({ scene: "改过的画面" }) }));
+    expect(save).toHaveBeenCalledWith("E1S01", { image_prompt: "改过的画面" });
   });
 
   it.each([false, new Error("写入失败")])("保存或刷新失败时不打开预览（%s）", async (result) => {

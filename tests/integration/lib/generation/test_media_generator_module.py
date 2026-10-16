@@ -1130,6 +1130,30 @@ class TestMediaGenerator:
         assert gen._video_backend.calls == []
         assert len(gen.ledger.started) == started_before
 
+    @pytest.mark.parametrize("count", [4, 6, 9])
+    async def test_shot_grid_frames_reach_provider_in_order(self, tmp_path, count):
+        from arcreel_market_core.video_backend_contract import VideoCapabilities
+
+        gen = _build_generator(tmp_path)
+        backend = _FakeVideoBackend(video_capabilities=VideoCapabilities(last_frame=True, max_reference_images=9))
+        gen._video_backend = backend
+        frames = [_solid_png(gen.project_path, f"K{index}.png", 16, 16) for index in range(count)]
+
+        await gen.generate_video_async(
+            prompt="Follow the ordered keyframes.",
+            resource_type="videos",
+            resource_id="E1S01",
+            start_image=frames[0],
+            end_image=frames[-1],
+            reference_images=frames,
+        )
+
+        assert len(backend.calls) == 1
+        request = backend.calls[0]
+        assert request.start_image == frames[0]
+        assert request.end_image == frames[-1]
+        assert request.reference_images == frames
+
     @pytest.mark.asyncio
     async def test_end_image_forwarded_when_backend_reports_tier_aware_last_frame(self, tmp_path):
         """后端实现 video_capabilities_for_tier 时按实际 service_tier 收窄决定是否转发

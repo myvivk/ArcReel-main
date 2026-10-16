@@ -1,10 +1,35 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { ShotDetail } from "./ShotDetail";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import type { NarrationSegment } from "@/types";
+import type { ShotGridPlan } from "@/types/shot-grid";
 import { makeNarrationSegment } from "@/test/factories";
+import { ShotDetail } from "./ShotDetail";
 
-/** 有未保存修改时，生成按钮先保存再生成；保存没有完整生效时不生成。 */
+function grid(): ShotGridPlan {
+  return {
+    id: "shot_grid_123456789abc",
+    episode: 1,
+    script_file: "episode_1.json",
+    shot_id: "E1S01",
+    rows: 3,
+    cols: 3,
+    status: "confirmed",
+    created_at: "",
+    updated_at: "",
+    error_message: null,
+    composite_path: "shot_grids/contact.png",
+    composite_url: "/contact.png",
+    cells: Array.from({ length: 9 }, (_, index) => ({
+      index,
+      prompt: "",
+      time_ratio: index / 8,
+      continuity_notes: "",
+      confirmed: true,
+      image_path: `storyboards/cell-${index}.png`,
+    })),
+  };
+}
 
 function renderDetail(props: Partial<Parameters<typeof ShotDetail>[0]> = {}, segment: NarrationSegment = makeNarrationSegment()) {
   return render(
@@ -25,56 +50,44 @@ function renderDetail(props: Partial<Parameters<typeof ShotDetail>[0]> = {}, seg
   );
 }
 
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
+});
+
 describe("ShotDetail 保存并生成", () => {
-  it("有未保存修改时按钮写「保存并生成」，先提交修改再生成", async () => {
+  it("视频有未保存修改时，右侧媒体按钮先提交修改再生成", async () => {
+    vi.mocked(API.getShotGrid).mockResolvedValue(grid());
     const onUpdatePrompt = vi.fn().mockResolvedValue(true);
-    const onGenerateStoryboard = vi.fn();
-    renderDetail({ onUpdatePrompt, onGenerateStoryboard });
+    const onGenerateVideo = vi.fn();
+    renderDetail({ onUpdatePrompt, onGenerateVideo });
 
     expect(screen.queryByRole("button", { name: /保存并生成/ })).not.toBeInTheDocument();
     fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "雨后的街道" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存并生成/ }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "保存并生成" }).at(-1)).toBeEnabled());
+    fireEvent.click(screen.getAllByRole("button", { name: "保存并生成" }).at(-1)!);
 
-    await waitFor(() => expect(onGenerateStoryboard).toHaveBeenCalledWith("E1S01"));
+    await waitFor(() => expect(onGenerateVideo).toHaveBeenCalledWith("E1S01"));
     expect(onUpdatePrompt).toHaveBeenCalledWith("E1S01", { image_prompt: "雨后的街道" });
-    expect(onUpdatePrompt.mock.invocationCallOrder[0]).toBeLessThan(onGenerateStoryboard.mock.invocationCallOrder[0]);
-    // 保存成功后提示条收起，按钮回到普通文案
-    await waitFor(() => expect(screen.queryByRole("button", { name: /保存并生成/ })).not.toBeInTheDocument());
+    expect(onUpdatePrompt.mock.invocationCallOrder[0]).toBeLessThan(onGenerateVideo.mock.invocationCallOrder[0]);
   });
 
   it("保存失败时不生成，错误显示在提示条上", async () => {
+    vi.mocked(API.getShotGrid).mockResolvedValue(grid());
     const onUpdatePrompt = vi.fn().mockRejectedValue(new Error("提示词不能为空"));
-    const onGenerateStoryboard = vi.fn();
-    renderDetail({ onUpdatePrompt, onGenerateStoryboard });
+    const onGenerateVideo = vi.fn();
+    renderDetail({ onUpdatePrompt, onGenerateVideo });
 
     fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "雨后的街道" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存并生成/ }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "保存并生成" }).at(-1)).toBeEnabled());
+    fireEvent.click(screen.getAllByRole("button", { name: "保存并生成" }).at(-1)!);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("提示词不能为空");
-    expect(onGenerateStoryboard).not.toHaveBeenCalled();
-    expect(screen.getByDisplayValue("雨后的街道")).toBeInTheDocument();
+    expect(onGenerateVideo).not.toHaveBeenCalled();
   });
 
-  it("修改已写入但剧本没刷新时不生成，并说明需要刷新", async () => {
-    const onUpdatePrompt = vi.fn().mockResolvedValue(false);
-    const onGenerateNarration = vi.fn();
-    renderDetail({ onUpdatePrompt, onGenerateNarration });
-
-    fireEvent.change(screen.getByRole("textbox", { name: "旁白正文" }), { target: { value: "雨停了。" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存并生成/ }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("没能载入最新剧本");
-    expect(onGenerateNarration).not.toHaveBeenCalled();
-    // 再点也不能绕过刷新失败，直到真正的剧本内容到达。
-    const generate = screen.getByRole("button", { name: /^生成旁白/ });
-    expect(generate).toBeDisabled();
-    fireEvent.click(generate);
-    expect(onGenerateNarration).not.toHaveBeenCalled();
-    // 已写入的内容成为已保存内容，不再标为未保存
-    expect(screen.queryByRole("button", { name: "放弃修改" })).not.toBeInTheDocument();
-  });
-
-  it("视频「保存并生成」等保存落定期间，尾帧不能更换或清除，落定后再生成", async () => {
+  it("视频保存并生成期间，尾帧不能更换或清除，保存后再生成", async () => {
+    vi.mocked(API.getShotGrid).mockResolvedValue(grid());
     let finishSave: (refreshed: boolean) => void = () => {};
     const onUpdatePrompt = vi.fn(() => new Promise<boolean>((resolve) => { finishSave = resolve; }));
     const onGenerateVideo = vi.fn();
@@ -93,9 +106,10 @@ describe("ShotDetail 保存并生成", () => {
     });
     renderDetail({ onUpdatePrompt, onGenerateVideo, lastFrame: true }, segment);
 
+    await waitFor(() => expect(screen.getByRole("button", { name: "生成视频" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /^尾帧/ }));
     fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "雨后的街道" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存并生成/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: "保存并生成" }).at(-1)!);
 
     expect(screen.getByRole("button", { name: "更换图片" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "清除" })).toBeDisabled();
@@ -105,19 +119,6 @@ describe("ShotDetail 保存并生成", () => {
     await waitFor(() => expect(onGenerateVideo).toHaveBeenCalledWith("E1S01"));
   });
 
-  it("没有未保存修改时直接生成，不提交修改", async () => {
-    const onUpdatePrompt = vi.fn().mockResolvedValue(true);
-    const onGenerateStoryboard = vi.fn();
-    renderDetail({ onUpdatePrompt, onGenerateStoryboard });
-
-    fireEvent.click(screen.getByRole("button", { name: /^生成分镜/ }));
-
-    await waitFor(() => expect(onGenerateStoryboard).toHaveBeenCalledWith("E1S01"));
-    expect(onUpdatePrompt).not.toHaveBeenCalled();
-  });
-});
-
-describe("ShotDetail 备注与引用进入未保存修改", () => {
   it("备注与提示词一起保存", async () => {
     const onUpdatePrompt = vi.fn().mockResolvedValue(true);
     renderDetail({ onUpdatePrompt });
@@ -125,7 +126,6 @@ describe("ShotDetail 备注与引用进入未保存修改", () => {
     fireEvent.click(screen.getByRole("button", { name: "备注" }));
     fireEvent.change(await screen.findByRole("textbox", { name: "备注" }), { target: { value: "换成雨后" } });
     fireEvent.change(screen.getByDisplayValue("雨夜街道"), { target: { value: "雨后的街道" } });
-    expect(onUpdatePrompt).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() =>

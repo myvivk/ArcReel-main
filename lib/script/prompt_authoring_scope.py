@@ -1,7 +1,8 @@
 """提示词编写的对象选择：本次为哪些条目写哪些视觉层字段，显式重写会替换哪些已有内容。
 
-补缺以整份视觉层字段为单位：分镜类条目的 ``image_prompt`` / ``video_prompt`` 各自判断，已有的保留，
-只补缺失的那一份，不看结构化提示词内部的空字段；参考生视频单元的正文即视觉层，按待编写标记展开，
+分镜类条目默认只写 ``image_prompt``：视频提示词依赖已确认参考素材，必须显式传
+``fields=["video_prompt"]`` 单独编写。补缺以整份视觉层字段为单位：已有的保留，只补本次字段范围内
+缺失的那一份，不看结构化提示词内部的空字段；参考生视频单元的正文即视觉层，按待编写标记展开，
 正文非空也照常改写，标记清除后只有显式重写才改写。点名条目只划定范围，不等于授权覆盖。
 """
 
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 
@@ -20,6 +21,16 @@ VISUAL_LAYER_FIELDS: dict[str, tuple[str, ...]] = {
     "shots": ("image_prompt", "video_prompt"),
     "video_units": ("text",),
 }
+
+#: 省略 ``fields`` 时的编写字段。分镜类先写分镜提示词；视频提示词等参考素材确认后单独写。
+DEFAULT_AUTHORING_FIELDS: dict[str, tuple[str, ...]] = {
+    "segments": ("image_prompt",),
+    "scenes": ("image_prompt",),
+    "shots": ("image_prompt",),
+    "video_units": ("text",),
+}
+
+PromptAuthoringField = Literal["image_prompt", "video_prompt"]
 
 
 def visual_field_filled(value: Any) -> bool:
@@ -59,6 +70,19 @@ def _fill_fields(kind: str, item: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(field for field in VISUAL_LAYER_FIELDS[kind] if not visual_field_filled(item.get(field)))
 
 
+def _limited_fields(kind: str, fields: Iterable[str] = ()) -> tuple[str, ...]:
+    requested = tuple(dict.fromkeys(fields))
+    if not requested:
+        return DEFAULT_AUTHORING_FIELDS[kind]
+    allowed = set(VISUAL_LAYER_FIELDS[kind])
+    unknown = [field for field in requested if field not in allowed]
+    if unknown:
+        raise ValueError(f"{kind} 不支持这些提示词字段: {unknown}")
+    if kind != "video_units" and {"image_prompt", "video_prompt"} <= set(requested):
+        raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
+    return requested
+
+
 def select_prompt_authoring(
     items: Sequence[Mapping[str, Any]],
     *,
@@ -66,13 +90,15 @@ def select_prompt_authoring(
     id_field: str,
     entry_ids: Iterable[str] = (),
     rewrite: bool = False,
+    fields: Iterable[str] = (),
 ) -> PromptAuthoringSelection:
     """按范围与模式选出编写对象。
 
     ``entry_ids`` 为空时范围是全部带待编写标记的条目，否则是这些条目（调用方先确认它们都在剧本里）。
-    补缺只写缺失的视觉层字段；``rewrite`` 写范围内条目的全部视觉层字段，其中补缺本不会写、
-    却已有内容的字段记为 ``overwritten``，即显式重写需要确认的丢失项。
+    补缺只写本次字段范围内缺失的视觉层字段；``rewrite`` 写范围内条目的本次字段，其中补缺本不会写、
+    却已有内容的本次字段记为 ``overwritten``，即显式重写需要确认的丢失项。
     """
+    target_fields = _limited_fields(kind, fields)
     requested = set(entry_ids)
     entries: list[AuthoringEntry] = []
     skipped: list[str] = []
@@ -81,14 +107,14 @@ def select_prompt_authoring(
         in_scope = entry_id in requested if requested else item.get(PENDING_AUTHORING_FIELD) is True
         if not in_scope:
             continue
-        fill = _fill_fields(kind, item)
+        fill = tuple(field for field in _fill_fields(kind, item) if field in target_fields)
         if rewrite:
             overwritten = tuple(
                 field
-                for field in VISUAL_LAYER_FIELDS[kind]
+                for field in target_fields
                 if field not in fill and visual_field_filled(item.get(field))
             )
-            entries.append(AuthoringEntry(entry_id, VISUAL_LAYER_FIELDS[kind], overwritten))
+            entries.append(AuthoringEntry(entry_id, target_fields, overwritten))
         elif fill:
             entries.append(AuthoringEntry(entry_id, fill))
         else:
@@ -157,8 +183,10 @@ def prompt_overwrite_with_text(overwrite: Mapping[str, Any], translate: Callable
 
 
 __all__ = [
+    "DEFAULT_AUTHORING_FIELDS",
     "VISUAL_LAYER_FIELDS",
     "AuthoringEntry",
+    "PromptAuthoringField",
     "PromptAuthoringSelection",
     "PromptOverwrite",
     "PromptOverwriteRequired",

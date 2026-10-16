@@ -8,8 +8,8 @@ Manifest registration commit together, and a failed commit never leaves the new 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -507,6 +507,7 @@ def shot_grid_formal_image_callback(
     prompt: str,
     versions: Any,
     task_id: str | None,
+    basis: ArtifactBasis,
     outcome_box: list[FormalImageCommitOutcome],
 ) -> StagedImageCommit:
     artifact_path = f"shot_grids/{resource_id}.png"
@@ -516,6 +517,7 @@ def shot_grid_formal_image_callback(
             current_grid.composite_path = artifact_path
             current_grid.status = "completed"
             current_grid.error_message = None
+            current_grid.image_basis = ArtifactBasisDescriptor.from_basis(basis).to_dict()
             current_grid.updated_at = datetime.now(UTC).isoformat()
 
         committed_grid = grid_manager.update_formal(resource_id, _complete, on_commit=activate)
@@ -535,7 +537,7 @@ def shot_grid_formal_image_callback(
         artifact_path=artifact_path,
         prompt=prompt,
         task_id=task_id,
-        basis=None,
+        basis=basis,
         outcome_box=outcome_box,
         commit_metadata=_commit_metadata,
     )

@@ -21,18 +21,6 @@ export const SHOT_TYPES = [
 
 export type ShotType = (typeof SHOT_TYPES)[number];
 
-export const SHOT_TYPE_I18N_KEYS: Record<ShotType, string> = {
-  "Extreme Close-up": "shot_type_extreme_close_up",
-  "Close-up": "shot_type_close_up",
-  "Medium Close-up": "shot_type_medium_close_up",
-  "Medium Shot": "shot_type_medium_shot",
-  "Medium Long Shot": "shot_type_medium_long_shot",
-  "Long Shot": "shot_type_long_shot",
-  "Extreme Long Shot": "shot_type_extreme_long_shot",
-  "Over-the-shoulder": "shot_type_over_the_shoulder",
-  "Point-of-view": "shot_type_point_of_view",
-};
-
 export const CAMERA_MOTIONS = [
   "Static",
   "Pan Left",
@@ -53,25 +41,6 @@ export const CAMERA_MOTIONS = [
 ] as const;
 
 export type CameraMotion = (typeof CAMERA_MOTIONS)[number];
-
-export const CAMERA_MOTION_I18N_KEYS: Record<CameraMotion, string> = {
-  Static: "camera_motion_static",
-  "Pan Left": "camera_motion_pan_left",
-  "Pan Right": "camera_motion_pan_right",
-  "Tilt Up": "camera_motion_tilt_up",
-  "Tilt Down": "camera_motion_tilt_down",
-  "Zoom In": "camera_motion_zoom_in",
-  "Zoom Out": "camera_motion_zoom_out",
-  "Push In": "camera_motion_push_in",
-  "Pull Out": "camera_motion_pull_out",
-  "Truck Left": "camera_motion_truck_left",
-  "Truck Right": "camera_motion_truck_right",
-  "Pedestal Up": "camera_motion_pedestal_up",
-  "Pedestal Down": "camera_motion_pedestal_down",
-  Orbit: "camera_motion_orbit",
-  "Tracking Shot": "camera_motion_tracking_shot",
-  Shake: "camera_motion_shake",
-};
 
 export type DurationSeconds = number;
 export type AssetStatus = "pending" | "storyboard_ready" | "completed";
@@ -371,18 +340,6 @@ export interface DramaEpisodeScript {
   short_drama_meta?: Record<string, unknown>;
 }
 
-/** 带货框架 section 八值引导（与后端审定配比表用词一致；不硬枚举，允许自定义值）。 */
-export const AD_SECTION_VALUES = [
-  "hook",
-  "pain_point",
-  "product_reveal",
-  "selling_point",
-  "demo",
-  "trust",
-  "price_promo",
-  "cta",
-] as const;
-
 /** 广告/短片分镜（平铺 shots[]，口播文案一等）。 */
 export interface AdShot {
   shot_id: string;
@@ -426,6 +383,7 @@ export type EpisodeScript = NarrationEpisodeScript | DramaEpisodeScript | AdEpis
 export interface AuthorPromptsRequest {
   entry_ids?: string[] | null;
   rewrite?: boolean;
+  fields?: Array<"image_prompt" | "video_prompt"> | null;
   instructions?: string | null;
   overwrite_revision?: string | null;
 }

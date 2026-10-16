@@ -1211,7 +1211,7 @@ async def execute_video_task(
                 kind=f"grid_cell_{index}",
             )
             for index, image in enumerate(reference_images)
-            if image != storyboard_file
+            if len(reference_images) > 1 or image != storyboard_file
         )
         if end_image is not None:
             media_inputs.append(
@@ -1581,11 +1581,6 @@ async def execute_shot_grid_task(
     if grid.status == "confirmed":
         raise ValueError("confirmed shot grid cannot be regenerated")
 
-    prompt_parts = [
-        "Create a clean 3 by 3 cinematic continuous-story storyboard contact sheet. Use nine equal panels in strict left-to-right, top-to-bottom time order, with clear straight boundaries, no text, no labels, no gutters. The nine panels are consecutive moments from one shot, not nine unrelated scenes. Preserve identical characters, wardrobe, props, setting, lighting, and visual style across all panels. Panel 1 is the opening state, panel 5 is the key action or emotional beat, and panel 9 is the resolved ending state. Show gradual action continuity between adjacent panels and do not introduce events absent from the shot description."
-    ]
-    prompt_parts.extend(f"Panel {cell.index + 1}: {cell.prompt.strip()}" for cell in grid.cells if cell.prompt.strip())
-    prompt = "\n".join(prompt_parts)
     grid.status = "generating"
     grid.error_message = None
     grid.updated_at = datetime.now(UTC).isoformat()
@@ -1594,36 +1589,57 @@ async def execute_shot_grid_task(
     outcome_box: list[FormalImageCommitOutcome] = []
     try:
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
+        script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
+        generation_input = storyboard_image_input(
+            project, script, episode=grid.episode, resource_id=grid.shot_id,
+            observation=project_input_observation(project_path),
+        )
+        if isinstance(generation_input, InputRefused):
+            raise input_refusal_error(generation_input)
         context = await resolve_generation_context(
             project_name,
             payload,
             project=project,
             project_path=project_path,
             user_id=user_id,
-            image=ImageLaneRequest(generation_type="t2i"),
+            image=ImageLaneRequest(generation_type="i2i" if generation_input.references else "t2i"),
         )
         generator = context.generator
-        outcome_box = []
-        await generator.generate_image_async(
-            prompt=prompt,
-            resource_type="shot_grids",
-            resource_id=grid.id,
-            reference_images=None,
-            aspect_ratio="16:9",
-            image_size=context.image.resolution,
-            formal_output=True,
-            task_id=task_id,
-            commit_formal_output=shot_grid_formal_image_callback(
-                project_path=project_path,
-                grid_manager=manager,
-                grid=grid,
-                resource_id=grid.id,
-                prompt=prompt,
-                versions=generator.versions,
-                task_id=task_id,
-                outcome_box=outcome_box,
+        resolver = active_artifact_currency_resolver(project_path, project)
+        with generation_input.freeze(
+            max_reference_images=context.image.max_reference_images,
+            model=context.image.backend_model,
+            bind_claims=lambda claims, digests: bind_artifact_input_claims_to_content_digests(
+                resolver=resolver, claims=claims, content_digests=digests,
             ),
-        )
+        ) as frozen:
+            count = grid.rows * grid.cols
+            prompt = "\n".join([
+                f"Create a cinematic contact sheet with exactly {grid.rows} rows and {grid.cols} columns, "
+                f"{count} equal panels in left-to-right, top-to-bottom time order. "
+                "No text, labels or gutters. Every panel depicts a consecutive moment of the SAME shot. "
+                "Preserve characters, wardrobe, props, setting, lighting and visual style from the references. "
+                f"Panel 1 is the opening; panel {count} is the ending. "
+                "Show gradual action continuity without adding events absent from the shot description.",
+                frozen.prompt,
+                *(f"Panel {cell.index + 1} ({cell.time_ratio:.0%}): {cell.prompt.strip()}" for cell in grid.cells),
+            ])
+            await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, frozen.claims)
+            await generator.generate_image_async(
+                prompt=prompt,
+                resource_type="shot_grids",
+                resource_id=grid.id,
+                reference_images=frozen.references.reference_images,
+                aspect_ratio=generation_input.canvas_ratio,
+                image_size=context.image.resolution,
+                formal_output=True,
+                task_id=task_id,
+                commit_formal_output=shot_grid_formal_image_callback(
+                    project_path=project_path, grid_manager=manager, grid=grid, resource_id=grid.id,
+                    prompt=prompt, versions=generator.versions, task_id=task_id,
+                    basis=frozen.basis, outcome_box=outcome_box,
+                ),
+            )
         return {
             "file_path": f"shot_grids/{grid.id}.png",
             "resource_type": "shot_grids",

@@ -2,7 +2,7 @@
 id: text/ad_storyboard_prompt_authoring
 category: text
 title: 广告 / 短片 · 分镜提示词编写
-description: 为广告分镜脚本里待编写的分镜补全画面与视频提示词（image_prompt / video_prompt）。
+description: 为广告分镜脚本里待编写的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。
 stage: prompt_authoring
 invoked_by:
   kind: agent_tool
@@ -32,7 +32,7 @@ protected: false
 ---
 # 角色与任务
 
-你是一位资深的短视频分镜摄影 / 动作设计师。下方是一支已定稿的广告 / 短片分镜脚本，其中标注「【待编写】」的分镜还没有视觉层。你的唯一职责是为这些分镜补全视觉生产层：image_prompt（画面）与 video_prompt（动作 / 运镜 / 环境音 / 出镜台词）。**不要新增 / 删除 / 重排分镜、不要改动口播、时长、段落与出场资产。**
+你是一位资深的短视频分镜摄影 / 动作设计师。下方是一支已定稿的广告 / 短片分镜脚本，其中标注「【待编写】」的分镜还没有本次请求的视觉字段。你的唯一职责是为这些分镜补全本次 response_schema 要求的视觉生产字段。**不要新增 / 删除 / 重排分镜、不要改动口播、时长、段落与出场资产。**
 
 **输出语言**：所有字符串值必须使用 {{ target_language }}；JSON 键名 / 枚举值保持英文。
 **结构约束**：字段 / 枚举 / 必填项由 response_schema 强制；本提示只解释**如何写好每个字段的内容**。
@@ -68,6 +68,8 @@ protected: false
 </episode_constraints>
 
 # 字段写作指引
+
+按本次 response_schema 填写需要的视觉字段；未出现在 response_schema 中的字段不要输出。
 
 {{ partial("shared/image_prompt_writing_guide") }}
 

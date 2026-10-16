@@ -1,4 +1,12 @@
 MESSAGES = {
+    "shot_grid_missing": "Reference materials were not found. Reload the shot.",
+    "shot_grid_busy": "Reference materials are being processed. Wait for completion.",
+    "shot_grid_layout_invalid": "Supported grid layouts are 2×2, 2×3 and 3×3.",
+    "shot_grid_cells_invalid": "The grid requires {count} ordered keyframes. Check them and retry.",
+    "shot_grid_not_ready": "Reference materials are not ready. Generate them first.",
+    "shot_grid_split_failed": "Reference materials could not be split. Regenerate the contact sheet.",
+    "shot_grid_register_failed": "Reference materials could not be registered. Generate them again.",
+    "shot_grid_shot_missing": "The shot was not found in the script. Reload it.",
     "story_plan_conflict": "Story planning changed elsewhere. Reload before saving.",
     "story_plan_invalid": "A record is incomplete or its references no longer exist. Check its episode, characters and content.",
     "story_plan_source_changed": "The source script changed. Extract the event again before confirming.",

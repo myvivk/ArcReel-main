@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import { LeaveGuardProvider } from "@/components/shared/edit-unit/LeaveGuard";
 import { makeNarrationSegment } from "@/test/factories";
 import { ShotSplitView } from "./ShotSplitView";
@@ -28,7 +29,12 @@ function renderView(onUpdatePrompt = vi.fn().mockResolvedValue(true)) {
   return onUpdatePrompt;
 }
 
-const position = () => screen.getByText(/^\d \/ 2$/).textContent;
+const currentShot = () => within(screen.getByRole("navigation", { name: "分镜列表" }))
+  .getByRole("button", { current: true });
+
+beforeEach(() => {
+  vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
+});
 
 describe("ShotSplitView 切换拦截与快捷键", () => {
   it("改了提示词后按 J 先询问，放弃修改后切到下一个分镜且不提交", async () => {
@@ -38,11 +44,11 @@ describe("ShotSplitView 切换拦截与快捷键", () => {
     fireEvent.keyDown(document.body, { key: "j" });
     const dialog = await screen.findByRole("alertdialog", { name: "「S01」有未保存的修改" });
     expect(within(dialog).getByRole("button", { name: "保存并切换" })).toBeInTheDocument();
-    expect(position()).toBe("1 / 2");
+    expect(screen.getByDisplayValue("雨后的街道")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "放弃修改" }));
 
-    await waitFor(() => expect(position()).toBe("2 / 2"));
+    await waitFor(() => expect(currentShot()).toHaveTextContent("S02"));
     expect(screen.getByDisplayValue("清晨码头")).toBeInTheDocument();
     expect(onUpdatePrompt).not.toHaveBeenCalled();
   });
@@ -51,9 +57,9 @@ describe("ShotSplitView 切换拦截与快捷键", () => {
     renderView();
 
     fireEvent.keyDown(document.body, { key: "j" });
-    expect(position()).toBe("2 / 2");
+    expect(currentShot()).toHaveTextContent("S02");
     fireEvent.keyDown(document.body, { key: "k" });
-    expect(position()).toBe("1 / 2");
+    expect(currentShot()).toHaveTextContent("S01");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
@@ -63,7 +69,7 @@ describe("ShotSplitView 切换拦截与快捷键", () => {
     fireEvent.keyDown(screen.getByDisplayValue("雨夜街道"), { key: "j" });
     fireEvent.keyDown(document.body, { key: "j", isComposing: true });
 
-    expect(position()).toBe("1 / 2");
+    expect(currentShot()).toHaveTextContent("S01");
   });
 
   it("⌘S 与 Ctrl+S 在输入框里也保存当前分镜，并拦下浏览器的保存网页", async () => {

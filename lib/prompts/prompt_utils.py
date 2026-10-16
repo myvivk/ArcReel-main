@@ -278,7 +278,19 @@ def render_storyboard_video_prompt(
                 prompt = build_drama_video_prompt_from_legacy_dialogue(prompt, characters=voice_characters)
     elif isinstance(prompt, str) and content_mode == "drama":
         prompt = _attach_drama_speech_text(prompt, item, characters=voice_characters)
-    return normalize_video_prompt(prompt)
+    rendered = normalize_video_prompt(prompt)
+    assets = item.get("generated_assets") if isinstance(item, Mapping) else None
+    grid = assets.get("shot_grid") if isinstance(assets, Mapping) else None
+    cells = grid.get("cell_paths") if isinstance(grid, Mapping) else None
+    if isinstance(cells, list) and cells:
+        instruction = (
+            f"Keyframe references K0–K{len(cells) - 1} correspond to the {len(cells)} reference images "
+            "in their supplied order. They are consecutive moments of one shot, from opening to ending. "
+            "Follow this temporal order and preserve character, setting and action continuity."
+        )
+        if instruction not in rendered:
+            rendered = f"{rendered.rstrip()}\n\n{instruction}"
+    return rendered
 
 
 def _attach_drama_speech_text(text: str, item: Mapping[str, Any] | None, *, characters: dict[str, Any] | None) -> str:

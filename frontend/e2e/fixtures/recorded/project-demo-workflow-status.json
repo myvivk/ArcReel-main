@@ -31,6 +31,7 @@
       "drafts": [],
       "formal_script": "present",
       "script_item_count": 0,
+      "script_from_short_drama": false,
       "pending_authoring_ids": [],
       "needs_replan_ids": [],
       "referenced_assets_without_sheet": [],
@@ -51,7 +52,7 @@
       },
       "prepare_script_plan": {
         "state": "refused",
-        "reason": "episode_source_missing"
+        "reason": "formal_script_no_source"
       },
       "generate_script": {
         "state": "not_applicable",

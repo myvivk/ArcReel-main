@@ -399,8 +399,8 @@ export function ProjectStatusBar({ projectName }: { projectName: string }) {
     project.content_mode === "drama" &&
     total === 0 &&
     (project.whole_source_files?.length ?? 0) === 0 &&
-    !Boolean(
-      project.overview?.synopsis || project.overview?.genre || project.overview?.theme || project.overview?.world_setting,
+    !(
+      project.overview?.synopsis || project.overview?.genre || project.overview?.theme || project.overview?.world_setting
     );
   const progressText =
     total === 0

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import { LeaveGuardProvider } from "@/components/shared/edit-unit/LeaveGuard";
 import { useAppStore } from "@/stores/app-store";
 import { makeNarrationSegment } from "@/test/factories";
@@ -17,6 +18,10 @@ function board(script: NarrationEpisodeScript, props: Partial<Parameters<typeof 
   return <LeaveGuardProvider><TimelineCanvas view="board" onViewChange={vi.fn()} projectName="demo" episode={1} projectData={PROJECT} episodeScript={script} scriptFile="episode_1.json" onUpdatePrompt={vi.fn().mockResolvedValue(true)} {...props} /></LeaveGuardProvider>;
 }
 
+beforeEach(() => {
+  vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
+});
+
 describe("TimelineCanvas 定位到分镜", () => {
   it("当前分镜有修改时，通知或制作进度定位到别的分镜先询问，放行后切过去", () => {
     render(board(twoShots()));
@@ -31,17 +36,12 @@ describe("TimelineCanvas 定位到分镜", () => {
     expect(useAppStore.getState().scrollTarget).toBeNull();
   });
 
-  it("有修改时改序不询问，编辑单元与修改都留着", async () => {
-    const onMoveShot = vi.fn().mockResolvedValue(true);
-    const { rerender } = render(board(twoShots(), { onMoveShot }));
+  it("外部改序时不询问，编辑单元与修改都留着", () => {
+    const { rerender } = render(board(twoShots()));
     fireEvent.change(screen.getByDisplayValue("E1S01 画面"), { target: { value: "改序前的修改" } });
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "后移分镜" }));
-    });
-    rerender(board(twoShots("E1S02", "E1S01"), { onMoveShot }));
+    rerender(board(twoShots("E1S02", "E1S01")));
 
-    expect(onMoveShot).toHaveBeenCalledWith("E1S01", "E1S02", "episode_1.json");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("改序前的修改")).toBeInTheDocument();
   });

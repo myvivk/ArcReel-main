@@ -20,6 +20,7 @@ export interface ShotGridPlan {
   composite_path: string | null;
   composite_url?: string;
   status: ShotGridStatus;
+  task_id?: string | null;
   created_at: string;
   updated_at: string;
   error_message: string | null;

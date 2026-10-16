@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { API } from "@/api";
 import { ShotDetail } from "./ShotDetail";
 import type { NarrationSegment } from "@/types";
 import { makeNarrationSegment } from "@/test/factories";
@@ -29,10 +30,13 @@ function renderDetail(segment: NarrationSegment, props: Partial<Parameters<typeo
 }
 
 describe("ShotDetail 空提示词", () => {
+  beforeEach(() => {
+    vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
+  });
   it("两侧为 null 时不标「待生成」徽标，文本框留空", () => {
     renderDetail(makeSegment());
     // 只看两个提示词区块：资产状态徽标另有一枚同文案的「待生成」
-    for (const title of ["分镜图提示词", "视频提示词"]) {
+    for (const title of ["分镜提示词", "视频提示词"]) {
       const section = screen.getByText(title).closest("section");
       expect(section).not.toBeNull();
       expect(within(section as HTMLElement).queryByText("待生成")).not.toBeInTheDocument();

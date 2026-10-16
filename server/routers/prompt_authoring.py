@@ -6,10 +6,10 @@
 """
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.infra.api_errors import ConflictError, UnprocessableError
 from lib.project.project_manager import get_project_manager
@@ -32,6 +32,7 @@ from server.tool_runtime import (
 router = APIRouter()
 
 _Instructions = Annotated[str, Field(max_length=MAX_INSTRUCTIONS_LEN)]
+_PromptField = Literal["image_prompt", "video_prompt"]
 
 
 class PromptAuthoringInstructions(BaseModel):
@@ -44,10 +45,21 @@ class AuthorPromptsRequest(PromptAuthoringInstructions):
     entry_ids: list[Annotated[str, Field(min_length=1)]] | None = Field(
         default=None, min_length=1, description="编写范围（分镜 / 单元 id）；省略时为全部待编写条目，给出时至少一条"
     )
-    rewrite: bool = Field(default=False, description="显式重写范围内条目的全部视觉层；省略时补缺")
+    rewrite: bool = Field(default=False, description="显式重写范围内条目的本次提示词字段；省略时补缺")
+    fields: list[_PromptField] | None = Field(
+        default=None,
+        min_length=1,
+        description="仅编写指定提示词字段；省略时默认写分镜提示词，视频提示词须在参考素材确认后单独请求",
+    )
     overwrite_revision: str | None = Field(
         default=None, description="认可覆盖的正式脚本版本，取自 prompt_overwrite.revision"
     )
+
+    @model_validator(mode="after")
+    def _single_prompt_field(self) -> "AuthorPromptsRequest":
+        if self.fields is not None and {"image_prompt", "video_prompt"} <= set(self.fields):
+            raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
+        return self
 
 
 def _raise_problem(problem: ToolProblem, episode: int, _t: Translator) -> None:
@@ -109,6 +121,7 @@ async def author_prompts(
                 episode_id=episode,
                 instructions=req.instructions,
                 entry_ids=req.entry_ids,
+                fields=req.fields,
                 rewrite=req.rewrite,
                 overwrite_revision=req.overwrite_revision,
             )

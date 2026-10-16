@@ -473,6 +473,7 @@ class MediaGenerator:
         """
         from lib.references.reference_compression import (
             LADDER_STEPS,
+            CompressedRef,
             ReferencePayloadFloorError,
             compressed_reference_payload,
         )

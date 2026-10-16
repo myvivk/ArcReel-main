@@ -187,7 +187,7 @@ export function ShotStructureActions({
 
   return (
     <>
-      {onInsert && (
+      {onInsert ? (
         <InsertShotButton
           afterId={segmentId}
           contentMode={contentMode}
@@ -197,8 +197,8 @@ export function ShotStructureActions({
           disabledHint={disabledHint}
           variant="icon"
         />
-      )}
-      {onRemove && (
+      ) : null}
+      {onRemove ? (
         <>
           <TooltipIconButton
             label={t("shot_remove")}
@@ -234,7 +234,7 @@ export function ShotStructureActions({
             </AlertDialogContent>
           </AlertDialog>
         </>
-      )}
+      ) : null}
     </>
   );
 }

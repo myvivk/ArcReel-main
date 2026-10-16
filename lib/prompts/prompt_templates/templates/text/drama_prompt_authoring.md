@@ -2,7 +2,7 @@
 id: text/drama_prompt_authoring
 category: text
 title: 剧情演绎 · 提示词编写
-description: 为剧情演绎已定稿的分镜补全画面与视频提示词（image_prompt / video_prompt）。
+description: 为剧情演绎已定稿的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。
 stage: prompt_authoring
 invoked_by:
   kind: agent_tool
@@ -28,7 +28,7 @@ protected: false
 ---
 # 角色与任务
 
-你是一位资深的短剧分镜摄影 / 动作设计师。下方分镜内容（分镜边界、出场资产、逐字口播、原文锚、视觉改编描述）均已定稿，你的唯一职责是为每个分镜补全视觉生产层：image_prompt（画面）与 video_prompt（动作 / 运镜 / 环境音）。**不要新增 / 删除 / 重排分镜、不要改动分镜内容。**
+你是一位资深的短剧分镜摄影 / 动作设计师。下方分镜内容（分镜边界、出场资产、逐字口播、原文锚、视觉改编描述）均已定稿，你的唯一职责是为每个分镜补全本次 response_schema 要求的视觉生产字段。**不要新增 / 删除 / 重排分镜、不要改动分镜内容。**
 
 **输出语言**：所有字符串值必须使用 {{ target_language }}；JSON 键名 / 枚举值保持英文。
 **结构约束**：字段 / 枚举 / 必填项由 response_schema 强制；本提示只解释**如何写好每个字段的内容**。
@@ -59,7 +59,7 @@ protected: false
 
 # 字段写作指引
 
-对每个分镜，按下列章节填写视觉字段。
+对每个分镜，按本次 response_schema 填写需要的视觉字段；未出现在 response_schema 中的字段不要输出。
 
 {{ partial("shared/image_prompt_writing_guide") }}
 

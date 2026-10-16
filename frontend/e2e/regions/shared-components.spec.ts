@@ -5,7 +5,7 @@ import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
 // 各区域共用的组件：待修复草稿的状态条与两个确认弹层、内容确认页的「本集新增资产」、「编写提示词」与
-// 广告「AI 生成脚本」对话框、分镜图的查看大图，以及集页顶部的文本任务失败提示。
+// 广告「AI 生成脚本」对话框，以及集页顶部的文本任务失败提示。
 const EPISODE_PATH = "/app/projects/demo/episodes/1";
 const PLAN_PATH = `${EPISODE_PATH}?view=plan`;
 const PROJECT = "GET /api/v1/projects/demo";
@@ -228,7 +228,6 @@ const discardDialog = (page: Page) => page.getByRole("alertdialog", { name: "丢
 const newAssets = (page: Page) => page.getByRole("region", { name: "本集新增资产" });
 const authoringDialog = (page: Page) => page.getByRole("dialog", { name: "编写提示词" });
 const adScriptDialog = (page: Page) => page.getByRole("dialog", { name: "重新生成脚本" });
-const viewer = (page: Page) => page.getByRole("dialog", { name: /E1S01|S01/ });
 const failureNote = (page: Page) => page.getByRole("alert").filter({ hasText: "上一次 AI 规划脚本失败" });
 
 async function draftReady(page: Page) {
@@ -337,24 +336,6 @@ defineRegionScenarios("共享组件：集页对话框与提示", [
       await expect(dialog.getByRole("button", { name: "交给 Agent" })).toBeInViewport();
     },
     screenshot: { name: "shared-prompt-authoring", target: authoringDialog },
-  },
-  {
-    name: "分镜图查看大图：占满视口的查看器，按 Esc 关闭",
-    path: EPISODE_PATH,
-    api: SCRIPTED,
-    ready: async (page) => {
-      await page.getByRole("button", { name: /查看「.*」的大图/ }).first().waitFor({ state: "attached" });
-    },
-    act: async (page) => {
-      await clearAgentOverlay(page);
-      const zoom = page.getByRole("button", { name: /查看「.*」的大图/ }).first();
-      await zoom.hover();
-      await zoom.click();
-      const dialog = viewer(page);
-      await waitForEntrance(dialog);
-      await expect(dialog.getByRole("img")).toBeVisible();
-    },
-    screenshot: { name: "shared-image-viewer", target: viewer },
   },
   {
     name: "文本任务失败：集页顶部给出原因与去登记最大输出长度的链接",

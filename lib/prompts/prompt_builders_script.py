@@ -259,7 +259,7 @@ def build_drama_prompt(
 
     内容抽取前移到 script_plan（见 ADR 0041）：分镜边界、出场资产、逐字口播 utterances、原文锚
     source_text、视觉改编描述均已在 script_plan 定稿，``scenes_content`` 是其渲染输入
-    （``render_drama_content_for_prompt_authoring``）。prompt_authoring 仅产出视觉层（image_prompt / video_prompt），
+    （``render_drama_content_for_prompt_authoring``）。prompt_authoring 仅产出本次 response_schema 要求的视觉层字段，
     LLM 输出按 scene_id 与 script_plan 内容对齐、由后端合并；不再按 source_kind 分支、不再识别口播、
     不再标注资产或时长——这些都是 script_plan 的职责。
 

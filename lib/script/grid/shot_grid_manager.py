@@ -34,19 +34,24 @@ class ShotGridManager:
         path = self._path(grid_id)
         if not path.exists():
             return None
-        with portalocker.Lock(path.with_name(f".{path.name}.lock"), flags=portalocker.LOCK_SH):
-            return ShotGrid.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        # 写入以原子替换提交；读取完整快照不再加锁，提交回调也能读取当前宫格身份。
+        return ShotGrid.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def update_formal(self, grid_id: str, mutate, *, on_commit=None) -> ShotGrid | None:
         path = self._path(grid_id)
         if not path.exists():
             return None
         with portalocker.Lock(path.with_name(f".{path.name}.lock"), flags=portalocker.LOCK_EX):
-            grid = ShotGrid.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            grid = ShotGrid.from_dict(previous)
             mutate(grid)
             atomic_write_json(path, grid.to_dict())
-            if on_commit is not None:
-                on_commit()
+            try:
+                if on_commit is not None:
+                    on_commit()
+            except BaseException:
+                atomic_write_json(path, previous)
+                raise
             return grid
 
     def find(self, *, script_file: str, shot_id: str) -> ShotGrid | None:

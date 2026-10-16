@@ -108,24 +108,34 @@ def _narration_plan(*, texts: tuple[str, ...] = ("原文甲。", "原文乙。")
     }
 
 
-def _narration_visual(*ids: str, mark: str = "画面") -> str:
+def _narration_visual(*ids: str, mark: str = "画面", fields: tuple[str, ...] = ("image_prompt",)) -> str:
     return json.dumps(
         {
             "title": "第一集",
             "segments": [
-                {
-                    "segment_id": entry_id,
-                    "image_prompt": {
-                        "scene": f"{mark}-{entry_id}",
-                        "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
-                    },
-                    "video_prompt": {
-                        "action": "动作",
-                        "camera_motion": "Static",
-                        "ambiance_audio": "风声",
-                        "dialogue": [],
-                    },
-                }
+                {"segment_id": entry_id}
+                | (
+                    {
+                        "image_prompt": {
+                            "scene": f"{mark}-{entry_id}",
+                            "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
+                        }
+                    }
+                    if "image_prompt" in fields
+                    else {}
+                )
+                | (
+                    {
+                        "video_prompt": {
+                            "action": "动作",
+                            "camera_motion": "Static",
+                            "ambiance_audio": "风声",
+                            "dialogue": [],
+                        }
+                    }
+                    if "video_prompt" in fields
+                    else {}
+                )
                 for entry_id in ids
             ],
         },
@@ -153,18 +163,28 @@ def _drama_plan(*, texts: tuple[str, ...] = ("原文甲。", "原文乙。")) ->
     }
 
 
-def _drama_visual(*ids: str, mark: str = "画面") -> str:
+def _drama_visual(*ids: str, mark: str = "画面", fields: tuple[str, ...] = ("image_prompt",)) -> str:
     return json.dumps(
         {
             "scenes": [
-                {
-                    "scene_id": entry_id,
-                    "image_prompt": {
-                        "scene": f"{mark}-{entry_id}",
-                        "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
-                    },
-                    "video_prompt": {"action": "动作", "camera_motion": "Static", "ambiance_audio": "风声"},
-                }
+                {"scene_id": entry_id}
+                | (
+                    {
+                        "image_prompt": {
+                            "scene": f"{mark}-{entry_id}",
+                            "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
+                        }
+                    }
+                    if "image_prompt" in fields
+                    else {}
+                )
+                | (
+                    {
+                        "video_prompt": {"action": "动作", "camera_motion": "Static", "ambiance_audio": "风声"}
+                    }
+                    if "video_prompt" in fields
+                    else {}
+                )
                 for entry_id in ids
             ]
         },
@@ -361,11 +381,22 @@ async def _materialize(project_dir: Path, plan_path: Path):
 async def _converted_and_authored(
     tmp_path: Path, variant: _Variant, *, mark: str = "首轮", texts: tuple[str, ...] | None = None
 ) -> tuple[Path, Path]:
-    """转换脚本规划并编写全部待编写条目：得到一份条目都有视觉层、无待编写标记的正式脚本。"""
+    """转换脚本规划并按 image → video 两阶段编写：得到一份视觉层完整、无待编写标记的正式脚本。"""
     first, second = variant.entry_ids
     project_dir, plan_path = variant.build(tmp_path, texts=texts)
     await _materialize(project_dir, plan_path)
-    await variant.generator(project_dir, [variant.visual_factory(first, second, mark=mark)]).generate(1)
+    if variant is REFERENCE:
+        await variant.generator(project_dir, [variant.visual_factory(first, second, mark=mark)]).generate(1)
+    else:
+        generator = variant.generator(
+            project_dir,
+            [
+                variant.visual_factory(first, second, mark=mark, fields=("image_prompt",)),
+                variant.visual_factory(first, second, mark=mark, fields=("video_prompt",)),
+            ],
+        )
+        await generator.generate(1)
+        await generator.generate(1, fields=("video_prompt",))
     return project_dir, plan_path
 
 
@@ -436,7 +467,11 @@ class TestPromptAuthoring:
         assert {entry_id: _entry_json(project_dir, variant, entry_id) for entry_id in (first, second)} == before
         after = _entries(_script(project_dir), variant)[third]
         assert _authored_with(after, variant, "补写")
-        assert PENDING_AUTHORING_FIELD not in after
+        if variant is REFERENCE:
+            assert PENDING_AUTHORING_FIELD not in after
+        else:
+            assert after[PENDING_AUTHORING_FIELD] is True
+            assert after["video_prompt"] is None
         assert _without_visual_layer(after, variant) == _without_visual_layer(added, variant)
 
     async def test_timeline_insert_and_remove_survive_default_authoring(
@@ -474,7 +509,8 @@ class TestPromptAuthoring:
         after = _script(project_dir)[variant.items_key]
         assert [entry[variant.id_field] for entry in after] == [first, added]
         assert _authored_with(after[1], variant, "补写")
-        assert PENDING_AUTHORING_FIELD not in after[1]
+        assert after[1][PENDING_AUTHORING_FIELD] is True
+        assert after[1]["video_prompt"] is None
         assert _entry_json(project_dir, variant, first) == before_first
 
     async def test_nothing_pending_leaves_the_script_untouched(self, tmp_path: Path, variant: _Variant) -> None:
@@ -544,7 +580,11 @@ class TestPromptAuthoring:
         assert rewritten == [first, second]
         after = _entries(_script(project_dir), variant)
         for entry_id in (first, second):
-            assert PENDING_AUTHORING_FIELD not in after[entry_id]
+            if variant is REFERENCE:
+                assert PENDING_AUTHORING_FIELD not in after[entry_id]
+            else:
+                assert after[entry_id][PENDING_AUTHORING_FIELD] is True
+                assert after[entry_id]["video_prompt"] is None
             assert _without_visual_layer(after[entry_id], variant) == _without_visual_layer(before[entry_id], variant)
 
     async def test_missing_formal_script_is_refused(self, tmp_path: Path, variant: _Variant) -> None:
@@ -557,7 +597,7 @@ class TestPromptAuthoring:
 
 
 class TestFillAndRewrite:
-    """补缺以整份图片 / 视频提示词为单位保留已有内容；覆盖已有内容只经显式重写与覆盖令牌。"""
+    """补缺以本次提示词字段为单位保留已有内容；覆盖已有内容只经显式重写与覆盖令牌。"""
 
     @staticmethod
     async def _materialized(tmp_path: Path, variant: _Variant) -> Path:
@@ -574,7 +614,7 @@ class TestFillAndRewrite:
 
         _rewrite_script(project_dir, mutate)
 
-    async def test_fill_keeps_the_existing_image_prompt_and_adds_the_video_prompt(
+    async def test_default_fill_writes_missing_image_prompt_only(
         self, tmp_path: Path, prompt_variant: _Variant
     ) -> None:
         variant = prompt_variant
@@ -587,12 +627,34 @@ class TestFillAndRewrite:
             1, rewritten_entry_ids=rewritten
         )
 
-        assert rewritten == [first, second]
+        assert rewritten == [second]
         after = _entries(_script(project_dir), variant)
         assert after[first]["image_prompt"] == "手写的分镜图提示词"
-        assert isinstance(after[first]["video_prompt"], dict)
-        assert PENDING_AUTHORING_FIELD not in after[first]
+        assert after[first]["video_prompt"] is None
+        assert after[first][PENDING_AUTHORING_FIELD] is True
         assert _authored_with(after[second], variant, "补缺")
+        assert after[second]["video_prompt"] is None
+        assert after[second][PENDING_AUTHORING_FIELD] is True
+
+    async def test_video_prompt_fill_is_explicit_second_stage(self, tmp_path: Path, prompt_variant: _Variant) -> None:
+        variant = prompt_variant
+        first, second = variant.entry_ids
+        project_dir = await self._materialized(tmp_path, variant)
+        await variant.generator(
+            project_dir, [variant.visual_factory(first, second, mark="分镜", fields=("image_prompt",))]
+        ).generate(1)
+
+        rewritten: list[str] = []
+        await variant.generator(
+            project_dir, [variant.visual_factory(first, second, mark="视频", fields=("video_prompt",))]
+        ).generate(1, fields=("video_prompt",), rewritten_entry_ids=rewritten)
+
+        assert rewritten == [first, second]
+        after = _entries(_script(project_dir), variant)
+        for entry_id in (first, second):
+            assert after[entry_id]["image_prompt"]["scene"] == f"分镜-{entry_id}"
+            assert after[entry_id]["video_prompt"]["action"] == "动作"
+            assert PENDING_AUTHORING_FIELD not in after[entry_id]
 
     async def test_selected_entry_with_a_complete_visual_layer_is_skipped_when_filling(
         self, tmp_path: Path, variant: _Variant
@@ -621,7 +683,7 @@ class TestFillAndRewrite:
         with pytest.raises(PromptOverwriteRequired) as caught:
             await variant.generator(project_dir, []).generate(1, entry_ids=[first], rewrite=True)
 
-        expected_fields = list(_VISUAL_FIELDS[variant.name])
+        expected_fields = ["text"] if variant is REFERENCE else ["image_prompt"]
         assert caught.value.overwrite.to_dict() == {
             "revision": _revision(project_dir),
             "entries": [{"id": first, "fields": expected_fields}],
@@ -702,8 +764,8 @@ class TestTextShapedPrompts:
         assert _entry_json(project_dir, prompt_variant, first) == before_first
         assert _entries(_script(project_dir), prompt_variant)[first]["image_prompt"] == "手写的分镜图提示词正文"
 
-    async def test_rewritten_entry_drops_the_text_shape(self, tmp_path: Path, prompt_variant: _Variant) -> None:
-        """点名重写一个文本形态条目：视觉层由 LLM 重出，回到结构形态、不留旧正文。"""
+    async def test_rewritten_entry_drops_the_image_text_shape(self, tmp_path: Path, prompt_variant: _Variant) -> None:
+        """点名默认重写一个文本形态条目：只把 image_prompt 重出，video_prompt 留到第二阶段。"""
         first, _second = prompt_variant.entry_ids
         project_dir, _plan_path = await _converted_and_authored(tmp_path, prompt_variant)
         self._write_text_prompts(project_dir, prompt_variant, first)
@@ -713,7 +775,7 @@ class TestTextShapedPrompts:
 
         entry = _entries(_script(project_dir), prompt_variant)[first]
         assert entry["image_prompt"]["scene"] == f"点名-{first}"
-        assert isinstance(entry["video_prompt"], dict)
+        assert entry["video_prompt"] == "手写的视频提示词正文"
 
 
 class TestDryRunPrompt:
@@ -808,14 +870,15 @@ class TestScriptPlanMaterialization:
         assert rewritten == [first]
         after = _entries(_script(project_dir), variant)
         assert after[first]["image_prompt"] is not None
-        assert "pending_authoring" not in after[first]
+        assert after[first]["video_prompt"] is None
+        assert after[first]["pending_authoring"] is True
         assert json.dumps(after[second], ensure_ascii=False, sort_keys=True) == before_second
         assert after[second]["pending_authoring"] is True
 
     async def test_default_generate_after_materialization_fills_every_pending_entry(
         self, tmp_path: Path, variant: _Variant
     ) -> None:
-        """转换出的条目都待编写：默认编写全部待编写条目，写回后标记清除、内容层不变。"""
+        """转换出的条目都待编写：默认编写全部待编写条目，分镜类先写 image_prompt。"""
         first, second = variant.entry_ids
         project_dir, plan_path = variant.build(tmp_path)
         await _materialize(project_dir, plan_path)
@@ -830,7 +893,11 @@ class TestScriptPlanMaterialization:
         after = _entries(_script(project_dir), variant)
         for entry_id in (first, second):
             assert _authored_with(after[entry_id], variant, "首轮")
-            assert PENDING_AUTHORING_FIELD not in after[entry_id]
+            if variant is REFERENCE:
+                assert PENDING_AUTHORING_FIELD not in after[entry_id]
+            else:
+                assert after[entry_id][PENDING_AUTHORING_FIELD] is True
+                assert after[entry_id]["video_prompt"] is None
             assert _without_visual_layer(after[entry_id], variant) == _without_visual_layer(before[entry_id], variant)
 
     def _edit_plan(self, plan_path: Path, project_dir: Path, variant: _Variant) -> str:

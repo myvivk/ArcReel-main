@@ -1,4 +1,12 @@
 MESSAGES = {
+    "shot_grid_missing": "找不到参考素材，请重新加载分镜。",
+    "shot_grid_busy": "参考素材正在处理中，请等待完成后再操作。",
+    "shot_grid_layout_invalid": "宫格规格支持 2×2、2×3、3×3。",
+    "shot_grid_cells_invalid": "宫格需要按顺序提供 {count} 个关键帧，请检查后重试。",
+    "shot_grid_not_ready": "参考素材尚未生成完成，请先生成。",
+    "shot_grid_split_failed": "无法切分参考素材，请重新生成宫格图。",
+    "shot_grid_register_failed": "无法登记参考素材，请重新生成。",
+    "shot_grid_shot_missing": "剧本中找不到对应分镜，请重新加载。",
     "story_plan_conflict": "故事规划已被其他操作更新，请重新加载后再保存。",
     "story_plan_invalid": "记录内容不完整或引用已失效，请检查所属集、角色和记录内容。",
     "story_plan_source_changed": "记录的来源剧本已变化，请重新提取后再确认。",

@@ -6,6 +6,7 @@ interface PromptAuthoringHandoff {
   /** 已成文的范围：「全部待编写的 N 条」或逐条 ID。 */
   scopeLabel: string;
   rewrite: boolean;
+  fields?: ("image_prompt" | "video_prompt")[] | null;
   instructions: string;
 }
 
@@ -13,6 +14,15 @@ interface PromptAuthoringHandoff {
 export function promptAuthoringHandoffText(t: TFunction, handoff: PromptAuthoringHandoff): string {
   const lines = [
     t("dashboard:prompt_authoring_agent_prefill", { episodeRef: handoff.episodeRef, scope: handoff.scopeLabel }),
+    ...(handoff.fields?.length
+      ? [
+          t(
+            handoff.fields[0] === "video_prompt"
+              ? "dashboard:prompt_authoring_agent_prefill_video"
+              : "dashboard:prompt_authoring_agent_prefill_image",
+          ),
+        ]
+      : []),
     handoff.rewrite
       ? t("dashboard:prompt_authoring_agent_prefill_rewrite")
       : t("dashboard:prompt_authoring_agent_prefill_fill"),

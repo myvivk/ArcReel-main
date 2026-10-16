@@ -3873,9 +3873,10 @@ class API {
     );
   }
 
-  static async getShotGridTask(projectName: string, taskId: string) {
-    return this.request<{ task_id: string; status: string; error?: string }>(
+  static async getShotGridTask(projectName: string, taskId: string, options: { signal?: AbortSignal } = {}) {
+    return this.request<{ task_id: string; status: string; error_message?: string | null }>(
       `/projects/${encodeURIComponent(projectName)}/shot-grids/tasks/${encodeURIComponent(taskId)}`,
+      { signal: options.signal },
     );
   }
 

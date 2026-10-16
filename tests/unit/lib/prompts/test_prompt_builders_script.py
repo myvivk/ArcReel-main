@@ -676,6 +676,24 @@ class TestPromptAuthoringPromptGuards:
         assert "- 庙宇：Y" in text
         assert "- 玉佩" in text
 
+    def test_prompt_authoring_standardizes_storyboard_asset_mentions(self):
+        """prompt_authoring 生成 image_prompt.scene 时，产出用户可见的标准镜头内容与资产 token。"""
+        text = self._narration_prompt()
+        assert "`【镜头1】`" in text
+        assert "只有一个镜头也写 `【镜头1】`" in text
+        assert "族少乙@[族少乙]" in text
+        assert "`@[登记名]` 是机器可解析的引用 token" in text
+        assert "生成端按参考图顺序把它换成「图N」并随请求发送对应参考图" in text
+        assert "不要在 image_prompt.scene 中写 `Reference_Images`" in text
+
+    def test_prompt_authoring_standardizes_video_action_as_timed_text(self):
+        """prompt_authoring 生成 video_prompt.action 时，产出用户可见的连续时间段动作文本。"""
+        text = self._narration_prompt()
+        assert "`0-3秒：...`" in text
+        assert "`3-6秒：...`" in text
+        assert "覆盖完整时长且不重叠" in text
+        assert "不要写成最终模型里的 `Action`" in text
+
     @pytest.mark.parametrize("builder", ["drama", "narration", "ad"])
     def test_prompt_authoring_warns_off_task_type_trigger_words(self, builder: str):
         """三条 prompt_authoring 路径都须把任务类型触发词避讳带给真正落笔 video_prompt 的文案模型。

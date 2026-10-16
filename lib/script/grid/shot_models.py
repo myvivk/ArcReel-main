@@ -53,6 +53,7 @@ class ShotGrid:
     updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     error_message: str | None = None
     task_id: str | None = None
+    image_basis: dict[str, object] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class ShotGrid:
             "updated_at": self.updated_at,
             "error_message": self.error_message,
             "task_id": self.task_id,
+            "image_basis": self.image_basis,
         }
 
     @classmethod
@@ -87,6 +89,7 @@ class ShotGrid:
             updated_at=str(data.get("updated_at", datetime.now(UTC).isoformat())),
             error_message=data.get("error_message"),
             task_id=data.get("task_id"),
+            image_basis=data.get("image_basis"),
         )
 
     @classmethod

@@ -291,6 +291,11 @@ def test_text_generation_request_rejects_non_positive_or_non_integer_episode(bad
         TextGenerationRequest(episode=bad)
 
 
+def test_text_generation_request_rejects_combined_prompt_fields() -> None:
+    with pytest.raises(ValueError, match="either image_prompt or video_prompt"):
+        TextGenerationRequest(episode=1, fields=("image_prompt", "video_prompt"))
+
+
 def _write_formal_script(project_path: Path, episode: int = 1, *, pending: bool = True) -> None:
     """正式脚本：默认带一条待编写条目，提示词编写的准入据此成立。"""
     scripts = project_path / "scripts"

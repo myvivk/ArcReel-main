@@ -195,6 +195,11 @@ class TestRenderStoryboardImagePrompt:
             "Avoid: 水印、多余文字、Logo"
         )
 
+    def test_text_form_keeps_asset_name_and_replaces_the_reference_token(self):
+        references = [_sheet("character", "族少乙")]
+        rendered = render_storyboard_image_prompt("族少乙@[族少乙]撇嘴嫌弃", style="Anime", references=references)
+        assert "Reference_Images: 图1为角色参考图。\n\n族少乙图1撇嘴嫌弃\n\nAvoid:" in rendered
+
     def test_rendering_a_rendered_text_again_is_idempotent(self):
         references = [_sheet("character", "林清"), _PREVIOUS]
         once = render_storyboard_image_prompt(

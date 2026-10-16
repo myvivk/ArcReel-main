@@ -140,8 +140,10 @@ class TextGenerationRequest:
     dry_run: bool = False
     #: 提示词编写的范围；为空时是全部待编写条目。
     entry_ids: tuple[str, ...] = ()
-    #: 提示词编写显式重写范围内条目的全部视觉层；为 False 时只补缺失的视觉层字段。
+    #: 提示词编写显式重写范围内条目的本次字段；为 False 时只补缺失的本次字段。
     rewrite: bool = False
+    #: 提示词编写的字段范围；为空时分镜类默认只写 image_prompt，video_prompt 须显式单独请求。
+    fields: tuple[str, ...] = ()
     #: 用户认可覆盖的正式脚本指纹，取自 ``prompt_overwrite.revision``；整份重做时取自 ``script_overwrite.revision``。
     overwrite_revision: str | None = None
     #: 仅广告/短片：整份重做，替换已有的正式脚本。
@@ -155,7 +157,13 @@ class TextGenerationRequest:
         entry_ids = tuple(self.entry_ids)
         if any(not is_str(entry_id) or not entry_id for entry_id in entry_ids):
             raise ValueError("entry_ids must be non-empty strings")
+        fields = tuple(self.fields)
+        if any(field not in {"image_prompt", "video_prompt"} for field in fields):
+            raise ValueError("fields must be image_prompt/video_prompt")
+        if {"image_prompt", "video_prompt"} <= set(fields):
+            raise ValueError("fields must choose either image_prompt or video_prompt, not both")
         object.__setattr__(self, "entry_ids", entry_ids)
+        object.__setattr__(self, "fields", fields)
 
     def to_payload(self) -> dict[str, object]:
         """队列任务 payload：只用 JSON 原生类型。
@@ -164,7 +172,7 @@ class TextGenerationRequest:
         「本次请求与在跑任务是否同一件事」的比对按值相等判定，两种容器类型会让同一个请求
         判成不同，把幂等提交变成一次任务冲突。
         """
-        return {**asdict(self), "entry_ids": list(self.entry_ids)}
+        return {**asdict(self), "entry_ids": list(self.entry_ids), "fields": list(self.fields)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +593,7 @@ def prompt_authoring_preflight(
     *,
     entry_ids: Sequence[str] = (),
     rewrite: bool = False,
+    fields: Sequence[str] = (),
     overwrite_revision: str | None = None,
     regenerate: bool = False,
 ) -> None:
@@ -633,7 +642,11 @@ def prompt_authoring_preflight(
     if rewrite:
         try:
             ScriptGenerator(project_path).prompt_overwrite(
-                episode, entry_ids=entry_ids, rewrite=rewrite, overwrite_revision=overwrite_revision
+                episode,
+                entry_ids=entry_ids,
+                rewrite=rewrite,
+                fields=fields,
+                overwrite_revision=overwrite_revision,
             )
         except PromptAuthoringTargetError as exc:
             raise TextGenerationError(f"❌ 编写范围无效: {exc}") from exc
@@ -679,6 +692,7 @@ async def generate_episode_script(
         project_path,
         episode,
         entry_ids=request.entry_ids,
+        fields=request.fields,
         rewrite=request.rewrite,
         overwrite_revision=request.overwrite_revision,
         regenerate=request.regenerate,
@@ -692,7 +706,11 @@ async def generate_episode_script(
                 config_resolver=config_resolver,
             )
             prompt = await generator.build_prompt(
-                episode, instructions=instructions, entry_ids=request.entry_ids, rewrite=request.rewrite
+                episode,
+                instructions=instructions,
+                entry_ids=request.entry_ids,
+                rewrite=request.rewrite,
+                fields=request.fields,
             )
             return TextGenerationResult(f"DRY RUN — 以下是将发送给文本模型的 Prompt:\n\n{prompt}")
 
@@ -715,6 +733,7 @@ async def generate_episode_script(
             episode=episode,
             instructions=instructions,
             entry_ids=request.entry_ids,
+            fields=request.fields,
             rewrite=request.rewrite,
             overwrite_revision=request.overwrite_revision,
             rewritten_entry_ids=rewritten,

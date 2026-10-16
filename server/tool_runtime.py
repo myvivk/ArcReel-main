@@ -871,7 +871,11 @@ class GenerateEpisodeScriptRequest(BaseModel):
     )
     rewrite: bool = Field(
         default=False,
-        description="显式重写范围内条目的全部视觉层；省略时补缺，已有的图片 / 视频提示词保留、只补缺失的那一份",
+        description="显式重写范围内条目的本次提示词字段；省略时补缺，已有的本次字段保留",
+    )
+    fields: list[Literal["image_prompt", "video_prompt"]] | SkipJsonSchema[None] = Field(
+        default=None,
+        description="仅编写指定提示词字段；省略时默认写 image_prompt，video_prompt 必须在参考素材确认后单独请求",
     )
     regenerate: bool = Field(
         default=False,
@@ -898,8 +902,10 @@ class GenerateEpisodeScriptRequest(BaseModel):
 
     @model_validator(mode="after")
     def _regenerate_is_whole_script(self) -> Self:
-        if self.regenerate and (self.entry_ids or self.rewrite):
-            raise ValueError("regenerate 整份重做全部条目，不与 entry_ids / rewrite 同用")
+        if self.regenerate and (self.entry_ids or self.rewrite or self.fields):
+            raise ValueError("regenerate 整份重做全部条目，不与 entry_ids / rewrite / fields 同用")
+        if self.fields is not None and {"image_prompt", "video_prompt"} <= set(self.fields):
+            raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
         return self
 
     def text_request(self) -> TextGenerationRequest:
@@ -908,6 +914,7 @@ class GenerateEpisodeScriptRequest(BaseModel):
             instructions=self.instructions,
             entry_ids=tuple(self.entry_ids or ()),
             rewrite=self.rewrite,
+            fields=tuple(self.fields or ()),
             overwrite_revision=self.overwrite_revision,
             dry_run=self.dry_run,
             regenerate=self.regenerate,
@@ -949,6 +956,7 @@ async def generate_episode_script(
                 text_request.episode,
                 entry_ids=text_request.entry_ids,
                 rewrite=text_request.rewrite,
+                fields=text_request.fields,
                 overwrite_revision=text_request.overwrite_revision,
                 regenerate=text_request.regenerate,
             )

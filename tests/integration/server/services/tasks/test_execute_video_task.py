@@ -131,10 +131,12 @@ class TestGenerationTasks:
 
         assert result["warnings"] == [warning]
 
+    @pytest.mark.parametrize("grid_cells", [0, 4, 6, 9])
     async def test_storyboard_worker_materializes_current_request_and_checkpoints_staged_frames(
         self,
         monkeypatch,
         tmp_path,
+        grid_cells,
     ):
         from lib.script.reference_video.execution_checkpoint import StoryboardSubmissionCheckpoint
 
@@ -146,6 +148,19 @@ class TestGenerationTasks:
         current_prompt = {"action": "current action", "camera_motion": "Static", "dialogue": []}
         item["video_prompt"] = current_prompt
         item["duration_seconds"] = 8
+        if grid_cells:
+            paths = []
+            for index in range(grid_cells):
+                relative = f"storyboards/keyframe-{index}.png"
+                (project_path / relative).write_bytes(b"png")
+                paths.append(relative)
+            item["generated_assets"]["shot_grid"] = {
+                "composite_path": item["generated_assets"]["storyboard_image"],
+                "cell_paths": paths,
+                "start_cell": 0,
+                "end_cell": grid_cells - 1,
+                "video_reference_mode": "start_end_cells",
+            }
         manifest = project_path / ".arcreel_artifacts.json"
         manifest_before = manifest.read_bytes()
         submitted: dict[str, Mapping[str, object]] = {}
@@ -199,7 +214,14 @@ class TestGenerationTasks:
         assert "stale enqueue prompt" not in checkpoint.prompt
         assert checkpoint.duration_seconds == 8
         assert checkpoint.provider_id == "ark"
-        assert [media.role for media in checkpoint.media] == ["start_image"]
+        expected_roles = ["start_image"] + (["reference_image"] * grid_cells + ["end_image"] if grid_cells else [])
+        assert [media.role for media in checkpoint.media] == expected_roles
+        if grid_cells:
+            assert len(call["reference_images"]) == grid_cells
+            assert [media.logical_name for media in checkpoint.media if media.role == "reference_image"] == [
+                f"E1S01:K{index}" for index in range(grid_cells)
+            ]
+            assert f"K0–K{grid_cells - 1}" in call["prompt"]
         assert checkpoint.artifact_visual_basis is not None
         assert checkpoint.artifact_visual_basis.kind == "artifact-visual/video-storyboard"
         assert checkpoint.artifact_currency is not None

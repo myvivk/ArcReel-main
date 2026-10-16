@@ -306,6 +306,10 @@ def resolve_usable_storyboard_video_inputs(
     if resolver is None:
         resolver = active_artifact_currency_resolver(project_path, project)
     storyboard_rel = storyboard_file.relative_to(project_path).as_posix()
+    assets = item.get("generated_assets")
+    grid = assets.get("shot_grid") if isinstance(assets, Mapping) else None
+    if isinstance(grid, Mapping) and isinstance(grid.get("composite_path"), str):
+        storyboard_rel = grid["composite_path"]
     if not artifact_input_is_usable(
         resolver=resolver,
         key=ArtifactKey.episode_storyboard(episode, resource_id),
@@ -337,8 +341,14 @@ def resolve_usable_storyboard_video_reference_images(
     if resolver is None:
         resolver = active_artifact_currency_resolver(project_path, project)
     key = ArtifactKey.episode_storyboard(episode, resource_id)
-    for image in images:
-        relative = image.relative_to(project_path).as_posix()
+    assets = item.get("generated_assets")
+    grid = assets.get("shot_grid") if isinstance(assets, Mapping) else None
+    composite = grid.get("composite_path") if isinstance(grid, Mapping) else None
+    # 切图共享整张宫格图的正式身份；同一分镜只有一个 Manifest 认领。
+    relatives = [composite] if isinstance(composite, str) else [
+        image.relative_to(project_path).as_posix() for image in images
+    ]
+    for relative in relatives:
         if not artifact_input_is_usable(
             resolver=resolver,
             key=key,

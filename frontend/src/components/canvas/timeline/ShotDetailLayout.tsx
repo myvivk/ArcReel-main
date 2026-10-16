@@ -1,9 +1,4 @@
 import { useId, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
-import { useTranslation } from "react-i18next";
-import { cn } from "cn";
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 /**
  * 分镜详情的栏位：页头在上，中间是「编辑栏 + 媒体栏」两栏，各自滚动，未保存提示条在最下方。
@@ -84,60 +79,5 @@ export function ShotSection({
       </div>
       {children}
     </section>
-  );
-}
-
-/** 默认折叠的「对应原文与参考」。 */
-export function ShotSourceCollapsible({ children }: { children: ReactNode }) {
-  const { t } = useTranslation("dashboard");
-  return (
-    <Collapsible>
-      <CollapsibleTrigger render={<Button variant="ghost" size="sm" className="-ml-2" />}>
-        <ChevronRight aria-hidden data-icon="inline-start" className="transition-transform group-aria-expanded/button:rotate-90" />
-        {t("detail_section_source_and_refs")}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="flex flex-col gap-4 pt-3">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-/**
- * 媒体栏：媒体栏够宽时分镜图与视频并排（竖屏 440px、横屏 720px 起），否则上下排；
- * 配音卡在下方横跨整栏。
- */
-export function ShotMediaGrid({
-  aspectRatio,
-  storyboard,
-  video,
-  audio,
-}: {
-  aspectRatio: "9:16" | "16:9";
-  storyboard: ReactNode;
-  video: ReactNode;
-  audio?: ReactNode;
-}) {
-  const portrait = aspectRatio === "9:16";
-  return (
-    <div
-      className={cn(
-        "grid items-start gap-x-4 gap-y-5",
-        portrait ? "@min-[440px]/shot-media:grid-cols-2" : "@min-[720px]/shot-media:grid-cols-2",
-      )}
-    >
-      <div className="min-w-0">{storyboard}</div>
-      <div className="flex min-w-0 flex-col">{video}</div>
-      {audio ? (
-        <div
-          className={cn(
-            "min-w-0",
-            portrait ? "@min-[440px]/shot-media:col-span-2" : "@min-[720px]/shot-media:col-span-2",
-          )}
-        >
-          {audio}
-        </div>
-      ) : null}
-    </div>
   );
 }

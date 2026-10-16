@@ -101,6 +101,7 @@ from lib.script.prompt_authoring_scope import (
     PromptOverwrite,
     PromptOverwriteRequired,
     select_prompt_authoring,
+    visual_layer_complete,
 )
 from lib.script.reference_video.draft_validation import (
     DraftViolation,
@@ -123,14 +124,21 @@ from lib.script.script_document import (
 )
 from lib.script.script_models import (
     AD_TARGET_DURATION_DRIFT_THRESHOLD,
+    PENDING_AUTHORING_FIELD,
     AdEpisodeScript,
+    AdImageVisualScript,
     AdReferenceFlatScript,
+    AdVideoVisualScript,
     AdVisualScript,
     DramaEpisodeScript,
+    DramaImageVisualScript,
     DramaSceneContent,
+    DramaVideoVisualScript,
     DramaVisualScript,
     NarrationEpisodeScript,
+    NarrationImageVisualEpisodeScript,
     NarrationScriptPlanDraft,
+    NarrationVideoVisualEpisodeScript,
     NarrationVisualEpisodeScript,
     ReferencePromptAuthoringFlatScript,
     ReferenceScriptPlanDraft,
@@ -185,6 +193,16 @@ _VISUAL_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {
     "scenes": DramaVisualScript,
     "shots": AdVisualScript,
 }
+_VISUAL_IMAGE_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {
+    "segments": NarrationImageVisualEpisodeScript,
+    "scenes": DramaImageVisualScript,
+    "shots": AdImageVisualScript,
+}
+_VISUAL_VIDEO_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {
+    "segments": NarrationVideoVisualEpisodeScript,
+    "scenes": DramaVideoVisualScript,
+    "shots": AdVideoVisualScript,
+}
 
 # 质量探针阈值：仅捕极端短样本，正常完整描述应远超这些值。
 _QUALITY_PROBE_SCENE_MIN_LEN = 40
@@ -199,6 +217,37 @@ _KIND_PARSE_SCHEMA: dict[str, type[BaseModel]] = {
     "shots": AdEpisodeScript,
     "video_units": ReferenceVideoScript,
 }
+
+
+def _visual_response_schema(targets: "PromptAuthoringTargets") -> type[BaseModel]:
+    fields = {field for entry in targets.selection.entries for field in entry.fields}
+    if fields == {"image_prompt"}:
+        return _VISUAL_IMAGE_RESPONSE_SCHEMA[targets.kind]
+    if fields == {"video_prompt"}:
+        return _VISUAL_VIDEO_RESPONSE_SCHEMA[targets.kind]
+    return _VISUAL_RESPONSE_SCHEMA[targets.kind]
+
+
+def _visual_field_instruction(targets: "PromptAuthoringTargets") -> str | None:
+    fields = {field for entry in targets.selection.entries for field in entry.fields}
+    if fields == {"image_prompt"}:
+        return (
+            "本次只编写 image_prompt（分镜提示词）。不要输出 video_prompt；"
+            "视频提示词必须等参考素材生成并确认后再单独编写。"
+        )
+    if fields == {"video_prompt"}:
+        return (
+            "本次只编写 video_prompt（视频提示词）。必须基于已确认的参考素材与分镜提示词编写；"
+            "不要输出 image_prompt，也不要改写分镜提示词。"
+        )
+    return None
+
+
+def _with_field_instruction(instructions: str | None, targets: "PromptAuthoringTargets") -> str | None:
+    extra = _visual_field_instruction(targets)
+    if not extra:
+        return instructions
+    return f"{instructions.strip()}\n\n{extra}" if instructions and instructions.strip() else extra
 
 
 class PromptAuthoringTargetError(ValueError):
@@ -376,6 +425,7 @@ class ScriptGenerator:
         entry_ids: Iterable[str] | None,
         *,
         rewrite: bool = False,
+        fields: Iterable[str] = (),
     ) -> PromptAuthoringTargets | None:
         """读正式脚本并定出本次编写的条目；正式脚本不存在时返回 None。
 
@@ -404,7 +454,14 @@ class ScriptGenerator:
         unknown = [entry_id for entry_id in requested if entry_id not in known]
         if unknown:
             raise PromptAuthoringTargetError(f"entry_ids 不在集（id={episode}）正式脚本内: {unknown}")
-        selection = select_prompt_authoring(items, kind=kind, id_field=id_field, entry_ids=requested, rewrite=rewrite)
+        selection = select_prompt_authoring(
+            items,
+            kind=kind,
+            id_field=id_field,
+            entry_ids=requested,
+            rewrite=rewrite,
+            fields=fields,
+        )
         selected = {entry.entry_id for entry in selection.entries}
         entries = tuple(item for item in items if str(item[id_field]) in selected)
         return PromptAuthoringTargets(kind=kind, id_field=id_field, script=script, entries=entries, selection=selection)
@@ -417,6 +474,7 @@ class ScriptGenerator:
         instructions: str | None = None,
         entry_ids: Iterable[str] | None = None,
         rewrite: bool = False,
+        fields: Iterable[str] = (),
         overwrite_revision: str | None = None,
         rewritten_entry_ids: list[str] | None = None,
         skipped_entry_ids: list[str] | None = None,
@@ -439,7 +497,8 @@ class ScriptGenerator:
                 prompt 末尾（遵循强度由正文表达），所有 content_mode / 生成模式同口径。
             entry_ids: 本次编写的范围；为空时是全部待编写条目。任一 id 不在正式剧本内即报错、不落盘。
                 点名只划定范围：补缺时视觉层已齐的条目照常跳过。
-            rewrite: 显式重写范围内条目的全部视觉层；为 False 时补缺，只写缺失的视觉层字段。
+            rewrite: 显式重写范围内条目的本次视觉层字段；为 False 时补缺，只写缺失的本次字段。
+            fields: 本次编写的视觉字段；分镜类省略时默认只写 ``image_prompt``，``video_prompt`` 须显式单独传入。
             overwrite_revision: 调用方认可覆盖的正式剧本指纹（取自丢失清单的 ``revision``）。显式重写
                 会替换已有视觉层内容时，缺失或与当前正式剧本不符即抛 ``PromptOverwriteRequired``、不调用模型。
             rewritten_entry_ids: 可选收集器；非 None 时就地填入本次编写的条目 id（剧本顺序），
@@ -480,8 +539,8 @@ class ScriptGenerator:
         if regenerate:
             if self.content_mode != "ad":
                 raise PromptAuthoringTargetError("整份重做只适用于广告/短片；其他创作类型请重跑脚本规划并重新确认")
-            if entry_ids or rewrite:
-                raise PromptAuthoringTargetError("整份重做不能与 entry_ids / rewrite 同时使用")
+            if entry_ids or rewrite or tuple(fields):
+                raise PromptAuthoringTargetError("整份重做不能与 entry_ids / rewrite / fields 同时使用")
             overwrite = await asyncio.to_thread(formal_script_overwrite, self.project_path, self.project_json, episode)
             if overwrite is not None and overwrite_revision != overwrite.fingerprint:
                 raise AdScriptOverwriteRequired(overwrite)
@@ -495,7 +554,14 @@ class ScriptGenerator:
                 registered_assets=registered_assets,
             )
         targets = await asyncio.to_thread(
-            functools.partial(self._load_prompt_authoring_targets, episode, filename, entry_ids, rewrite=rewrite)
+            functools.partial(
+                self._load_prompt_authoring_targets,
+                episode,
+                filename,
+                entry_ids,
+                rewrite=rewrite,
+                fields=fields,
+            )
         )
         if targets is None:
             if self.content_mode != "ad":
@@ -555,7 +621,7 @@ class ScriptGenerator:
         result = await self._generate_text(
             TextGenerationRequest(
                 prompt=await self._build_visual_prompt(episode, targets, instructions),
-                response_schema=_VISUAL_RESPONSE_SCHEMA[targets.kind],
+                response_schema=_visual_response_schema(targets),
                 max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
             )
         )
@@ -580,6 +646,7 @@ class ScriptGenerator:
     ) -> str:
         """分镜类条目（segments / scenes / shots）的视觉层 prompt：输入是正式剧本里这些条目的内容字段。"""
         entries = list(targets.entries)
+        scoped_instructions = _with_field_instruction(instructions, targets)
         if targets.kind == "scenes":
             context_characters: set[str] = set()
             for item in targets.items:
@@ -591,11 +658,11 @@ class ScriptGenerator:
             return self._build_drama_prompt_authoring_prompt(
                 entries,
                 episode,
-                instructions,
+                scoped_instructions,
                 context_characters=context_characters,
             )
         if targets.kind == "shots":
-            return self._build_ad_shot_prompt_authoring_prompt(episode, targets, instructions)
+            return self._build_ad_shot_prompt_authoring_prompt(episode, targets, scoped_instructions)
         return build_narration_prompt(
             project_overview=self.project_json.get("overview", {}),
             style=self.project_json.get("style", ""),
@@ -608,7 +675,7 @@ class ScriptGenerator:
             episode=episode,
             # 输出语言取项目 source_language，与正式剧本透传的内容字段同一语言（同 drama）
             target_language=self.project_json.get("source_language") or "中文",
-            instructions=instructions,
+            instructions=scoped_instructions,
         )
 
     def _project_bucket(self, key: str) -> dict:
@@ -623,7 +690,7 @@ class ScriptGenerator:
         except json.JSONDecodeError as e:
             raise ValueError(f"提示词编写视觉层 JSON 解析失败: {e}") from e
         try:
-            validated = _VISUAL_RESPONSE_SCHEMA[targets.kind].model_validate(data)
+            validated = _visual_response_schema(targets).model_validate(data)
         except ValidationError as e:
             raise ValueError(f"提示词编写视觉层结构校验失败: {e}") from e
         return cast(list[dict], validated.model_dump()[targets.kind])
@@ -678,6 +745,10 @@ class ScriptGenerator:
             reference_unit_durations=reference_unit_durations,
             facts=facts,
         )[targets.kind]
+        if targets.kind != "video_units":
+            for item in finished:
+                if not visual_layer_complete(targets.kind, item):
+                    item[PENDING_AUTHORING_FIELD] = True
         # _add_metadata 按集号改写 id 前缀；正式剧本里的 id 是写回的定位锚，不随编写改变。
         replacements: dict[str, dict] = {}
         for entry_id, item in zip(targets.ids, finished, strict=True):
@@ -850,7 +921,7 @@ class ScriptGenerator:
         *,
         context_characters: set[str] | None = None,
     ) -> str:
-        """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求 image_prompt / video_prompt。"""
+        """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求本次字段。"""
         characters = self.project_json.get("characters")
         characters = characters if isinstance(characters, dict) else {}
         scenes = self.project_json.get("scenes")
@@ -1051,6 +1122,7 @@ class ScriptGenerator:
         *,
         entry_ids: Iterable[str] | None = None,
         rewrite: bool = False,
+        fields: Iterable[str] = (),
         overwrite_revision: str | None = None,
     ) -> None:
         """提交前的覆盖预检：与 ``generate`` 同一套对象选择，未认可的覆盖抛 ``PromptOverwriteRequired``。
@@ -1059,7 +1131,7 @@ class ScriptGenerator:
         """
         filename = formal_script_filename(self.project_path, self.project_json, episode)
         baseline = content_fingerprint(self.project_path / "scripts" / filename)
-        targets = self._load_prompt_authoring_targets(episode, filename, entry_ids, rewrite=rewrite)
+        targets = self._load_prompt_authoring_targets(episode, filename, entry_ids, rewrite=rewrite, fields=fields)
         if targets is not None:
             _require_overwrite_acknowledged(targets, baseline, overwrite_revision)
 
@@ -1070,6 +1142,7 @@ class ScriptGenerator:
         instructions: str | None = None,
         entry_ids: Iterable[str] | None = None,
         rewrite: bool = False,
+        fields: Iterable[str] = (),
     ) -> str:
         """
         构建 Prompt（用于 dry-run 模式）
@@ -1080,7 +1153,11 @@ class ScriptGenerator:
         dry-run 恒以该集绑定的正式剧本为准：它不落盘，也就没有 ``output_filename`` 可言。
         """
         targets = self._load_prompt_authoring_targets(
-            episode, formal_script_filename(self.project_path, self.project_json, episode), entry_ids, rewrite=rewrite
+            episode,
+            formal_script_filename(self.project_path, self.project_json, episode),
+            entry_ids,
+            rewrite=rewrite,
+            fields=fields,
         )
         if targets is None:
             if self.content_mode != "ad":

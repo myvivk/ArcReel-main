@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +10,9 @@ from fastapi.responses import FileResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from lib.artifacts.artifact_activation import register_current_resource_artifact
+from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor
+from lib.artifacts.formal_write import formal_write_transaction
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.path_safety import safe_join
 from lib.project.project_manager import get_project_manager
@@ -16,6 +20,7 @@ from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid, ShotGridCell
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.auth import CurrentUser
+from server.i18n import Translator
 
 router = APIRouter(prefix="/projects/{project_name}/shot-grids", tags=["分镜镜头宫格"])
 
@@ -29,8 +34,8 @@ class SaveShotGridRequest(BaseModel):
     script_file: str
     episode: int = Field(ge=1)
     shot_id: str = Field(min_length=1, max_length=200)
-    rows: int = Field(default=3, ge=3, le=3)
-    cols: int = Field(default=3, ge=3, le=3)
+    rows: int = Field(default=3, ge=2, le=3)
+    cols: int = Field(default=3, ge=2, le=3)
     cells: list[ShotGridCellInput] = Field(default_factory=list)
 
 
@@ -50,20 +55,25 @@ def get_shot_grid(project_name: str, script_file: str, shot_id: str, request: Re
 
 
 @router.get("/{grid_id}/image")
-def get_shot_grid_image(project_name: str, grid_id: str):
+def get_shot_grid_image(project_name: str, grid_id: str, t: Translator):
     project_path = get_project_manager().get_project_path(project_name)
     grid = ShotGridManager(project_path).get(grid_id)
     if grid is None or not grid.composite_path:
-        raise HTTPException(status_code=404, detail="联合图不存在")
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
     image_path = safe_join(project_path, grid.composite_path)
     if not image_path.is_file():
-        raise HTTPException(status_code=404, detail="联合图文件不存在")
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
     return FileResponse(image_path, media_type="image/png")
 
 
 @router.put("")
-def save_shot_grid(project_name: str, req: SaveShotGridRequest):
-    manager = ShotGridManager(get_project_manager().get_project_path(project_name))
+async def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
+    project_manager = get_project_manager()
+    script = project_manager.load_script(project_name, req.script_file)
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    if script.get("episode") != req.episode or not any(item.get(id_field) == req.shot_id for item in items):
+        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+    manager = ShotGridManager(project_manager.get_project_path(project_name))
     grid = manager.find(script_file=req.script_file, shot_id=req.shot_id)
     if grid is None:
         grid = ShotGrid.create(
@@ -74,21 +84,31 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest):
             cols=req.cols,
         )
     elif grid.status in {"generating", "confirming"}:
-        raise HTTPException(status_code=409, detail="镜头宫格正在处理中")
+        task = await get_generation_queue().get_task(grid.task_id) if grid.task_id else None
+        if grid.status == "confirming" or not task or task["status"] not in {"failed", "cancelled"}:
+            raise HTTPException(status_code=409, detail=t("shot_grid_busy"))
 
-    if (req.rows, req.cols) != (3, 3):
-        raise HTTPException(status_code=400, detail="单分镜宫格必须使用 3×3 布局")
-    if len(req.cells) != 9:
-        raise HTTPException(status_code=400, detail="3×3 单分镜宫格必须提供 9 个镜头格")
+    if (req.rows, req.cols) not in {(2, 2), (2, 3), (3, 3)}:
+        raise HTTPException(status_code=400, detail=t("shot_grid_layout_invalid"))
+    count = req.rows * req.cols
+    if req.cells and len(req.cells) != count:
+        raise HTTPException(status_code=400, detail=t("shot_grid_cells_invalid", count=count))
     by_index = {cell.index: cell for cell in req.cells}
-    if len(by_index) != 9 or set(by_index) != set(range(9)):
-        raise HTTPException(status_code=400, detail="镜头格索引必须完整覆盖 0 到 8")
+    if req.cells and (len(by_index) != count or set(by_index) != set(range(count))):
+        raise HTTPException(status_code=400, detail=t("shot_grid_cells_invalid", count=count))
     grid.rows, grid.cols = req.rows, req.cols
     grid.cells = [
-        ShotGridCell(index=index, prompt=by_index[index].prompt if index in by_index else "")
-        for index in range(req.rows * req.cols)
+        ShotGridCell(
+            index=index,
+            prompt=by_index[index].prompt if index in by_index else "Follow the shot description at this moment.",
+            time_ratio=index / (count - 1),
+        )
+        for index in range(count)
     ]
     grid.status = "draft"
+    grid.composite_path = None
+    grid.task_id = None
+    grid.image_basis = None
     grid.error_message = None
     grid.updated_at = datetime.now(UTC).isoformat()
     manager.save(grid)
@@ -96,15 +116,15 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest):
 
 
 @router.post("/generate")
-async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, user: CurrentUser):
+async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, user: CurrentUser, t: Translator):
     project_manager = get_project_manager()
     project_path = project_manager.get_project_path(project_name)
     manager = ShotGridManager(project_path)
     grid = manager.find(script_file=script_file, shot_id=shot_id)
     if grid is None:
-        raise HTTPException(status_code=404, detail="请先保存镜头规划")
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
     if not any(cell.prompt.strip() for cell in grid.cells):
-        raise HTTPException(status_code=400, detail="至少填写一个镜头描述")
+        raise HTTPException(status_code=400, detail=t("shot_grid_cells_invalid", count=grid.rows * grid.cols))
     if grid.status == "generating":
         return {"task_id": grid.task_id, "status": grid.status}
 
@@ -119,47 +139,52 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
         source="webui",
         user_id=user.id,
     )
-    grid.status = "generating"
-    grid.task_id = task["task_id"]
-    grid.error_message = None
-    grid.updated_at = datetime.now(UTC).isoformat()
-    manager.save(grid)
+    def mark_submitted(current):
+        if current.status in {"draft", "failed", "generating"}:
+            current.status = "generating"
+            current.task_id = task["task_id"]
+            current.error_message = None
+            current.updated_at = datetime.now(UTC).isoformat()
+
+    manager.update_formal(grid.id, mark_submitted)
     return {"task_id": task["task_id"], "status": task["status"]}
 
 
 @router.get("/tasks/{task_id}")
-async def get_shot_grid_task(task_id: str):
+async def get_shot_grid_task(project_name: str, task_id: str, t: Translator):
     task = await get_generation_queue().get_task(task_id)
-    if task is None or task.get("task_type") != "shot_grid":
-        raise HTTPException(status_code=404, detail="镜头宫格任务不存在")
+    if task is None or task.get("task_type") != "shot_grid" or task.get("project_name") != project_name:
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
     return task
 
 
 @router.post("/{grid_id}/confirm")
-def confirm_shot_grid(project_name: str, grid_id: str):
+def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Translator):
     project_manager = get_project_manager()
     project_path = project_manager.get_project_path(project_name)
     manager = ShotGridManager(project_path)
     grid = manager.get(grid_id)
     if grid is None:
-        raise HTTPException(status_code=404, detail="镜头宫格不存在")
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
+    if grid.status == "confirmed":
+        return {"success": True, "grid": get_shot_grid(project_name, grid.script_file, grid.shot_id, request)}
     if grid.status != "completed" or not grid.composite_path:
-        raise HTTPException(status_code=409, detail="联合图尚未生成完成")
+        raise HTTPException(status_code=409, detail=t("shot_grid_not_ready"))
 
     composite = safe_join(project_path, grid.composite_path)
+    count = grid.rows * grid.cols
+    if len(grid.cells) != count or [cell.index for cell in grid.cells] != list(range(count)):
+        raise HTTPException(status_code=422, detail=t("shot_grid_cells_invalid", count=count))
     try:
         with Image.open(composite) as image:
             image.load()
             width, height = image.size
             if width < grid.cols or height < grid.rows:
-                raise ValueError("联合图尺寸不足，无法切分")
-            cells_dir = safe_join(project_path, f"shot_grids/{grid.id}/cells")
+                raise ValueError("contact sheet dimensions are smaller than its layout")
+            cells_dir = safe_join(project_path, f"storyboards/{grid.id}")
             cells_dir.mkdir(parents=True, exist_ok=True)
             paths = []
             for cell in grid.cells:
-                if not cell.prompt.strip():
-                    paths.append(None)
-                    continue
                 row, col = divmod(cell.index, grid.cols)
                 left = round(col * width / grid.cols)
                 top = round(row * height / grid.rows)
@@ -169,39 +194,45 @@ def confirm_shot_grid(project_name: str, grid_id: str):
                 image.crop((left, top, right, bottom)).save(output, format="PNG")
                 paths.append(output.relative_to(project_path).as_posix())
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=f"联合图切分失败：{exc}") from exc
+        raise HTTPException(status_code=422, detail=t("shot_grid_split_failed")) from exc
 
-    script = project_manager.load_script(project_name, grid.script_file)
-    items, id_field, _, _, _ = get_storyboard_items(script)
-    shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
-    if shot is None:
-        raise HTTPException(status_code=404, detail="剧本中找不到对应分镜")
-    assets = shot.setdefault("generated_assets", {})
-    existing = assets.get("storyboard_image", {})
-    if not isinstance(existing, dict):
-        existing = {}
-    if not paths[0] or not paths[8]:
-        raise HTTPException(status_code=422, detail="第 1 格和第 9 格必须有可用图像，才能作为视频首尾参考")
-    cell_paths = paths
-    existing["grid_images"] = [path for path in paths if path]
-    assets["storyboard_image"] = paths[0]
-    assets["shot_grid"] = {
-        "grid_id": grid.id,
-        "layout": "3x3",
-        "composite_path": grid.composite_path,
-        "cell_paths": cell_paths,
-        "start_cell": 0,
-        "key_cell": 4,
-        "end_cell": 8,
-        "video_reference_mode": "start_end_cells",
-        "confirmed_at": datetime.now(UTC).isoformat(),
-    }
-    project_manager.save_script(project_name, grid.script_file, script)
+    # 正式分镜绑定整张宫格图；视频首尾帧与参考图从同一图切出。
+    storyboard = cells_dir / "contact.png"
+    composite_rel = storyboard.relative_to(project_path).as_posix()
+    basis = ArtifactBasisDescriptor.from_dict(grid.image_basis) if grid.image_basis else None
 
-    grid.status = "confirmed"
-    grid.updated_at = datetime.now(UTC).isoformat()
-    for cell, path in zip(grid.cells, paths, strict=True):
-        cell.confirmed = bool(path)
-        cell.image_path = path
-    manager.save(grid)
-    return {"success": True, "grid": grid.to_dict()}
+    def register(_script_path):
+        if not register_current_resource_artifact(
+            project_path, resource_type="storyboards", resource_id=grid.shot_id,
+            script_file=grid.script_file, artifact_path=composite_rel, basis=basis,
+        ):
+            raise HTTPException(status_code=422, detail=t("shot_grid_register_failed"))
+        grid.status = "confirmed"
+        grid.updated_at = datetime.now(UTC).isoformat()
+        for cell, path in zip(grid.cells, paths, strict=True):
+            cell.confirmed = True
+            cell.image_path = path
+        manager.save(grid)
+
+    with formal_write_transaction(storyboard):
+        shutil.copyfile(composite, storyboard)
+        with project_manager.locked_script(project_name, grid.script_file, validate=False, on_commit=register) as script:
+            items, id_field, _, _, _ = get_storyboard_items(script)
+            shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
+            if shot is None:
+                raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+            assets = shot.setdefault("generated_assets", {})
+            assets["storyboard_image"] = composite_rel
+            assets["shot_grid"] = {
+                "grid_id": grid.id,
+                "layout": f"{grid.rows}x{grid.cols}",
+                "composite_path": composite_rel,
+                "cell_paths": paths,
+                "start_cell": 0,
+                "key_cell": count // 2,
+                "end_cell": count - 1,
+                "video_reference_mode": "start_end_cells",
+                "confirmed_at": datetime.now(UTC).isoformat(),
+            }
+            project_manager.update_scene_status(shot)
+    return {"success": True, "grid": get_shot_grid(project_name, grid.script_file, grid.shot_id, request)}

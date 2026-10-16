@@ -90,6 +90,15 @@ def artifact_key_for_resource(
     planner = TargetStatePlanner(project_dir)
     if not project_schema_is_current(planner.project):
         raise ProjectMigrationError("Artifact Manifest is not activated for this project schema")
+    if resource_type == "shot_grids":
+        from lib.script.grid.shot_grid_manager import ShotGridManager
+
+        shot_grid = ShotGridManager(project_dir).get(resource_id)
+        if shot_grid is None:
+            raise KeyError(resource_id)
+        return artifact_key_for_resource(
+            project_dir, resource_type="storyboards", resource_id=shot_grid.shot_id, script_file=shot_grid.script_file
+        )
     if resource_type == "grids":
         grid = next((candidate for candidate in planner.load_grid_records() if candidate.id == resource_id), None)
         if grid is None:

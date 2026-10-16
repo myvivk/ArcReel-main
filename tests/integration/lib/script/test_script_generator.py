@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -146,19 +146,18 @@ def _drama_script_plan_content() -> dict:
     }
 
 
-def _drama_visual_response() -> dict:
-    """drama prompt_authoring 视觉层响应：仅 scene_id + image_prompt + video_prompt（无 dialogue）。"""
+def _drama_visual_response(*, fields: tuple[str, ...] = ("image_prompt",)) -> dict:
+    """drama prompt_authoring 视觉层响应：仅 scene_id + 本次视觉字段（无 dialogue）。"""
+    scene = {"scene_id": "E1S01"}
+    if "image_prompt" in fields:
+        scene["image_prompt"] = {
+            "scene": "场景",
+            "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
+        }
+    if "video_prompt" in fields:
+        scene["video_prompt"] = {"action": "转身", "camera_motion": "Static", "ambiance_audio": "风声"}
     return {
-        "scenes": [
-            {
-                "scene_id": "E1S01",
-                "image_prompt": {
-                    "scene": "场景",
-                    "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
-                },
-                "video_prompt": {"action": "转身", "camera_motion": "Static", "ambiance_audio": "风声"},
-            }
-        ],
+        "scenes": [scene],
     }
 
 
@@ -604,7 +603,8 @@ class TestScriptGenerator:
         assert seg["novel_text"] == "原样保留的小说原文。"
         assert seg["characters_in_segment"] == ["姜月茴"]
         assert seg["image_prompt"]["scene"] == "画面"
-        assert "pending_authoring" not in seg
+        assert seg["video_prompt"] is None
+        assert seg["pending_authoring"] is True
         assert payload["metadata"]["generator"] == "fake-model"
         assert payload["metadata"]["created_at"] == converted["metadata"]["created_at"]
 
@@ -803,8 +803,8 @@ class TestScriptGenerator:
         assert payload["segments"][0]["image_prompt"]["scene"] == "画面"
 
     async def test_generate_drama_prompt_authoring_passes_visual_schema(self, tmp_path):
-        """drama prompt_authoring LLM 输出 schema 是 DramaVisualScript（仅 scene_id + 视觉字段，无非视觉字段）。"""
-        from lib.script.script_models import DramaVisualScript
+        """drama prompt_authoring 默认 LLM 输出 schema 是 image-only（仅 scene_id + 本次视觉字段）。"""
+        from lib.script.script_models import DramaImageVisualScript
 
         project_path = tmp_path / "projects" / "demo"
         _write_drama_ledger_project(
@@ -820,8 +820,8 @@ class TestScriptGenerator:
         output = await generator.generate(1)
 
         schema = fake.backend.last_request.response_schema
-        assert schema is DramaVisualScript
-        props = DramaVisualScript.model_json_schema()["$defs"]["DramaSceneVisual"]["properties"]
+        assert schema is DramaImageVisualScript
+        props = DramaImageVisualScript.model_json_schema()["$defs"]["DramaSceneImageVisual"]["properties"]
         # 非视觉字段不进 LLM 输出 schema（工程透传，杜绝漂移）
         assert "utterances" not in props
         assert "source_text" not in props
@@ -1456,9 +1456,20 @@ def _write_drama_script_plan_json(project_path: Path, episode: int, content: dic
         _activate_project_artifacts(project_path, episode)
 
 
-def _narration_visual_response(segment_ids: list[str], *, title: str = "第一集") -> dict:
-    """prompt_authoring 视觉层 LLM 响应（NarrationVisualEpisodeScript 形态）。"""
-    return {"title": title, "segments": [_visual_seg(sid) for sid in segment_ids]}
+def _narration_visual_response(
+    segment_ids: list[str], *, title: str = "第一集", fields: tuple[str, ...] = ("image_prompt",)
+) -> dict:
+    """prompt_authoring 视觉层 LLM 响应（默认 image-only 形态）。"""
+    segments: list[dict[str, Any]] = []
+    for sid in segment_ids:
+        visual = _visual_seg(sid)
+        segment = {"segment_id": sid}
+        if "image_prompt" in fields:
+            segment["image_prompt"] = visual["image_prompt"]
+        if "video_prompt" in fields:
+            segment["video_prompt"] = visual["video_prompt"]
+        segments.append(segment)
+    return {"title": title, "segments": segments}
 
 
 def _resolver() -> ConfigResolver:
@@ -1484,7 +1495,12 @@ async def _materialize(generator: ScriptGenerator, episode: int = 1) -> None:
     )
 
 
-def _segment_targets(segments: list[dict], target_ids: list[str]) -> PromptAuthoringTargets:
+def _segment_targets(
+    segments: list[dict],
+    target_ids: list[str],
+    *,
+    fields: tuple[str, ...] = (),
+) -> PromptAuthoringTargets:
     script = {"segments": segments}
     wanted = set(target_ids)
     return PromptAuthoringTargets(
@@ -1493,7 +1509,12 @@ def _segment_targets(segments: list[dict], target_ids: list[str]) -> PromptAutho
         script=script,
         entries=tuple(seg for seg in segments if seg["segment_id"] in wanted),
         selection=select_prompt_authoring(
-            segments, kind="segments", id_field="segment_id", entry_ids=target_ids, rewrite=True
+            segments,
+            kind="segments",
+            id_field="segment_id",
+            entry_ids=target_ids,
+            rewrite=True,
+            fields=fields,
         ),
     )
 
@@ -1517,7 +1538,7 @@ class TestMergeVisualLayer:
         assert merged[0]["note"] == "用户备注"
         assert merged[1]["novel_text"] == "原文乙！"
         assert merged[0]["image_prompt"]["scene"] == "画面"
-        assert merged[0]["video_prompt"]["action"] == "动作"
+        assert "video_prompt" not in merged[0]
 
     def test_merge_aligns_by_id_not_order(self):
         """LLM 视觉层乱序也按 segment_id 对齐，顺序随正式剧本。"""
@@ -1530,6 +1551,32 @@ class TestMergeVisualLayer:
         assert [s["segment_id"] for s in merged] == ["E1S01", "E1S02"]
         assert merged[0]["image_prompt"]["scene"] == "甲画面"
         assert merged[1]["image_prompt"]["scene"] == "乙画面"
+
+    def test_field_scoped_merge_preserves_the_other_prompt(self):
+        segments = [
+            {
+                **_script_plan_seg("E1S01", "甲"),
+                "image_prompt": {"scene": "旧图", "composition": {"shot_type": "Medium Shot", "lighting": "旧光", "ambiance": "旧气氛"}},
+                "video_prompt": {"action": "旧动作", "camera_motion": "Static", "ambiance_audio": "旧环境音", "dialogue": []},
+            }
+        ]
+        image_targets = _segment_targets(segments, ["E1S01"], fields=("image_prompt",))
+        image_merged = ScriptGenerator._merge_visual_layer(
+            image_targets,
+            [{"segment_id": "E1S01", "image_prompt": {"scene": "新图", "composition": {"shot_type": "Medium Shot", "lighting": "新光", "ambiance": "新气氛"}}}],
+            1,
+        )
+        assert image_merged[0]["image_prompt"]["scene"] == "新图"
+        assert image_merged[0]["video_prompt"]["action"] == "旧动作"
+
+        video_targets = _segment_targets(segments, ["E1S01"], fields=("video_prompt",))
+        video_merged = ScriptGenerator._merge_visual_layer(
+            video_targets,
+            [{"segment_id": "E1S01", "video_prompt": {"action": "新动作", "camera_motion": "Static", "ambiance_audio": "新环境音", "dialogue": []}}],
+            1,
+        )
+        assert video_merged[0]["image_prompt"]["scene"] == "旧图"
+        assert video_merged[0]["video_prompt"]["action"] == "新动作"
 
     def test_merge_returns_only_the_authored_entries(self):
         segments = [_script_plan_seg("E1S01", "甲"), _script_plan_seg("E1S02", "乙")]

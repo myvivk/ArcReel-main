@@ -611,8 +611,8 @@ class _VideoSubmissionCheckpoint:
             roles = tuple(item.role for item in self.media)
             if roles.count("start_image") != 1 or roles.count("end_image") > 1:
                 raise ValueError("storyboard checkpoint requires one start image and at most one end image")
-            if any(role not in ("start_image", "end_image") for role in roles):
-                raise ValueError("storyboard checkpoint contains reference media")
+            if any(role not in ("start_image", "end_image", "reference_image") for role in roles):
+                raise ValueError("storyboard checkpoint contains reference audio")
             if self.reference_audio_targets is not None:
                 raise ValueError("storyboard checkpoint cannot have reference_audio_targets")
         _require_digest(self.request_digest, "request_digest")

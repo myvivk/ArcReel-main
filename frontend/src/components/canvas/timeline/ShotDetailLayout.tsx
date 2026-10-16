@@ -84,19 +84,16 @@ export function ShotSection({
 }
 
 /**
- * 媒体栏：媒体栏够宽时分镜图与视频并排（竖屏 440px、横屏 720px 起），否则上下排；
- * 配音卡在下方横跨整栏。
+ * 媒体栏：媒体栏够宽时分镜图与视频并排（竖屏 440px、横屏 720px 起），否则上下排。
  */
 export function ShotMediaGrid({
   aspectRatio,
   storyboard,
   video,
-  audio,
 }: {
   aspectRatio: "9:16" | "16:9";
   storyboard: ReactNode;
   video: ReactNode;
-  audio?: ReactNode;
 }) {
   const portrait = aspectRatio === "9:16";
   return (
@@ -108,16 +105,6 @@ export function ShotMediaGrid({
     >
       <div className="min-w-0">{storyboard}</div>
       <div className="flex min-w-0 flex-col">{video}</div>
-      {audio ? (
-        <div
-          className={cn(
-            "min-w-0",
-            portrait ? "@min-[440px]/shot-media:col-span-2" : "@min-[720px]/shot-media:col-span-2",
-          )}
-        >
-          {audio}
-        </div>
-      ) : null}
     </div>
   );
 }

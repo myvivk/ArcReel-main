@@ -3,8 +3,9 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, Film, ImageIcon, Timer } from "lucide-react";
 import type { DurationOutOfRangeReason } from "@/hooks/useModelCapabilities";
 import type { NarrationSegment, DramaScene, AdShot, ImagePrompt, VideoPrompt } from "@/types";
+import type { ShotGridPlan } from "@/types/shot-grid";
 import { ShotDetailHeader } from "./ShotDetailHeader";
-import { ShotDetailLayout, ShotGroup, ShotMediaGrid, ShotSection } from "./ShotDetailLayout";
+import { ShotDetailLayout, ShotGroup, ShotSection } from "./ShotDetailLayout";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -14,9 +15,9 @@ import { UnsavedChangesBar } from "@/components/shared/edit-unit/UnsavedChangesB
 import { useStaysInEpisodeView } from "@/components/canvas/episode-page/EpisodeViewScope";
 import { PromptPreviewButton } from "@/components/shared/PromptPreviewButton";
 import { ReferencesSection } from "./ReferencesSection";
+import { ReferenceMaterialsSection } from "./ReferenceMaterialsSection";
+import { PromptReferenceMenu } from "./PromptReferenceMenu";
 import { MediaCard } from "./MediaCard";
-import { NarrationAudioCard } from "./NarrationAudioCard";
-import { ShotGridPlanner } from "./ShotGridPlanner";
 import { EndFrameRow } from "./EndFrameRow";
 import { NotesDrawer } from "./NotesDrawer";
 import { StatusBadge, statusFromAssets } from "./StatusBadge";
@@ -132,6 +133,10 @@ function videoPromptText(prompt: ShotFields["video_prompt"]): string {
   return prompt.action;
 }
 
+function storyboardAssetReferenceText(name: string): string {
+  return `${name}@[${name}]`;
+}
+
 function shotFieldsOf(segment: Segment, contentMode: ContentMode): ShotFields {
   const base = {
     image_prompt: segment.image_prompt,
@@ -150,19 +155,6 @@ function shotFieldsOf(segment: Segment, contentMode: ContentMode): ShotFields {
   }
   const narration = segment as NarrationSegment;
   return { ...base, characters: narration.characters_in_segment ?? [], segment_break: narration.segment_break === true };
-}
-
-/** 配音的文本：旁白取正文，广告取口播；剧情演绎只在没有台词时取画外音。 */
-function narrationTextOf(segment: Segment, mode: ContentMode): string {
-  if (mode === "narration") return (segment as NarrationSegment).novel_text ?? "";
-  if (mode === "ad") return (segment as AdShot).voiceover_text ?? "";
-  const utterances = (segment as DramaScene).utterances ?? [];
-  if (utterances.some((utterance) => utterance.kind === "dialogue")) return "";
-  return utterances
-    .filter((utterance) => utterance.kind === "voiceover")
-    .map((utterance) => utterance.text.trim())
-    .filter(Boolean)
-    .join("\n");
 }
 
 function durationLockedByTasks(projectName: string, segmentId: string, scriptFile?: string): boolean {
@@ -342,10 +334,7 @@ function ShotDetailContent({
   onInsertShot,
   onRemoveShot,
   structurePending,
-  onGenerateStoryboard,
   onGenerateVideo,
-  onGenerateNarration,
-  onRestoreStoryboard,
   onRestoreVideo,
   generatingStoryboard,
   generatingVideo,
@@ -364,11 +353,6 @@ function ShotDetailContent({
   const status = statusFromAssets(segment.generated_assets?.status);
   const segCost = useCostStore((state) => state.getSegmentCost(segmentId));
   const assets = segment.generated_assets;
-  const isDrama = contentMode === "drama";
-  const narrationText = narrationTextOf(segment, contentMode);
-  const hasNarrationText = narrationText.trim().length > 0;
-  const sbEstimate = segCost?.estimate?.image;
-  const narrationEstimate = segCost?.estimate?.audio;
 
   const source = useMemo(() => shotFieldsOf(segment, contentMode), [segment, contentMode]);
   const save = useCallback(async (value: ShotFields, saved: ShotFields) => {
@@ -402,6 +386,10 @@ function ShotDetailContent({
   const saving = unit.status === "saving";
   const refreshPending = !fieldsEqual(source, unit.savedValue);
 
+  const prepareGeneration = useCallback(
+    async () => !readOnly && !refreshPending && await saveUnit(),
+    [readOnly, refreshPending, saveUnit],
+  );
   const preparePreview = useCallback(
     async () => !refreshPending && await saveUnit(),
     [refreshPending, saveUnit],
@@ -417,16 +405,19 @@ function ShotDetailContent({
     setValue((prev) => ({ ...prev, [key]: value }));
   const imageText = imagePromptText(fields.image_prompt);
   const videoText = videoPromptText(fields.video_prompt);
+  const [plan, setPlan] = useState<ShotGridPlan | null>(null);
+  const [materialsBusy, setMaterialsBusy] = useState(false);
   const [restoringMedia, setRestoringMedia] = useState(false);
-  const [uploadingStoryboard, setUploadingStoryboard] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const [endFrameSubmitting, setEndFrameSubmitting] = useState(false);
-  const editingBlocked = readOnly || saving;
+  const editingBlocked = readOnly || saving || materialsBusy;
+  const materials = plan?.status === "confirmed" ? plan.cells.filter((cell) => cell.image_path) : [];
+  const hasConfirmedMaterials = materials.length > 0;
   const gridBusy = () =>
     isScriptFileBusy("grid", scriptFile, projectName) || isScriptFileBusy("shot_grid", scriptFile, projectName);
   const generateLabel = dirty ? t("common:save_and_generate") : undefined;
   const savingHint = saving ? t("common:save_status_saving") : undefined;
-  const videoDisabled = editingBlocked || refreshPending || !!generatingVideo;
+  const videoDisabled = editingBlocked || refreshPending || !!generatingVideo || !hasConfirmedMaterials;
 
   const handleVideoUpload = async (file: File) => {
     if (!scriptFile || uploadingVideo || restoringMedia || isResourceBusy("video", projectName, segmentId) || gridBusy()) return;
@@ -444,25 +435,20 @@ function ShotDetailContent({
     }
   };
 
-  const handleStoryboardUpload = async (file: File) => {
-    if (!scriptFile || uploadingStoryboard || restoringMedia || isResourceBusy("storyboard", projectName, segmentId) || gridBusy()) return;
-    setUploadingStoryboard(true);
-    try {
-      const result = await API.uploadShotMedia(projectName, scriptFile, segmentId, "storyboard", file);
-      useProjectsStore.getState().updateAssetFingerprints(result.asset_fingerprints);
-      const refreshed = await onRestoreStoryboard?.();
-      if (refreshed === false) return;
-      useAppStore.getState().pushToast(t("media_upload_success", { id: segmentId }), "success");
-    } catch (error) {
-      useAppStore.getState().pushToast(t("media_upload_failed", { message: errMsg(error) }), "error");
-    } finally {
-      setUploadingStoryboard(false);
-    }
-  };
-
   const generateVideo = () => {
     if (!onGenerateVideo || videoDisabled || isResourceBusy("video", projectName, segmentId) || gridBusy()) return;
     void unit.saveAndGenerate(() => onGenerateVideo(segmentId));
+  };
+
+  const insertReference = (side: PromptSide, token: string) => {
+    if (editingBlocked) return;
+    const append = (text: string) => `${text}${text && !/\s$/.test(text) ? " " : ""}${token} `;
+    setValue((prev) => {
+      if (side === "image") {
+        return { ...prev, image_prompt: append(imagePromptText(prev.image_prompt)) };
+      }
+      return { ...prev, video_prompt: append(videoPromptText(prev.video_prompt)) };
+    });
   };
 
   const promptActions = (side: PromptSide) => (
@@ -475,7 +461,7 @@ function ShotDetailContent({
           ))[side === "image" ? "storyboard_image" : "video"]}
           beforeOpen={preparePreview}
           saveFirst={dirty}
-          disabled={saving || refreshPending}
+          disabled={saving || refreshPending || materialsBusy}
         />
       ) : null}
     </>
@@ -578,6 +564,16 @@ function ShotDetailContent({
         {segment.pending_authoring ? <p role="status" className="text-xs text-muted-foreground">{t("detail_pending_authoring_hint")}</p> : null}
         <ShotSection title={t("detail_image_prompt_title")} icon={<ImageIcon aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
+            <PromptReferenceMenu
+              label={t("shot_insert_asset")}
+              disabled={editingBlocked}
+              groups={[
+                { label: t("references_badge_character"), items: fields.characters.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
+                { label: t("references_badge_scene"), items: fields.scenes.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
+                { label: t("references_badge_prop"), items: fields.props.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
+              ]}
+              onSelect={(token) => insertReference("image", token)}
+            />
             {episode !== undefined && !readOnly ? (
               <PromptAuthoringButton
                 projectName={projectName}
@@ -601,9 +597,33 @@ function ShotDetailContent({
             className="max-h-none min-h-31"
           />
         </ShotSection>
+        <ReferenceMaterialsSection
+          projectName={projectName}
+          scriptFile={scriptFile}
+          episode={episode}
+          shotId={segmentId}
+          readOnly={readOnly}
+          disabled={saving || refreshPending || !!generatingStoryboard || !!generatingVideo}
+          saveFirst={dirty}
+          beforeGenerate={prepareGeneration}
+          onPlanChange={setPlan}
+          onBusyChange={setMaterialsBusy}
+        />
         <ShotSection title={t("detail_video_prompt_title")} icon={<Film aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
-            {episode !== undefined && !readOnly ? (
+            <PromptReferenceMenu
+              label={t("shot_insert_material")}
+              disabled={editingBlocked}
+              groups={[{
+                label: t("shot_reference_materials"),
+                items: materials.map((cell) => ({
+                  label: t("shot_keyframe", { index: cell.index }),
+                  token: `K${cell.index}`,
+                })),
+              }]}
+              onSelect={(token) => insertReference("video", token)}
+            />
+            {episode !== undefined && !readOnly && hasConfirmedMaterials ? (
               <PromptAuthoringButton
                 projectName={projectName}
                 episode={episode}
@@ -630,42 +650,7 @@ function ShotDetailContent({
     </>
   );
 
-  const videoDisabledHint = savingHint;
-  const storyboardMedia = (
-    <MediaCard
-      kind="storyboard"
-      projectName={projectName}
-      segmentId={segmentId}
-      assetPath={assets?.storyboard_image ?? null}
-      aspectRatio={aspectRatio}
-      generating={generatingStoryboard}
-      estimatedCost={sbEstimate}
-      onGenerate={onGenerateStoryboard ? () => { void saveUnit(); onGenerateStoryboard(segmentId); } : undefined}
-      generateLabel={generateLabel}
-      restoring={restoringMedia}
-      onRestoringChange={setRestoringMedia}
-      checkBusy={() => uploadingStoryboard || saving}
-      onRestore={onRestoreStoryboard}
-      onUpload={scriptFile && !readOnly ? handleStoryboardUpload : undefined}
-      uploading={uploadingStoryboard}
-      uploadDisabled={gridBusy()}
-    />
-  );
-
-  const audioMedia = hasNarrationText ? (
-    <NarrationAudioCard
-      readOnly={readOnly}
-      projectName={projectName}
-      segmentId={segmentId}
-      novelText={narrationText}
-      assetPath={assets?.narration_audio ?? null}
-      generating={generatingNarration}
-      estimatedCost={narrationEstimate}
-      onGenerate={onGenerateNarration ? () => { void saveUnit(); onGenerateNarration(segmentId); } : undefined}
-      generateLabel={generateLabel}
-    />
-  ) : null;
-
+  const videoDisabledHint = !hasConfirmedMaterials ? t("shot_materials_unavailable") : savingHint;
   const videoMedia = (
     <>
       {scriptFile && onGenerateVideo ? (
@@ -713,14 +698,7 @@ function ShotDetailContent({
       header={header}
       footer={<UnsavedChangesBar unit={unit} disabled={editingBlocked} className="mx-5 my-3 shrink-0" />}
       main={main}
-      media={
-        <>
-          <ShotMediaGrid aspectRatio={aspectRatio} storyboard={storyboardMedia} video={videoMedia} audio={audioMedia} />
-          {isDrama ? (
-            <ShotGridPlanner projectName={projectName} scriptFile={scriptFile} episode={episode} shotId={segmentId} />
-          ) : null}
-        </>
-      }
+      media={<div className="flex min-w-0 flex-col">{videoMedia}</div>}
     />
   );
 }

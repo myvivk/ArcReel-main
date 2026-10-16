@@ -124,7 +124,6 @@ from lib.script.script_document import (
 )
 from lib.script.script_models import (
     AD_TARGET_DURATION_DRIFT_THRESHOLD,
-    PENDING_AUTHORING_FIELD,
     AdEpisodeScript,
     AdImageVisualScript,
     AdReferenceFlatScript,
@@ -143,6 +142,7 @@ from lib.script.script_models import (
     ReferencePromptAuthoringFlatScript,
     ReferenceScriptPlanDraft,
     ReferenceVideoScript,
+    PENDING_AUTHORING_FIELD,
     build_episode_script_model,
     script_duration_total,
     with_new_assets_field,

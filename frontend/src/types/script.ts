@@ -21,6 +21,18 @@ export const SHOT_TYPES = [
 
 export type ShotType = (typeof SHOT_TYPES)[number];
 
+export const SHOT_TYPE_I18N_KEYS: Record<ShotType, string> = {
+  "Extreme Close-up": "shot_type_extreme_close_up",
+  "Close-up": "shot_type_close_up",
+  "Medium Close-up": "shot_type_medium_close_up",
+  "Medium Shot": "shot_type_medium_shot",
+  "Medium Long Shot": "shot_type_medium_long_shot",
+  "Long Shot": "shot_type_long_shot",
+  "Extreme Long Shot": "shot_type_extreme_long_shot",
+  "Over-the-shoulder": "shot_type_over_the_shoulder",
+  "Point-of-view": "shot_type_point_of_view",
+};
+
 export const CAMERA_MOTIONS = [
   "Static",
   "Pan Left",
@@ -41,6 +53,25 @@ export const CAMERA_MOTIONS = [
 ] as const;
 
 export type CameraMotion = (typeof CAMERA_MOTIONS)[number];
+
+export const CAMERA_MOTION_I18N_KEYS: Record<CameraMotion, string> = {
+  Static: "camera_motion_static",
+  "Pan Left": "camera_motion_pan_left",
+  "Pan Right": "camera_motion_pan_right",
+  "Tilt Up": "camera_motion_tilt_up",
+  "Tilt Down": "camera_motion_tilt_down",
+  "Zoom In": "camera_motion_zoom_in",
+  "Zoom Out": "camera_motion_zoom_out",
+  "Push In": "camera_motion_push_in",
+  "Pull Out": "camera_motion_pull_out",
+  "Truck Left": "camera_motion_truck_left",
+  "Truck Right": "camera_motion_truck_right",
+  "Pedestal Up": "camera_motion_pedestal_up",
+  "Pedestal Down": "camera_motion_pedestal_down",
+  Orbit: "camera_motion_orbit",
+  "Tracking Shot": "camera_motion_tracking_shot",
+  Shake: "camera_motion_shake",
+};
 
 export type DurationSeconds = number;
 export type AssetStatus = "pending" | "storyboard_ready" | "completed";

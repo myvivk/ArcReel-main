@@ -572,7 +572,7 @@ function ShotDetailContent({
                 { label: t("references_badge_scene"), items: fields.scenes.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
                 { label: t("references_badge_prop"), items: fields.props.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
               ]}
-              onSelect={(token) => insertReference("image", token)}
+              onSelect={(token: string) => insertReference("image", token)}
             />
             {episode !== undefined && !readOnly ? (
               <PromptAuthoringButton
@@ -621,7 +621,7 @@ function ShotDetailContent({
                   token: `K${cell.index}`,
                 })),
               }]}
-              onSelect={(token) => insertReference("video", token)}
+              onSelect={(token: string) => insertReference("video", token)}
             />
             {episode !== undefined && !readOnly && hasConfirmedMaterials ? (
               <PromptAuthoringButton

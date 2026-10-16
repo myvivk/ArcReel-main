@@ -304,6 +304,19 @@ export async function enqueueImageEdit(
   return { taskIds: [res.task_id], deduped: res.deduped };
 }
 
+export async function enqueueShotGrid(
+  projectName: string,
+  scriptFile: string,
+  shotId: string,
+): Promise<EnqueueResult> {
+  const res = await submit(
+    [markScriptFile(projectName, "shot_grid", scriptFile)],
+    () => API.generateShotGrid(projectName, scriptFile, shotId),
+    oneTaskId,
+  );
+  return { taskIds: [res.task_id], deduped: false };
+}
+
 export async function enqueueGrid(
   projectName: string,
   episode: number,

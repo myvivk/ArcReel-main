@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from "react";
+import { cn } from "cn";
 
 /**
  * 分镜详情的栏位：页头在上，中间是「编辑栏 + 媒体栏」两栏，各自滚动，未保存提示条在最下方。
@@ -79,5 +80,44 @@ export function ShotSection({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * 媒体栏：媒体栏够宽时分镜图与视频并排（竖屏 440px、横屏 720px 起），否则上下排；
+ * 配音卡在下方横跨整栏。
+ */
+export function ShotMediaGrid({
+  aspectRatio,
+  storyboard,
+  video,
+  audio,
+}: {
+  aspectRatio: "9:16" | "16:9";
+  storyboard: ReactNode;
+  video: ReactNode;
+  audio?: ReactNode;
+}) {
+  const portrait = aspectRatio === "9:16";
+  return (
+    <div
+      className={cn(
+        "grid items-start gap-x-4 gap-y-5",
+        portrait ? "@min-[440px]/shot-media:grid-cols-2" : "@min-[720px]/shot-media:grid-cols-2",
+      )}
+    >
+      <div className="min-w-0">{storyboard}</div>
+      <div className="flex min-w-0 flex-col">{video}</div>
+      {audio ? (
+        <div
+          className={cn(
+            "min-w-0",
+            portrait ? "@min-[440px]/shot-media:col-span-2" : "@min-[720px]/shot-media:col-span-2",
+          )}
+        >
+          {audio}
+        </div>
+      ) : null}
+    </div>
   );
 }

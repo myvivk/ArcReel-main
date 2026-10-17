@@ -37,6 +37,8 @@ export interface EpisodeViewFacts {
   demo: boolean;
   /** 本集正式脚本来自短剧工厂导入（顶层 short_drama_meta）：没有脚本规划时不给「脚本规划」页签。 */
   shortDrama?: boolean;
+  /** The project can contain a factory episode Markdown artifact without a native script. */
+  hasShortDramaSource?: boolean;
   /** 工作流计划里 script_plan 的产物态；取不到时视为没有（短剧工厂导入的集据此藏掉规划页签）。 */
   scriptPlanState?: string | null;
 }
@@ -62,7 +64,14 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
   if (plan) tabs.push({ view: "plan", disabled: false });
   // 集原文/剧本常驻可查可改，排在分镜之前——先读内容再看产物；脚本规划视图正在做集原文确认时
   // 不重复给（那已经是同一个编辑器）。
-  if (!facts.isAd && !facts.demo && !facts.sourceReview) tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  if (
+    !facts.isAd &&
+    !facts.demo &&
+    !facts.sourceReview &&
+    (facts.hasShortDramaSource || facts.hasScript || facts.hasDraft)
+  ) {
+    tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  }
   if (facts.grid) tabs.push({ view: "grid", disabled: facts.sourceReview });
   // 参考生视频的单元列表在中间稿阶段就可查看；分镜图生视频要等正式剧本。没有脚本规划时分镜是唯一视图。
   const boardEnabled =

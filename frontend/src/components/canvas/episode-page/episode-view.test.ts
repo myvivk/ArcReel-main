@@ -40,6 +40,16 @@ describe("episodeViewTabs", () => {
     ]);
   });
 
+  it("shows the source tab for factory artifacts even without a native script", () => {
+    const tabs = episodeViewTabs({
+      ...SCRIPTED,
+      hasScript: false,
+      hasDraft: false,
+      hasShortDramaSource: true,
+    });
+    expect(tabs).toContainEqual({ view: "source", disabled: false });
+  });
+
   it("opens the unit list during the draft stage on the reference route", () => {
     const tabs = episodeViewTabs({ ...SCRIPTED, route: "reference_video", hasScript: false });
     expect(tabs.find((tab) => tab.view === "board")).toEqual({ view: "board", disabled: false });

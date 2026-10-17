@@ -1,3 +1,11 @@
+export interface ShortDramaArtifactView {
+  path: string;
+  revision: string;
+  kind: string;
+  episode: number | null;
+  content: string;
+}
+
 export interface StoryRecord {
   id: string;
   kind: "relationship" | "event" | "fact";
@@ -20,4 +28,11 @@ export interface StorySnapshot {
   plan: StoryPlan;
   revision: string;
   stale_ids: string[];
+}
+
+export interface StoryPlanningArtifacts {
+  character_bible: ShortDramaArtifactView | null;
+  series_outline: ShortDramaArtifactView | null;
+  ledger: ShortDramaArtifactView | null;
+  episode_plans: ShortDramaArtifactView[];
 }

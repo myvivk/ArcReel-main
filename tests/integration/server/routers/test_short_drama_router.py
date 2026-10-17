@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -46,6 +47,37 @@ def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
     return TestClient(app), manager
 
 
+def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatch, tmp_path: Path) -> None:
+    client, manager = _client(monkeypatch, tmp_path)
+    original = "角色：林夏\r\n台词：打开门。\r\n".encode("utf-8")
+    payload = {
+        "artifacts": [
+            {
+                "path": "episodes/episode_01.md",
+                "content_base64": base64.b64encode(original).decode("ascii"),
+            },
+            {
+                "path": "reports/episode_01.machine.md",
+                "content_base64": base64.b64encode(b"FAIL\r\n").decode("ascii"),
+            },
+        ]
+    }
+    with client:
+        response = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
+        listed = client.get("/api/v1/projects/demo/short-drama/artifacts")
+
+    assert response.status_code == 200
+    assert listed.status_code == 200
+    project_path = manager.get_project_path("demo")
+    assert (project_path / "source/short_drama/episodes/episode_01.md").read_bytes() == original
+    assert not (project_path / "characters.json").exists()
+    assert {item["path"] for item in listed.json()["artifacts"]} == {
+        "episodes/episode_01.md",
+        "reports/episode_01.machine.md",
+    }
+    assert not (project_path / "scripts/episode_1.json").exists()
+
+
 def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: Path) -> None:
     client, _manager = _client(monkeypatch, tmp_path)
 
@@ -62,7 +94,7 @@ def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: P
 
     assert legacy.status_code == 200
     assert legacy.json()["exists"] is False
-    assert legacy.json()["path"] == "source/short_drama/episode_1.md"
+    assert legacy.json()["path"] == "source/short_drama/episodes/episode_01.md"
     assert saved.status_code == 200
     assert saved.json()["exists"] is True
     assert saved.json()["revision"]
@@ -85,7 +117,7 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
     assert imported.status_code == 200
     assert imported.json()["scenes"] == 1
     script = manager.load_script("demo", "episode_1.json")
-    assert script["short_drama_meta"]["source_path"] == "source/short_drama/episode_1.md"
+    assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
     assert script["short_drama_meta"]["source_revision"] == saved["revision"]
     project = manager.load_project("demo")
     assert "林夏" in project["characters"]

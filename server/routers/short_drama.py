@@ -1,13 +1,4 @@
-"""短剧工厂剧本导入的 Web 入口。
-
-与 Agent 的 ``import_short_drama_script`` / ``import_short_drama_series`` 调用同一个服务命令：把
-short-drama-factory 的剧本 Markdown 转写为正式剧情演绎剧本并落盘。路由只负责把结果映射成 HTTP，
-「动作/神态进 scene_description、台词进 utterances、单集按项目默认分镜时长切分多幕、视觉层留空、
-短剧元信息进 short_drama_meta、集尾断章对齐 hook」等转写规则全在 lib.script.short_drama_import 与
-Agent 工具里，与聊天式入口完全一致（不重述规则）。
-
-前置：项目须为剧情演绎（drama），目标集须已存在（批量建空白集见 episode_management）。
-"""
+"""短剧工厂 Markdown 工件的零处理导入与兼容源稿路由。"""
 
 import asyncio
 from dataclasses import asdict
@@ -19,6 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lib.infra.api_errors import ConflictError, NotFoundError, UnprocessableError
 from lib.infra.async_thread import run_sync_transaction
+from lib.short_drama_ingest import (
+    ShortDramaArtifactError,
+    decode_artifact_content,
+    ingest_short_drama_artifacts,
+    load_short_drama_artifacts,
+)
 from lib.project.project_manager import get_project_manager
 from lib.script.short_drama_source import (
     ShortDramaSourceConflict,
@@ -78,9 +75,19 @@ class ShortDramaSourceUpdateRequest(BaseModel):
 
 class ShortDramaReimportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     source_revision: str = Field(min_length=1)
     confirm_artifacts: bool = False
+
+
+class ShortDramaArtifactItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1)
+    content_base64: str = Field(min_length=1)
+
+
+class ShortDramaArtifactImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifacts: list[ShortDramaArtifactItem] = Field(min_length=1)
 
 
 def short_drama_context(project_name: str, user_id: str) -> tuple[ProjectScope, CallerContext, Services]:
@@ -193,6 +200,42 @@ async def reimport_source(
     except ShortDramaWorkflowError as exc:
         _raise_workflow_error(exc, project_name, episode)
     return result.as_dict()
+
+
+@router.get("/projects/{project_name}/short-drama/artifacts")
+async def get_artifacts(project_name: str):
+    manager = get_project_manager()
+    try:
+        project = await asyncio.to_thread(manager.load_project, project_name)
+        if project.get("content_mode") != "drama":
+            raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
+        artifacts = await asyncio.to_thread(load_short_drama_artifacts, manager, project_name)
+    except FileNotFoundError as exc:
+        raise NotFoundError("project_not_found", name=project_name) from exc
+    return {"artifacts": [artifact.as_dict() for artifact in artifacts]}
+
+
+@router.post("/projects/{project_name}/short-drama/import-artifacts")
+async def import_artifacts(project_name: str, req: ShortDramaArtifactImportRequest):
+    manager = get_project_manager()
+    try:
+        project = await asyncio.to_thread(manager.load_project, project_name)
+        if project.get("content_mode") != "drama":
+            raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
+        artifacts = await run_sync_transaction(
+            ingest_short_drama_artifacts,
+            manager,
+            project_name,
+            [
+                (item.path, decode_artifact_content(None, item.content_base64))
+                for item in req.artifacts
+            ],
+        )
+    except FileNotFoundError as exc:
+        raise NotFoundError("project_not_found", name=project_name) from exc
+    except ShortDramaArtifactError as exc:
+        raise UnprocessableError("short_drama_import_refused", reason=str(exc)).with_diagnostic(str(exc)) from exc
+    return {"artifacts": [artifact.as_dict(include_content=False) for artifact in artifacts]}
 
 
 @router.post("/projects/{project_name}/short-drama/import")

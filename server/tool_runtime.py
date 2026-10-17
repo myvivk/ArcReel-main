@@ -1054,19 +1054,47 @@ async def confirm_script_review(
     )
 
 
+class ImportShortDramaArtifactItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(description="source/short_drama/ 下的七类标准相对路径")
+    content_base64: str = Field(description="工件原始字节的 Base64 编码")
+
+
+class IngestShortDramaArtifactsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    artifacts: list[ImportShortDramaArtifactItem] = Field(min_length=1, description="原样导入的短剧工厂 Markdown 工件")
+
+
+async def ingest_short_drama_artifacts_tool(
+    request: ToolRequest[IngestShortDramaArtifactsRequest],
+    scope: ProjectScope,
+    _caller: CallerContext,
+    services: Services,
+) -> ToolOutcome[Any]:
+    from lib.short_drama_ingest import ShortDramaArtifactError, decode_artifact_content, ingest_short_drama_artifacts
+
+    try:
+        await asyncio.to_thread(services.projects.load_project, scope.project_name)
+        result = await _run_sync_transaction(
+            ingest_short_drama_artifacts,
+            services.projects,
+            scope.project_name,
+            [(item.path, decode_artifact_content(None, item.content_base64)) for item in request.value.artifacts],
+        )
+    except FileNotFoundError as exc:
+        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
+    except ShortDramaArtifactError as exc:
+        return ToolOutcome(problem=ToolProblem("short_drama_import_refused", str(exc)))
+    return ToolOutcome(value={"imported": len(result), "artifacts": [item.as_dict(include_content=False) for item in result]})
+
+
 class ImportShortDramaScriptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
-    markdown: str = Field(
-        description=(
-            "short-drama-factory 产出的单集剧本 Markdown 原文（一集一份）。转换器按本集内容解析为剧情演绎剧本："
-            "动作行与神态进 scene_description，台词进 utterances，按剧情节奏切分为多幕（单幕 12~15 秒）。"
-            "导入阶段不读取视频供应商能力、不做时长档位吸附；实际生成前再按模型档位校验。"
-            "视觉层留空待 generate_episode_script 补出；无原生字段的短剧元信息进顶层 short_drama_meta，"
-            "集尾断章卡点对齐 hook。只转换产物，不重述短剧工厂的编剧规则。"
-        )
-    )
+    markdown: str = Field(description="兼容入口：该集短剧工厂 Markdown 原文；新流程请使用工件包导入并原样保存。")
 
 
 async def import_short_drama_script(
@@ -1075,12 +1103,7 @@ async def import_short_drama_script(
     _caller: CallerContext,
     services: Services,
 ) -> ToolOutcome[Any]:
-    """把 short-drama-factory 的 Markdown 剧本转写为本项目的正式剧情演绎剧本并落盘。
-
-    前置：本项目须为剧情演绎（drama）且目标集已存在。转换逻辑见
-    ``lib.script.short_drama_import``；短剧工厂 Skill 原样复刻于
-    ``agent_runtime_profile/.claude/skills/short-drama-factory/``。
-    """
+    """兼容旧单集入口；新的工厂交稿请通过工件包接口原样写入 source/short_drama。"""
     from server.services.short_drama_workflow import (
         ShortDramaWorkflowError,
         import_short_drama_episode,
@@ -1123,12 +1146,7 @@ async def import_short_drama_series(
     _caller: CallerContext,
     services: Services,
 ) -> ToolOutcome[Any]:
-    """批量把 short-drama-factory 的多集 Markdown 转写为本项目的正式剧情演绎剧本并落盘。
-
-    底层复用 ``import_short_drama_script`` 的单集路径；各集通过 ``asyncio.gather`` 并发执行。
-    并发安全性由 ``ProjectManager`` 保证：每集脚本文件有独立锁，账本 ``project.json`` 的同步走单项目锁，
-    因此并发不会损坏数据，但同一项目内的账本更新会被串行化（墙钟时间不会线性下降）。
-    """
+    """兼容旧批量入口；新的工厂交稿请通过工件包接口原样写入 source/short_drama。"""
     from server.services.short_drama_workflow import (
         ShortDramaWorkflowError,
         import_short_drama_episode,

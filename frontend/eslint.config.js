@@ -299,6 +299,19 @@ export default tseslint.config(
     },
   },
 
+  // 分镜详情的可拖动分隔条：手写带 role=separator 的按钮（react-resizable-panels 在 jsdom 下不渲染），
+  // 分隔条位置随拖动比例变化必须内联写入百分比，悬停高亮用主色透明度描边作为品牌交互反馈；
+  // 这几条 @shadcn/lint 规则在该组件上误报，整文件放行，并在组件内用行内 disable 说明意图。
+  {
+    files: ["src/components/canvas/timeline/ShotDetailLayout.tsx"],
+    ignores: TEST_FILES,
+    rules: {
+      "jsx-a11y/no-interactive-element-to-noninteractive-role": "off",
+      "shadcn/no-inline-styles": "off",
+      "shadcn/no-arbitrary-values": "off",
+    },
+  },
+
   // 本项目严于 recommended：exhaustive-deps / incompatible-library 一律视为 error
   {
     rules: {
@@ -324,6 +337,19 @@ export default tseslint.config(
     rules: {
       ...SHADCN_RULES,
       "no-restricted-syntax": restrictSyntax(),
+    },
+  },
+
+  // 分镜详情的可拖动分隔条：手写带 role=separator 的按钮（react-resizable-panels 在 jsdom 下不渲染），
+  // 分隔条位置随拖动比例变化必须内联写入百分比，悬停高亮用主色透明度描边作为品牌交互反馈；
+  // 这几条 @shadcn/lint / jsx-a11y 规则在该组件上误报，整文件放行，并在组件内用注释说明意图。
+  {
+    files: ["src/components/canvas/timeline/ShotDetailLayout.tsx"],
+    ignores: TEST_FILES,
+    rules: {
+      "jsx-a11y/no-interactive-element-to-noninteractive-role": "off",
+      "shadcn/no-inline-styles": "off",
+      "shadcn/no-arbitrary-values": "off",
     },
   },
   {

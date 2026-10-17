@@ -666,14 +666,17 @@ export function useHasActiveTaskForScriptFile(
 // projectName 缺失时复用同一空集，保证 hook 引用稳定。
 const EMPTY_ACTIVE_IDS: Set<string> = new Set();
 
-/** hook 版 {@link selectActiveResourceIds}；projectName 缺失时返回稳定空集。 */
+/**
+ * hook 版 {@link selectActiveResourceIds}；projectName 缺失、或这一栏的忙碌态无法按资源
+ * ID 归并（如参考素材：任务按宫格记录寻址，清单里记的是分镜）时返回稳定空集。
+ */
 export function useActiveResourceIds(
-  taskType: ResourceKind,
+  taskType: ResourceKind | null,
   projectName: string | undefined | null,
 ): Set<string> {
   return useTasksStore(
     useShallow((s) =>
-      projectName
+      projectName && taskType
         ? selectActiveResourceIds(s.tasks, taskType, projectName, s.optimisticActive)
         : EMPTY_ACTIVE_IDS,
     ),

@@ -262,4 +262,10 @@ def test_builtin_shared_partial_detail_lists_every_referencing_template_and_list
         detail = client.get("/api/v1/prompt-templates/partials/shared/media_style").json()
     assert not any(item["id"].startswith(("shared/", "partials/")) for item in listed)
     assert detail["protected"] is True
-    assert detail["referenced_by"] == ["asset/sheet", "reference_video/unit", "storyboard/grid", "storyboard/image"]
+    assert detail["referenced_by"] == [
+        "asset/sheet",
+        "reference_video/unit",
+        "storyboard/grid",
+        "storyboard/image",
+        "storyboard/shot_grid",
+    ]

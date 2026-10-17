@@ -20,6 +20,9 @@ from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.generation.generation_queue import GenerationQueue
 from lib.project.project_manager import ProjectManager
+from lib.script.grid.keyframe_parser import format_grid_prompt, parse_scene_shots
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid
 from server.error_handlers import register_error_handlers
 from server.routers import storyboard_batches
 from tests.auth_deps import AUTH_DEPENDENCIES, override_auth
@@ -212,7 +215,7 @@ async def test_video_batch_without_a_video_model_is_refused_whole_with_reasons(
     assert tasks == []
 
 
-@pytest.mark.parametrize("kind", ["storyboards", "videos"])
+@pytest.mark.parametrize("kind", ["storyboards", "shot-grids", "videos"])
 async def test_batch_maps_unknown_episode_and_reference_project(
     board_client: httpx.AsyncClient, board_projects: ProjectManager, kind: str
 ) -> None:
@@ -224,3 +227,74 @@ async def test_batch_maps_unknown_episode_and_reference_project(
 
     assert missing.status_code == 404
     assert reference.status_code == 409
+
+
+def _scene(*shots: tuple[str, str]) -> dict:
+    return {"scene": "".join(f"【镜头{index}｜{size}】{text}" for index, (size, text) in enumerate(shots, start=1))}
+
+
+def _grid(board_projects: ProjectManager, segment_id: str, **overrides: object) -> ShotGrid:
+    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=segment_id, rows=2, cols=2)
+    for key, value in overrides.items():
+        setattr(grid, key, value)
+    ShotGridManager(board_projects.get_project_path(PROJECT)).save(grid)
+    return grid
+
+
+async def test_shot_grid_preview_lists_targets_skips_and_cost_without_queueing(
+    board_client: httpx.AsyncClient, board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    _write_episode(
+        board_projects,
+        [
+            _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口"))),
+            _segment("E1S02", image_prompt=_scene(("全景", "小明望向远方"))),
+            _segment("E1S03", image_prompt={"scene": ""}),
+        ],
+    )
+    _grid(board_projects, "E1S03", status="confirmed")
+
+    response = await board_client.post(f"{BASE}/1/shot-grids/batch/preview")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["targets"] == [{"unit_id": "E1S01"}, {"unit_id": "E1S02"}]
+    assert body["skipped"] == [{"unit_id": "E1S03", "reason": "confirmed"}]
+    # 首张没有参考图走文生图（0.04），第二张接在上一张之后走图生图（0.09）。
+    assert body["estimated_cost"] == {"USD": pytest.approx(0.13)}
+    tasks = await board_queue.get_active_tasks_for_resources(
+        project_name=PROJECT, task_type="shot_grid", resource_ids=["E1S01", "E1S02"], user_id=DEFAULT_USER_ID
+    )
+    assert tasks == []
+
+
+async def test_shot_grid_submit_queues_one_task_per_target_under_one_batch(
+    board_client: httpx.AsyncClient, board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    first = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口"), ("全景", "小明推开院门")))
+    second = _segment("E1S02", segment_break=True, image_prompt=_scene(("特写", "门环上的锈迹")))
+    _write_episode(board_projects, [first, second, _segment("E1S03", image_prompt={"scene": ""})])
+
+    response = await board_client.post(f"{BASE}/1/shot-grids/batch")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_id"]
+    assert list(body["task_ids_by_unit"]) == ["E1S01", "E1S02"]
+    assert body["skipped"] == [{"unit_id": "E1S03", "reason": "missing_prompt"}]
+    assert body["enqueue_failures"] == []
+    manager = ShotGridManager(board_projects.get_project_path(PROJECT))
+    for unit_id, segment in (("E1S01", first), ("E1S02", second)):
+        grid = manager.find(script_file="episode_1.json", shot_id=unit_id)
+        assert grid is not None
+        assert (grid.rows, grid.cols) == (2, 2)
+        assert grid.status == "draft"
+        assert grid.prompt == format_grid_prompt(parse_scene_shots(segment["image_prompt"]["scene"]).shots)
+    tasks = await board_queue.get_active_tasks_for_resources(
+        project_name=PROJECT,
+        task_type="shot_grid",
+        resource_ids=[grid.id for grid in manager.list_all()],
+        script_file="episode_1.json",
+        user_id=DEFAULT_USER_ID,
+    )
+    assert len(tasks) == 2

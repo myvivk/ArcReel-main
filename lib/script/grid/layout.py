@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import gcd
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -108,6 +109,21 @@ def grid_aspect_ratio_for(rows: int, cols: int, aspect_ratio: str) -> str:
     if rows == cols:
         return video_aspect
     return _LEGACY_NON_SQUARE_ASPECT.get((rows, cols), video_aspect)
+
+
+def panel_aspect_ratio_for(grid_aspect_ratio: str, rows: int, cols: int) -> str:
+    """由整图比例与行列数推算单个画格的比例。
+
+    整图按等分裁成 rows×cols 个画格，单格比例 = (整图宽/cols) : (整图高/rows)。交叉相乘取
+    最大公约数，全程整数运算。多宫格联合图与单分镜宫格共用这一算式，两个出口的「每格比例」
+    才不会各算一套。
+    """
+
+    grid_width, grid_height = (int(part) for part in grid_aspect_ratio.split(":"))
+    panel_width = grid_width * rows
+    panel_height = grid_height * cols
+    divisor = gcd(panel_width, panel_height)
+    return f"{panel_width // divisor}:{panel_height // divisor}"
 
 
 def calculate_grid_layout(num_scenes: int, aspect_ratio: str, *, allow_large_grid: bool = False) -> GridLayout | None:

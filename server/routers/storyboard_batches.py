@@ -1,11 +1,13 @@
-"""一集分镜图与分镜视频的批量生成入口（时间线与宫格工具栏）。
+"""一集分镜图、参考素材与分镜视频的批量生成入口（时间线与宫格工具栏）。
 
 - 分镜图：与 Agent 的 ``generate_storyboards`` 同一份规划（:mod:`server.services.admission.storyboard_batch`），
   只补本集没有可用分镜图的分镜；缺提示词、引用不可用的分镜列为跳过项，其余照常提交。
+- 参考素材：与 Agent 的 ``generate_shot_grids`` 同一份规划，规格统一 2×2、逐格镜头文本从
+  ``image_prompt.scene`` 现解析（ADR 0099 D-11）；已确认的宫格不进批量，列为跳过项。
 - 分镜视频：只补本集没有可用视频的分镜；缺提示词、缺分镜图、已在生成中的分镜列为跳过项，其余分镜整批准入，
   任一目标不满足时整批拒绝，一个任务也不建，并逐项说明原因。
 
-两者都分预览与提交：预览只规划不建任务，供确认框列名单、跳过项与能算出时的预估费用；提交重新规划后建一个
+三者都分预览与提交：预览只规划不建任务，供确认框列名单、跳过项与能算出时的预估费用；提交重新规划后建一个
 持久批次，立即返回。过期的产物不进批量。
 """
 
@@ -30,13 +32,16 @@ from server.services.admission.cost_estimation import estimate_image_batch_cost
 from server.services.admission.storyboard_batch import (
     BatchSkip,
     EpisodeStoryboardScript,
+    ShotGridBatchPlan,
     StoryboardBatchEpisodeNotFound,
     StoryboardBatchRouteMismatch,
     StoryboardImageBatchPlan,
     StoryboardVideoBatchPlan,
     estimate_storyboard_video_batch_cost,
+    load_shot_grid_batch_plan,
     load_storyboard_image_batch_plan,
     load_storyboard_video_batch_plan,
+    submit_shot_grid_batch,
     submit_storyboard_image_batch,
     submit_storyboard_video_batch,
 )
@@ -69,6 +74,19 @@ async def _image_plan(
 ) -> tuple[EpisodeStoryboardScript, StoryboardImageBatchPlan]:
     with _planning_errors(project_name, episode):
         return await load_storyboard_image_batch_plan(
+            get_project_manager(),
+            get_generation_queue(),
+            project_name=project_name,
+            episode_id=episode,
+            user_id=user_id,
+        )
+
+
+async def _shot_grid_plan(
+    project_name: str, episode: int, user_id: str
+) -> tuple[EpisodeStoryboardScript, ShotGridBatchPlan]:
+    with _planning_errors(project_name, episode):
+        return await load_shot_grid_batch_plan(
             get_project_manager(),
             get_generation_queue(),
             project_name=project_name,
@@ -119,6 +137,48 @@ async def submit_storyboard_batch(project_name: str, episode: int, user: Current
     return {
         "batch_id": batch.batch_id,
         "task_ids_by_unit": {task.resource_id: task.task_id for task in enqueued},
+        "skipped": _skipped(plan.skips),
+        "enqueue_failures": [enqueue_failure_payload(failure, _t) for failure in failures],
+    }
+
+
+@router.post("/shot-grids/batch/preview")
+async def preview_shot_grid_batch(project_name: str, episode: int, user: CurrentUser) -> dict[str, Any]:
+    """规划一批参考素材但不建任务：要生成的分镜、跳过项与能算出时的预估费用。"""
+
+    loaded, plan = await _shot_grid_plan(project_name, episode, user.id)
+    estimated = await estimate_image_batch_cost(
+        loaded.project,
+        [plan.lanes[unit_id] for unit_id in plan.new_task_ids],
+        resolver=ConfigResolver(async_session_factory),
+        session_factory=async_session_factory,
+    )
+    return {
+        "targets": [{"unit_id": unit_id} for unit_id in plan.new_task_ids],
+        "skipped": _skipped(plan.skips),
+        "estimated_cost": estimated or None,
+    }
+
+
+@router.post("/shot-grids/batch")
+async def submit_shot_grid_batch_route(
+    project_name: str, episode: int, user: CurrentUser, _t: Translator
+) -> dict[str, Any]:
+    """提交一批参考素材，立即返回；同一 batch_id 下每个目标分镜一个宫格任务。"""
+
+    loaded, plan = await _shot_grid_plan(project_name, episode, user.id)
+    batch, enqueued, failures = await submit_shot_grid_batch(
+        plan,
+        project_name=project_name,
+        project_path=loaded.project_path,
+        queue=get_generation_queue(),
+        source="webui",
+        user_id=user.id,
+    )
+    return {
+        "batch_id": batch.batch_id,
+        # 键是分镜（unit_id）：宫格任务的 resource_id 是宫格记录 ID，批量契约的单元始终是分镜。
+        "task_ids_by_unit": {task.unit_id or task.resource_id: task.task_id for task in enqueued},
         "skipped": _skipped(plan.skips),
         "enqueue_failures": [enqueue_failure_payload(failure, _t) for failure in failures],
     }

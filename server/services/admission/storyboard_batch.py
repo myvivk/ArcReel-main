@@ -1,8 +1,11 @@
-"""分镜图与分镜视频的集范围批量生成：Web 时间线 / 宫格入口与 Agent 的 ``generate_storyboards`` 共用的规划。
+"""分镜图、参考素材与分镜视频的集范围批量生成：Web 时间线 / 宫格入口与 Agent 的 ``generate_storyboards`` 共用的规划。
 
 - **分镜图**：:func:`plan_storyboard_image_batch` 是 ``generate_storyboards`` 与 Web 批量入口的同一份
   规划。不点名时只选没有可用分镜图的分镜；缺提示词、引用不可用的分镜逐项拒绝，其余照常提交，
   相邻分镜在批内按参考链排队。
+- **参考素材**：:func:`plan_shot_grid_batch` 是 ``generate_shot_grids`` 与 Web 批量入口的同一份
+  规划。规格统一 2×2，逐格镜头文本从 ``image_prompt.scene`` 现解析（ADR 0099 D-11），不弹提示词
+  编辑弹窗；已确认的宫格不进批量（R7）。
 - **分镜视频**：:func:`load_storyboard_video_batch_plan` 选出本集没有可用视频的分镜，先把缺提示词、
   缺分镜图与已在生成中的分镜列为跳过项，其余分镜走 :func:`admit_storyboard_video_request` 整批
   准入：任一目标不满足时整批拒绝，一个任务也不建。
@@ -16,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -60,6 +64,15 @@ from lib.project.project_manager import ProjectManager, find_episode, is_referen
 from lib.prompts.prompt_builders import render_storyboard_image_prompt
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
+from lib.script.grid.keyframe_parser import (
+    format_grid_prompt,
+    parse_scene_shots,
+    scene_revision_of,
+    shot_scene_text,
+)
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid
+from lib.script.grid.shot_prompt_builder import shot_grid_cells
 from lib.script.script_models import get_generated_assets, resolve_content_mode
 from lib.script.script_skeleton import ensure_route_skeleton, resolve_script_kind
 from lib.script.storyboard_sequence import (
@@ -81,7 +94,13 @@ from server.services.admission.video_batch_admission import (
 )
 
 STORYBOARD_BATCH_OPERATION = "generate_storyboards"
+SHOT_GRID_BATCH_OPERATION = "generate_shot_grids"
 VIDEO_BATCH_OPERATION = "generate_videos"
+
+#: 整集批量的宫格规格统一 2×2（ADR 0099 五）：规格在批量里不由人定，逐格镜头文本从
+#: ``image_prompt.scene`` 现解析，弹的仍是名单确认框而不是提示词编辑弹窗。
+SHOT_GRID_BATCH_ROWS = 2
+SHOT_GRID_BATCH_COLS = 2
 
 
 class BatchSkipReason(StrEnum):
@@ -94,6 +113,8 @@ class BatchSkipReason(StrEnum):
     REFERENCE_UNAVAILABLE = "reference_unavailable"
     #: 产物清单读不出，或条目本身不成立。
     UNAVAILABLE = "unavailable"
+    #: 已有确认过的宫格：重做只能单个走分镜详情，不进批量（ADR 0099 R7）。
+    CONFIRMED = "confirmed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +446,294 @@ async def submit_storyboard_image_batch(
     )
 
 
+# --- 参考素材（镜头宫格）------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ShotGridBatchPlan:
+    """一次参考素材批量生成的规划：要提交的分镜、逐项拒绝与已在生成中的目标。"""
+
+    script_file: str
+    episode: int
+    items: Sequence[dict[str, Any]]
+    id_field: str
+    #: 要提交的目标，按剧本顺序。
+    targets: tuple[GenerationTargetState, ...]
+    preflight: GenerationBatchResult
+    #: 每个目标的生图通道，供报价。与执行侧同一判定：接了上一张分镜图或引用了资产就是图生图。
+    lanes: Mapping[str, ImageLane] = field(default_factory=dict)
+    #: 目标里已建出宫格记录的那些分镜 → 记录 ID。活动任务按记录 ID 探，提交时按它并入原任务。
+    grid_ids: Mapping[str, str] = field(default_factory=dict)
+    #: 已有确认过的宫格的分镜：不进批量，重做只能单个走分镜详情（R7）。
+    confirmed: frozenset[str] = frozenset()
+    #: 目标里已有活动 shot_grid 任务的分镜：提交时并入原任务，不再计费。
+    generating: frozenset[str] = frozenset()
+    missing_prompt: frozenset[str] = frozenset()
+    reference_blocked: frozenset[str] = frozenset()
+
+    @property
+    def target_ids(self) -> list[str]:
+        return [state.unit_id for state in self.targets]
+
+    @property
+    def states(self) -> dict[str, GenerationTargetState]:
+        return {state.unit_id: state for state in self.targets}
+
+    @property
+    def new_task_ids(self) -> list[str]:
+        """会新建付费任务的目标：扣掉已在生成中的。"""
+
+        return [unit_id for unit_id in self.target_ids if unit_id not in self.generating]
+
+    @property
+    def unit_ids(self) -> list[str]:
+        """本集全部分镜，按剧本顺序；跳过项按它排。"""
+
+        return [str(item[self.id_field]) for item in self.items if item.get(self.id_field)]
+
+    @property
+    def skips(self) -> tuple[BatchSkip, ...]:
+        """没有可用参考素材、这一批却不会新建任务的分镜及原因，按剧本顺序。"""
+
+        reasons: dict[str, BatchSkipReason] = dict.fromkeys(self.confirmed, BatchSkipReason.CONFIRMED)
+        reasons.update(dict.fromkeys(self.generating, BatchSkipReason.GENERATING))
+        for item in self.preflight.items:
+            if item.unit_id in self.missing_prompt:
+                reasons[item.unit_id] = BatchSkipReason.MISSING_PROMPT
+            elif item.unit_id in self.reference_blocked:
+                reasons[item.unit_id] = BatchSkipReason.REFERENCE_UNAVAILABLE
+            else:
+                reasons[item.unit_id] = BatchSkipReason.UNAVAILABLE
+        return tuple(BatchSkip(unit_id, reasons[unit_id]) for unit_id in self.unit_ids if unit_id in reasons)
+
+
+def _episode_shot_grids(project_path: Path, script_file: str) -> dict[str, ShotGrid]:
+    """这一集剧本名下已建出的宫格记录，按分镜 ID；一条分镜只认排在前的那一个。"""
+
+    grids: dict[str, ShotGrid] = {}
+    for grid in ShotGridManager(project_path).list_all():
+        if grid.script_file == script_file:
+            grids.setdefault(grid.shot_id, grid)
+    return grids
+
+
+def plan_shot_grid_batch(
+    *,
+    project: Mapping[str, Any],
+    script: dict[str, Any],
+    script_file: str,
+    episode: int,
+    project_path: Path,
+    resolver: ArtifactCurrencyResolver,
+) -> ShotGridBatchPlan:
+    """选出这一批的参考素材目标并逐项判准入；只选没有可用参考素材的分镜。
+
+    规格统一 2×2、逐格文本从 ``image_prompt.scene`` 现解析（ADR 0099 五 / D-11）：这里只做
+    结构判定，不写盘也不建任务，落记录发生在提交时。已确认的宫格整条不进候选——它已经有了
+    用户认过的参考素材，重做只能单个走分镜详情（R7）。
+    """
+
+    items, id_field, char_field, scene_field, prop_field = get_storyboard_items(script)
+    items_by_id = {str(item[id_field]): item for item in items if item.get(id_field)}
+    grids = _episode_shot_grids(project_path, script_file)
+    confirmed = frozenset(shot_id for shot_id, grid in grids.items() if grid.status == "confirmed")
+    selection = select_generation_targets(
+        candidates=[
+            GenerationCandidate(
+                unit_id=unit_id,
+                artifact_key=ArtifactKey.episode_storyboard(episode, unit_id),
+                # 参考素材看宫格记录自己的复合图：没有记录、或记录还没确认时都算缺失。
+                # 分镜图与参考素材在清单里同一个键，但这一栏的真相源是宫格记录（D-10）。
+                artifact_path=grids[unit_id].composite_path if unit_id in grids else None,
+            )
+            for unit_id in items_by_id
+            if unit_id not in confirmed
+        ],
+        requested_ids=None,
+        resolver=resolver,
+    )
+    builder = GenerationResultBuilder.from_selection(SHOT_GRID_BATCH_OPERATION, selection)
+
+    catalog = build_reference_catalog(project)
+    index_by_id = {str(item.get(id_field)): index for index, item in enumerate(items)}
+    reference_fields = ("products_in_shot", char_field, scene_field, prop_field)
+    targets: list[GenerationTargetState] = []
+    missing_prompt: set[str] = set()
+    reference_blocked: set[str] = set()
+    for state in selection.targets:
+        item = items_by_id[state.unit_id]
+        # 结果集一个分镜只记一条问题：取首条（未登记排在无资产图之前——名字都没登记时
+        # 「去生成资产图」指不出该对谁做），另一条在这条修完后的下一次调用里报出。
+        problem = next(
+            iter(reference_admission_problems(admit_storyboard_item(catalog, item), unit_id=state.unit_id)),
+            None,
+        )
+        if problem is not None:
+            reference_blocked.add(state.unit_id)
+        else:
+            scene_text = shot_scene_text(item)
+            try:
+                parse_scene_shots(scene_text)
+            except ValueError as exc:
+                # scene 为空、或还写着旧单帧格式：这一条没有可用的逐格镜头文本，
+                # 归到「缺提示词」——修正的下一步是去分镜详情改写 scene。
+                missing_prompt.add(state.unit_id)
+                problem = GenerationProblem(
+                    code=GenerationProblemCode.UNIT_REQUEST_INVALID,
+                    detail=str(exc),
+                    action=GenerationAction.FIX_INPUT,
+                )
+        if problem is not None:
+            builder.block(
+                state.unit_id,
+                problem=problem,
+                artifact_key=state.artifact_key,
+                artifact_path=state.artifact_path,
+                artifact_status=state.status,
+            )
+            continue
+        targets.append(state)
+
+    return ShotGridBatchPlan(
+        script_file=script_file,
+        episode=episode,
+        items=items,
+        id_field=id_field,
+        targets=tuple(targets),
+        preflight=builder.build(),
+        lanes={
+            state.unit_id: _storyboard_image_lane(items, index_by_id[state.unit_id], reference_fields)
+            for state in targets
+        },
+        grid_ids={state.unit_id: grids[state.unit_id].id for state in targets if state.unit_id in grids},
+        confirmed=confirmed,
+        missing_prompt=frozenset(missing_prompt),
+        reference_blocked=frozenset(reference_blocked),
+    )
+
+
+async def load_shot_grid_batch_plan(
+    projects: ProjectManager,
+    queue: GenerationQueue | None,
+    *,
+    project_name: str,
+    episode_id: int,
+    user_id: str,
+) -> tuple[EpisodeStoryboardScript, ShotGridBatchPlan]:
+    """读取这一集的现状并规划一批参考素材，标出其中已在生成中的目标。"""
+
+    def _read() -> tuple[EpisodeStoryboardScript, ShotGridBatchPlan]:
+        loaded = load_episode_storyboard_script(projects, project_name, episode_id)
+        resolver = active_artifact_currency_resolver(loaded.project_path, loaded.project)
+        plan = plan_shot_grid_batch(
+            project=loaded.project,
+            script=loaded.script,
+            script_file=loaded.script_file,
+            episode=loaded.episode,
+            project_path=loaded.project_path,
+            resolver=resolver,
+        )
+        return loaded, plan
+
+    loaded, plan = await asyncio.to_thread(_read)
+    # 活动任务按宫格记录 ID 探：shot_grid 任务的 resource_id 是宫格 id，不是分镜 id。
+    active_grid_ids = await _active_resource_ids(
+        queue,
+        project_name=project_name,
+        task_type="shot_grid",
+        script_file=loaded.script_file,
+        resource_ids=list(plan.grid_ids.values()),
+        user_id=user_id,
+    )
+    generating = frozenset(unit_id for unit_id, grid_id in plan.grid_ids.items() if grid_id in active_grid_ids)
+    return loaded, replace(plan, generating=generating)
+
+
+def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> dict[str, ShotGrid]:
+    """就地创建或更新这一批的宫格记录：规格统一 2×2，逐格文本从 scene 现解析。
+
+    只在提交时写盘——规划不落记录，用户取消确认框不会留下半截状态。已在生成中的目标不动
+    原记录：它的复合图、任务与依据都归那个任务，改写会让跑着的任务失去落点，入队时按原样
+    并入即可（同一个 resource_id 命中去重键）。
+    """
+
+    manager = ShotGridManager(project_path)
+    grids = _episode_shot_grids(project_path, plan.script_file)
+    items_by_id = {str(item[plan.id_field]): item for item in plan.items if item.get(plan.id_field)}
+    prepared: dict[str, ShotGrid] = {}
+    for unit_id in plan.target_ids:
+        existing = grids.get(unit_id)
+        if unit_id in plan.generating and existing is not None:
+            prepared[unit_id] = existing
+            continue
+        scene_text = shot_scene_text(items_by_id[unit_id])
+        frames = parse_scene_shots(scene_text).shots
+        grid = existing or ShotGrid.create(
+            episode=plan.episode,
+            script_file=plan.script_file,
+            shot_id=unit_id,
+            rows=SHOT_GRID_BATCH_ROWS,
+            cols=SHOT_GRID_BATCH_COLS,
+        )
+        grid.rows, grid.cols = SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS
+        grid.prompt = format_grid_prompt(frames)
+        # 留证与拼装出口读到的序列同一个：执行期按 ShotGrid.prompt 再解析一次。
+        grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
+        grid.scene_revision = scene_revision_of(scene_text)
+        grid.status = "draft"
+        grid.composite_path = None
+        grid.task_id = None
+        grid.image_basis = None
+        grid.error_message = None
+        grid.updated_at = datetime.now(UTC).isoformat()
+        manager.save(grid)
+        prepared[unit_id] = grid
+    return prepared
+
+
+async def submit_shot_grid_batch(
+    plan: ShotGridBatchPlan,
+    *,
+    project_name: str,
+    project_path: Path,
+    queue: GenerationQueue,
+    source: str,
+    user_id: str,
+) -> tuple[GenerationBatchReadModel, list[EnqueuedTask], list[BatchTaskResult]]:
+    """把一次参考素材规划作为一个持久批次提交，不等待结果。"""
+
+    prepared = await asyncio.to_thread(_write_shot_grid_records, plan, project_path=project_path)
+    specs = [
+        TaskSpec.from_request(
+            task_type="shot_grid",
+            media_type="image",
+            resource_id=grid.id,
+            # 逐格文本随任务落一份留证；执行期仍以 ShotGrid.prompt 为真相源（D-2）。
+            prompt=grid.prompt,
+            script_file=plan.script_file,
+            extra_payload={"shot_grid_id": grid.id},
+            unit_id=unit_id,
+            source=source,
+        )
+        for unit_id, grid in prepared.items()
+    ]
+    requested, blocked = build_generation_batch_admission(
+        preflight=plan.preflight,
+        pending_ids=[unit_id for unit_id in plan.target_ids if unit_id in prepared],
+        states=plan.states,
+    )
+    return await submit_generation_batch(
+        project_name=project_name,
+        operation=SHOT_GRID_BATCH_OPERATION,
+        requested=requested,
+        blocked=blocked,
+        specs=specs,
+        source=source,
+        user_id=user_id,
+        queue=queue,
+    )
+
+
 # --- 分镜视频 -----------------------------------------------------------------
 
 
@@ -632,21 +941,28 @@ async def submit_storyboard_video_batch(
 
 
 __all__ = [
+    "SHOT_GRID_BATCH_COLS",
+    "SHOT_GRID_BATCH_OPERATION",
+    "SHOT_GRID_BATCH_ROWS",
     "STORYBOARD_BATCH_OPERATION",
     "VIDEO_BATCH_OPERATION",
     "BatchSkip",
     "BatchSkipReason",
     "EpisodeStoryboardScript",
+    "ShotGridBatchPlan",
     "StoryboardBatchEpisodeNotFound",
     "StoryboardBatchRouteMismatch",
     "StoryboardImageBatchPlan",
     "StoryboardVideoBatchPlan",
     "estimate_storyboard_video_batch_cost",
     "load_episode_storyboard_script",
+    "load_shot_grid_batch_plan",
     "load_storyboard_image_batch_plan",
     "load_storyboard_video_batch_plan",
+    "plan_shot_grid_batch",
     "plan_storyboard_image_batch",
     "storyboard_image_prompt",
+    "submit_shot_grid_batch",
     "submit_storyboard_image_batch",
     "submit_storyboard_video_batch",
 ]

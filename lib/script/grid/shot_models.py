@@ -6,6 +6,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+#: 宫格默认规格（ADR 0098 D-D / 0099 D-1）：旧记录缺省按 2×2 读，新建记录同样默认 2×2。
+DEFAULT_ROWS = 2
+DEFAULT_COLS = 2
+
 
 @dataclass
 class ShotGridCell:
@@ -47,6 +51,8 @@ class ShotGrid:
     rows: int
     cols: int
     cells: list[ShotGridCell] = field(default_factory=list)
+    prompt: str = ""
+    scene_revision: str | None = None
     composite_path: str | None = None
     status: str = "draft"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -64,6 +70,8 @@ class ShotGrid:
             "rows": self.rows,
             "cols": self.cols,
             "cells": [cell.to_dict() for cell in self.cells],
+            "prompt": self.prompt,
+            "scene_revision": self.scene_revision,
             "composite_path": self.composite_path,
             "status": self.status,
             "created_at": self.created_at,
@@ -80,9 +88,11 @@ class ShotGrid:
             episode=int(data["episode"]),
             script_file=str(data["script_file"]),
             shot_id=str(data["shot_id"]),
-            rows=int(data.get("rows", 3)),
-            cols=int(data.get("cols", 3)),
+            rows=int(data.get("rows", DEFAULT_ROWS)),
+            cols=int(data.get("cols", DEFAULT_COLS)),
             cells=[ShotGridCell.from_dict(cell) for cell in data.get("cells", [])],
+            prompt=str(data.get("prompt", "")),
+            scene_revision=data.get("scene_revision"),
             composite_path=data.get("composite_path"),
             status=str(data.get("status", "draft")),
             created_at=str(data.get("created_at", datetime.now(UTC).isoformat())),
@@ -93,7 +103,15 @@ class ShotGrid:
         )
 
     @classmethod
-    def create(cls, *, episode: int, script_file: str, shot_id: str, rows: int, cols: int) -> ShotGrid:
+    def create(
+        cls,
+        *,
+        episode: int,
+        script_file: str,
+        shot_id: str,
+        rows: int = DEFAULT_ROWS,
+        cols: int = DEFAULT_COLS,
+    ) -> ShotGrid:
         now = datetime.now(UTC).isoformat()
         return cls(
             id=f"shot_grid_{uuid.uuid4().hex[:12]}",

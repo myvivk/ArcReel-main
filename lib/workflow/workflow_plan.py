@@ -169,6 +169,7 @@ _ARTIFACT_BY_STEP: dict[str, str] = {
     "script_plan_review": "script_plan",
     "final_script": "script",
     "storyboard": "storyboards",
+    "shot_grid": "shot_grids",
     "video": "videos",
     "edit": "edit_timelines",
 }
@@ -196,6 +197,7 @@ _TASK_STEP: dict[str, str] = {
     "text_episode_script": "final_script",
     **dict.fromkeys(ASSET_SPECS, "asset_sheets"),
     "storyboard": "storyboard",
+    "shot_grid": "shot_grid",
     "grid": "storyboard",
     "video": "video",
     "reference_video": "video",
@@ -228,6 +230,7 @@ _ACTION_STEP: dict[WorkflowActionType, str] = {
     WorkflowActionType.GENERATE_ASSET_SHEETS: "asset_sheets",
     WorkflowActionType.REPAIR_VIDEO_UNITS: "script_structure",
     WorkflowActionType.GENERATE_STORYBOARDS: "storyboard",
+    WorkflowActionType.GENERATE_SHOT_GRIDS: "shot_grid",
     WorkflowActionType.GENERATE_GRID: "storyboard",
     WorkflowActionType.GENERATE_VIDEOS: "video",
     WorkflowActionType.CREATE_EDIT_TIMELINE: "edit",
@@ -290,6 +293,8 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
         return has_items and not content.needs_replan_ids
     if step_id == "storyboard":
         return has_items and not artifacts.get("storyboards", {}).get("missing_ids")
+    if step_id == "shot_grid":
+        return has_items and not artifacts.get("shot_grids", {}).get("missing_ids")
     if step_id == "video":
         return has_items and not artifacts.get("videos", {}).get("missing_ids")
     if step_id == "edit":

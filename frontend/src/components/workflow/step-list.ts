@@ -32,6 +32,7 @@ export type StepRowKey =
   | "prompts"
   | "assets"
   | "boards"
+  | "materials"
   | "voice"
   | "videos"
   | "edit";
@@ -491,6 +492,17 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
       acts: [],
       steps: stepsFor(facts, ["storyboard"]),
     });
+    // 参考素材（单分镜宫格）紧随分镜图：视频提示词从这里取连续关键帧（ADR 0099）。
+    const materials = mediaStatus(t, status.artifacts.shot_grids);
+    rows.push({
+      key: "materials",
+      title: t("workflow:row_materials"),
+      tone: formal === "present" ? materials.tone : "todo",
+      status: formal === "present" ? materials.status : t("workflow:status_none"),
+      notes: [],
+      acts: [],
+      steps: stepsFor(facts, ["shot_grid"]),
+    });
   }
 
   if (status.project.content_mode === "narration" && status.project.generation_mode === "storyboard") {
@@ -682,6 +694,8 @@ function ownerRow(facts: Facts, rows: StepRowView[], action: WorkflowNextAction)
     case "generate_storyboards":
     case "generate_grid":
       return rows.some((row) => row.key === "boards") ? "boards" : null;
+    case "generate_shot_grids":
+      return rows.some((row) => row.key === "materials") ? "materials" : null;
     case "generate_videos":
       return "videos";
     case "create_edit_timeline":
@@ -907,9 +921,10 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
       };
     case "generate_storyboards":
     case "generate_grid":
+    case "generate_shot_grids":
     case "generate_videos": {
       const primary = [agentAct(t, t(`workflow:agent_prefill_${action.type}`, { episodeRef }))];
-      // 分镜图生视频的批量入口与时间线工具栏同一个确认框；宫格图与参考生视频各有自己的入口。
+      // 分镜图、参考素材与视频的批量入口与时间线工具栏同一个确认框；参考生视频没有批量入口。
       const batchKind: StoryboardBatchKind | null =
         facts.plan.status.project.generation_mode === "reference_video"
           ? null
@@ -917,11 +932,13 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
             ? "storyboards"
             : action.type === "generate_videos"
               ? "videos"
-              : null;
+              : action.type === "generate_shot_grids"
+                ? "shot-grids"
+                : null;
       if (batchKind) {
         primary.push({
           key: "batch",
-          label: t(batchKind === "storyboards" ? "dashboard:batch_generate_storyboards" : "dashboard:batch_generate_videos"),
+          label: t(`dashboard:batch_generate_${batchKind}`),
           kind: "ai",
           intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind: batchKind },
         });
@@ -980,12 +997,14 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
 
 /**
  * 引用了还没有资产图的资产时，生成入口会拒绝引用它们的分镜：下一步照常给出，另附一条跳转提示。
- * 提示只说数量，具体是哪些资产、为什么没有资产图由资产图行的提醒陈述。视频只在参考生视频模式直接引用资产。
+ * 提示只说数量，具体是哪些资产、为什么没有资产图由资产图行的提醒陈述。视频与参考素材同处
+ * 分镜图之后，缺口已由分镜图那一步陈述过，不再重复；参考生视频模式直接引用资产，照常提示。
  */
 function unsheetedAssetsHint(facts: Facts, ctx: StepListContext, actionType: WorkflowNextAction["type"]): StepNote | null {
   const names = facts.content.referenced_assets_without_sheet;
   if (names.length === 0) return null;
   if (actionType === "generate_videos" && facts.plan.status.project.generation_mode !== "reference_video") return null;
+  if (actionType === "generate_shot_grids") return null;
   const { t } = ctx;
   const path = ctx.assetRoute(names[0]);
   return {

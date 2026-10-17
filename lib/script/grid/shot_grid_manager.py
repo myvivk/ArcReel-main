@@ -63,3 +63,14 @@ class ShotGridManager:
             if grid.script_file == script_file and grid.shot_id == shot_id:
                 return grid
         return None
+
+    def list_all(self) -> list[ShotGrid]:
+        """目录下全部宫格记录；单条读坏只跳过它，不因一条坏记录拖垮整行判定。"""
+
+        grids: list[ShotGrid] = []
+        for path in sorted(self._dir.glob("shot_grid_*.json")):
+            try:
+                grids.append(ShotGrid.from_dict(json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+        return grids

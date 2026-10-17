@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from lib.project.asset_types import asset_name_comparison_key
-from lib.script.reference_video.text_parser import render_mentions
+from lib.script.reference_video.text_parser import mention_spans, render_mentions
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +166,59 @@ def render_reference_mentions(text: str, references: Sequence[ReferenceImageSlot
     return render_mentions(text, lambda name: replacements.get(name, name))
 
 
+def link_asset_mentions(text: str, references: Sequence[ReferenceImageSlot]) -> str:
+    """把正文里已登记资产的**裸名**在首次出现处包上 ``@[名称]``（ADR 0098 D-B）。
+
+    用户与 Agent 只写自然语言名字，没有任何手动 token 入口：渲染时按 references 的
+    ``logical_id`` 在首次出现处包 mention，再走 :func:`render_reference_mentions` 换成「图N」。
+    长名优先（「沈昭儿」先于「沈昭」命中），已是 mention 的区间不再包，包过的名字在同一段
+    正文里只包首次出现。名字判等走比对坐标系，正文以 NFD 落盘的同名也会被命中。
+    """
+
+    if not text or not references:
+        return text
+    # 候选名：按资产在参考图列表的序位去重，长名优先匹配，避免短名先吃掉长名的前缀。
+    names: dict[str, None] = {}
+    for slot in references:
+        if slot.logical_id:
+            names.setdefault(asset_name_comparison_key(slot.logical_id), None)
+    if not names:
+        return text
+    ordered = sorted(names, key=lambda name: (-len(name), name))
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, _name in mention_spans(text):
+        pieces.append(_link_names(text[cursor:start], ordered))
+        pieces.append(text[start:end])
+        cursor = end
+    pieces.append(_link_names(text[cursor:], ordered))
+    return "".join(pieces)
+
+
+def _link_names(segment: str, ordered: Sequence[str]) -> str:
+    """在一段没有 mention 的正文里，把每个候选名的首次出现包成 ``@[名称]``。"""
+
+    linked: list[tuple[int, int, str]] = []
+    for name in ordered:
+        position = segment.find(name)
+        while position != -1 and any(start <= position < end for start, end, _ in linked):
+            position = segment.find(name, position + 1)
+        if position == -1:
+            continue
+        linked.append((position, position + len(name), name))
+    if not linked:
+        return segment
+    linked.sort()
+    pieces: list[str] = []
+    cursor = 0
+    for start, end, name in linked:
+        pieces.append(segment[cursor:start])
+        pieces.append(f"@[{name}]")
+        cursor = end
+    pieces.append(segment[cursor:])
+    return "".join(pieces)
+
+
 __all__ = [
     "PREVIOUS_STORYBOARD_REFERENCE_DESCRIPTION",
     "PREVIOUS_STORYBOARD_ROLE",
@@ -174,6 +227,7 @@ __all__ = [
     "ReferenceImageClamp",
     "ReferenceImageSlot",
     "clamp_reference_images",
+    "link_asset_mentions",
     "mention_replacements",
     "reference_images_declaration",
     "render_reference_mentions",

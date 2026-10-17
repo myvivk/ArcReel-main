@@ -45,6 +45,7 @@ export const WORKFLOW_ACTION_TYPES = [
   "author_prompts",
   "generate_asset_sheets",
   "generate_storyboards",
+  "generate_shot_grids",
   "generate_grid",
   "repair_video_units",
   "generate_videos",

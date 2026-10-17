@@ -1077,6 +1077,7 @@ _ARTIFACT_STATUS_LABELS: dict[ArtifactStatus, str] = {
 _OPERATION_LABELS: dict[str, str] = {
     "generate_assets": "资产图生成",
     "generate_storyboards": "分镜图生成",
+    "generate_shot_grids": "参考素材生成",
     "generate_grid": "多宫格分镜生成",
     "generate_narration_audio": "旁白配音生成",
     "edit_images": "图片编辑",

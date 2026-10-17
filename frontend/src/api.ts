@@ -3865,6 +3865,17 @@ class API {
     });
   }
 
+  /** 同步生成逐格镜头文本：不落盘、不入队，由用户在弹窗里改完再「确定」（ADR 0099 D-5）。 */
+  static async authorShotGridPrompt(
+    projectName: string,
+    payload: { script_file: string; episode: number; shot_id: string; rows: number; cols: number },
+  ): Promise<{ prompt: string }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/author-prompt`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
   static async generateShotGrid(projectName: string, scriptFile: string, shotId: string) {
     const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
     return this.request<{ task_id: string; status: string }>(

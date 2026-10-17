@@ -1,4 +1,4 @@
-"""分镜图与分镜视频的集范围批量：选目标、跳过项、整批准入与提交，落在真实项目目录与真实队列上。"""
+"""分镜图、参考素材与分镜视频的集范围批量：选目标、跳过项、整批准入与提交，落在真实项目目录与真实队列上。"""
 
 from __future__ import annotations
 
@@ -15,22 +15,45 @@ from lib.generation.batch_admission import BatchAdmissionDecision
 from lib.generation.generation_queue import GenerationQueue
 from lib.generation.video_request_facts import VideoRequestCostFacts
 from lib.project.project_manager import ProjectManager
+from lib.script.grid.keyframe_parser import format_grid_prompt, parse_scene_shots
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid
 from server.services.admission.cost_estimation import quote_video_request_from_price
 from server.services.admission.storyboard_batch import (
+    SHOT_GRID_BATCH_COLS,
+    SHOT_GRID_BATCH_OPERATION,
+    SHOT_GRID_BATCH_ROWS,
     BatchSkip,
     BatchSkipReason,
     StoryboardBatchEpisodeNotFound,
     StoryboardBatchRouteMismatch,
     estimate_storyboard_video_batch_cost,
+    load_shot_grid_batch_plan,
     load_storyboard_image_batch_plan,
     load_storyboard_video_batch_plan,
     storyboard_image_prompt,
+    submit_shot_grid_batch,
     submit_storyboard_image_batch,
     submit_storyboard_video_batch,
 )
 from tests.factories import make_video_request_facts
 
 PROJECT = "demo"
+
+
+def _scene(*shots: str) -> dict:
+    """结构化分镜提示词：导语加若干 ``【镜头N｜景别】正文``。"""
+
+    return {
+        "scene": "村口黄昏。"
+        + "".join(f"【镜头{index}｜{size}】{text}" for index, (size, text) in enumerate(shots, start=1))
+    }
+
+
+def _sequence(*texts: str) -> str:
+    """逐格镜头文本的标准形态。"""
+
+    return "\n".join(f"第{index}格（远景）：{text}" for index, text in enumerate(texts, start=1))
 
 
 @pytest.fixture
@@ -370,3 +393,159 @@ async def test_video_batch_cost_is_unknown_when_a_target_has_no_planned_duration
 
     assert plan.target_ids == ["E1S01"]
     assert await estimate_storyboard_video_batch_cost(plan, session_factory) is None
+
+
+# --- 参考素材 -----------------------------------------------------------------
+
+
+def _save_grid(board_projects: ProjectManager, segment_id: str, **overrides: object) -> ShotGrid:
+    """落一条宫格记录：默认 2×2 草稿，逐格文本从 scene 现解析出来的两段。"""
+
+    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=segment_id, rows=2, cols=2)
+    grid.prompt = _sequence("小明推开院门", "小明望向远方")
+    for key, value in overrides.items():
+        setattr(grid, key, value)
+    ShotGridManager(board_projects.get_project_path(PROJECT)).save(grid)
+    return grid
+
+
+async def test_shot_grid_batch_targets_shots_without_a_confirmed_grid(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    first = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口")))
+    confirmed = _segment("E1S02", image_prompt=_scene(("全景", "小明走进院子")))
+    no_scene = _segment("E1S03", image_prompt={"scene": ""})
+    not_sequence = _segment("E1S04", image_prompt={"scene": "小明站在院门口，只有一句话"})
+    unregistered = _segment("E1S05", image_prompt=_scene(("中景", "小明抬起头")), characters_in_segment=["无名氏"])
+    chained = _segment("E1S06", image_prompt=_scene(("近景", "小明伸出手")))
+    _write_episode(board_projects, [first, confirmed, no_scene, not_sequence, unregistered, chained])
+    _save_grid(board_projects, "E1S02", status="confirmed")
+
+    _loaded, plan = await load_shot_grid_batch_plan(
+        board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
+    )
+
+    assert plan.new_task_ids == ["E1S01", "E1S06"]
+    assert plan.skips == (
+        BatchSkip("E1S02", BatchSkipReason.CONFIRMED),
+        BatchSkip("E1S03", BatchSkipReason.MISSING_PROMPT),
+        BatchSkip("E1S04", BatchSkipReason.MISSING_PROMPT),
+        BatchSkip("E1S05", BatchSkipReason.REFERENCE_UNAVAILABLE),
+    )
+    # 首张没有参考图走文生图；接在上一张之后、或引用了资产走图生图。
+    assert dict(plan.lanes) == {"E1S01": "t2i", "E1S06": "i2i"}
+
+
+async def test_shot_grid_batch_writes_records_from_scene_and_submits_one_batch(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    first = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口"), ("全景", "小明推开院门")))
+    second = _segment("E1S02", segment_break=True, image_prompt=_scene(("特写", "门环上的锈迹")))
+    _write_episode(board_projects, [first, second])
+
+    _loaded, plan = await load_shot_grid_batch_plan(
+        board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
+    )
+    assert plan.target_ids == ["E1S01", "E1S02"]
+
+    batch, enqueued, failures = await submit_shot_grid_batch(
+        plan,
+        project_name=PROJECT,
+        project_path=board_projects.get_project_path(PROJECT),
+        queue=board_queue,
+        source="webui",
+        user_id=DEFAULT_USER_ID,
+    )
+
+    assert failures == []
+    assert batch.operation == SHOT_GRID_BATCH_OPERATION
+    assert len({task.task_id for task in enqueued}) == 2
+    # 一个批次、每个分镜一个宫格任务：resource_id 是宫格 id，unit_id 是分镜 id。
+    assert {task.unit_id for task in enqueued} == {"E1S01", "E1S02"}
+    assert len(batch.batch_id) > 0
+    manager = ShotGridManager(board_projects.get_project_path(PROJECT))
+    for unit_id, scene in (("E1S01", first), ("E1S02", second)):
+        grid = manager.find(script_file="episode_1.json", shot_id=unit_id)
+        assert grid is not None
+        assert (grid.rows, grid.cols) == (SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS)
+        assert grid.status == "draft"
+        assert grid.composite_path is None
+        assert grid.task_id is None
+        assert grid.image_basis is None
+        # 逐格文本从 scene 现解析，留证与拼装出口读到的序列同一个。
+        frames = parse_scene_shots(scene["image_prompt"]["scene"]).shots
+        assert grid.prompt == format_grid_prompt(frames)
+        assert len(grid.cells) == SHOT_GRID_BATCH_ROWS * SHOT_GRID_BATCH_COLS
+        assert [cell.prompt for cell in grid.cells[: len(frames)]] == [frame.text for frame in frames]
+        assert [cell.continuity_notes for cell in grid.cells[: len(frames)]] == [frame.shot_size for frame in frames]
+        # 镜头数不足格数时尾格延续最后一个镜头，不留空格（ADR 0098 D2 建议分支）。
+        assert all("延续" in cell.continuity_notes for cell in grid.cells[len(frames) :])
+    tasks = await board_queue.get_active_tasks_for_resources(
+        project_name=PROJECT,
+        task_type="shot_grid",
+        resource_ids=[grid.id for grid in manager.list_all()],
+        script_file="episode_1.json",
+        user_id=DEFAULT_USER_ID,
+    )
+    assert len(tasks) == 2
+
+
+async def test_shot_grid_batch_adopts_a_running_task_without_rewriting_the_record(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    busy = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口")))
+    _write_episode(board_projects, [busy, _segment("E1S02", image_prompt=_scene(("全景", "小明望向远方")))])
+    grid = _save_grid(board_projects, "E1S01", status="generating", task_id=None)
+    await board_queue.enqueue_task(
+        project_name=PROJECT,
+        task_type="shot_grid",
+        media_type="image",
+        resource_id=grid.id,
+        payload={"shot_grid_id": grid.id, "script_file": "episode_1.json"},
+        script_file="episode_1.json",
+        source="webui",
+        user_id=DEFAULT_USER_ID,
+    )
+
+    _loaded, plan = await load_shot_grid_batch_plan(
+        board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
+    )
+
+    assert plan.new_task_ids == ["E1S02"]
+    assert plan.skips == (BatchSkip("E1S01", BatchSkipReason.GENERATING),)
+
+    batch, enqueued, failures = await submit_shot_grid_batch(
+        plan,
+        project_name=PROJECT,
+        project_path=board_projects.get_project_path(PROJECT),
+        queue=board_queue,
+        source="webui",
+        user_id=DEFAULT_USER_ID,
+    )
+
+    assert failures == []
+    # 生成中的那一条并入原任务（deduped），记录原样不动：仍是生成中、还挂着原任务。
+    deduped = next(task for task in enqueued if task.unit_id == "E1S01")
+    assert deduped.deduped
+    assert deduped.resource_id == grid.id
+    kept = ShotGridManager(board_projects.get_project_path(PROJECT)).get(grid.id)
+    assert kept is not None
+    assert kept.status == "generating"
+    assert kept.task_id == grid.task_id
+    assert [member.unit_id for member in batch.members] == ["E1S01", "E1S02"]
+
+
+async def test_shot_grid_batch_rejects_an_unknown_episode_and_a_reference_project(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    _write_episode(board_projects, [_segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口")))])
+    with pytest.raises(StoryboardBatchEpisodeNotFound):
+        await load_shot_grid_batch_plan(
+            board_projects, board_queue, project_name=PROJECT, episode_id=9, user_id=DEFAULT_USER_ID
+        )
+
+    board_projects.update_project(PROJECT, lambda project: project.update({"generation_mode": "reference_video"}))
+    with pytest.raises(StoryboardBatchRouteMismatch):
+        await load_shot_grid_batch_plan(
+            board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
+        )

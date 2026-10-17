@@ -57,6 +57,8 @@ from lib.script.draft_quarantine import (
     quarantine_path,
     read_quarantine,
 )
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid
 from lib.script.reference_video.text_parser import derive_references_from_text
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
@@ -71,6 +73,7 @@ from lib.workflow.operation_admission import (
     admit_edit_timeline,
     admit_plan_episodes,
     admit_script_plan,
+    admit_shot_grids,
     episode_source_present,
     pending_authoring_entry_ids,
     whole_source_present,
@@ -140,6 +143,7 @@ class WorkflowActionType(StrEnum):
     AUTHOR_PROMPTS = "author_prompts"
     GENERATE_ASSET_SHEETS = "generate_asset_sheets"
     GENERATE_STORYBOARDS = "generate_storyboards"
+    GENERATE_SHOT_GRIDS = "generate_shot_grids"
     GENERATE_GRID = "generate_grid"
     REPAIR_VIDEO_UNITS = "repair_video_units"
     GENERATE_VIDEOS = "generate_videos"
@@ -808,6 +812,64 @@ class WorkflowStateService:
                 collection["missing_ids"].append(resource_id)
         return collection
 
+    @classmethod
+    def _shot_grid_collection(
+        cls,
+        project_path: Path,
+        items: list[dict[str, Any]],
+        kind: str | None,
+        *,
+        episode: int,
+        resolver: ArtifactComparer | None,
+        issues: list[WorkflowBlocker],
+    ) -> dict[str, Any]:
+        """「参考素材」产物集合：按宫格记录 + 登记依据的时效判定（ADR 0099 D-10）。
+
+        与 ``storyboard_image`` 分开计数：confirm 会把宫格整图同时登记成分镜图（同一个
+        ``episode_storyboard`` 键），若复用那一行，两行会同时亮、把同一件东西算两遍。本行只认
+        宫格记录自己留下的依据——没有记录、没有确认、没有登记依据，都是「还没有参考素材」。
+        """
+
+        collection: dict[str, Any] = _empty_collection()
+        if kind is None:
+            return collection
+        id_field = SKELETONS[kind].id_field
+        grids: dict[str, ShotGrid] = {}
+        for grid in ShotGridManager(project_path).list_all():
+            if grid.episode != episode:
+                continue
+            current = grids.get(grid.shot_id)
+            # 同一分镜只认一条：已确认的优先，同状态取更新更晚的一条。
+            if (
+                current is None
+                or (current.status != "confirmed" and grid.status == "confirmed")
+                or (current.status == grid.status and grid.updated_at > current.updated_at)
+            ):
+                grids[grid.shot_id] = grid
+        for item in items:
+            resource_id = item.get(id_field)
+            if not isinstance(resource_id, str) or not resource_id:
+                continue
+            grid = grids.get(resource_id)
+            if (
+                grid is None
+                or grid.status != "confirmed"
+                or not grid.composite_path
+                or grid.image_basis is None
+                or resolver is None
+            ):
+                collection["missing_ids"].append(resource_id)
+                continue
+            cls._classify_artifact(
+                collection,
+                resolver=resolver,
+                key=ArtifactKey.episode_storyboard(episode, resource_id),
+                artifact_path=grid.composite_path,
+                resource_id=resource_id,
+                issues=issues,
+            )
+        return collection
+
     def get_status(self, project_name: str, episode: int | None = None) -> WorkflowStatus:
         project_path = self.pm.get_project_path(project_name)
         try:
@@ -1317,6 +1379,7 @@ class WorkflowStateService:
             "script_plan": {"state": "not_applicable" if is_ad else "missing"},
             "script": {"state": "missing"},
             "storyboards": _empty_collection(),
+            "shot_grids": _empty_collection(),
             "videos": _empty_collection(),
             "audio": _empty_collection(),
         }
@@ -1674,6 +1737,18 @@ class WorkflowStateService:
                 if generation_mode == "storyboard"
                 else _not_applicable_collection()
             )
+            artifacts["shot_grids"] = (
+                self._shot_grid_collection(
+                    project_path,
+                    items,
+                    kind,
+                    episode=number,
+                    resolver=shared.currency,
+                    issues=issues,
+                )
+                if generation_mode == "storyboard"
+                else _not_applicable_collection()
+            )
             artifacts["videos"] = self._media_collection(
                 project_path,
                 items,
@@ -1705,6 +1780,9 @@ class WorkflowStateService:
             artifacts["storyboards"] = (
                 _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
             )
+            artifacts["shot_grids"] = (
+                _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
+            )
         content.pending_authoring_ids = pending_ids
         content.needs_replan_ids = replan_ids
         # 剪辑时间线只陈述这一类内容：视频是否齐全不影响列出已有的几条。
@@ -1731,6 +1809,12 @@ class WorkflowStateService:
             formal_script=formal_present,
             pending_ids=pending_ids,
             draft_pending=any(draft.kind == QUARANTINE_KIND_PROMPT_AUTHORING for draft in content.drafts),
+        )
+        operations[WorkflowActionType.GENERATE_SHOT_GRIDS] = admit_shot_grids(
+            mode,
+            generation_mode=generation_mode,
+            formal_script=formal_present,
+            missing_ids=artifacts["shot_grids"].get("missing_ids", []),
         )
 
         episode_args = {"episode_id": number}
@@ -1862,6 +1946,16 @@ class WorkflowStateService:
                     ids=artifacts["storyboards"]["missing_ids"],
                 ),
             )
+        if generation_mode == "storyboard" and artifacts["shot_grids"]["missing_ids"]:
+            return respond(
+                target,
+                _action(
+                    WorkflowActionType.GENERATE_SHOT_GRIDS,
+                    "reference materials are missing",
+                    args=episode_args,
+                    ids=artifacts["shot_grids"]["missing_ids"],
+                ),
+            )
         if artifacts["videos"]["missing_ids"]:
             return respond(
                 target,
@@ -1945,6 +2039,7 @@ class WorkflowStateService:
                 "script_plan": {"state": "missing"},
                 "script": {"state": "missing"},
                 "storyboards": _empty_collection(),
+                "shot_grids": _empty_collection(),
                 "videos": _empty_collection(),
                 "audio": _empty_collection(),
             },

@@ -87,7 +87,10 @@ from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resou
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.prompts.reference_image_numbering import clamp_reference_images
+from lib.script.grid.keyframe_parser import parse_grid_prompt_cells, parse_scene_shots
+from lib.script.grid.layout import grid_aspect_ratio_for
 from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_prompt_builder import build_shot_grid_prompt, shot_grid_cells
 from lib.script.reference_video.execution_checkpoint import (
     ProviderMediaInput,
     StagedProviderMedia,
@@ -1565,6 +1568,22 @@ async def execute_product_task(
     )
 
 
+def _shot_grid_scene_opening(image_prompt: object) -> str:
+    """分镜提示词 scene 的导语段，作为跨格基调进「风格与锚点」。
+
+    纯文本形态的 scene 没有镜头序列结构，取不到导语就留空——逐格文本另有来源
+    （``ShotGrid.prompt``），缺导语不影响出图。
+    """
+
+    scene = image_prompt.get("scene") if isinstance(image_prompt, Mapping) else image_prompt
+    if not isinstance(scene, str) or not scene.strip():
+        return ""
+    try:
+        return parse_scene_shots(scene).opening
+    except ValueError:
+        return ""
+
+
 async def execute_shot_grid_task(
     project_name: str,
     resource_id: str,
@@ -1573,13 +1592,24 @@ async def execute_shot_grid_task(
     user_id: str = DEFAULT_USER_ID,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    """Execute a per-shot reference-material (keyframe grid) generation task.
+
+    逐格镜头文本只有 ``ShotGrid.prompt`` 一个来源（ADR 0099 D-2）：确定入队前它已由
+    服务端解析并回填留证，这里原样再解析一次，拼装出口与 PUT / 整集批量共用。
+    已确认的宫格允许改提示词后重新生成——规格才由 PUT 的 409 锁死，任务层不再按
+    status 拒绝（R7）。
+    """
+
     project_path = get_project_manager().get_project_path(project_name)
     manager = ShotGridManager(project_path)
     grid = manager.get(resource_id)
     if grid is None:
         raise ValueError(f"shot grid not found: {resource_id}")
-    if grid.status == "confirmed":
-        raise ValueError("confirmed shot grid cannot be regenerated")
+    frames = parse_grid_prompt_cells(grid.prompt)
+    if not frames:
+        raise ValueError(f"shot grid has no cell prompt: {resource_id}")
+    # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
+    grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
 
     grid.status = "generating"
     grid.error_message = None
@@ -1591,7 +1621,10 @@ async def execute_shot_grid_task(
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
         script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
         generation_input = storyboard_image_input(
-            project, script, episode=grid.episode, resource_id=grid.shot_id,
+            project,
+            script,
+            episode=grid.episode,
+            resource_id=grid.shot_id,
             observation=project_input_observation(project_path),
         )
         if isinstance(generation_input, InputRefused):
@@ -1610,34 +1643,42 @@ async def execute_shot_grid_task(
             max_reference_images=context.image.max_reference_images,
             model=context.image.backend_model,
             bind_claims=lambda claims, digests: bind_artifact_input_claims_to_content_digests(
-                resolver=resolver, claims=claims, content_digests=digests,
+                resolver=resolver,
+                claims=claims,
+                content_digests=digests,
             ),
         ) as frozen:
-            count = grid.rows * grid.cols
-            prompt = "\n".join([
-                f"Create a cinematic contact sheet with exactly {grid.rows} rows and {grid.cols} columns, "
-                f"{count} equal panels in left-to-right, top-to-bottom time order. "
-                "No text, labels or gutters. Every panel depicts a consecutive moment of the SAME shot. "
-                "Preserve characters, wardrobe, props, setting, lighting and visual style from the references. "
-                f"Panel 1 is the opening; panel {count} is the ending. "
-                "Show gradual action continuity without adding events absent from the shot description.",
-                frozen.prompt,
-                *(f"Panel {cell.index + 1} ({cell.time_ratio:.0%}): {cell.prompt.strip()}" for cell in grid.cells),
-            ])
+            prompt = build_shot_grid_prompt(
+                rows=grid.rows,
+                cols=grid.cols,
+                canvas_ratio=generation_input.canvas_ratio,
+                cells=frames,
+                style=generation_input.semantics.style,
+                style_description=generation_input.semantics.style_description,
+                scene_opening=_shot_grid_scene_opening(generation_input.semantics.image_prompt),
+                references=frozen.references.visual_references,
+            )
             await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, frozen.claims)
             await generator.generate_image_async(
                 prompt=prompt,
                 resource_type="shot_grids",
                 resource_id=grid.id,
                 reference_images=frozen.references.reference_images,
-                aspect_ratio=generation_input.canvas_ratio,
+                # 整图比例按规格与画布比例算出，不再是裸画布比例；单格比例只随提示词下发。
+                aspect_ratio=grid_aspect_ratio_for(grid.rows, grid.cols, generation_input.canvas_ratio),
                 image_size=context.image.resolution,
                 formal_output=True,
                 task_id=task_id,
                 commit_formal_output=shot_grid_formal_image_callback(
-                    project_path=project_path, grid_manager=manager, grid=grid, resource_id=grid.id,
-                    prompt=prompt, versions=generator.versions, task_id=task_id,
-                    basis=frozen.basis, outcome_box=outcome_box,
+                    project_path=project_path,
+                    grid_manager=manager,
+                    grid=grid,
+                    resource_id=grid.id,
+                    prompt=prompt,
+                    versions=generator.versions,
+                    task_id=task_id,
+                    basis=frozen.basis,
+                    outcome_box=outcome_box,
                 ),
             )
         return {

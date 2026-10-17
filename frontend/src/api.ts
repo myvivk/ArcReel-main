@@ -166,7 +166,7 @@ import type {
   StoryboardBatchPreview,
   StoryboardBatchSubmitted,
 } from "@/types/storyboard-batch";
-import type { StoryPlan, StorySnapshot } from "@/types/story-planning";
+import type { StoryPlanningArtifacts } from "@/types/story-planning";
 import type {
   AgentCredential,
   CreateAgentCredentialRequest,
@@ -369,24 +369,26 @@ function agentMemoryBase(scope: AgentMemoryScope): string {
 // ==================== API class ====================
 
 class API {
-  static async getStoryPlanning(projectName: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
+  static async getStoryPlanning(projectName: string, options: { signal?: AbortSignal } = {}): Promise<StoryPlanningArtifacts> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, options);
+  }
+
+  static async getShortDramaArtifacts(projectName: string, options: { signal?: AbortSignal } = {}): Promise<{ artifacts: StoryPlanningArtifacts["episode_plans"] }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/short-drama/artifacts`, options);
+  }
+
+  static async importShortDramaArtifacts(
+    projectName: string,
+    artifacts: Array<{ path: string; content_base64: string }>,
+  ): Promise<{ artifacts: Array<{ path: string; revision: string; kind: string; episode: number | null }> }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/short-drama/import-artifacts`, {
+      method: "POST",
+      body: JSON.stringify({ artifacts }),
+    });
   }
 
   static async getStoryContext(projectName: string, episode: number, options: { signal?: AbortSignal } = {}): Promise<{ context: string }> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/context/${episode}`, options);
-  }
-
-  static async saveStoryPlanning(projectName: string, plan: StoryPlan, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning`, {
-      method: "PUT", body: JSON.stringify({ plan, revision }), signal: options.signal,
-    });
-  }
-
-  static async extractStoryPlanning(projectName: string, revision: string, options: { signal?: AbortSignal } = {}): Promise<StorySnapshot> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/story-planning/extract`, {
-      method: "POST", body: JSON.stringify({ revision }), signal: options.signal,
-    });
   }
 
   /**
@@ -1527,7 +1529,7 @@ class API {
     );
   }
 
-  /** 读取本集短剧工厂 Markdown 源稿；历史导入未保留源稿时 exists=false。 */
+  /** 读取新版工厂集原文，并兼容旧版单集源稿。 */
   static async getShortDramaSource(
     projectName: string,
     episode: number,

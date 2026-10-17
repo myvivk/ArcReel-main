@@ -32,6 +32,25 @@ export interface ShortDramaImportResult {
   details: ShortDramaImportDetail[];
 }
 
+export interface ShortDramaArtifactInput {
+  path: string;
+  content_base64: string;
+}
+
+export async function importShortDramaArtifacts(
+  projectName: string,
+  artifacts: ShortDramaArtifactInput[],
+): Promise<{ artifacts: Array<{ path: string; revision: string; kind: string; episode: number | null }> }> {
+  try {
+    const result = await API.importShortDramaArtifacts(projectName, artifacts);
+    useAppStore.getState().pushToast(i18n.t("dashboard:short_drama_imported_artifacts", { count: result.artifacts.length }), "success");
+    return result;
+  } catch (err) {
+    useAppStore.getState().pushToast(errMsg(err), "error");
+    throw err;
+  }
+}
+
 export interface ShortDramaSource {
   episode: number;
   path: string;

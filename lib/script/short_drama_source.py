@@ -32,6 +32,10 @@ class ShortDramaSource:
 def short_drama_source_relative_path(episode: int) -> str:
     if type(episode) is not int or episode <= 0:
         raise ValueError("episode must be a positive integer")
+    return f"source/short_drama/episodes/episode_{episode:02d}.md"
+
+
+def _legacy_short_drama_source_relative_path(episode: int) -> str:
     return f"source/short_drama/episode_{episode}.md"
 
 
@@ -49,7 +53,12 @@ def load_short_drama_source(
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        return None
+        legacy_path = manager.get_project_path(project_name) / _legacy_short_drama_source_relative_path(episode)
+        try:
+            raw = legacy_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        relative = _legacy_short_drama_source_relative_path(episode)
     return ShortDramaSource(
         episode=episode,
         path=relative,
@@ -70,7 +79,7 @@ def save_short_drama_source(
     relative = short_drama_source_relative_path(episode)
     raw = markdown.encode("utf-8")
     with manager.locked_source_mutation(project_name) as source_dir:
-        path = source_dir / "short_drama" / f"episode_{episode}.md"
+        path = source_dir / "short_drama" / "episodes" / f"episode_{episode:02d}.md"
         current = None
         with suppress(FileNotFoundError):
             current = _revision(path.read_bytes())

@@ -20,6 +20,7 @@ from server.tool_runtime import (
     GenerateScriptPlanRequest,
     ImportShortDramaScriptRequest,
     ImportShortDramaSeriesRequest,
+    IngestShortDramaArtifactsRequest,
     PatchDraftRequest,
     PromoteDraftRequest,
     confirm_script_review,
@@ -28,6 +29,7 @@ from server.tool_runtime import (
     generate_script_plan,
     import_short_drama_script,
     import_short_drama_series,
+    ingest_short_drama_artifacts_tool,
     open_draft,
     patch_draft,
     promote_draft,
@@ -100,19 +102,25 @@ CONFIRM_SCRIPT_REVIEW = ToolDeclaration(
     handler=confirm_script_review,
 )
 
+INGEST_SHORT_DRAMA_ARTIFACTS = ToolDeclaration(
+    name="ingest_short_drama_artifacts",
+    description=(
+        "短剧工厂唯一新交稿入口：将七类 Markdown 工件按传入相对路径原样写入 source/short_drama。"
+        "content_base64 必须是工件 UTF-8 原文的 Base64 编码；不解析、不重写、不生成原生剧本 JSON、不登记资产、不修改 project.json。"
+        "允许路径：character-bible.md、series-outline.md、ledger.md、episode-plan/episode_NN.plan.md、"
+        "episodes/episode_NN.md、reports/episode_NN.machine.md、compliance/episode_NN.compliance.md。"
+    ),
+    request_model=IngestShortDramaArtifactsRequest,
+    migration=BLOCKED,
+    domain_key="script",
+    handler=ingest_short_drama_artifacts_tool,
+)
+
 IMPORT_SHORT_DRAMA_SCRIPT = ToolDeclaration(
     name="import_short_drama_script",
     description=(
-        "把 short-drama-factory 产出的单集剧本 Markdown 转写为本项目的正式剧情演绎剧本并落盘。"
-        "前置：项目须为剧情演绎（drama）且目标集已存在。转换只处理产物（Markdown → 剧本 JSON）："
-        "动作行与神态进 scene_description，台词进 utterances，单集按项目默认分镜时长切分为多幕"
-        "（项目未设置时使用 8 秒）。导入阶段不读取视频供应商能力；实际生成前再校验模型时长档位。"
-        "视觉层留空并置 pending_authoring 待 generate_episode_script 补出，无原生字段的短剧元信息进顶层"
-        " short_drama_meta，集尾断章卡点对齐 hook。回执给 episode 与 scenes；若本集声明时长按默认时长"
-        "排不满（剧本拍数不足或【本集时长】有误），另给 declared_seconds / actual_seconds /"
-        " duration_shortfall，此时应补写剧本行或修正时长后重新导入，不要拿缩水的剧本往下走。"
-        "不重述短剧工厂的编剧规则——其 Skill 原样复刻于"
-        " agent_runtime_profile/.claude/skills/short-drama-factory/。dry_run 不支持。"
+        "兼容旧工作区：将单集 Markdown 转为原生正式剧本。short-drama-factory 新交稿不得调用此工具，"
+        "应使用 ingest_short_drama_artifacts 原样保存七类 Markdown 工件。"
     ),
     request_model=ImportShortDramaScriptRequest,
     migration=BLOCKED,
@@ -123,13 +131,8 @@ IMPORT_SHORT_DRAMA_SCRIPT = ToolDeclaration(
 IMPORT_SHORT_DRAMA_SERIES = ToolDeclaration(
     name="import_short_drama_series",
     description=(
-        "批量把 short-drama-factory 的多集剧本 Markdown 转写为本项目的正式剧情演绎剧本并落盘。"
-        "每集独立解析转写（动作/神态进 scene_description、台词进 utterances、单集按项目默认分镜时长切分多幕、"
-        "视觉层留空待 generate_episode_script 补出、短剧元信息进顶层 short_drama_meta、集尾断章对齐 hook），"
-        "通过 asyncio.gather 并发执行，并发安全由 ProjectManager 的脚本锁与项目锁保证。"
-        "每集明细除 episode / scenes / ok 外，声明时长排不满时另给 declared_seconds / actual_seconds"
-        " / duration_shortfall，需补写剧本行或修正时长后重新导入该集。"
-        "前置：项目须为 drama 且各目标集已存在。continue_on_error 控制单集失败是否跳过。不重述短剧工厂规则。"
+        "兼容旧批量工作区：将多集 Markdown 转为原生正式剧本。short-drama-factory 新交稿不得调用此工具，"
+        "应使用 ingest_short_drama_artifacts 原样保存七类 Markdown 工件。"
     ),
     request_model=ImportShortDramaSeriesRequest,
     migration=BLOCKED,
@@ -180,6 +183,7 @@ SCRIPT_AUTHORING_TOOLS = (
     GENERATE_EPISODE_SCRIPT,
     GENERATE_SCRIPT_PLAN,
     CONFIRM_SCRIPT_REVIEW,
+    INGEST_SHORT_DRAMA_ARTIFACTS,
     IMPORT_SHORT_DRAMA_SCRIPT,
     IMPORT_SHORT_DRAMA_SERIES,
     OPEN_DRAFT,
@@ -193,6 +197,7 @@ __all__ = [
     "DISCARD_DRAFT",
     "GENERATE_EPISODE_SCRIPT",
     "GENERATE_SCRIPT_PLAN",
+    "INGEST_SHORT_DRAMA_ARTIFACTS",
     "OPEN_DRAFT",
     "PATCH_DRAFT",
     "PROMOTE_DRAFT",

@@ -1,13 +1,15 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText, Loader2 } from "lucide-react";
+import { FileText, FolderOpen, Loader2 } from "lucide-react";
 import {
   importShortDramaScript,
   importShortDramaSeries,
+  importShortDramaArtifacts,
   createBlankEpisodes,
   type ShortDramaImportDetail,
 } from "@/actions/shortDrama";
 import { Button } from "@/components/ui/button";
+import { useAppStore } from "@/stores/app-store";
 import {
   Dialog,
   DialogBody,
@@ -57,14 +59,32 @@ interface DialogProps {
   onClose: () => void;
 }
 
-type Mode = "single" | "batch";
+type Mode = "single" | "batch" | "artifacts";
+
+const ARTIFACT_PATH_RE = /^(?:character-bible\.md|series-outline\.md|ledger\.md|episode-plan\/episode_\d+\.plan\.md|episodes\/episode_\d+\.md|reports\/episode_\d+\.machine\.md|compliance\/episode_\d+\.compliance\.md)$/;
+
+function normalizeArtifactPath(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  const marker = ["character-bible.md", "series-outline.md", "ledger.md", "episode-plan/", "episodes/", "reports/", "compliance/"]
+    .map((value) => normalized.indexOf(value))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  return marker === undefined ? normalized : normalized.slice(marker);
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
 
 /**
- * 短剧工厂「导入剧本」：把 short-drama-factory 的 Markdown 转写为正式剧情演绎剧本并落盘。
- * 转写规则（与 Agent 入口一致，固化在此处）：动作/神态进 scene_description、台词进 utterances、
- * 单集按项目默认分镜时长切分多幕（未设置时使用 8 秒；导入阶段不读取视频供应商能力）、
- * 视觉层留空待 generate_episode_script 补出、集尾断章对齐 hook。
- * 集须已存在；批量模式可先「批量建空白集」再粘贴多集 Markdown（以「第 N 集」标题分隔，N 即集 ID）。
+ * 短剧工厂导入弹窗：保留兼容单集/批量模式，并支持七类工件目录原样导入。
+ * 工件目录模式不创建剧集、不转写剧本，只把符合标准相对路径的 Markdown 字节交给后端保存。
  */
 function ShortDramaImportDialog({ request, onClose }: DialogProps) {
   const { t } = useTranslation("dashboard");
@@ -75,6 +95,9 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
   const [episodeId, setEpisodeId] = useState<number | "">(request.episode ?? ledger[0]?.episode ?? "");
   const [markdown, setMarkdown] = useState("");
   const [batchText, setBatchText] = useState("");
+  const [artifactFiles, setArtifactFiles] = useState<Array<{ path: string; content_base64: string }>>([]);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const fileGeneration = useRef(0);
   const [blankCount, setBlankCount] = useState(10);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -83,7 +106,9 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
   const canSubmit =
     mode === "single"
       ? episodeId !== "" && markdown.trim().length > 0
-      : parseShortDramaBatch(batchText).length > 0;
+      : mode === "batch"
+        ? parseShortDramaBatch(batchText).length > 0
+        : artifactFiles.length > 0 && artifactError === null;
 
   const createBlanks = async () => {
     if (creating || blankCount <= 0) return;
@@ -105,24 +130,31 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
         await importShortDramaScript(projectName, Number(episodeId), markdown);
         await refreshAfterWrite(projectName, t);
         onClose();
-      } else {
+      } else if (mode === "batch") {
         const episodes = parseShortDramaBatch(batchText);
         const res = await importShortDramaSeries(projectName, episodes, true);
         await refreshAfterWrite(projectName, t);
         setResult(res);
+      } else {
+        await importShortDramaArtifacts(projectName, artifactFiles);
+        await refreshAfterWrite(projectName, t);
+        onClose();
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const submitLabel = mode === "single" ? t("short_drama_import_submit") : t("short_drama_import_submit_batch");
+  const submitLabel = mode === "artifacts" ? t("short_drama_import_submit_artifacts") : mode === "single" ? t("short_drama_import_submit") : t("short_drama_import_submit_batch");
 
   return (
     <Dialog
       open
       onOpenChange={(next) => {
-        if (!next && !submitting) onClose();
+        if (!next && !submitting) {
+          fileGeneration.current += 1;
+          onClose();
+        }
       }}
     >
       <DialogContent showCloseButton={!submitting}>
@@ -148,6 +180,15 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
                 onClick={() => setMode("batch")}
               >
                 {t("short_drama_import_mode_batch")}
+              </Button>
+              <Button
+                type="button"
+                variant={mode === "artifacts" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setMode("artifacts")}
+              >
+                <FolderOpen aria-hidden data-icon="inline-start" />
+                {t("short_drama_import_mode_artifacts")}
               </Button>
             </div>
 
@@ -179,6 +220,53 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
                   disabled={submitting}
                   className="min-h-48"
                 />
+              </div>
+            ) : mode === "artifacts" ? (
+              <div className="flex flex-col gap-3">
+                <Label htmlFor={`${fieldId}-artifacts`}>选择短剧工件 Markdown 文件</Label>
+                <input
+                  id={`${fieldId}-artifacts`}
+                  type="file"
+                  multiple
+                  {...{ webkitdirectory: "" }}
+                  accept=".md,text/markdown"
+                  disabled={submitting}
+                  onChange={async (event) => {
+                    const generation = ++fileGeneration.current;
+                    const files = Array.from(event.target.files ?? []);
+                    const loaded: Array<{ path: string; content_base64: string }> = [];
+                    try {
+                      for (const file of files) {
+                        loaded.push({
+                          path: normalizeArtifactPath(file.webkitRelativePath || file.name),
+                          content_base64: encodeBase64(new Uint8Array(await file.arrayBuffer())),
+                        });
+                      }
+                    } catch {
+                      if (fileGeneration.current === generation) {
+                        setArtifactFiles([]);
+                        setArtifactError(t("short_drama_import_artifacts_read_failed"));
+                      }
+                      return;
+                    }
+                    if (fileGeneration.current !== generation) return;
+                    const invalid = loaded.filter((item) => !ARTIFACT_PATH_RE.test(item.path));
+                    const accepted = loaded.filter((item) => ARTIFACT_PATH_RE.test(item.path));
+                    const duplicates = accepted.filter((item, index) => accepted.findIndex((other) => other.path === item.path) !== index);
+                    setArtifactFiles(accepted);
+                    setArtifactError(invalid.length || duplicates.length ? t("short_drama_import_artifacts_invalid", {
+                      invalid: invalid.length,
+                      duplicates: duplicates.length,
+                    }) : null);
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">{t("short_drama_import_artifacts_hint")}</p>
+                {artifactError ? <p role="alert" className="text-sm text-destructive">{artifactError}</p> : null}
+                {artifactFiles.length ? (
+                  <div className="rounded-md border border-input p-3 text-sm">
+                    {artifactFiles.map((file) => <p key={file.path} className="font-mono text-xs">{file.path}</p>)}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="flex flex-col gap-3">

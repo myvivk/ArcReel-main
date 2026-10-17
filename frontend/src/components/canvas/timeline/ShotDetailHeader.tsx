@@ -42,12 +42,12 @@ export function ShotDetailHeader({
 }: ShotDetailHeaderProps) {
   const { t } = useTranslation("dashboard");
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/60 bg-background px-5 py-3">
+    <div className="flex shrink-0 items-center gap-x-3 border-b border-border/60 bg-background px-5 py-3">
       <Badge translate="no">
         <span className="num">{itemIdWithinEpisode(segmentId)}</span>
       </Badge>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">{meta}</div>
-      <div className="flex min-w-0 flex-1 basis-full items-center justify-end gap-0.5 border-t border-border/50 pt-2 @min-[560px]/shot-detail:ml-auto @min-[560px]/shot-detail:basis-auto @min-[560px]/shot-detail:min-w-fit @min-[560px]/shot-detail:flex-none @min-[560px]/shot-detail:border-t-0 @min-[560px]/shot-detail:pt-0">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{meta}</div>
+      <div className="flex flex-none items-center justify-end gap-0.5">
         <span className="num mr-1.5 rounded-md bg-muted px-2 py-1 text-xs text-subtle-foreground">
           {t("shot_detail_count", { current: index + 1, total })}
         </span>

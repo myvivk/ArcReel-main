@@ -187,8 +187,8 @@ export function MediaCard({
             </AspectFrame>
           </PreviewableImageFrame>
         ) : (
-          <div className="overflow-hidden rounded-lg ring-1 ring-border">
-            <AspectFrame ratio={aspectRatio}>
+          <div className="w-fit overflow-hidden rounded-lg ring-1 ring-border">
+            <AspectFrame ratio={aspectRatio} className={kind === "video" && aspectRatio === "16:9" ? "h-[265px] w-[450px]" : undefined}>
               <PresentationPlayer
                 key={`${segmentId}:${assetFp ?? "current"}`}
                 projectName={projectName}
@@ -201,7 +201,10 @@ export function MediaCard({
           </div>
         )
       ) : (
-        <AspectFrame ratio={aspectRatio}>
+        <AspectFrame
+          ratio={aspectRatio}
+          className={kind === "video" && aspectRatio === "16:9" ? "h-[265px] w-[450px]" : undefined}
+        >
           <div className="flex size-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
             <Icon aria-hidden className="size-5" />
             <span className="text-xs">{t("media_not_generated")}</span>

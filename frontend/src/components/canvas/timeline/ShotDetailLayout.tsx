@@ -96,7 +96,7 @@ export function ShotDetailLayout({
       {header}
       <div ref={detailRef} className="@container/shot-detail flex min-h-0 flex-1 flex-col">
         <div
-          className="relative grid min-h-0 flex-1 auto-rows-max grid-cols-[minmax(0,1fr)] content-start overflow-y-auto bg-background [scrollbar-gutter:stable] @min-[480px]/shot-detail:grid-cols-[minmax(0,1fr)_300px] @min-[480px]/shot-detail:grid-rows-[minmax(0,1fr)] @min-[480px]/shot-detail:content-stretch @min-[480px]/shot-detail:overflow-visible @min-[860px]/shot-detail:grid-cols-[minmax(0,70fr)_minmax(0,30fr)]"
+          className="relative grid min-h-0 flex-1 auto-rows-max grid-cols-[minmax(0,1fr)] content-start overflow-y-auto bg-background [scrollbar-gutter:stable] @min-[480px]/shot-detail:grid-cols-[minmax(0,1fr)_300px] @min-[480px]/shot-detail:grid-rows-[minmax(0,1fr)] @min-[480px]/shot-detail:content-stretch @min-[480px]/shot-detail:overflow-visible @min-[860px]/shot-detail:grid-cols-[minmax(0,1fr)_var(--shot-media-percent)]"
           style={{
             "--shot-media-percent": `${mediaPercent}%`,
           } as CSSProperties}
@@ -187,31 +187,5 @@ export function ShotSection({
       </div>
       {children}
     </section>
-  );
-}
-
-/**
- * 媒体栏：媒体栏够宽时分镜图与视频并排（竖屏 440px、横屏 720px 起），否则上下排。
- */
-function ShotMediaGrid({
-  aspectRatio,
-  storyboard,
-  video,
-}: {
-  aspectRatio: "9:16" | "16:9";
-  storyboard: ReactNode;
-  video: ReactNode;
-}) {
-  const portrait = aspectRatio === "9:16";
-  return (
-    <div
-      className={cn(
-        "grid items-start gap-x-4 gap-y-5",
-        portrait ? "@min-[440px]/shot-media:grid-cols-2" : "@min-[720px]/shot-media:grid-cols-2",
-      )}
-    >
-      <div className="min-w-0">{storyboard}</div>
-      <div className="flex min-w-0 flex-col">{video}</div>
-    </div>
   );
 }

@@ -2129,6 +2129,7 @@ export default {
   'open_assistant_panel': 'Mở bảng Agent',
   'resize_assistant_panel': 'Điều chỉnh chiều rộng bảng Agent (nhấp đúp để đặt lại)',
   'resize_sidebar': 'Điều chỉnh chiều rộng thanh bên (nhấp đúp để đặt lại)',
+  'resize_shot_detail': 'Điều chỉnh chiều rộng khu vực chỉnh sửa và phương tiện',
   'agent_panel_label': 'Bảng Agent',
   'agent_panel_toggle': 'Agent',
   'agent_status_running': 'Agent đang chạy',

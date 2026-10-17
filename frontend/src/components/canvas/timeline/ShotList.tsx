@@ -173,9 +173,9 @@ export function ShotList({
   }
 
   return (
-    <nav aria-label={t("shot_list_label")} className="flex min-h-0 min-w-0 flex-col border-r border-border/50 bg-sidebar/40">
-      <div className="flex shrink-0 items-center gap-1 px-3 pt-3 pb-2">
-        <h2 className="text-xs font-medium text-muted-foreground">{t("shots_section_title")}</h2>
+    <nav aria-label={t("shot_list_label")} className="flex min-h-0 min-w-0 flex-col border-r border-border/60 bg-sidebar/60">
+      <div className="flex shrink-0 items-center gap-1 px-3 pt-4 pb-3">
+        <h2 className="text-xs font-semibold tracking-wide text-subtle-foreground">{t("shots_section_title")}</h2>
         <span className="num text-xs text-muted-foreground">{visibleIds.length}</span>
         <span className="flex-1" />
         {onAppend && (
@@ -198,7 +198,7 @@ export function ShotList({
         </Tooltip>
       </div>
 
-      <div className="shrink-0 px-3 pb-2">
+      <div className="shrink-0 px-3 pb-3">
         <InputGroup>
           <InputGroupInput
             type="search"
@@ -213,7 +213,7 @@ export function ShotList({
         </InputGroup>
       </div>
 
-      <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         <SortableList
           ids={visibleIds}
           onMove={handleSortMove}
@@ -237,8 +237,8 @@ export function ShotList({
                   id={id}
                   data-shot-id={id}
                   className={cn(
-                    "group/shot flex items-center gap-0.5 rounded-lg pr-0.5 transition-colors hover:bg-muted/60 data-dragging:bg-popover data-dragging:shadow-overlay",
-                    active && "bg-primary/12 hover:bg-primary/12",
+                    "group/shot relative flex items-center gap-0.5 rounded-lg border border-transparent pr-0.5 transition-colors hover:bg-muted/70 data-dragging:bg-popover data-dragging:shadow-overlay",
+                    active && "border-primary/20 bg-primary/10 hover:bg-primary/10",
                   )}
                 >
                   <button

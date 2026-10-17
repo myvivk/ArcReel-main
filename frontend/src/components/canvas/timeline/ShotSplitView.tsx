@@ -211,7 +211,7 @@ export function ShotSplitView({
     <div
       ref={rootRef}
       className={cn(
-        "grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)]",
+        "grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-background",
         collapsed ? "grid-cols-[44px_minmax(0,1fr)]" : "grid-cols-[220px_minmax(0,1fr)]",
       )}
     >

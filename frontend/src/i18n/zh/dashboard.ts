@@ -2163,6 +2163,7 @@ export default {
   'open_assistant_panel': '展开 Agent 面板',
   'resize_assistant_panel': '调整 Agent 面板宽度（双击恢复默认）',
   'resize_sidebar': '调整侧栏宽度（双击恢复默认）',
+  'resize_shot_detail': '调整编辑区和媒体区宽度',
   'agent_panel_label': 'Agent 面板',
   'agent_panel_toggle': 'Agent',
   'agent_status_running': 'Agent 正在运行',

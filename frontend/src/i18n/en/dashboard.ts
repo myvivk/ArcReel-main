@@ -2164,6 +2164,7 @@ export default {
   'open_assistant_panel': 'Open agent panel',
   'resize_assistant_panel': 'Resize agent panel (double-click to reset)',
   'resize_sidebar': 'Resize sidebar (double-click to reset)',
+  'resize_shot_detail': 'Resize editor and media areas',
   'agent_panel_label': 'Agent panel',
   'agent_panel_toggle': 'Agent',
   'agent_status_running': 'Agent is running',

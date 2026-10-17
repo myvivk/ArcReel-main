@@ -115,4 +115,48 @@ describe("StoryboardBatchDialog", () => {
     expect(screen.getByText(/过期的视频不进批量/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开始生成" })).toBeDisabled();
   });
+
+  it("lists reference material targets and skips confirmed ones under one batch", async () => {
+    vi.spyOn(API, "previewStoryboardBatch").mockResolvedValue({
+      targets: [{ unit_id: "E1S02" }, { unit_id: "E1S05" }],
+      skipped: [
+        { unit_id: "E1S01", reason: "confirmed" },
+        { unit_id: "E1S03", reason: "missing_prompt" },
+      ],
+      estimated_cost: { USD: 0.13 },
+    });
+    const submit = vi.spyOn(API, "submitStoryboardBatch").mockResolvedValue({
+      batch_id: "b2",
+      task_ids_by_unit: { E1S02: "t1", E1S05: "t2" },
+      skipped: [],
+      enqueue_failures: [],
+    });
+    const onClose = vi.fn();
+
+    render(<StoryboardBatchDialog projectName="demo" episode={2} kind="shot-grids" onClose={onClose} />);
+
+    expect(await screen.findByText("将生成 2 个分镜")).toBeInTheDocument();
+    expect(screen.getByText("跳过 2 个分镜")).toBeInTheDocument();
+    expect(screen.getByText(/已有确认过的参考素材/)).toBeInTheDocument();
+    expect(screen.getByText(/缺提示词/)).toBeInTheDocument();
+    expect(screen.getByText("预估费用：$0.13")).toBeInTheDocument();
+    // 规格与逐格文本在批量里不由人定：一句说明讲清 2×2 与现场解析
+    expect(screen.getByText(/规格统一为 2×2/)).toBeInTheDocument();
+    expect(screen.getByText(/已确认的参考素材不进批量/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(submit).toHaveBeenCalledWith("demo", 2, "shot-grids");
+    expect(useAppStore.getState().toast?.text).toBe("已提交 2 个参考素材生成任务");
+  });
+
+  it("says no shot needs reference materials when the batch is empty", async () => {
+    vi.spyOn(API, "previewStoryboardBatch").mockResolvedValue({ targets: [], skipped: [], estimated_cost: null });
+
+    render(<StoryboardBatchDialog projectName="demo" episode={1} kind="shot-grids" onClose={vi.fn()} />);
+
+    expect(await screen.findByText("本集没有需要生成参考素材的分镜")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始生成" })).toBeDisabled();
+  });
 });

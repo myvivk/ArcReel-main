@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
-import { Check, Loader2, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Check, Loader2, Sparkles } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
 import type { ShotGridPlan } from "@/types/shot-grid";
-import { enqueueShotGrid } from "@/actions/generation";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { useShotGridDialogStore } from "@/stores/shot-grid-dialog-store";
+import { ShotGridDialogHost } from "./ShotGridDialog";
 
 interface ReferenceMaterialsSectionProps {
   projectName: string;
@@ -20,6 +21,9 @@ interface ReferenceMaterialsSectionProps {
   onPlanChange: (plan: ShotGridPlan | null) => void;
   onBusyChange: (busy: boolean) => void;
 }
+
+/** 格数 → 静态栅格类：Tailwind 只能识别完整的类名，动态拼接的那一个不会被编译进去。 */
+const GRID_COLUMNS: Record<number, string> = { 2: "grid-cols-2", 3: "grid-cols-3" };
 
 export function ReferenceMaterialsSection({
   projectName,
@@ -35,14 +39,27 @@ export function ReferenceMaterialsSection({
 }: ReferenceMaterialsSectionProps) {
   const { t } = useTranslation("dashboard");
   const fingerprints = useProjectsStore((state) => state.assetFingerprints);
+  const titleId = useId();
+  const openDialog = useShotGridDialogStore((s) => s.open);
+  const dialogOpen = useShotGridDialogStore((s) => s.request) !== null;
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 弹窗关掉就重读：确定入队了这一条要接着轮询它的任务，取消则回到原样。
+  const [reloadKey, setReloadKey] = useState(0);
+  const wasOpen = useRef(dialogOpen);
+  useEffect(() => {
+    if (wasOpen.current && !dialogOpen) setReloadKey((key) => key + 1);
+    wasOpen.current = dialogOpen;
+  }, [dialogOpen]);
   const busy = submitting || plan?.status === "generating";
 
-  const updatePlan = useCallback((next: ShotGridPlan | null) => {
-    setPlan(next);
-    onPlanChange(next);
-  }, [onPlanChange]);
+  const updatePlan = useCallback(
+    (next: ShotGridPlan | null) => {
+      setPlan(next);
+      onPlanChange(next);
+    },
+    [onPlanChange],
+  );
 
   useEffect(() => {
     if (!scriptFile) return;
@@ -53,7 +70,7 @@ export function ReferenceMaterialsSection({
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [projectName, scriptFile, shotId, updatePlan]);
+  }, [projectName, scriptFile, shotId, updatePlan, reloadKey]);
 
   useEffect(() => {
     if (!plan?.task_id || plan.status !== "generating") return;
@@ -84,23 +101,11 @@ export function ReferenceMaterialsSection({
     return () => onBusyChange(false);
   }, [busy, onBusyChange]);
 
-  const generate = async () => {
+  /** 打开配置弹窗：先保存分镜上的未提交修改，scene 是逐格文本的来源。 */
+  const configure = async () => {
     if (!scriptFile || episode === undefined || disabled || busy || submitting) return;
-    if (saveFirst && !await beforeGenerate()) return;
-    setSubmitting(true);
-    try {
-      const result = await enqueueShotGrid(projectName, scriptFile, shotId);
-      const fresh = await API.getShotGrid(projectName, scriptFile, shotId);
-      if (fresh) {
-        updatePlan(fresh);
-      } else if (plan) {
-        updatePlan({ ...plan, status: "generating", task_id: result.taskIds[0] ?? null, error_message: null });
-      }
-    } catch {
-      useAppStore.getState().pushToast(t("shot_materials_failed"), "error");
-    } finally {
-      setSubmitting(false);
-    }
+    if (saveFirst && !(await beforeGenerate())) return;
+    openDialog({ projectName, scriptFile, episode, shotId, plan });
   };
 
   const confirm = async () => {
@@ -119,15 +124,22 @@ export function ReferenceMaterialsSection({
   const compositeUrl = plan?.composite_path
     ? API.getFileUrl(projectName, plan.composite_path, fingerprints[plan.composite_path] ?? null, { width: 1280 })
     : null;
+  const columns = GRID_COLUMNS[plan?.cols ?? 2] ?? "grid-cols-2";
 
   return (
-    <section className="flex flex-col gap-2">
+    <section aria-labelledby={titleId} className="flex flex-col gap-2">
       <div className="flex min-h-7 flex-wrap items-center gap-2">
-        <h3 className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">{t("shot_reference_materials")}</h3>
+        <h3 id={titleId} className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">{t("shot_reference_materials")}</h3>
         {!readOnly && (
-          <Button type="button" variant="outline" size="xs" disabled={!scriptFile || episode === undefined || disabled || busy || submitting} onClick={() => void generate()}>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={!scriptFile || episode === undefined || disabled || busy || submitting}
+            onClick={() => void configure()}
+          >
             {(busy || submitting) ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : <Sparkles aria-hidden data-icon="inline-start" />}
-            {t("shot_generate_materials")}
+            {t("shot_configure_materials")}
           </Button>
         )}
         {plan?.status === "completed" && !readOnly && (
@@ -143,7 +155,7 @@ export function ReferenceMaterialsSection({
       {compositeUrl ? (
         <img src={compositeUrl} alt={t("shot_materials_preview")} className="max-h-80 w-full rounded-md border border-border object-contain" />
       ) : plan?.cells.length ? (
-        <div className={`grid grid-cols-${plan.cols} gap-2`}>
+        <div className={`grid ${columns} gap-2`}>
           {plan.cells.map((cell) => (
             <div key={cell.index} className="aspect-video overflow-hidden rounded-md border border-border bg-muted">
               {cell.image_path ? <img src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 320 })} alt={t("shot_keyframe", { index: cell.index })} className="size-full object-cover" /> : null}
@@ -151,6 +163,7 @@ export function ReferenceMaterialsSection({
           ))}
         </div>
       ) : null}
+      <ShotGridDialogHost />
     </section>
   );
 }

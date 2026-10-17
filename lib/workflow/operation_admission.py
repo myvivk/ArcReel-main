@@ -50,6 +50,7 @@ class AdmissionReason(StrEnum):
     PROMPT_AUTHORING_DRAFT_PENDING = "prompt_authoring_draft_pending"
     AD_INPUTS_MISSING = "ad_brief_and_products_missing"
     NO_AVAILABLE_VIDEO = "no_available_video"
+    NO_MISSING_SHOT_GRID = "no_missing_shot_grid"
 
 
 class OperationAdmission(BaseModel):
@@ -140,9 +141,7 @@ def admit_plan_episodes(
     return _refused(AdmissionReason.REPLAN_CANDIDATE_PENDING) if replan_pending else ADMITTED
 
 
-def admit_script_plan(
-    content_mode: object, *, episode_source: bool, formal_script: bool = False
-) -> OperationAdmission:
+def admit_script_plan(content_mode: object, *, episode_source: bool, formal_script: bool = False) -> OperationAdmission:
     """AI 规划脚本：本集有集原文。
 
     短剧工厂导入的集无集原文，但已有正式脚本：AI 规划脚本不适用，应走
@@ -199,6 +198,27 @@ def admit_edit_timeline(*, available_videos: int) -> OperationAdmission:
     return ADMITTED if available_videos > 0 else _refused(AdmissionReason.NO_AVAILABLE_VIDEO)
 
 
+def admit_shot_grids(
+    content_mode: object,
+    *,
+    generation_mode: object,
+    formal_script: bool,
+    missing_ids: Sequence[str],
+) -> OperationAdmission:
+    """参考素材（单分镜宫格）：分镜图项目里，正式脚本在位且有分镜缺参考素材。
+
+    与「分镜图」行同一把尺子：没有正式脚本就无从谈产物；一个都不缺时这条操作无事可做。
+    参考生视频与广告不走这一步，报「不适用」而不是「缺东西」。
+    """
+    if content_mode == "ad" or generation_mode != "storyboard":
+        return NOT_APPLICABLE
+    if not formal_script:
+        return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
+    if not missing_ids:
+        return _refused(AdmissionReason.NO_MISSING_SHOT_GRID)
+    return ADMITTED
+
+
 __all__ = [
     "ADMITTED",
     "NOT_APPLICABLE",
@@ -211,6 +231,7 @@ __all__ = [
     "admit_edit_timeline",
     "admit_plan_episodes",
     "admit_script_plan",
+    "admit_shot_grids",
     "episode_source_present",
     "pending_authoring_entry_ids",
     "whole_source_present",

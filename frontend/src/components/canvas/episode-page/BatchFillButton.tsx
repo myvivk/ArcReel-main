@@ -6,29 +6,32 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useActiveResourceIds, type ResourceKind } from "@/stores/tasks-store";
 import { useWorkflowStore, workflowPlanKey } from "@/stores/workflow-store";
 
-export type BatchFillKind = "storyboards" | "videos" | "narration";
+export type BatchFillKind = "storyboards" | "videos" | "narration" | "shot-grids";
 
 /** 计划里各类产物的集合名。 */
 const ARTIFACT_OF: Record<BatchFillKind, string> = {
   storyboards: "storyboards",
   videos: "videos",
   narration: "audio",
+  "shot-grids": "shot_grids",
 };
 
 /**
  * 这一集某类产物还要补齐几份：计划里缺失的条目扣掉正在生成的。
  * 计划还没取到或属于别的集、这类产物读不了或本项目不涉及时数不出来，返回 null。
+ * ``taskKind`` 缺省表示这一栏的忙碌态无法按资源 ID 归并（参考素材的任务按宫格记录寻址），
+ * 此时不扣——正在生成的宫格仍是缺失项，确认框会把它们列为「生成中」跳过。
  */
 export function useBatchGap(
   projectName: string,
   episode: number,
   kind: BatchFillKind,
-  taskKind: ResourceKind,
+  taskKind?: ResourceKind,
 ): number | null {
   const collection = useWorkflowStore((s) =>
     s.planKey === workflowPlanKey(projectName, episode) ? s.plan?.status.artifacts[ARTIFACT_OF[kind]] : undefined,
   );
-  const busy = useActiveResourceIds(taskKind, projectName);
+  const busy = useActiveResourceIds(taskKind ?? null, projectName);
   const missing = collection?.missing_ids;
   if (!Array.isArray(missing) || collection?.state === "blocked" || collection?.state === "not_applicable") {
     return null;

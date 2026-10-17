@@ -122,6 +122,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   const hasScript = Boolean(episodeScript);
   const [batchKind, setBatchKind] = useState<StoryboardBatchKind | null>(null);
   const storyboardGap = useBatchGap(projectName, episode, "storyboards", "storyboard");
+  const shotGridGap = useBatchGap(projectName, episode, "shot-grids");
   const videoGap = useBatchGap(projectName, episode, "videos", "video");
   const narrationGap = useBatchGap(projectName, episode, "narration", "tts");
 
@@ -230,6 +231,12 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             count={storyboardGap}
             disabled={demoReadOnly}
             onClick={() => setBatchKind("storyboards")}
+          />
+          <BatchFillButton
+            kind="shot-grids"
+            count={shotGridGap}
+            disabled={demoReadOnly}
+            onClick={() => setBatchKind("shot-grids")}
           />
           <BatchFillButton
             kind="videos"

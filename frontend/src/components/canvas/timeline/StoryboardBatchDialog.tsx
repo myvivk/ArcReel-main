@@ -22,7 +22,7 @@ import { costEntries, formatCurrencyAmount } from "@/utils/cost-format";
 import type { StoryboardBatchKind, StoryboardBatchPreview, WorkflowAdmission } from "@/types";
 
 /**
- * 一集分镜图 / 分镜视频批量补齐的确认框：列出要生成的分镜、跳过项与原因，能算出时给出预估费用。
+ * 一集分镜图 / 参考素材 / 分镜视频批量补齐的确认框：列出要生成的分镜、跳过项与原因，能算出时给出预估费用。
  *
  * 分镜视频整批准入：预览时已知不满足就陈述原因、不给提交；预览之后状态有变、提交时才被拒绝的，
  * 同样在框内陈述，一个任务也没建。提交中忽略关闭请求。
@@ -88,7 +88,7 @@ export function StoryboardBatchDialog({
     body = (
       <div className="flex flex-col gap-3" data-testid="storyboard-batch-preview">
         {preview.targets.length === 0 ? (
-          <p>{t("storyboard_batch_nothing")}</p>
+          <p>{t(`storyboard_batch_nothing.${kind}`, { defaultValue: t("storyboard_batch_nothing") })}</p>
         ) : (
           <div className="flex flex-col gap-1">
             <p className="font-medium text-subtle-foreground">
@@ -123,6 +123,7 @@ export function StoryboardBatchDialog({
             <p>{cost ? t("storyboard_batch_cost", { cost }) : t("storyboard_batch_cost_unknown")}</p>
           )
         )}
+        {kind === "shot-grids" ? <p>{t("storyboard_batch_shot_grid_note")}</p> : null}
         <p>{t(`storyboard_batch_stale_note.${kind}`)}</p>
       </div>
     );

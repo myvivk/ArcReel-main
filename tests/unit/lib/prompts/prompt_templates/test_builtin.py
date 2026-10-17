@@ -85,6 +85,7 @@ def test_builtin_templates_declare_stage_and_trigger_and_lock_structural_partial
         "reference_video/unit",
         "storyboard/grid",
         "storyboard/image",
+        "storyboard/shot_grid",
     ]
 
 

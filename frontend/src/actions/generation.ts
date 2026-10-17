@@ -421,8 +421,12 @@ export async function enqueueReferenceVideoBatch(
 }
 
 /**
- * 一集分镜图 / 分镜视频的批量生成：目标集合由服务端决定（本集没有可用产物的分镜），
+ * 一集分镜图 / 参考素材 / 分镜视频的批量生成：目标集合由服务端决定（本集没有可用产物的条目），
  * 占用标记在响应后按「分镜 → task_id」逐项补打。
+ *
+ * 参考素材没有按资源 ID 归并的占用槽：它的批量任务 resource_id 是宫格记录 ID，而清单的键是
+ * 分镜，两者对不上；忙碌态由分镜详情轮询宫格记录自身呈现（{@link useActiveResourceIds}
+ * 传 null 即为此设），故这一类不打标。
  *
  * 分镜视频整批准入未通过时一个任务也没建，不提示成功，由调用方陈述结论。
  */
@@ -433,8 +437,10 @@ export async function enqueueStoryboardBatch(
 ): Promise<StoryboardBatchSubmitted> {
   const res = await API.submitStoryboardBatch(projectName, episode, kind);
   if (res.admission && res.admission.decision !== "admitted") return res;
-  const taskType = kind === "storyboards" ? "storyboard" : "video";
-  markResourcesByTaskId(projectName, taskType, taskType, res.task_ids_by_unit);
+  if (kind !== "shot-grids") {
+    const taskType = kind === "storyboards" ? "storyboard" : "video";
+    markResourcesByTaskId(projectName, taskType, taskType, res.task_ids_by_unit);
+  }
   const queued = Object.keys(res.task_ids_by_unit).length;
   notifyEnqueued(
     false,

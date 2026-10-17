@@ -42,6 +42,7 @@ TemplateStage = Literal[
     "asset_sheet",
     "storyboard_image",
     "grid",
+    "shot_grid",
     "storyboard_video",
     "reference_video",
     "style_analysis",
@@ -76,7 +77,7 @@ class GenerationTaskTrigger(_Trigger):
     """生成任务执行时渲染；``name`` 是任务类型，``asset`` 合指角色、场景、道具、商品与角色衍生五种资产图任务。"""
 
     kind: Literal["generation_task"]
-    name: Literal["asset", "storyboard", "video", "reference_video", "grid"]
+    name: Literal["asset", "storyboard", "video", "reference_video", "grid", "shot_grid"]
 
 
 #: 模版的触发方，三类各带一个具体名，取值封闭。

@@ -297,6 +297,18 @@ def extract_mentions(text: str) -> list[str]:
     return result
 
 
+def mention_spans(text: str) -> list[tuple[int, int, str]]:
+    """正文中每个 mention 的 ``(start, end, name)``，按出现序；没有 mention 时为空列表。
+
+    :func:`render_mentions` 只换字、不暴露位置，自动链接（把资产裸名包成 mention）却必须知道
+    哪些区间已经是 mention——否则会把 ``@[名称]`` 内部的名字再包一层。本函数是
+    :func:`_iter_mentions` 的公开出口，与其余出口同一识别口径（含旧式裸 ``@名字``）。
+    ``name`` 是原文切片，未归一；判等由调用方按需走比对坐标系。
+    """
+
+    return list(_iter_mentions(text))
+
+
 def mention_names(text: str) -> list[str]:
     """正文里出现的全部 ``@`` 引用名（保持首次出现顺序、去重），**含发声记号的说话人位**。
 

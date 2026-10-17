@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from math import gcd
 
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_templates.builtin import builtin_templates
@@ -17,6 +16,7 @@ from lib.prompts.reference_image_numbering import (
     reference_images_declaration,
     render_reference_mentions,
 )
+from lib.script.grid.layout import panel_aspect_ratio_for
 
 
 def pending_grid_prompt_ids(scenes: Sequence[Mapping[str, object]], id_field: str) -> list[str]:
@@ -100,13 +100,10 @@ def _extract_action(scene: dict) -> str:
 def _compute_panel_aspect(grid_aspect_ratio: str, rows: int, cols: int) -> str:
     """从整体宫格比例推算单格比例。
 
-    例：grid 4:3, 3行2列 → panel (4/2):(3/3) = 2:1
+    例：grid 4:3, 3行2列 → panel (4/2):(3/3) = 2:1。与单分镜宫格共用
+    :func:`lib.script.grid.layout.panel_aspect_ratio_for`，两个出口的「每格比例」同源。
     """
-    gw, gh = (int(x) for x in grid_aspect_ratio.split(":"))
-    pw = gw * rows  # 交叉相乘避免浮点
-    ph = gh * cols
-    g = gcd(pw, ph)
-    return f"{pw // g}:{ph // g}"
+    return panel_aspect_ratio_for(grid_aspect_ratio, rows, cols)
 
 
 def build_grid_prompt(

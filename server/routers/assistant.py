@@ -22,12 +22,12 @@ from server.agent_runtime.models import SessionMeta, WithdrawalIntent
 from server.agent_runtime.service import (
     AssistantService,
     InterruptSettleTimeoutError,
-    SkillNotReadyError,
     PendingQuestionError,
     QueuedMessagesPendingError,
     RewriteAnchorError,
     RewriteUnavailableError,
     SessionSupersededError,
+    SkillNotReadyError,
 )
 from server.agent_runtime.session_branch import SessionBranchError
 from server.agent_runtime.session_manager import (

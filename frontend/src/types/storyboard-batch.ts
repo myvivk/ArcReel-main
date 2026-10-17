@@ -4,8 +4,8 @@ import type { CostBreakdown } from "./cost";
 import type { ReferenceBatchEnqueueFailure } from "./reference-video";
 import type { WorkflowAdmission } from "./workflow";
 
-/** `storyboards` 批量生成分镜图，`videos` 批量生成分镜视频。 */
-export type StoryboardBatchKind = "storyboards" | "videos";
+/** `storyboards` 批量生成分镜图，`shot-grids` 批量生成参考素材，`videos` 批量生成分镜视频。 */
+export type StoryboardBatchKind = "storyboards" | "shot-grids" | "videos";
 
 /** 没有可用产物、却不进这一批的原因。 */
 export type StoryboardBatchSkipReason =
@@ -13,7 +13,9 @@ export type StoryboardBatchSkipReason =
   | "missing_storyboard"
   | "generating"
   | "reference_unavailable"
-  | "unavailable";
+  | "unavailable"
+  /** 已有确认过的参考素材：重做只能单个走分镜详情（ADR 0099 R7）。 */
+  | "confirmed";
 
 export interface StoryboardBatchSkip {
   unit_id: string;

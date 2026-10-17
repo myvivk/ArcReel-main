@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import unicodedata
 from pathlib import Path
@@ -16,6 +17,7 @@ from lib.artifacts.artifact_activation import (
     register_current_resource_artifact,
 )
 from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor, ArtifactKey, ProjectArtifactManifestAdapter
+from lib.artifacts.generation_input import InputRefused
 from lib.artifacts.version_manager import MANUAL_UPLOAD_VERSION_SOURCE, VersionManager
 from lib.edit_timeline import EditTimelineService, RevisionAuthor
 from lib.episode.episode_ledger import SOURCE_FINGERPRINTS_KEY, compute_source_fingerprints
@@ -32,6 +34,8 @@ from lib.project.project_migration_failure import (
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
 from lib.project.resource_paths import resource_relative_path
 from lib.project.source_revision import SourceScope, compute_source_revision
+from lib.script.script_models import get_generated_assets
+from lib.script.storyboard_sequence import get_storyboard_items
 from lib.speech.narration_delivery import (
     TtsSynthesisSettings,
     build_narration_audio_basis,
@@ -197,6 +201,78 @@ def _complete_episode_media(project_path: Path, resource_id: str = "E1S01") -> d
         "storyboard_image": storyboard,
         "video_clip": _commit_media_version(project_path, "videos", resource_id),
     }
+
+
+#: 参考素材（单分镜宫格）记录的可复现 id：``shot_grid_`` + 12 位十六进制。
+_SHOT_GRID_ID = "shot_grid_000000000001"
+
+
+def _confirm_shot_grid(
+    pm: ProjectManager,
+    project_path: Path,
+    *,
+    shot_id: str = "E1S01",
+    episode: int = 1,
+    script_file: str = "episode_1.json",
+    rows: int = 2,
+    cols: int = 2,
+) -> None:
+    """登记一条已确认的单分镜宫格，让「参考素材」行有可判定的记录（ADR 0099 D-10）。
+
+    confirm 会把整图登记成分镜图（``episode_storyboard`` 键 + 分镜图依据），记录里的
+    ``composite_path`` 就指向登记在案的那一份。缺了这份记录，分镜图再齐也报缺参考素材。
+    """
+
+    from lib.artifacts.artifact_registration import register_current_resource_artifact
+    from lib.artifacts.generation_input import project_input_observation, storyboard_image_input
+    from lib.script.grid.shot_grid_manager import ShotGridManager
+    from lib.script.grid.shot_models import ShotGrid, ShotGridCell
+
+    project = pm.load_project("demo")
+    script = json.loads((project_path / "scripts" / script_file).read_text(encoding="utf-8"))
+    generation_input = storyboard_image_input(
+        project,
+        script,
+        episode=episode,
+        resource_id=shot_id,
+        observation=project_input_observation(project_path),
+    )
+    assert not isinstance(generation_input, InputRefused), "确认参考素材前分镜图输入必须成立"
+    basis = generation_input.expected_basis()
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    item = next(entry for entry in items if str(entry.get(id_field, "")) == shot_id)
+    composite = get_generated_assets(item).get("storyboard_image")
+    assert isinstance(composite, str), "确认参考素材前分镜图必须是路径字符串"
+    assert composite, "确认参考素材前分镜图必须已在剧本里声明"
+    _write_artifact(project_path, composite)
+    ShotGridManager(project_path).save(
+        ShotGrid(
+            id=_SHOT_GRID_ID,
+            episode=episode,
+            script_file=script_file,
+            shot_id=shot_id,
+            rows=rows,
+            cols=cols,
+            cells=[ShotGridCell(index=index) for index in range(rows * cols)],
+            prompt="第1格（全景）：画面",
+            status="confirmed",
+            composite_path=composite,
+            image_basis=ArtifactBasisDescriptor.from_basis(basis).to_dict(),
+        )
+    )
+    # 登记是幂等的：条目已在案且完全一致时返回 False，故按清单里的最终状态断言。
+    register_current_resource_artifact(
+        project_path,
+        resource_type="storyboards",
+        resource_id=shot_id,
+        script_file=script_file,
+        artifact_path=composite,
+        basis=basis,
+    )
+    entry = ProjectArtifactManifestAdapter(project_path).get_entry(ArtifactKey.episode_storyboard(episode, shot_id))
+    assert entry is not None
+    assert entry.artifact_path == composite
+    assert entry.basis_digest == basis.digest
 
 
 def _valid_narration_segment(**overrides: object) -> dict:
@@ -387,6 +463,7 @@ def test_manual_presplit_project_reaches_edit_without_planning_records(tmp_path:
         {"episode": 1, "title": "第一集", "content_mode": "narration", "segments": [segment]},
     )
     _register_produced_artifacts(project_path)
+    _confirm_shot_grid(pm, project_path)
     project = pm.load_project("demo")
     assert [entry["episode"] for entry in project["episodes"]] == [1]
     assert "source_range" not in project["episodes"][0]
@@ -532,6 +609,16 @@ def test_narration_progresses_through_storyboard_video_to_edit(tmp_path: Path) -
     _write_artifact(project_path, storyboard_path)
     atomic_write_json(script_path, script)
     _register_produced_artifacts(project_path)
+    # 分镜图齐了之后是「参考素材」这一步（ADR 0099：storyboard → shot_grid → video）。
+    materials = service.get_status("demo")
+    assert materials.next_action.type == "generate_shot_grids"
+    assert materials.next_action.requested_ids == ["E1S01"]
+    assert materials.operations["generate_shot_grids"].model_dump(mode="json") == {
+        "state": "admitted",
+        "reason": None,
+    }
+
+    _confirm_shot_grid(pm, project_path)
     video = service.get_status("demo")
     assert video.next_action.type == "generate_videos"
     # 剪辑的准入：本集至少有一个可用视频。
@@ -684,6 +771,7 @@ def test_narration_audio_manifest_state_unreadable_does_not_block_edit(tmp_path:
     monkeypatch.setattr(
         f"{WorkflowStateService.__module__}.ArtifactCurrencyResolver", lambda _project_path: _AudioBlockedResolver()
     )
+    _confirm_shot_grid(pm, project_path)
 
     status = WorkflowStateService(pm).get_status("demo")
     assert status.next_action.type == "create_edit_timeline"
@@ -732,11 +820,17 @@ def test_unplanned_source_with_legacy_episode_without_source_range_requires_full
 
 
 def _one_complete_episode(
-    pm: ProjectManager, project_path: Path, *, source_end: int | None = None, **segment_overrides: object
+    pm: ProjectManager,
+    project_path: Path,
+    *,
+    source_end: int | None = None,
+    with_shot_grid: bool = True,
+    **segment_overrides: object,
 ) -> None:
     """单集项目：整本源文切出第一集（``source_end`` 为切到的位置，缺省切完），脚本、分镜图与视频齐全。
 
-    ``segment_overrides`` 改写那一个分镜的字段。
+    ``segment_overrides`` 改写那一个分镜的字段；``with_shot_grid=False`` 用于引用资产缺资产图、
+    参考素材本就生成不出来的场景（那一行报缺失即可，不拦完成）。
     """
 
     source_text = "完整原文"
@@ -771,6 +865,9 @@ def _one_complete_episode(
         },
     )
     _register_produced_artifacts(project_path)
+    # 「参考素材」是分镜图之后、视频之前的一步：齐备的一集同样要有一条已确认的宫格记录。
+    if with_shot_grid:
+        _confirm_shot_grid(pm, project_path)
 
 
 def test_project_is_complete_once_every_episode_has_an_edit_timeline_and_no_source_remains(tmp_path: Path) -> None:
@@ -801,7 +898,10 @@ def test_episode_with_videos_and_an_edit_timeline_is_complete_despite_in_episode
 
     pm, project_path = _make_project(tmp_path, "narration")
     pm.add_character("demo", "小明", "红衣")
-    _one_complete_episode(pm, project_path, pending_authoring=True, characters_in_segment=["小明"])
+    # 小明没有资产图，参考素材本就生成不出来：那一行报缺失，但不拦一集完成。
+    _one_complete_episode(
+        pm, project_path, pending_authoring=True, characters_in_segment=["小明"], with_shot_grid=False
+    )
     _create_edit_timeline(pm)
     service = WorkflowStateService(pm)
 
@@ -1064,6 +1164,7 @@ def test_episode_next_steps_follow_the_ledger_and_match_the_per_episode_status(t
         },
     )
     _register_produced_artifacts(project_path)
+    _confirm_shot_grid(pm, project_path)
     _create_edit_timeline(pm)
     service = WorkflowStateService(pm)
 

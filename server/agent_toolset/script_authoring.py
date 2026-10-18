@@ -55,7 +55,8 @@ GENERATE_EPISODE_SCRIPT = ToolDeclaration(
         "默认补缺：范围是全部待编写条目或 entry_ids 点名的条目，分镜类默认只写 image_prompt；"
         'video_prompt 依赖已确认参考素材，必须在参考素材确认后以 fields=["video_prompt"] 单独请求；'
         "同一次请求不能同时写 image_prompt 和 video_prompt。参考生视频按待编写标记展开单元正文。"
-        "rewrite=true 显式重写范围内条目的本次提示词字段；"
+        "rewrite=true 显式重写范围内条目的本次提示词字段；分镜类必须与 fields 同用（省略 fields 即按 "
+        "image_prompt 重写，故单独给 rewrite=true 会被拒绝），参考生视频单元不受此限；"
         "会覆盖已有内容时返回 prompt_overwrite_required，回执正文即服务端生成的丢失清单，"
         "params.prompt_overwrite.revision 是认可令牌；先向用户转述清单，得到同意后才以该 revision 作为 overwrite_revision 重新调用。"
         "内容字段、备注、尾帧与已生成产物原样保留。"

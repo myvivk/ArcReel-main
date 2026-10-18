@@ -199,8 +199,15 @@ class PromptOverwriteRequiredError(TextGenerationError):
 
 def _prompt_overwrite_error(episode_label: str, exc: PromptOverwriteRequired) -> PromptOverwriteRequiredError:
     overwrite = prompt_overwrite_with_text(exc.overwrite.to_dict(), translate)
+    # 重写分镜提示词的代价不止那一段文本：依赖它的分镜图与宫格参考素材会一起过期。
+    cascade = ""
+    if "image_prompt" in {field for entry in exc.overwrite.entries for field in entry.overwritten}:
+        cascade = (
+            "\n⚠️ 清单里含 image_prompt（分镜提示词）：一旦重写，这些分镜已生成的分镜图与已确认的宫格"
+            "参考素材会一并转为「已过期」，必须重新生成；转述给用户时一并说明，请对方确认这些产物可以重做。"
+        )
     return PromptOverwriteRequiredError(
-        f"⚠️ {episode_label} 的显式重写需要用户确认覆盖，本次未调用文本模型、未写入。\n{overwrite['text']}\n"
+        f"⚠️ {episode_label} 的显式重写需要用户确认覆盖，本次未调用文本模型、未写入。\n{overwrite['text']}{cascade}\n"
         "须先把上面的丢失清单原文转述给用户，得到明确同意后，再以 "
         "overwrite_revision=params.prompt_overwrite.revision 重新调用；"
         "正式脚本在此期间又有变化时会按新清单再次拒绝。",

@@ -309,6 +309,12 @@ REFERENCE = _Variant(
 VARIANTS = [NARRATION, DRAMA, REFERENCE]
 
 
+def _rewrite_fields(variant: _Variant) -> tuple[str, ...]:
+    """显式重写必须点名本次写哪一层：参考生视频单元的视觉层是单元正文，字段不参与choices。"""
+
+    return () if variant is REFERENCE else ("image_prompt",)
+
+
 @pytest.fixture(params=VARIANTS, ids=lambda variant: variant.name)
 def variant(request) -> _Variant:
     return request.param
@@ -533,7 +539,12 @@ class TestPromptAuthoring:
         rewritten: list[str] = []
         rerun = variant.generator(project_dir, [variant.visual_factory(first, mark="点名")])
         await rerun.generate(
-            1, entry_ids=[first], rewrite=True, overwrite_revision=_revision(project_dir), rewritten_entry_ids=rewritten
+            1,
+            entry_ids=[first],
+            rewrite=True,
+            fields=_rewrite_fields(variant),
+            overwrite_revision=_revision(project_dir),
+            rewritten_entry_ids=rewritten,
         )
 
         assert rewritten == [first]
@@ -679,7 +690,9 @@ class TestFillAndRewrite:
         before = (project_dir / "scripts" / "episode_1.json").read_bytes()
 
         with pytest.raises(PromptOverwriteRequired) as caught:
-            await variant.generator(project_dir, []).generate(1, entry_ids=[first], rewrite=True)
+            await variant.generator(project_dir, []).generate(
+                1, entry_ids=[first], rewrite=True, fields=_rewrite_fields(variant)
+            )
 
         expected_fields = ["text"] if variant is REFERENCE else ["image_prompt"]
         assert caught.value.overwrite.to_dict() == {
@@ -697,10 +710,50 @@ class TestFillAndRewrite:
 
         with pytest.raises(PromptOverwriteRequired) as caught:
             await variant.generator(project_dir, []).generate(
-                1, entry_ids=[first], rewrite=True, overwrite_revision=stale
+                1,
+                entry_ids=[first],
+                rewrite=True,
+                fields=_rewrite_fields(variant),
+                overwrite_revision=stale,
             )
 
         assert caught.value.overwrite.fingerprint == _revision(project_dir) != stale
+
+    async def test_rewrite_without_naming_the_field_is_refused(
+        self, tmp_path: Path, prompt_variant: _Variant
+    ) -> None:
+        """没点名字段的显式重写不许按缺省落到分镜提示词上：缺 fields 等于没说改哪一层。"""
+
+        variant = prompt_variant
+        first, _second = variant.entry_ids
+        project_dir, _plan_path = await _converted_and_authored(tmp_path, variant)
+        before = (project_dir / "scripts" / "episode_1.json").read_bytes()
+
+        with pytest.raises(PromptAuthoringTargetError, match="fields"):
+            await variant.generator(project_dir, []).generate(1, entry_ids=[first], rewrite=True)
+
+        assert (project_dir / "scripts" / "episode_1.json").read_bytes() == before
+
+    async def test_video_prompt_rewrite_leaves_the_image_prompt_alone(
+        self, tmp_path: Path, prompt_variant: _Variant
+    ) -> None:
+        """点名 video_prompt 的显式重写只动视频提示词：既不要覆盖令牌，也不碰分镜提示词。"""
+
+        variant = prompt_variant
+        first, _second = variant.entry_ids
+        project_dir = await self._materialized(tmp_path, variant)
+        self._set_entry(project_dir, variant, first, image_prompt="手写的分镜图提示词")
+
+        rewritten: list[str] = []
+        await variant.generator(
+            project_dir, [variant.visual_factory(first, mark="视频", fields=("video_prompt",))]
+        ).generate(1, entry_ids=[first], rewrite=True, fields=("video_prompt",), rewritten_entry_ids=rewritten)
+
+        assert rewritten == [first]
+        after = _entries(_script(project_dir), variant)
+        # 空字段的显式重写不替换任何已有内容：既不索要覆盖令牌，也不碰分镜提示词
+        assert after[first]["image_prompt"] == "手写的分镜图提示词"
+        assert after[first]["video_prompt"]["action"] == "动作"
 
     async def test_rewrite_of_entries_without_content_needs_no_token(
         self, tmp_path: Path, prompt_variant: _Variant
@@ -711,7 +764,11 @@ class TestFillAndRewrite:
 
         rewritten: list[str] = []
         await variant.generator(project_dir, [variant.visual_factory(first, mark="重写")]).generate(
-            1, entry_ids=[first], rewrite=True, rewritten_entry_ids=rewritten
+            1,
+            entry_ids=[first],
+            rewrite=True,
+            fields=_rewrite_fields(variant),
+            rewritten_entry_ids=rewritten,
         )
 
         assert rewritten == [first]
@@ -769,7 +826,13 @@ class TestTextShapedPrompts:
         self._write_text_prompts(project_dir, prompt_variant, first)
 
         rerun = prompt_variant.generator(project_dir, [prompt_variant.visual_factory(first, mark="点名")])
-        await rerun.generate(1, entry_ids=[first], rewrite=True, overwrite_revision=_revision(project_dir))
+        await rerun.generate(
+            1,
+            entry_ids=[first],
+            rewrite=True,
+            fields=("image_prompt",),
+            overwrite_revision=_revision(project_dir),
+        )
 
         entry = _entries(_script(project_dir), prompt_variant)[first]
         assert entry["image_prompt"]["scene"] == f"点名-{first}"
@@ -814,7 +877,9 @@ class TestDryRunPrompt:
         first, second = variant.entry_ids
         project_dir = await self._converted_with_pending(tmp_path, variant)
 
-        prompt = await variant.generator(project_dir, []).build_prompt(1, entry_ids=[first, second], rewrite=True)
+        prompt = await variant.generator(project_dir, []).build_prompt(
+            1, entry_ids=[first, second], rewrite=True, fields=_rewrite_fields(variant)
+        )
 
         assert all(needle in prompt for needle in variant.prompt_needles)
 

@@ -493,7 +493,9 @@ async def test_generate_episode_script_rewrite_over_existing_prompts_returns_the
 
     _prepare_script_admission(fake_ctx.project_path)
     out = await run_declared_tool(
-        "generate_episode_script", fake_ctx, {"episode_id": 1, "entry_ids": ["E1S01"], "rewrite": True}
+        "generate_episode_script",
+        fake_ctx,
+        {"episode_id": 1, "entry_ids": ["E1S01"], "rewrite": True, "fields": ["image_prompt"]},
     )
 
     assert out.problem is not None

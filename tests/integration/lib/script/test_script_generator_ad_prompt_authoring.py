@@ -226,7 +226,7 @@ class TestAdShotAuthoring:
 
         revision = content_fingerprint(project_dir / "scripts" / "episode_1.json")
         await _generator(project_dir, [_shot_visual("E1S01", mark="点名")]).generate(
-            1, entry_ids=["E1S01"], rewrite=True, overwrite_revision=revision
+            1, entry_ids=["E1S01"], rewrite=True, fields=("image_prompt",), overwrite_revision=revision
         )
 
         after_first = _items(project_dir, "shots", "shot_id")["E1S01"]

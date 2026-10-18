@@ -50,7 +50,13 @@ class AuthorPromptsRequest(PromptAuthoringInstructions):
     entry_ids: list[Annotated[str, Field(min_length=1)]] | None = Field(
         default=None, min_length=1, description="编写范围（分镜 / 单元 id）；省略时为全部待编写条目，给出时至少一条"
     )
-    rewrite: bool = Field(default=False, description="显式重写范围内条目的本次提示词字段；省略时补缺")
+    rewrite: bool = Field(
+        default=False,
+        description=(
+            "显式重写范围内条目的本次提示词字段；省略时补缺。"
+            "分镜类必须与 fields 同用：省略 fields 时本次写的是 image_prompt，单独给 rewrite 会被拒绝"
+        ),
+    )
     fields: list[_PromptField] | None = Field(
         default=None,
         min_length=1,

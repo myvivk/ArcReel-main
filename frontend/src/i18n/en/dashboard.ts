@@ -18,6 +18,7 @@ export default {
   shot_materials_hint: "Generate continuous keyframes from the storyboard prompt, ordered left to right and top to bottom.",
   shot_materials_unavailable: "Save the episode and shot to generate reference materials.",
   shot_materials_preview: "Shot keyframe grid",
+  shot_materials_preview_open: "Click to enlarge",
   shot_materials_failed: "Reference material generation failed. Try again.",
   shot_configure_materials: "Configure reference materials",
   shot_grid_dialog_title: "Configure reference materials",

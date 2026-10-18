@@ -118,6 +118,7 @@ PUBLIC_MEDIA_DIRS: frozenset[str] = frozenset(
         "props",
         "products",
         "grids",
+        "shot_grids",
         "audio",
         "bgm",
         "renders",

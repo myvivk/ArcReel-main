@@ -55,6 +55,8 @@ export interface EpisodeViewChangeOptions {
 export interface EpisodeCanvasContext {
   view: CanvasView;
   onViewChange: (view: EpisodeView, options?: EpisodeViewChangeOptions) => void;
+  /** 本集已有短剧工厂源稿（可能还没转写成分镜）：画布据此给「AI 分镜」空态。 */
+  hasShortDramaSource?: boolean;
 }
 
 /** 本集已有中间稿：分段稿或生成好的剧本草稿。 */
@@ -266,7 +268,11 @@ function EpisodePageContent({
   } else if (sourceReview) {
     body = <EpisodeViewFactsProvider value={facts}><EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} contentMode={scriptContentMode} /></EpisodeViewFactsProvider>;
   } else {
-    body = <EpisodeViewFactsProvider value={facts}>{renderCanvas({ view, onViewChange: changeView })}</EpisodeViewFactsProvider>;
+    body = (
+      <EpisodeViewFactsProvider value={facts}>
+        {renderCanvas({ view, onViewChange: changeView, hasShortDramaSource })}
+      </EpisodeViewFactsProvider>
+    );
   }
 
   return (

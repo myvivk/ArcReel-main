@@ -31,6 +31,7 @@ import type {
   StoryboardBatchKind,
   StoryboardBatchSubmitted,
 } from "@/types";
+import type { SaveShotGridPayload } from "@/types/shot-grid";
 import {
   useTasksStore,
   type ImageEditResourceKind,
@@ -304,14 +305,16 @@ export async function enqueueImageEdit(
   return { taskIds: [res.task_id], deduped: res.deduped };
 }
 
+/**
+ * 直接按规格入队参考素材（不预存提示词）：逐格文本由服务端从分镜提示词现解析（D-1 / D-3）。
+ */
 export async function enqueueShotGrid(
   projectName: string,
-  scriptFile: string,
-  shotId: string,
+  params: SaveShotGridPayload,
 ): Promise<EnqueueResult> {
   const res = await submit(
-    [markScriptFile(projectName, "shot_grid", scriptFile)],
-    () => API.generateShotGrid(projectName, scriptFile, shotId),
+    [markScriptFile(projectName, "shot_grid", params.script_file)],
+    () => API.generateShotGrid(projectName, params),
     oneTaskId,
   );
   return { taskIds: [res.task_id], deduped: false };

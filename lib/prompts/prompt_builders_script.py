@@ -9,10 +9,14 @@
 - 提示词编写与旁白切分经内置整段模版渲染；资产外观与只读内容保持代码投影。
 """
 
+from collections.abc import Mapping
+
 from lib.infra.text_metrics import reading_unit_noun
 from lib.project.asset_types import ALIASES_FIELD
 from lib.prompts.prompt_rules.asset_appearance import asset_reference_names, iter_asset_appearances
 from lib.prompts.prompt_templates.builtin import builtin_templates
+from lib.script.grid.keyframe_parser import shot_scene_text
+from lib.script.grid.shot_models import ShotGrid
 from lib.speech.speech_rate import speech_rate_units_per_second
 
 
@@ -98,7 +102,33 @@ def _neutralize_tags(value: str) -> str:
     return value.replace("<", "＜").replace(">", "＞")
 
 
-def _format_narration_script_plan_segments(script_plan_segments: list[dict]) -> str:
+def render_video_prompt_inputs(scene: str, grid: ShotGrid | None) -> list[str]:
+    """视频提示词编写的两块输入：分镜提示词 + 该分镜已确认宫格的逐格文本（D-15）。
+
+    只由 ``fields == {"video_prompt"}`` 的调用方传进来：写 image_prompt 时看不到这些块，
+    模型就不会把逐格文本抄回分镜提示词，多出第二份真相源。
+
+    ``grid.cells`` 是本次出图实际用的那一份（D-3），不重新解析 scene；K 的编号就是
+    ``cells`` 的下标序，与视频请求下发的参考图同源（D-17）。
+    """
+
+    lines: list[str] = []
+    opening = scene.strip()
+    if opening:
+        lines.append(f"分镜提示词：{_neutralize_tags(opening).replace(chr(10), chr(10) + '  ')}")
+    if grid is not None and grid.cells:
+        lines.append(
+            f"关键帧（{grid.rows}x{grid.cols}，按 K0→K{len(grid.cells) - 1} 顺序，与视频请求下发的参考图同序）："
+        )
+        for cell in grid.cells:
+            size = f"（{cell.continuity_notes}）" if cell.continuity_notes else ""
+            lines.append(f"  K{cell.index}{size}：{_neutralize_tags(cell.prompt).replace(chr(10), ' ')}")
+    return lines
+
+
+def _format_narration_script_plan_segments(
+    script_plan_segments: list[dict], video_inputs: Mapping[str, ShotGrid] | None = None
+) -> str:
     """把 script_plan 结构化分镜渲染为 prompt_authoring 的只读上下文：segment_id + 内容字段 + 逐字原文。
 
     这些字段在 script_plan 已定、prompt_authoring 透传不重出；此处仅作为「为该分镜写好视觉层」的依据呈现。
@@ -115,9 +145,13 @@ def _format_narration_script_plan_segments(script_plan_segments: list[dict]) -> 
         prop_names = _neutralize_tags("、".join(seg.get("props") or []) or "无")
         # 多行 novel_text 续行缩进进原文块，避免 flush-left 溢出 <segments>；尖括号一并中和防注入
         novel_block = _neutralize_tags(seg.get("novel_text") or "").replace("\n", "\n  ")
-        lines.append(
-            f"- {sid}（时长 {dur}s{brk}）｜出场角色：{chars}｜场景：{scene_names}｜道具：{prop_names}\n  原文：{novel_block}"
-        )
+        entry = f"- {sid}（时长 {dur}s{brk}）｜出场角色：{chars}｜场景：{scene_names}｜道具：{prop_names}\n  原文：{novel_block}"
+        if video_inputs is not None:
+            # 视频提示词编写才需要：分镜提示词与已确认宫格的逐格文本（D-15）。
+            extra = render_video_prompt_inputs(shot_scene_text(seg), video_inputs.get(sid))
+            if extra:
+                entry += "\n  " + "\n  ".join(extra)
+        lines.append(entry)
     return "\n".join(lines)
 
 
@@ -133,12 +167,16 @@ def build_narration_prompt(
     aspect_ratio: str = "9:16",
     target_language: str = "中文",
     instructions: str | None = None,
+    video_inputs: Mapping[str, ShotGrid] | None = None,
 ) -> str:
     """构建旁白/解说模式 prompt_authoring（视觉层）prompt。
 
     script_plan 已定的 novel_text / 时长 / segment_break / 出场角色 / 场景 / 道具按 segment_id
     透传，prompt_authoring 只产 image_prompt 与 video_prompt。``<segments>`` 块为只读上下文，
     LLM 不重出这些字段——novel_text 由此不再经 prompt_authoring 的 LLM 扩写漂移。
+
+    ``video_inputs`` 只在编写视频提示词时传入（D-15）：按 segment_id 给出已确认宫格，逐格文本
+    与分镜提示词随条目渲染；写 image_prompt 时传 ``None``，模型看不到这些块。
     """
     return builtin_templates.render(
         "text/narration_prompt_authoring",
@@ -148,14 +186,16 @@ def build_narration_prompt(
         aspect_ratio=aspect_ratio,
         aspect_ratio_label=_format_aspect_ratio_desc(aspect_ratio),
         assets=_project_asset_appearances(characters, scenes, props),
-        segments_content=_format_narration_script_plan_segments(script_plan_segments),
+        segments_content=_format_narration_script_plan_segments(script_plan_segments, video_inputs),
         episode=episode,
         target_language=target_language,
         instructions=instructions,
     )
 
 
-def render_drama_content_for_prompt_authoring(content_scenes: list) -> str:
+def render_drama_content_for_prompt_authoring(
+    content_scenes: list, *, video_inputs: Mapping[str, ShotGrid] | None = None
+) -> str:
     """把 script_plan 已定稿的分镜内容渲染为 prompt_authoring 视觉生成的输入块（每分镜一段）。
 
     口播 / 原文锚仅供 LLM 理解戏剧节奏——「不要复制进视觉字段」由 ``build_drama_prompt`` 在
@@ -210,6 +250,9 @@ def render_drama_content_for_prompt_authoring(content_scenes: list) -> str:
         if source_text:
             source_block = _neutralize_tags(str(source_text)).replace("\n", "\n  ")
             lines.append(f"原文锚：{source_block}")
+        if video_inputs is not None:
+            # 视频提示词编写才需要：分镜提示词与已确认宫格的逐格文本（D-15）。
+            lines.extend(render_video_prompt_inputs(shot_scene_text(scene), video_inputs.get(sid)))
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 

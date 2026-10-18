@@ -11,9 +11,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from lib.episode.episode_paths import episode_script_filename
 from lib.infra.api_errors import ConflictError, UnprocessableError
 from lib.project.project_manager import get_project_manager
+from lib.script.grid.keyframe_parser import keyframe_reference_problems
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.video_prompt_targets import video_prompt_text
 from lib.script.prompt_authoring_scope import prompt_overwrite_with_text
+from lib.script.storyboard_sequence import get_storyboard_items
 from server.agent_toolset.envelope import json_value
 from server.auth import CurrentUser
 from server.i18n import Translator
@@ -79,6 +84,49 @@ def _raise_problem(problem: ToolProblem, episode: int, _t: Translator) -> None:
     raise UnprocessableError("prompt_authoring_refused", reason=text).with_diagnostic(problem.detail)
 
 
+def _reject_out_of_range_keyframes(project_name: str, episode: int, req: "AuthorPromptsRequest", t: Translator) -> None:
+    """写视频提示词前先答「这次会不会失败」：已有正文里越界的 K 直接 422（D-17）。
+
+    补缺模式不重写已有正文，但同一分镜的旧文本越界会让整条写回被拒、整集任务白跑一遍。
+    重写模式会覆盖旧正文，不做这项前置检查。
+    """
+
+    if req.fields != ["video_prompt"] or req.rewrite:
+        return
+    pm = get_project_manager()
+    try:
+        script = pm.load_script(project_name, episode_script_filename(episode))
+    except (FileNotFoundError, ValueError):
+        # 没有正式脚本时由常规准入拒绝，不在这里抢答。
+        return
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    wanted = set(req.entry_ids or [])
+    grids = {
+        grid.shot_id: grid
+        for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
+        if grid.episode == episode and grid.status == "confirmed"
+    }
+    for item in items:
+        unit_id = str(item.get(id_field, ""))
+        if wanted and unit_id not in wanted:
+            continue
+        grid = grids.get(unit_id)
+        text = video_prompt_text(item)
+        if grid is None or not text:
+            continue
+        problems = keyframe_reference_problems(text, len(grid.cells))
+        if problems:
+            raise UnprocessableError(
+                "prompt_authoring_refused",
+                reason=t(
+                    "shot_grid_keyframe_out_of_range",
+                    ids=unit_id,
+                    refs="、".join(problems),
+                    count=len(grid.cells),
+                ),
+            ).with_diagnostic({"entry_id": unit_id, "references": problems, "cell_count": len(grid.cells)})
+
+
 @router.put("/projects/{project_name}/episodes/{episode}/prompt-authoring/instructions")
 async def save_prompt_authoring_instructions(project_name: str, episode: int, req: PromptAuthoringInstructions):
     """只保存本集的附加指令（「交给 Agent」路径用），不提交生成。"""
@@ -115,6 +163,7 @@ async def author_prompts(
         EpisodeInstructionKind.PROMPT_AUTHORING,
         req.instructions,
     )
+    await asyncio.to_thread(_reject_out_of_range_keyframes, project_name, episode, req, _t)
     outcome = await generate_episode_script(
         ToolRequest(
             GenerateEpisodeScriptRequest(

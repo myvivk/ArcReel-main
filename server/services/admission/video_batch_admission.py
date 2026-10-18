@@ -60,6 +60,7 @@ from lib.prompts.prompt_utils import (
 )
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
+from lib.script.grid.keyframe_parser import keyframe_reference_problems
 from lib.script.reference_video.request_projection import (
     ProjectionProblem,
     ReferenceRequestOptions,
@@ -801,7 +802,21 @@ def storyboard_video_prompt(
         raise TypeError(f"分镜 video_prompt 类型无效（期望 str 或 dict）: {item_id}")
     # 与执行路径共用 render_storyboard_video_prompt：入队快照与实发文本同构，反向约束尾词
     # 由该出口统一追加（执行期对已带尾词的字符串幂等）。
-    return render_storyboard_video_prompt(prompt, item, content_mode=content_mode, voice_characters=voice_characters)
+    rendered = render_storyboard_video_prompt(prompt, item, content_mode=content_mode, voice_characters=voice_characters)
+    # K 引用有界（D-17）：越界文本写回时已被拒，这里在计费前再拦一次——声明了不存在的参考图
+    # 只会在供应商那边失败，成本更高。
+    assets = get_generated_assets(item)
+    grid = assets.get("shot_grid")
+    cells = grid.get("cell_paths") if isinstance(grid, Mapping) else None
+    if isinstance(cells, list) and cells:
+        problems = keyframe_reference_problems(rendered, len(cells))
+        if problems:
+            item_id = item.get("segment_id") or item.get("scene_id") or item.get("shot_id")
+            raise ValueError(
+                f"分镜 video_prompt 引用了不存在的关键帧: {'、'.join(problems)}"
+                f"（本分镜宫格共 {len(cells)} 格，id={item_id}）"
+            )
+    return rendered
 
 
 async def resolve_voice_context(project: dict[str, Any], content_mode: str) -> dict[str, Any] | None:

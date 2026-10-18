@@ -37,6 +37,7 @@ _STEP_IDS: tuple[str, ...] = (
     "script_structure",
     "storyboard",
     "shot_grid",
+    "video_prompt",
     "video",
     "edit",
 )
@@ -84,7 +85,7 @@ _PREPROCESSORS: dict[tuple[str, str], str | None] = {
 def _build_rule(content_mode: str, generation_mode: str) -> WorkflowRule:
     applicable = set(_CONTENT_STEPS[content_mode])
     if generation_mode == "storyboard":
-        applicable.update({"storyboard", "shot_grid"})
+        applicable.update({"storyboard", "shot_grid", "video_prompt"})
     return WorkflowRule(
         content_mode=content_mode,
         generation_mode=generation_mode,

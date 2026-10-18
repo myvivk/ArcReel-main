@@ -72,7 +72,7 @@ export function PromptAuthoringHost({ projectName, episode, script, savedInstruc
   return (
     <PromptAuthoringDialog
       // 每次打开都从请求重新初始化范围与指令，不沿用上一次弹窗里未提交的状态。
-      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}:${request.defaultRewrite ? "rewrite" : "fill"}:${(request.defaultFields ?? []).join(",")}`}
+      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}:${request.defaultRewrite ? "rewrite" : "fill"}:${(request.defaultFields ?? []).join(",")}:${(request.defaultEntryIds ?? []).join(",")}`}
       projectName={projectName}
       episode={episode}
       entries={entries}
@@ -119,9 +119,11 @@ export function PromptAuthoringDialog({
     request.scope === "current" && !currentEntryId ? "pending" : request.scope;
 
   const [scope, setScope] = useState<PromptAuthoringScope>(initialScope);
-  const [selected, setSelected] = useState<string[]>(() =>
-    currentEntryId ? [currentEntryId] : entries.filter((entry) => entry.pending).map((entry) => entry.id),
-  );
+  const [selected, setSelected] = useState<string[]>(() => {
+    if (currentEntryId) return [currentEntryId];
+    if (request.defaultEntryIds?.length) return request.defaultEntryIds.filter((id) => entries.some((entry) => entry.id === id));
+    return entries.filter((entry) => entry.pending).map((entry) => entry.id);
+  });
   const [rewrite, setRewrite] = useState(request.defaultRewrite === true);
   const [fields, setFields] = useState<PromptAuthoringField[]>(
     () => request.defaultFields ?? (unitMode ? [] : ["image_prompt"]),
@@ -267,9 +269,13 @@ export function PromptAuthoringDialog({
                           <span className="ml-auto text-xs text-muted-foreground">
                             {entry.pending
                               ? t("prompt_authoring_entry_pending")
-                              : entry.hasContent
-                                ? t("prompt_authoring_entry_has_prompt")
-                                : t("prompt_authoring_entry_empty")}
+                              : fields[0] === "video_prompt"
+                                ? entry.videoPromptFilled
+                                  ? t("prompt_authoring_entry_has_video_prompt")
+                                  : t("prompt_authoring_entry_empty")
+                                : entry.hasContent
+                                  ? t("prompt_authoring_entry_has_prompt")
+                                  : t("prompt_authoring_entry_empty")}
                           </span>
                         </Label>
                       </li>

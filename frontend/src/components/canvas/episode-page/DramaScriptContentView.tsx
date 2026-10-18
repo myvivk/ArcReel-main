@@ -1,22 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw, Save } from "lucide-react";
+import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { reimportShortDramaSource, type ShortDramaSource } from "@/actions/shortDrama";
+import { type ShortDramaSource } from "@/actions/shortDrama";
 import { API } from "@/api";
-import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { useEditUnit } from "@/components/shared/edit-unit/useEditUnit";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogBody,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -110,8 +98,6 @@ function ShortDramaSourceWorkspace({
 }) {
   const { t } = useTranslation("dashboard");
   const revisionRef = useRef(source.revision);
-  const [reimporting, setReimporting] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const submit = useCallback(
     async (value: SourceValue, saved: SourceValue) => {
@@ -135,28 +121,6 @@ function ShortDramaSourceWorkspace({
     leaveTitle: t("short_drama_source_leave_title"),
   });
 
-  const reimport = useCallback(
-    async (confirmed: boolean) => {
-      setReimporting(true);
-      try {
-        if (!(await unit.save())) return;
-        const revision = revisionRef.current;
-        if (!revision) throw new Error(t("short_drama_source_save_first"));
-        await reimportShortDramaSource(projectName, episode, revision, confirmed);
-        await refreshAfterWrite(projectName, t);
-        setConfirmOpen(false);
-      } finally {
-        setReimporting(false);
-      }
-    },
-    [unit, projectName, episode, t],
-  );
-
-  const requestReimport = () => {
-    if (hasArtifacts) setConfirmOpen(true);
-    else void reimport(false);
-  };
-
   return (
     <>
       <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -174,7 +138,7 @@ function ShortDramaSourceWorkspace({
                   variant="outline"
                   size="sm"
                   onClick={() => void unit.save()}
-                  disabled={!unit.dirty || unit.status === "saving" || reimporting}
+                  disabled={!unit.dirty || unit.status === "saving"}
                 >
                   {unit.status === "saving" ? (
                     <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
@@ -183,21 +147,12 @@ function ShortDramaSourceWorkspace({
                   )}
                   {t("short_drama_source_save")}
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={requestReimport}
-                  disabled={reimporting || unit.status === "saving" || unit.value.markdown.trim() === ""}
-                >
-                  {reimporting ? (
-                    <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
-                  ) : (
-                    <RefreshCw aria-hidden data-icon="inline-start" />
-                  )}
-                  {t("short_drama_source_reimport")}
-                </Button>
               </div>
             ) : null}
           </div>
+          {hasArtifacts ? (
+            <p className="mt-3 text-xs text-muted-foreground">{t("short_drama_reimport_moved_hint")}</p>
+          ) : null}
 
           <Tabs defaultValue="source" className="mt-5">
             <TabsList aria-label={t("short_drama_source_tabs_aria")}>
@@ -244,39 +199,6 @@ function ShortDramaSourceWorkspace({
           </Tabs>
         </div>
       </div>
-
-      <AlertDialog
-        open={confirmOpen}
-        onOpenChange={(open) => {
-          if (!open && !reimporting) setConfirmOpen(false);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("short_drama_reimport_confirm_title")}</AlertDialogTitle>
-          </AlertDialogHeader>
-          <AlertDialogBody>
-            <AlertDialogDescription>
-              {t("short_drama_reimport_confirm_description")}
-            </AlertDialogDescription>
-          </AlertDialogBody>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={reimporting}>{t("common:cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={reimporting}
-              onClick={() => void reimport(true)}
-            >
-              {reimporting ? (
-                <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
-              ) : (
-                <RefreshCw aria-hidden data-icon="inline-start" />
-              )}
-              {t("short_drama_reimport_confirm")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }

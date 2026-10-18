@@ -208,6 +208,12 @@ class GeneratedAssets(BaseModel):
     video_generated_at: SkipJsonSchema[str | None] = Field(default=None, description="视频生成完成时间（ISO8601 UTC）")
     # 仅用于无损接收迁移前的历史记录；运行时不读取、比较或新增该键。
     source_signature: SkipJsonSchema[str | None] = Field(default=None, description="历史产物来源签名")
+    # 写视频提示词时所用宫格的指纹（D-18）：描述的是「脚本里这份文本按哪次宫格写的」，
+    # 不是宫格自己的属性。extra="forbid" 要求先声明再写回，否则「不更坏」会以
+    # extra_forbidden 拒整集写盘；这里不走 validate=False 的捷径。
+    video_prompt_basis: SkipJsonSchema[dict[str, object] | None] = Field(
+        default=None, description="写这条视频提示词时所用宫格的指纹"
+    )
 
 
 def get_generated_assets(item: dict) -> dict:

@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useSearch } from "wouter";
 import { API } from "@/api";
 import type { LibraryImportPreview } from "@/components/assets/AddToLibraryDialog";
 import { AssetPickerModal } from "@/components/assets/AssetPickerModal";
@@ -110,6 +111,21 @@ export function AssetGallery<T extends GalleryAssetSource>({
   useScrollTarget(assetType, { prepareTarget });
 
   const openAsset = useCallback((name: string) => setEditorTarget({ mode: "edit", name }), []);
+
+  // 「去补描述」等入口带 ?focus=名字 进来：直接打开那条资产的详情；关掉后同一 URL 不再弹。
+  // 放到 effect 的宏任务里执行，避免渲染期同步 setState（React 会对成串更新告警）。
+  const search = useSearch();
+  const handledFocus = useRef<string | null>(null);
+  useEffect(() => {
+    const focus = new URLSearchParams(search).get("focus");
+    if (!focus || handledFocus.current === focus || !(focus in assets)) return;
+    handledFocus.current = focus;
+    const timer = window.setTimeout(() => {
+      setFilter("all");
+      setEditorTarget({ mode: "edit", name: focus });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [search, assets]);
   const onAdd = readOnly ? undefined : () => setEditorTarget({ mode: "create" });
   const viewAsset = useCallback((name: string) => setViewName(name), []);
   // 查看器只在有资产图的资产之间切换，顺序与筛选后的网格一致；判据与卡片的「查看大图」相同

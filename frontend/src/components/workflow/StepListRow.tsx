@@ -116,7 +116,7 @@ interface Props {
   busy: boolean;
 }
 
-/** 分镜图与视频的过期产物可以就地查看与重生；资产图的过期只作提醒并跳到画廊。 */
+/** 分镜图与视频的过期产物可以就地查看与重生；资产图与视频提示词不是可重生文件产物。 */
 const REGENERABLE_STEPS = new Set(["storyboard", "video"]);
 
 /**

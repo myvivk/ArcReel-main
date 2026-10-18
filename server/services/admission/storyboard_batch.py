@@ -65,9 +65,7 @@ from lib.prompts.prompt_builders import render_storyboard_image_prompt
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.grid.keyframe_parser import (
-    format_grid_prompt,
     parse_scene_shots,
-    scene_revision_of,
     shot_scene_text,
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
@@ -676,10 +674,8 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
             cols=SHOT_GRID_BATCH_COLS,
         )
         grid.rows, grid.cols = SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS
-        grid.prompt = format_grid_prompt(frames)
-        # 留证与拼装出口读到的序列同一个：执行期按 ShotGrid.prompt 再解析一次。
+        # 留证与拼装出口读到的序列同一个：执行期再从 scene 现解析一次（D-1 / D-3）。
         grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
-        grid.scene_revision = scene_revision_of(scene_text)
         grid.status = "draft"
         grid.composite_path = None
         grid.task_id = None
@@ -703,13 +699,14 @@ async def submit_shot_grid_batch(
     """把一次参考素材规划作为一个持久批次提交，不等待结果。"""
 
     prepared = await asyncio.to_thread(_write_shot_grid_records, plan, project_path=project_path)
+    items_by_id = {str(item[plan.id_field]): item for item in plan.items if item.get(plan.id_field)}
     specs = [
         TaskSpec.from_request(
             task_type="shot_grid",
             media_type="image",
             resource_id=grid.id,
-            # 逐格文本随任务落一份留证；执行期仍以 ShotGrid.prompt 为真相源（D-2）。
-            prompt=grid.prompt,
+            # 任务上只带 scene 原文快照：逐格文本由执行期从同一处现解析（D-1 / D-3）。
+            prompt=shot_scene_text(items_by_id[unit_id]),
             script_file=plan.script_file,
             extra_payload={"shot_grid_id": grid.id},
             unit_id=unit_id,

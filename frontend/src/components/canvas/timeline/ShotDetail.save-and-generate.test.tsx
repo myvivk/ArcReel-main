@@ -15,7 +15,6 @@ function grid(): ShotGridPlan {
     rows: 3,
     cols: 3,
     status: "confirmed",
-    prompt: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下\n第3格（近景）：行人驻足",
     created_at: "",
     updated_at: "",
     error_message: null,

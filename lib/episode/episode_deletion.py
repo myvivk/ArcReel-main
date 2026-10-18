@@ -345,7 +345,9 @@ def delete_episodes(
     确认流程与删除一集相同：``revision`` 缺省或与当前全部清单的合成指纹不符时只返回清单，不写入。
     逐集调用单集删除做不到这一点——删掉相邻的切出集会改变余下集的丢失清单，确认会一再失效。
     """
-    wanted = sorted(dict.fromkeys(parse_positive_episode_num(episode) for episode in episodes))
+    # parse_positive_episode_num 对非法输入返回 None：批量删除只认能解析成集号的项。
+    parsed = {number for number in (parse_positive_episode_num(item) for item in episodes) if number is not None}
+    wanted = sorted(parsed)
     if not wanted:
         raise EpisodeManagementError("episode_not_found", "没有要删除的集")
     project_dir = pm.get_project_path(project_name)

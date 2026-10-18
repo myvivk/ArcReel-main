@@ -87,7 +87,7 @@ from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resou
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.prompts.reference_image_numbering import clamp_reference_images
-from lib.script.grid.keyframe_parser import parse_grid_prompt_cells, parse_scene_shots
+from lib.script.grid.keyframe_parser import parse_scene_shots, shot_scene_text
 from lib.script.grid.layout import grid_aspect_ratio_for
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_prompt_builder import build_shot_grid_prompt, shot_grid_cells
@@ -1571,8 +1571,8 @@ async def execute_product_task(
 def _shot_grid_scene_opening(image_prompt: object) -> str:
     """分镜提示词 scene 的导语段，作为跨格基调进「风格与锚点」。
 
-    纯文本形态的 scene 没有镜头序列结构，取不到导语就留空——逐格文本另有来源
-    （``ShotGrid.prompt``），缺导语不影响出图。
+    纯文本形态的 scene 没有镜头序列结构，取不到导语就留空——逐格文本同样来自 scene，
+    缺导语不影响出图。
     """
 
     scene = image_prompt.get("scene") if isinstance(image_prompt, Mapping) else image_prompt
@@ -1594,10 +1594,9 @@ async def execute_shot_grid_task(
 ) -> dict[str, Any]:
     """Execute a per-shot reference-material (keyframe grid) generation task.
 
-    逐格镜头文本只有 ``ShotGrid.prompt`` 一个来源（ADR 0099 D-2）：确定入队前它已由
-    服务端解析并回填留证，这里原样再解析一次，拼装出口与 PUT / 整集批量共用。
-    已确认的宫格允许改提示词后重新生成——规格才由 PUT 的 409 锁死，任务层不再按
-    status 拒绝（R7）。
+    逐格镜头文本只有 ``image_prompt.scene`` 一个来源（D-1 / D-3）：入队与执行都从 scene
+    现解析，任务不读取任何保存下来的提示词。出图前把解析结果回填 ``cells`` 只作本次留证。
+    已确认的宫格允许按同一规格重做——规格由 PUT / generate 的 409 锁死（R7）。
     """
 
     project_path = get_project_manager().get_project_path(project_name)
@@ -1605,11 +1604,6 @@ async def execute_shot_grid_task(
     grid = manager.get(resource_id)
     if grid is None:
         raise ValueError(f"shot grid not found: {resource_id}")
-    frames = parse_grid_prompt_cells(grid.prompt)
-    if not frames:
-        raise ValueError(f"shot grid has no cell prompt: {resource_id}")
-    # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
-    grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
 
     grid.status = "generating"
     grid.error_message = None
@@ -1620,6 +1614,19 @@ async def execute_shot_grid_task(
     try:
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
         script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
+        items, id_field, _, _, _ = get_storyboard_items(script)
+        shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
+        if shot is None:
+            raise ValueError(f"shot not found in script: {grid.shot_id}")
+        try:
+            frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
+        except ValueError as exc:
+            raise ValueError(f"shot grid scene has no shot sequence: {grid.shot_id}") from exc
+        # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
+        grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
+        grid.updated_at = datetime.now(UTC).isoformat()
+        manager.save(grid)
+
         generation_input = storyboard_image_input(
             project,
             script,

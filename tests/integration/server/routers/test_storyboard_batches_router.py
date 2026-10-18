@@ -20,7 +20,7 @@ from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.generation.generation_queue import GenerationQueue
 from lib.project.project_manager import ProjectManager
-from lib.script.grid.keyframe_parser import format_grid_prompt, parse_scene_shots
+from lib.script.grid.keyframe_parser import parse_scene_shots
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from server.error_handlers import register_error_handlers
@@ -289,7 +289,8 @@ async def test_shot_grid_submit_queues_one_task_per_target_under_one_batch(
         assert grid is not None
         assert (grid.rows, grid.cols) == (2, 2)
         assert grid.status == "draft"
-        assert grid.prompt == format_grid_prompt(parse_scene_shots(segment["image_prompt"]["scene"]).shots)
+        frames = parse_scene_shots(segment["image_prompt"]["scene"]).shots
+        assert [cell.prompt for cell in grid.cells[: len(frames)]] == [frame.text for frame in frames]
     tasks = await board_queue.get_active_tasks_for_resources(
         project_name=PROJECT,
         task_type="shot_grid",

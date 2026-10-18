@@ -24,6 +24,7 @@ export interface ShortDramaImportDetail {
   duration_shortfall?: boolean;
   registered_assets?: Record<string, string[]>;
   asset_conflicts?: Array<Record<string, string>>;
+  assets_without_description?: Array<{ type: string; name: string; reason: string }>;
 }
 
 export interface ShortDramaImportResult {
@@ -67,6 +68,7 @@ export interface ShortDramaImportOneResult {
   duration_shortfall?: boolean;
   registered_assets?: Record<string, string[]>;
   asset_conflicts?: Array<Record<string, string>>;
+  assets_without_description?: Array<{ type: string; name: string; reason: string }>;
 }
 
 /** 导入一集短剧工厂剧本，成功/失败均弹提示。 */
@@ -77,6 +79,17 @@ export async function importShortDramaScript(
 ): Promise<ShortDramaImportOneResult> {
   try {
     const res = await API.importShortDramaScript(projectName, episodeId, markdown);
+    if (res.assets_without_description?.length) {
+      useAppStore
+        .getState()
+        .pushToast(
+          i18n.t("dashboard:short_drama_imported_one_missing_descriptions", {
+            episode: res.episode,
+            assets: res.assets_without_description.map((asset) => asset.name).join("、"),
+          }),
+          "warning",
+        );
+    }
     if (res.duration_shortfall) {
       useAppStore
         .getState()
@@ -111,6 +124,16 @@ export async function importShortDramaSeries(
 ): Promise<ShortDramaImportResult> {
   try {
     const res = await API.importShortDramaSeries(projectName, episodes, continueOnError);
+    const missingDescriptions = res.details.flatMap((detail) =>
+      (detail.assets_without_description ?? []).map((asset) => ({ episode: detail.episode, name: asset.name })),
+    );
+    if (missingDescriptions.length) {
+      const summary = missingDescriptions.map((asset) => `第 ${asset.episode} 集：${asset.name}`).join("、");
+      useAppStore.getState().pushToast(
+        i18n.t("dashboard:short_drama_imported_batch_missing_descriptions", { assets: summary }),
+        "warning",
+      );
+    }
     if (res.failed === 0) {
       useAppStore
         .getState()
@@ -133,7 +156,13 @@ export async function reimportShortDramaSource(
   episode: number,
   sourceRevision: string,
   confirmArtifacts: boolean,
-): Promise<{ episode: number; scenes: number; source_path: string; source_revision: string }> {
+): Promise<{
+  episode: number;
+  scenes: number;
+  source_path: string;
+  source_revision: string;
+  assets_without_description?: Array<{ type: string; name: string; reason: string }>;
+}> {
   try {
     const result = await API.reimportShortDramaSource(
       projectName,

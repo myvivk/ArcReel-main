@@ -1,9 +1,8 @@
-"""单分镜参考素材宫格的提示词拼装（ADR 0099 D-2 四段式）。
+"""单分镜参考素材宫格的提示词拼装（D-2 四段式）。
 
-弹窗（单分镜）与整集批量共用这一个拼装出口，只有逐格文本的来源不同：单分镜取用户编辑后
-保存的 ``ShotGrid.prompt``，整集从 ``image_prompt.scene`` 现解析（D-11）。四段里只有第 3 段
-（逐格镜头描述）来自这两个来源，第 1 / 2 / 4 段由系统按 rows/cols、项目画风、参考图声明与
-scene 导语渲染——输入框因此永远不承载网格排版指令，改规格不会与正文打架（P3）。
+单分镜与整集批量共用这一个拼装出口，逐格文本也只有一个来源：``image_prompt.scene``
+现解析（D-1 / D-3）。第 1 / 2 / 4 段由系统按 rows/cols、项目画风、参考图声明与 scene 导语
+渲染——没有任何可编辑文本承载网格排版指令，改规格不会与正文打架（P3）。
 
 比例分两个口径下发（D-6）：整图比例由 :func:`grid_aspect_ratio_for` 按 (rows, cols, 画布比例)
 算出，单格比例再由整图比例与行列数推算；2×3 这类非方形档的单格不再被错当成视频画布比例。
@@ -47,9 +46,10 @@ def resolve_grid_cells(frames: Sequence[ShotFrame], count: int) -> list[ShotFram
 
 
 def shot_grid_cells(frames: Sequence[ShotFrame], rows: int, cols: int) -> list[ShotGridCell]:
-    """本次出图的逐格留证：正文进 ``prompt``、景别进 ``continuity_notes``（ADR 0099 D-3）。
+    """本次出图的逐格留证：正文进 ``prompt``、景别进 ``continuity_notes``（D-3）。
 
-    单分镜入队前与整集批量建记录时都经本函数落 ``cells``，与拼装出口读到的序列同一个。
+    入队与执行两处都经本函数落 ``cells``，与拼装出口读到的序列同一个；它只作留证，不参与
+    再编辑，也不回写 scene。
     """
 
     count = rows * cols

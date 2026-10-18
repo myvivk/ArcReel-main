@@ -22,9 +22,11 @@ from lib.prompts.prompt_builders_script import (
     _overview_slot,
     _project_asset_appearances,
     format_duration_constraint,
+    render_video_prompt_inputs,
 )
 from lib.prompts.prompt_rules.asset_appearance import asset_reference_names
 from lib.prompts.prompt_templates.builtin import builtin_templates
+from lib.script.grid.shot_models import ShotGrid
 from lib.script.script_models import REFERENCE_UNIT_DURATION_RANGE
 from lib.speech.speech_rate import speech_rate_units_per_second
 
@@ -228,8 +230,13 @@ def _prompt_summary(value: object, field: str) -> str:
 _PENDING_MARK = "【待编写】"
 
 
-def render_ad_shots_for_prompt_authoring(shots: list[dict], target_ids: Collection[str]) -> str:
-    """按播放顺序渲染整份广告分镜：待编写分镜带标记，其余分镜附已有画面与动作摘要作前后文。"""
+def render_ad_shots_for_prompt_authoring(
+    shots: list[dict], target_ids: Collection[str], video_inputs: Mapping[str, ShotGrid] | None = None
+) -> str:
+    """按播放顺序渲染整份广告分镜：待编写分镜带标记，其余分镜附已有画面与动作摘要作前后文。
+
+    ``video_inputs`` 只在编写视频提示词时传入（D-15）：列出分镜提示词与已确认宫格的逐格文本。
+    """
     blocks: list[str] = []
     for shot in shots:
         shot_id = str(shot.get("shot_id") or "?")
@@ -250,6 +257,12 @@ def render_ad_shots_for_prompt_authoring(shots: list[dict], target_ids: Collecti
                 lines.append(f"已有画面：{_neutralize_tags(scene)}")
             if action:
                 lines.append(f"已有动作：{_neutralize_tags(action)}")
+        if video_inputs is not None:
+            lines.extend(
+                render_video_prompt_inputs(
+                    _prompt_summary(shot.get("image_prompt"), "scene"), video_inputs.get(shot_id)
+                )
+            )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) or "（无分镜）"
 
@@ -283,6 +296,7 @@ def build_ad_shot_prompt_authoring_prompt(
     aspect_ratio: str = "9:16",
     target_language: str = "中文",
     instructions: str | None = None,
+    video_inputs: Mapping[str, ShotGrid] | None = None,
 ) -> str:
     """广告分镜的提示词编写 prompt：只为 ``target_ids`` 里的分镜产出本次 response_schema 要求的字段。"""
     return builtin_templates.render(
@@ -298,7 +312,7 @@ def build_ad_shot_prompt_authoring_prompt(
         character_names=asset_reference_names("character", characters),
         scene_names=asset_reference_names("scene", scenes),
         prop_names=asset_reference_names("prop", props),
-        shots_content=render_ad_shots_for_prompt_authoring(shots, target_ids),
+        shots_content=render_ad_shots_for_prompt_authoring(shots, target_ids, video_inputs),
         episode=episode,
         instructions=instructions or None,
     )

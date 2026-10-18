@@ -543,7 +543,7 @@ export function StudioCanvasRouter() {
                   ? undefined
                   : (stepId, unitIds) => void handleWorkflowRegenerate(stepId, unitIds, scriptFile)
               }
-              renderCanvas={({ view, onViewChange }) => (
+              renderCanvas={({ view, onViewChange, hasShortDramaSource }) => (
                 // 懒加载画布的 chunk 未到达或加载失败时只在画布区域显示占位，页头与视图切换保持可见
                 <LazyBoundary variant="pane">
                   {route === "reference_video" ? (
@@ -571,6 +571,7 @@ export function StudioCanvasRouter() {
                       view={view}
                       onViewChange={onViewChange}
                       hasDraft={hasDraft}
+                      hasShortDramaSource={hasShortDramaSource}
                       episodeScript={script}
                       scriptFile={scriptFile ?? undefined}
                       projectData={currentProjectData}
@@ -604,6 +605,7 @@ export function StudioCanvasRouter() {
                       view={view}
                       onViewChange={onViewChange}
                       hasDraft={hasDraft}
+                      hasShortDramaSource={hasShortDramaSource}
                       episodeScript={script}
                       scriptFile={scriptFile ?? undefined}
                       projectData={currentProjectData}

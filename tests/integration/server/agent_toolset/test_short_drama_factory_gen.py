@@ -8,6 +8,7 @@ import pytest
 
 from lib.backends.providers import CallPurpose
 from lib.backends.text_backends.base import TextGenerationResult, TextTaskType
+from server.agent_toolset.declaration import BLOCKED
 from server.agent_toolset.script_authoring import GENERATE_SHORT_DRAMA_FACTORY
 from server.tool_runtime import (
     ProjectScope,
@@ -16,7 +17,6 @@ from server.tool_runtime import (
     ToolRequest,
     generate_short_drama_factory,
 )
-from server.agent_toolset.declaration import BLOCKED
 
 
 class _FakeGenerator:

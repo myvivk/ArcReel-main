@@ -599,3 +599,109 @@ adc2d7bf827f713453d4ad5662bb0f11e21b660a766f9132bb05beebd18b285d  tests/integrat
 - 用 revision 作为 React key：保存成功后组件重挂载，保存反馈消失。
 - 已导入短剧仍展示三个内容创建按钮：会把已经完成的内容导入误导为待执行步骤。
 - 删除集时遗漏嵌套源稿：项目目录会积累孤儿文件。
+
+## 工厂转写方案追加（道具 / 密度 / 外观 / AI 分镜入口）
+
+对应 `方案设计/2. 工厂转写方案.md`，在上一节契约之上追加以下行为：
+
+### 标记行格式
+
+```text
+[场景]：内景·仓库·夜｜水泥地，铁门单侧顶光     ← 「｜」后是场景外观
+[人物]：林辰（隐忍龙王｜三十岁上下，寸头，旧夹克磨白）  ← 「｜」后是角色外观，且须与人物圣经【外形】逐字一致
+[道具]：铁门｜锈迹斑斑，门轴下垂                ← 一个道具一行，「｜」后是外观
+```
+
+`｜` 同时接受半角 `|`。角色括号内没有 `｜` 时只算状态标签，外观为空；导入器据此不写 `description`。
+`[道具]` 只登记本幕动作或台词里真正出现的道具，避免"建了资产但画面里没有"。
+
+### 机检 E12–E14
+
+判定在两处实现且必须同源：
+
+- 工厂脚本 `agent_runtime_profile/.claude/skills/short-drama-factory/scripts/validate_episode.py`
+  （独立 `python3` 运行，`--bible references/character-bible.md` 启用 E14 逐字比对）。
+- 服务端 `lib/short_drama_quality.py`，由 `lib/short_drama_ingest.py` 在工件落盘前调用。
+
+| 规则 | 判定 | 级别 |
+| --- | --- | --- |
+| E12 | `△` 动作行 + 台词行 ≥ `ceil(本集秒数 ÷ 2)` | fail |
+| E13 | `[道具]` 行缺 `｜`/名称/外观、同集重复登记 | fail |
+| E13 | 道具与角色或场景重名、已登记但未进戏 | warn |
+| E14 | `[人物]` 行「｜」后外观 < 8 字、与人物圣经不一致、圣经里没有该角色 | fail |
+
+一致性由 `tests/unit/lib/test_short_drama_quality_parity.py` 守：同一批 fixture 分别跑 CLI 与 `check_episode`，逐条比对 `E12/E13/E14` 输出。
+工件包内任一集 FAIL 时整包拒绝（`ShortDramaArtifactError`），一个字节都不写入。
+
+### 导入回执 `assets_without_description`
+
+导入与重新导入在成功响应里追加：
+
+```json
+"assets_without_description": [
+  {"type": "character", "name": "林辰", "reason": "source_missing"},
+  {"type": "prop", "name": "铁门", "reason": "existing_blank"}
+]
+```
+
+`source_missing` 指源稿没给外观，`existing_blank` 指资产已在项目里但描述为空。列表为空时不返回该字段。
+前端单集/批量导入在拿到回执后追加一条 warning toast。
+
+### AI 补全上下文（`ai-fill`）
+
+`server/routers/_asset_router_factory.py` 的 `_collect_asset_context` 增加 `canon`：
+
+- 角色：人物圣经里该角色的整段（`【角色】：名字` 到下一个角色前）。
+- 场景：全剧大纲里提到该场景的一行 + 各集 `[场景]` 标记行。
+- 道具：各集 `[道具]` 标记行（带文件名）。
+
+提示词里 canon 以「【项目设定｜优先依据】」出现，优先级：项目设定 > 剧本摘录 > 题材补全。
+
+### 分镜页入口
+
+- `ShortDramaStoryboardButton`（`components/canvas/shared/`）：已导入短剧集在分镜页页头显示「AI 分镜」/「AI 重新分镜」，弹窗展示源稿行数/字数、已有分镜时要求勾选覆盖确认，提交即 `reimportShortDramaSource`，成功后弹窗内显示分镜数、缺描述黄条与「去补描述」。
+- `FactoryStoryboardStart`：工厂集还没转写时，分镜页空态从「请在左侧选择剧集」换成生成入口 + 「先看剧本」。
+- `EpisodePage` 把 `hasShortDramaSource` 注入 `EpisodeCanvasContext`，`StudioCanvasRouter` 再传给 `TimelineCanvas` / `GridImageToVideoCanvas`。
+- 剧本页移除「重新导入」按钮，只留「保存源稿」，并在已有媒体时提示入口已移到分镜页。
+
+### 追加多语言 key
+
+```text
+short_drama_ai_storyboard
+short_drama_ai_restoryboard
+short_drama_ai_storyboard_title
+short_drama_ai_restoryboard_title
+short_drama_ai_storyboard_desc
+short_drama_ai_storyboard_source
+short_drama_ai_storyboard_source_missing
+short_drama_ai_storyboard_overwrite
+short_drama_ai_storyboard_overwrite_confirm
+short_drama_ai_storyboard_submit
+short_drama_ai_restoryboard_submit
+short_drama_ai_storyboard_result
+short_drama_ai_storyboard_missing
+short_drama_ai_storyboard_fix_missing
+short_drama_ai_storyboard_close
+short_drama_storyboard_empty
+short_drama_storyboard_empty_hint
+short_drama_storyboard_view_script
+short_drama_asset_character
+short_drama_asset_scene
+short_drama_asset_prop
+short_drama_reimport_moved_hint
+short_drama_imported_one_missing_descriptions
+short_drama_imported_batch_missing_descriptions
+```
+
+### 追加测试
+
+```bash
+uv run python -m pytest -q -p no:timeout \
+  tests/unit/lib/test_short_drama_quality.py \
+  tests/unit/lib/test_short_drama_quality_parity.py \
+  tests/unit/lib/test_short_drama_ingest.py \
+  tests/unit/lib/script/test_short_drama_import.py \
+  tests/unit/server/routers/test_asset_router_factory.py \
+  tests/integration/server/routers/test_short_drama_router.py
+python agent_runtime_profile/.claude/skills/short-drama-factory/scripts/validate_episode.py --self-test
+```

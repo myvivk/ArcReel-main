@@ -33,6 +33,7 @@ export type StepRowKey =
   | "assets"
   | "boards"
   | "materials"
+  | "video_prompt"
   | "voice"
   | "videos"
   | "edit";
@@ -48,6 +49,7 @@ export type StepIntent =
   | { type: "author_prompts" }
   | { type: "author_prompts_to_agent" }
   | { type: "open_author_prompts" }
+  | { type: "open_video_prompts"; entryIds: string[] }
   | { type: "start_blank_script" }
   | { type: "open_script_plan" }
   | { type: "generate_ad_script" }
@@ -503,6 +505,31 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
       acts: [],
       steps: stepsFor(facts, ["shot_grid"]),
     });
+    // 视频提示词是参考素材的收尾产物：一行一产物集合，过期的算「还没写好」（D-13 / D-19）。
+    const videoPromptIds = ids(status.artifacts.video_prompts, "stale_ids");
+    const videoPromptsForRow: WorkflowArtifactCollection = {
+      ...status.artifacts.video_prompts,
+      missing_ids: [...ids(status.artifacts.video_prompts, "missing_ids"), ...videoPromptIds],
+    };
+    const videoPrompts = mediaStatus(t, videoPromptsForRow);
+    rows.push({
+      key: "video_prompt",
+      title: t("dashboard:detail_video_prompt_title"),
+      tone: formal === "present" ? videoPrompts.tone : "todo",
+      status: formal === "present" ? videoPrompts.status : t("workflow:status_none"),
+      notes:
+        videoPromptIds.length > 0
+          ? [
+              {
+                key: "video-prompt-stale",
+                tone: "warn",
+                text: t("dashboard:video_prompt_stale_hint", { count: videoPromptIds.length }),
+              },
+            ]
+          : [],
+      acts: [],
+      steps: stepsFor(facts, ["video_prompt"]),
+    });
   }
 
   if (status.project.content_mode === "narration" && status.project.generation_mode === "storyboard") {
@@ -689,6 +716,9 @@ function ownerRow(facts: Facts, rows: StepRowView[], action: WorkflowNextAction)
     case "author_prompts":
     case "repair_video_units":
       return "prompts";
+    case "author_video_prompts":
+      // 视频提示词自成一行（D-13）；没有这一行（广告 / 参考生视频）时不下发这个动作。
+      return rows.some((row) => row.key === "video_prompt") ? "video_prompt" : null;
     case "generate_asset_sheets":
       return "assets";
     case "generate_storyboards":
@@ -905,6 +935,28 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
         detail: t("workflow:next_detail_patch_episode_script"),
         primary: [agentAct(t, t("workflow:agent_prefill_patch_episode_script", { episodeRef }))],
       };
+    case "author_video_prompts": {
+      // 宫格已确认、视频提示词还空着的分镜：弹窗预选好这批，字段锁定为视频提示词（D-20）。
+      const awaiting = facts.plan.status.artifacts.video_prompts.awaiting_grid_ids?.length ?? 0;
+      const primary: StepAct[] = [
+        agentAct(t, t("workflow:agent_prefill_author_video_prompts", { episodeRef })),
+        {
+          key: "author-video-prompts",
+          label: t("workflow:act_author_video_prompts", { count }),
+          kind: "ai",
+          intent: { type: "open_video_prompts", entryIds: action.requested_ids },
+        },
+      ];
+      return {
+        ...base,
+        detail: t("workflow:next_detail_author_video_prompts", { count }),
+        primary,
+        hint:
+          awaiting > 0
+            ? { key: "awaiting-grid", tone: "info", text: t("workflow:hint_awaiting_grid", { count: awaiting }) }
+            : null,
+      };
+    }
     case "generate_asset_sheets":
       return {
         ...base,

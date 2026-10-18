@@ -16,6 +16,8 @@ export interface PromptAuthoringOpenRequest {
   defaultFields?: PromptAuthoringField[];
   /** 锁定字段选择，用于分镜详情里的分阶段按钮。 */
   lockFields?: boolean;
+  /** 打开时预选的自选范围（视频提示词整集补缺只针对宫格已确认的那批）。 */
+  defaultEntryIds?: string[];
 }
 
 interface PromptAuthoringState {

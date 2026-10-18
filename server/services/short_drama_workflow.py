@@ -40,6 +40,7 @@ class ShortDramaImportResult:
     source_revision: str
     registered_assets: dict[str, list[str]]
     asset_conflicts: list[dict[str, str]]
+    assets_without_description: list[dict[str, str]]
     declared_seconds: int | None = None
     actual_seconds: int | None = None
     duration_shortfall: bool | None = None
@@ -55,6 +56,8 @@ class ShortDramaImportResult:
             result["registered_assets"] = self.registered_assets
         if self.asset_conflicts:
             result["asset_conflicts"] = self.asset_conflicts
+        if self.assets_without_description:
+            result["assets_without_description"] = self.assets_without_description
         if self.declared_seconds is not None:
             result.update(
                 declared_seconds=self.declared_seconds,
@@ -162,6 +165,7 @@ async def import_short_drama_episode(
     descriptions = referenced_asset_descriptions(parsed)
     registered: dict[str, list[str]] = {}
     conflicts: list[dict[str, str]] = []
+    assets_without_description: list[dict[str, str]] = []
 
     def _update_project(current_project: dict[str, Any]) -> None:
         current_source = load_short_drama_source(projects, project_name, episode)
@@ -174,6 +178,21 @@ async def import_short_drama_episode(
         )
         registered.update(new_assets)
         conflicts.extend(new_conflicts)
+        for asset_type, bucket_name in (
+            ("character", "characters"),
+            ("scene", "scenes"),
+            ("prop", "props"),
+        ):
+            for name in names.get(asset_type, []):
+                entry = (current_project.get(bucket_name) or {}).get(name) or {}
+                if not str(entry.get("description") or "").strip():
+                    assets_without_description.append(
+                        {
+                            "type": asset_type,
+                            "name": name,
+                            "reason": "source_missing" if name in new_assets.get(asset_type, []) else "existing_blank",
+                        }
+                    )
 
     try:
         await run_sync_transaction(
@@ -200,6 +219,7 @@ async def import_short_drama_episode(
         source_revision=source.revision,
         registered_assets=registered,
         asset_conflicts=conflicts,
+        assets_without_description=assets_without_description,
         declared_seconds=declared if declared and actual != declared else None,
         actual_seconds=actual if declared and actual != declared else None,
         duration_shortfall=actual < declared if declared and actual != declared else None,

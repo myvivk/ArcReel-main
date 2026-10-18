@@ -87,6 +87,13 @@ from lib.script.draft_quarantine import (
     read_quarantine,
 )
 from lib.script.draft_violation import locate_violations, locate_violations_by_id, schema_violations
+from lib.script.grid.keyframe_parser import keyframe_reference_problems
+from lib.script.grid.shot_grid_manager import ShotGridManager
+from lib.script.grid.shot_models import ShotGrid
+from lib.script.grid.video_prompt_targets import (
+    video_prompt_basis_for,
+    video_prompt_text,
+)
 from lib.script.plan_new_assets import (
     NEW_ASSETS_FIELD,
     NewAssetResolution,
@@ -124,6 +131,7 @@ from lib.script.script_document import (
 )
 from lib.script.script_models import (
     AD_TARGET_DURATION_DRIFT_THRESHOLD,
+    PENDING_AUTHORING_FIELD,
     AdEpisodeScript,
     AdImageVisualScript,
     AdReferenceFlatScript,
@@ -142,7 +150,6 @@ from lib.script.script_models import (
     ReferencePromptAuthoringFlatScript,
     ReferenceScriptPlanDraft,
     ReferenceVideoScript,
-    PENDING_AUTHORING_FIELD,
     build_episode_script_model,
     script_duration_total,
     with_new_assets_field,
@@ -237,8 +244,10 @@ def _visual_field_instruction(targets: "PromptAuthoringTargets") -> str | None:
         )
     if fields == {"video_prompt"}:
         return (
-            "本次只编写 video_prompt（视频提示词）。必须基于已确认的参考素材与分镜提示词编写；"
-            "不要输出 image_prompt，也不要改写分镜提示词。"
+            "本次只编写 video_prompt（视频提示词）。输入里有分镜提示词与该分镜已确认宫格的逐格文本"
+            "（K0→Kn）：按 K0→Kn 的时序写「怎么动」，不复述每格已经写死的静帧外观、姿态与服装；"
+            "只引用真实存在的 K（正文出现的 K 编号必须小于格数），台词不进 action；"
+            "不写 BGM、画面比例、时长与模型参数，也不要输出 image_prompt 或改写分镜提示词。"
         )
     return None
 
@@ -647,6 +656,7 @@ class ScriptGenerator:
         """分镜类条目（segments / scenes / shots）的视觉层 prompt：输入是正式剧本里这些条目的内容字段。"""
         entries = list(targets.entries)
         scoped_instructions = _with_field_instruction(instructions, targets)
+        video_inputs = self._video_prompt_inputs(targets, episode)
         if targets.kind == "scenes":
             context_characters: set[str] = set()
             for item in targets.items:
@@ -660,9 +670,12 @@ class ScriptGenerator:
                 episode,
                 scoped_instructions,
                 context_characters=context_characters,
+                video_inputs=video_inputs,
             )
         if targets.kind == "shots":
-            return self._build_ad_shot_prompt_authoring_prompt(episode, targets, scoped_instructions)
+            return self._build_ad_shot_prompt_authoring_prompt(
+                episode, targets, scoped_instructions, video_inputs=video_inputs
+            )
         return build_narration_prompt(
             project_overview=self.project_json.get("overview", {}),
             style=self.project_json.get("style", ""),
@@ -676,7 +689,24 @@ class ScriptGenerator:
             # 输出语言取项目 source_language，与正式剧本透传的内容字段同一语言（同 drama）
             target_language=self.project_json.get("source_language") or "中文",
             instructions=scoped_instructions,
+            video_inputs=video_inputs,
         )
+
+    def _video_prompt_inputs(self, targets: PromptAuthoringTargets, episode: int) -> Mapping[str, ShotGrid] | None:
+        """视频提示词编写才带的输入：本集已确认宫格，按分镜 id 索引（D-15）。
+
+        ``None`` 表示本次不是写视频提示词，调用方据此不渲染分镜提示词 / 关键帧块——
+        写 image_prompt 时模型看不到宫格，也就不会把逐格文本抄回去。
+        """
+
+        fields = {field for entry in targets.selection.entries for field in entry.fields}
+        if fields != {"video_prompt"}:
+            return None
+        return {
+            grid.shot_id: grid
+            for grid in ShotGridManager(self.project_path).list_all()
+            if grid.episode == episode and grid.status == "confirmed"
+        }
 
     def _project_bucket(self, key: str) -> dict:
         bucket = self.project_json.get(key)
@@ -725,6 +755,40 @@ class ScriptGenerator:
             for entry in targets.entries
         ]
 
+    def _stamp_video_prompt_basis(
+        self, authored_by_id: Mapping[str, dict], targets: PromptAuthoringTargets, episode: int
+    ) -> None:
+        """视频提示词的写回守卫：越界 K 整条拒、有已确认宫格才记依据（D-17 / D-18）。
+
+        模型产出在后台任务里落盘，拿不到请求期的 422；错误在这里抛出会把该任务判失败，
+        不落半截文本。视频准入（``storyboard_video_prompt``）在计费前再拦一次同一条规则。
+        """
+
+        written = [entry_id for entry_id in targets.ids if "video_prompt" in targets.fields_of(entry_id)]
+        if not written:
+            return
+        grids = {
+            grid.shot_id: grid
+            for grid in ShotGridManager(self.project_path).list_all()
+            if grid.episode == episode and grid.status == "confirmed"
+        }
+        for entry_id in written:
+            item = authored_by_id[entry_id]
+            grid = grids.get(entry_id)
+            if grid is None:
+                # 没有已确认宫格：正文没有 K 可引用，也无从记依据。
+                continue
+            problems = keyframe_reference_problems(video_prompt_text(item), len(grid.cells))
+            if problems:
+                raise ValueError(
+                    f"视频提示词引用了不存在的关键帧: {'、'.join(problems)}（本分镜宫格共 {len(grid.cells)} 格）"
+                )
+            assets = item.get("generated_assets")
+            if not isinstance(assets, dict):
+                assets = {}
+                item["generated_assets"] = assets
+            assets["video_prompt_basis"] = video_prompt_basis_for(grid)
+
     def _authored_script(
         self,
         episode: int,
@@ -754,6 +818,8 @@ class ScriptGenerator:
         for entry_id, item in zip(targets.ids, finished, strict=True):
             item[targets.id_field] = entry_id
             replacements[entry_id] = item
+        # 视频提示词写回前：越界 K 直接拒，有已确认宫格才记依据（D-17 / D-18）。
+        self._stamp_video_prompt_basis(replacements, targets, episode)
         script = dict(targets.script)
         script[targets.kind] = [
             replacements.get(str(item.get(targets.id_field)), item) if isinstance(item, dict) else item
@@ -920,6 +986,7 @@ class ScriptGenerator:
         instructions: str | None = None,
         *,
         context_characters: set[str] | None = None,
+        video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> str:
         """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求本次字段。"""
         characters = self.project_json.get("characters")
@@ -932,7 +999,7 @@ class ScriptGenerator:
             project_overview=self.project_json.get("overview", {}),
             style=self.project_json.get("style", ""),
             style_description=self.project_json.get("style_description", ""),
-            scenes_content=render_drama_content_for_prompt_authoring(content_scenes),
+            scenes_content=render_drama_content_for_prompt_authoring(content_scenes, video_inputs=video_inputs),
             episode=episode,
             aspect_ratio=self._resolve_aspect_ratio(),
             # 输出语言与 script_plan（normalize）同取项目 source_language，避免非中文项目 script_plan 内容与 prompt_authoring 视觉割裂
@@ -1886,12 +1953,18 @@ class ScriptGenerator:
         }
 
     def _build_ad_shot_prompt_authoring_prompt(
-        self, episode: int, targets: PromptAuthoringTargets, instructions: str | None
+        self,
+        episode: int,
+        targets: PromptAuthoringTargets,
+        instructions: str | None,
+        *,
+        video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> str:
         return build_ad_shot_prompt_authoring_prompt(
             **self._ad_prompt_common(episode, instructions),
             shots=[item for item in targets.items if isinstance(item, dict)],
             target_ids=targets.ids,
+            video_inputs=video_inputs,
         )
 
     def _build_ad_reference_prompt_authoring_prompt(

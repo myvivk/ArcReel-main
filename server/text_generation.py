@@ -73,7 +73,11 @@ from lib.script.plan_new_assets import (
     planning_project,
     with_new_assets,
 )
-from lib.script.prompt_authoring_scope import PromptOverwriteRequired, prompt_overwrite_with_text
+from lib.script.prompt_authoring_scope import (
+    DEFAULT_AUTHORING_FIELDS,
+    PromptOverwriteRequired,
+    prompt_overwrite_with_text,
+)
 from lib.script.reference_video.draft_validation import (
     validate_dialogue_load,
     validate_source_text_anchor,
@@ -92,6 +96,7 @@ from lib.script.reference_video.script_preview import (
 from lib.script.reference_video.text_parser import extract_mentions
 from lib.script.reference_video.unit_capabilities import hydrate_reference_units
 from lib.script.reference_video.voice_settings import VoiceRenderSettings
+from lib.script.script_skeleton import resolve_declared_kind
 from lib.script.script_generator import (
     AdScriptOverwriteRequired,
     AdScriptRejected,
@@ -770,6 +775,9 @@ async def generate_episode_script(
     skipped_note = (
         f"\n   视觉层已齐、补缺未改动的条目: {'、'.join(skipped)}（要覆盖请传 rewrite=true）" if skipped else ""
     )
+    # 写了哪一层必须在回执里自证：调用方除了看进展，得先确认这一步动的是地方。
+    written_fields = _written_fields(projects, project_name, request)
+    fields_note = f"\n   本次编写字段: {'、'.join(written_fields)}" if written_fields else ""
     if not rewritten and formal_existed and not request.regenerate:
         redo = (
             "要整份重做请传 regenerate=true" if generator.content_mode == "ad" else "要整集重做请重跑脚本规划并重新确认"
@@ -780,7 +788,7 @@ async def generate_episode_script(
             f"   要覆盖已有视觉层请用 entry_ids 点名并传 rewrite=true；{redo}。"
         )
     rewritten_note = "、".join(rewritten) if rewritten else "整份生成"
-    summary = f"✅ 剧本生成完成: {result_path}\n   本次编写条目: {rewritten_note}{skipped_note}"
+    summary = f"✅ 剧本生成完成: {result_path}\n   本次编写条目: {rewritten_note}{fields_note}{skipped_note}"
     if registered:
         labels = {asset_type: spec.label_zh for asset_type, spec in ASSET_SPECS.items()}
         summary += "\n   本次登记的新资产（待生成）: " + "、".join(
@@ -789,6 +797,26 @@ async def generate_episode_script(
     warnings = await asyncio.to_thread(_rewritten_mention_warnings, projects, project_name, result_path, rewritten)
     summary += _unbound_mentions_note(warnings)
     return TextGenerationResult(summary, warnings, new_assets=registered)
+
+
+def _written_fields(
+    projects: ProjectManager, project_name: str, request: TextGenerationRequest
+) -> tuple[str, ...]:
+    """本次编写动了哪些视觉层字段：回执要能自证，取不到就干脆不写这一行。
+
+    省略 ``fields`` 时的缺省值按项目声明的骨架种类取值。这里刻意绕开 ``ScriptGenerator``
+    实例重新求一次：它的 ``generate`` 在测试里常被替身替换，回执不该依赖替身有没有那些成员。
+    """
+
+    if request.fields or request.regenerate:
+        return tuple(request.fields)
+    try:
+        project = projects.load_project(project_name)
+    except (OSError, ValueError):
+        return ()
+    return DEFAULT_AUTHORING_FIELDS.get(
+        resolve_declared_kind(project.get("content_mode"), project.get("generation_mode")), ()
+    )
 
 
 def _rewritten_mention_warnings(

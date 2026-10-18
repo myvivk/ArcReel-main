@@ -725,7 +725,7 @@ class ScriptGenerator:
         return {
             grid.shot_id: grid
             for grid in ShotGridManager(self.project_path).list_all()
-            if grid.episode == episode and grid.status == "confirmed"
+            if grid.episode == episode and grid.status in {"completed", "confirmed"}
         }
 
     def _project_bucket(self, key: str) -> dict:
@@ -790,13 +790,13 @@ class ScriptGenerator:
         grids = {
             grid.shot_id: grid
             for grid in ShotGridManager(self.project_path).list_all()
-            if grid.episode == episode and grid.status == "confirmed"
+            if grid.episode == episode and grid.status in {"completed", "confirmed"}
         }
         for entry_id in written:
             item = authored_by_id[entry_id]
             grid = grids.get(entry_id)
             if grid is None:
-                # 没有已确认宫格：正文没有 K 可引用，也无从记依据。
+                # 没有已生成宫格：正文没有 K 可引用，也无从记依据。
                 continue
             problems = keyframe_reference_problems(video_prompt_text(item), len(grid.cells))
             if problems:

@@ -110,7 +110,7 @@ def _reject_out_of_range_keyframes(project_name: str, episode: int, req: "Author
     grids = {
         grid.shot_id: grid
         for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
-        if grid.episode == episode and grid.status == "confirmed"
+        if grid.episode == episode and grid.status in {"completed", "confirmed"}
     }
     for item in items:
         unit_id = str(item.get(id_field, ""))

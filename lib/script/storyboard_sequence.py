@@ -120,10 +120,11 @@ def resolve_storyboard_video_reference_images(
     resource_id: str,
     item: dict[str, object],
 ) -> tuple[Path, ...]:
-    """Resolve every ordered storyboard-grid image used as video context.
+    """Resolve the ordered storyboard cells in stable ``K0``, ``K1`` order.
 
-    Grid bindings are deliberately not reduced to provider limits. The order in
-    ``cell_paths`` is the stable ``K0``, ``K1`` ... order exposed to prompt text.
+    The caller assigns the cells to the three video request slots. This helper
+    intentionally returns the complete source sequence so admission and input
+    claiming can validate the same registered storyboard artifact.
     """
     assets = get_generated_assets(item)
     grid = assets.get("shot_grid")
@@ -156,67 +157,46 @@ def resolve_storyboard_video_inputs(
     resource_id: str,
     item: dict[str, object],
 ) -> tuple[Path, Path | None]:
-    """Resolve the exact current storyboard and optional canonical end frame.
-
-    The recorded binding is the only evidence of which image belongs to this
-    resource; a resource without one is refused rather than matched against a
-    same-named file that nothing claims.
-    """
+    """Resolve the current shot's fallback opening image and final image cell."""
+    cells = resolve_storyboard_video_cells(project_path=project_path, resource_id=resource_id, item=item)
+    if cells:
+        start = cells[0]
+        end = cells[-1] if len(cells) > 1 else None
+        return start, end
 
     assets = get_generated_assets(item)
-    grid = assets.get("shot_grid")
-    if isinstance(grid, dict) and grid.get("video_reference_mode") == "start_end_cells":
-        cell_paths = grid.get("cell_paths")
-        if not isinstance(cell_paths, list) or not cell_paths:
-            raise StoryboardImageBindingRequired(f"shot grid cell bindings missing: {resource_id}")
-        start_index = grid.get("start_cell", 0)
-        end_index = grid.get("end_cell", len(cell_paths) - 1)
-        if (
-            type(start_index) is not int
-            or type(end_index) is not int
-            or not 0 <= start_index < len(cell_paths)
-            or not 0 <= end_index < len(cell_paths)
-        ):
-            raise StoryboardImageBindingRequired(f"invalid shot grid video cells: {resource_id}")
-        storyboard_file = resolve_storyboard_image_ref(project_path, cell_paths[start_index])
-        end_frame_file = resolve_storyboard_image_ref(project_path, cell_paths[end_index])
-        if storyboard_file is None or end_frame_file is None:
-            raise StoryboardImageBindingRequired(f"shot grid video bindings missing: {resource_id}")
-        if not storyboard_file.is_file():
-            raise StoryboardImageUnavailable(f"storyboard not found: {storyboard_file.name}")
-        if not end_frame_file.is_file():
-            raise EndFrameImageUnavailable(f"shot grid end cell not found: {end_frame_file.name}")
-        return storyboard_file, end_frame_file
-
     storyboard_rel = assets.get("storyboard_image")
     storyboard_file = resolve_storyboard_image_ref(project_path, storyboard_rel)
     if storyboard_file is None:
         raise StoryboardImageBindingRequired(f"storyboard binding missing: {resource_id}")
     if not storyboard_file.is_file():
         raise StoryboardImageUnavailable(f"storyboard not found: {storyboard_file.name}")
+    return storyboard_file, None
 
-    end_frame_rel = item.get("end_frame_image")
-    if end_frame_rel in (None, ""):
-        return storyboard_file, None
-    if not isinstance(end_frame_rel, str):
-        raise EndFrameImageUnavailable(f"invalid end frame snapshot path: {end_frame_rel!r}")
-    normalized = end_frame_rel.strip().replace("\\", "/")
-    candidate = normalized if "/" in normalized else f"{END_FRAME_RESOURCE_TYPE}/{normalized}"
-    expected_rel = resource_relative_path(END_FRAME_RESOURCE_TYPE, resource_id)
-    end_frame_file = try_safe_join(project_path, candidate)
-    expected_file = safe_join(project_path, expected_rel)
-    canonical_path_tampered = False
-    current = project_path
-    for component in Path(expected_rel).parts:
-        current = current / component
-        if current.is_symlink() or current.is_junction():
-            canonical_path_tampered = True
-            break
-    if end_frame_file is None or end_frame_file != expected_file or canonical_path_tampered:
-        raise EndFrameImageUnavailable(f"invalid end frame snapshot path: {end_frame_rel!r}")
-    if not end_frame_file.is_file():
-        raise EndFrameImageUnavailable(f"end frame snapshot not found: {end_frame_file.name}")
-    return storyboard_file, end_frame_file
+
+def resolve_storyboard_video_cells(
+    *,
+    project_path: Path,
+    resource_id: str,
+    item: dict[str, object],
+) -> tuple[Path, ...]:
+    """Resolve confirmed grid cells in their temporal ``K0`` … ``Kn`` order."""
+    assets = get_generated_assets(item)
+    grid = assets.get("shot_grid")
+    if not isinstance(grid, dict) or not isinstance(grid.get("cell_paths"), list):
+        return ()
+    raw_cells = grid["cell_paths"]
+    if not raw_cells:
+        raise StoryboardImageBindingRequired(f"shot grid cell bindings missing: {resource_id}")
+    resolved: list[Path] = []
+    for raw_path in raw_cells:
+        path = resolve_storyboard_image_ref(project_path, raw_path)
+        if path is None:
+            raise StoryboardImageBindingRequired(f"shot grid cell binding missing: {resource_id}")
+        if not path.is_file():
+            raise StoryboardImageUnavailable(f"storyboard not found: {path.name}")
+        resolved.append(path)
+    return tuple(resolved)
 
 
 def resolve_previous_storyboard_path(
@@ -225,6 +205,7 @@ def resolve_previous_storyboard_path(
     id_field: str,
     resource_id: str,
 ) -> Path | None:
+    """Resolve the previous shot's strongest available continuity frame."""
     resolved = find_storyboard_item(items, id_field, resource_id)
     if resolved is None:
         raise KeyError(f"scene/segment not found: {resource_id}")
@@ -232,7 +213,6 @@ def resolve_previous_storyboard_path(
     target_item, index = resolved
     if index == 0 or bool(target_item.get("segment_break")):
         return None
-
     previous_item = items[index - 1]
     if not isinstance(previous_item, dict):
         return None
@@ -240,9 +220,24 @@ def resolve_previous_storyboard_path(
     if not previous_id:
         return None
 
-    previous_rel = get_generated_assets(previous_item).get("storyboard_image")
-    if previous_rel in (None, ""):
-        return None
+    previous_assets = get_generated_assets(previous_item)
+    end_rel = previous_item.get("end_frame_image")
+    if isinstance(end_rel, str) and end_rel:
+        normalized = end_rel.strip().replace("\\", "/")
+        candidate = normalized if "/" in normalized else f"{END_FRAME_RESOURCE_TYPE}/{normalized}"
+        end_path = try_safe_join(project_path, candidate)
+        expected = safe_join(project_path, resource_relative_path(END_FRAME_RESOURCE_TYPE, previous_id))
+        if end_path == expected and end_path.is_file():
+            return end_path
+
+    previous_grid = previous_assets.get("shot_grid")
+    previous_cells = previous_grid.get("cell_paths") if isinstance(previous_grid, dict) else None
+    if isinstance(previous_cells, list) and previous_cells:
+        last = resolve_storyboard_image_ref(project_path, previous_cells[-1])
+        if last is not None and last.is_file():
+            return last
+
+    previous_rel = previous_assets.get("storyboard_image")
     previous_path = resolve_storyboard_image_ref(project_path, previous_rel)
     return previous_path if previous_path is not None and previous_path.is_file() else None
 

@@ -16,6 +16,7 @@ interface ReferenceMaterialsSectionProps {
   scriptFile?: string;
   episode?: number;
   shotId: string;
+  aspectRatio?: "9:16" | "16:9";
   readOnly?: boolean;
   disabled?: boolean;
   /** 该分镜已有视频提示词：收尾条的入口写「重写」而不是「生成」。 */
@@ -34,6 +35,7 @@ export function ReferenceMaterialsSection({
   scriptFile,
   episode,
   shotId,
+  aspectRatio = "9:16",
   readOnly,
   disabled,
   videoPromptFilled,
@@ -49,8 +51,8 @@ export function ReferenceMaterialsSection({
   const dialogOpen = useShotGridDialogStore((s) => s.request) !== null;
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  //: 宫格图的放大预览：缩略图按可用宽度等比缩放，点击进查看器看原图。
-  const [previewing, setPreviewing] = useState(false);
+  // 宫格图的放大预览：缩略图按可用宽度等比缩放，点击进查看器看原图。
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   // 弹窗关掉就重读：确定入队了这一条要接着轮询它的任务，取消则回到原样。
   const [reloadKey, setReloadKey] = useState(0);
   const wasOpen = useRef(dialogOpen);
@@ -115,20 +117,7 @@ export function ReferenceMaterialsSection({
     openDialog({ projectName, scriptFile, episode, shotId, plan });
   };
 
-  const confirm = async () => {
-    if (!plan || disabled) return;
-    setSubmitting(true);
-    try {
-      const result = await API.confirmShotGrid(projectName, plan.id);
-      updatePlan(result.grid);
-    } catch {
-      useAppStore.getState().pushToast(t("shot_materials_failed"), "error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /** 宫格确认后进入视频提示词：单分镜、字段锁定为 video_prompt。 */
+  /** 宫格完成后进入视频提示词：单分镜、字段锁定为 video_prompt。 */
   const openVideoPrompt = () => {
     if (episode === undefined) return;
     usePromptAuthoringStore.getState().open({
@@ -145,6 +134,9 @@ export function ReferenceMaterialsSection({
     ? API.getFileUrl(projectName, plan.composite_path, fingerprints[plan.composite_path] ?? null, { width: 1280 })
     : null;
   const columns = GRID_COLUMNS[plan?.cols ?? 2] ?? "grid-cols-2";
+  const gridAspectClass = aspectRatio === "9:16"
+    ? plan?.rows === plan?.cols ? "aspect-[9/16]" : plan?.rows === 2 && plan?.cols === 3 ? "aspect-[3/4]" : "aspect-[4/3]"
+    : plan?.rows === plan?.cols ? "aspect-video" : plan?.rows === 2 && plan?.cols === 3 ? "aspect-[3/4]" : "aspect-[4/3]";
 
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-2">
@@ -162,16 +154,10 @@ export function ReferenceMaterialsSection({
             {t("shot_configure_materials")}
           </Button>
         )}
-        {plan?.status === "completed" && !readOnly && (
-          <Button type="button" size="xs" disabled={disabled || submitting} onClick={() => void confirm()}>
-            {submitting ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : <Check aria-hidden data-icon="inline-start" />}
-            {t("shot_confirm_materials")}
-          </Button>
-        )}
-        {plan?.status === "confirmed" && (
+        {(plan?.status === "completed" || plan?.status === "confirmed") && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1.5">
             <Check aria-hidden className="size-3.5 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 text-xs text-muted-foreground">{t("shot_materials_confirmed")}</span>
+            <span className="min-w-0 flex-1 text-xs text-muted-foreground">{t("shot_materials_ready")}</span>
             <span className="text-xs text-muted-foreground">
               {videoPromptFilled ? t("video_prompt_done") : t("video_prompt_missing")}
             </span>
@@ -190,45 +176,53 @@ export function ReferenceMaterialsSection({
       </div>
       <p className="text-xs text-muted-foreground">{t("shot_materials_hint")}</p>
       {plan?.error_message ? <p role="alert" className="text-xs text-destructive">{plan.error_message}</p> : null}
-      {compositeUrl ? (
-        <>
-          <button
-            type="button"
-            aria-label={t("shot_materials_preview_open")}
-            onClick={() => setPreviewing(true)}
-            className="focus-ring group flex h-[min(60vh,560px)] w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-md border border-border bg-muted/20"
-          >
-            {/* 宫格图按容器等比缩放（contain 不裁切），点击进查看器看原图 */}
-            <img
-              src={compositeUrl}
-              alt={t("shot_materials_preview")}
-              className="size-full object-contain transition-transform duration-200 group-hover:scale-[1.01]"
-            />
-          </button>
-          <Dialog open={previewing} onOpenChange={setPreviewing}>
-            <DialogContent size="viewer">
-              <DialogHeader>
-                <DialogTitle>{t("shot_materials_preview")}</DialogTitle>
-              </DialogHeader>
-              <DialogBody className="flex min-h-0 items-center justify-center">
-                <img
-                  src={compositeUrl}
-                  alt={t("shot_materials_preview")}
-                  className="size-full object-contain"
-                />
-              </DialogBody>
-            </DialogContent>
-          </Dialog>
-        </>
-      ) : plan?.cells.length ? (
-        <div className={`grid ${columns} gap-2`}>
+      {plan?.cells.some((cell) => cell.image_path) ? (
+        <div className={`grid ${columns} ${gridAspectClass} gap-0 overflow-hidden rounded-md border border-border bg-muted/20`}>
           {plan.cells.map((cell) => (
-            <div key={cell.index} className="aspect-video overflow-hidden rounded-md border border-border bg-muted">
-              {cell.image_path ? <img src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 320 })} alt={t("shot_keyframe", { index: cell.index })} className="size-full object-cover" /> : null}
-            </div>
+            <button
+              key={cell.index}
+              type="button"
+              aria-label={t("shot_keyframe", { index: cell.index })}
+              onClick={() => {
+                if (cell.image_path) {
+                  setPreviewUrl(API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 1280 }));
+                }
+              }}
+              className="focus-ring relative min-h-0 overflow-hidden bg-muted/40"
+            >
+              {cell.image_path ? (
+                <img
+                  src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 640 })}
+                  alt={t("shot_keyframe", { index: cell.index })}
+                  className="size-full object-cover"
+                />
+              ) : null}
+              <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                K{cell.index}
+              </span>
+            </button>
           ))}
         </div>
+      ) : compositeUrl ? (
+        <button
+          type="button"
+          aria-label={t("shot_materials_preview")}
+          onClick={() => setPreviewUrl(compositeUrl)}
+          className={`focus-ring relative block w-full overflow-hidden rounded-md border border-border bg-muted/20 ${gridAspectClass}`}
+        >
+          <img src={compositeUrl} alt={t("shot_materials_preview")} className="size-full object-contain" />
+        </button>
       ) : null}
+      <Dialog open={previewUrl !== null} onOpenChange={(open) => !open && setPreviewUrl(null)}>
+        <DialogContent size="viewer">
+          <DialogHeader>
+            <DialogTitle>{t("shot_materials_preview")}</DialogTitle>
+          </DialogHeader>
+          <DialogBody className="flex min-h-0 items-center justify-center">
+            {previewUrl ? <img src={previewUrl} alt={t("shot_materials_preview")} className="size-full object-contain" /> : null}
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
       <ShotGridDialogHost />
     </section>
   );

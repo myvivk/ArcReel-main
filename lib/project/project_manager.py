@@ -64,6 +64,12 @@ from lib.episode.episode_target_duration import (
     MIN_EPISODE_TARGET_DURATION,
     is_valid_episode_target_duration,
 )
+from lib.episode.episode_total import (
+    MAX_TOTAL_EPISODES,
+    MIN_TOTAL_EPISODES,
+    TOTAL_EPISODES_FIELD,
+    is_valid_total_episodes,
+)
 from lib.episode.source_kinds import project_overview_source_kind
 from lib.infra.app_data_dir import app_data_dir
 from lib.infra.content_digest import canonical_json_digest
@@ -2417,6 +2423,7 @@ class ProjectManager:
         aspect_ratio: str | None = "9:16",
         default_duration: int | None = None,
         episode_target_duration: int | None = None,
+        total_episodes: int | None = None,
         style_template_id: str | None = None,
         extras: dict | None = None,
         target_duration: int | None = None,
@@ -2437,6 +2444,9 @@ class ProjectManager:
         `episode_target_duration` 为单集目标时长（秒），取值区间见
         `lib.episode.episode_target_duration`；软偏好，只注入脚本规划提示词与审核面板对比，不做阻断。
 
+        `total_episodes` 为全剧规划总集数（集），取值区间见 `lib.episode.episode_total`；仅非 ad 项目
+        持有，供「AI 原创剧本」连写 / 续写流程告诉 Agent 全剧体量。ad 项目不持有该字段。
+
         `narration` 是旁白交付配置字段（交付方式与 TTS 快照，见 `lib.speech.narration_config`），
         缺省为后期配音；TTS 配音必须带完整快照。
         """
@@ -2450,6 +2460,8 @@ class ProjectManager:
                 raise ValueError("广告/短片项目不持有 default_duration（分镜时长按 target_duration 预算逐个分镜规划）")
             if episode_target_duration is not None:
                 raise ValueError("广告/短片项目不持有 episode_target_duration（整集体量按 target_duration 预算规划）")
+            if total_episodes is not None:
+                raise ValueError("广告/短片项目不持有 total_episodes（整集体量按 target_duration 预算规划）")
             if target_duration is not None and not is_int(target_duration, minimum=1):
                 raise ValueError(f"target_duration 必须为正整数秒，当前为 {target_duration!r}")
             if brief is not None and not is_str(brief):
@@ -2504,6 +2516,12 @@ class ProjectManager:
                     f"{MAX_EPISODE_TARGET_DURATION} 秒的整数，当前为 {episode_target_duration!r}"
                 )
             project[EPISODE_TARGET_DURATION_FIELD] = episode_target_duration
+        if total_episodes is not None:
+            if not is_valid_total_episodes(total_episodes):
+                raise ValueError(
+                    f"total_episodes 必须是 {MIN_TOTAL_EPISODES}–{MAX_TOTAL_EPISODES} 的整数，当前为 {total_episodes!r}"
+                )
+            project[TOTAL_EPISODES_FIELD] = total_episodes
         if style_template_id is not None:
             project["style_template_id"] = style_template_id
         if extras:
@@ -2516,6 +2534,7 @@ class ProjectManager:
             reserved = set(project) | {
                 "default_duration",
                 EPISODE_TARGET_DURATION_FIELD,
+                TOTAL_EPISODES_FIELD,
                 "style_template_id",
                 "target_duration",
                 "brief",

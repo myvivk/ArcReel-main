@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from lib.artifacts.artifact_activation import register_current_resource_artifact
 from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor
@@ -49,10 +49,8 @@ SUPPORTED_LAYOUTS = {(2, 2), (2, 3), (3, 3)}
 _GENERATING_STATUSES = {"generating", "confirming"}
 
 
-class ShotGridSpecRequest(BaseModel):
-    """PUT 与 POST /generate 共用：寻址 + 规格，没有一个文本字段。"""
-
-    model_config = ConfigDict(extra="forbid")
+class _GridSpecRequest(BaseModel):
+    """PUT / POST /generate / author-prompt 共用的寻址 + 规格，没有一个文本字段。"""
 
     script_file: str = Field(min_length=1)
     episode: int = Field(ge=1)
@@ -65,27 +63,24 @@ class ShotGridSpecRequest(BaseModel):
         return self.rows, self.cols
 
 
-def _assert_layout(req: ShotGridSpecRequest, t: Translator) -> None:
+def _assert_layout(req: _GridSpecRequest, t: Translator) -> None:
     if req.layout not in SUPPORTED_LAYOUTS:
         raise HTTPException(status_code=400, detail=t("shot_grid_layout_invalid"))
 
 
-class SaveShotGridRequest(BaseModel):
-    script_file: str = Field(min_length=1)
-    episode: int = Field(ge=1)
-    shot_id: str = Field(min_length=1, max_length=200)
-    rows: int = Field(default=2, ge=2, le=3)
-    cols: int = Field(default=2, ge=2, le=3)
+class SaveShotGridRequest(_GridSpecRequest):
     #: 本次出图的逐格镜头文本；``None`` 表示保持原值，``""`` 表示明确清空（ADR 0099 D-4）。
     prompt: str | None = Field(default=None, max_length=12000)
 
 
-class AuthorShotGridPromptRequest(BaseModel):
-    script_file: str = Field(min_length=1)
-    episode: int = Field(ge=1)
-    shot_id: str = Field(min_length=1, max_length=200)
-    rows: int = Field(default=2, ge=2, le=3)
-    cols: int = Field(default=2, ge=2, le=3)
+class SaveShotGridDraftRequest(_GridSpecRequest):
+    """弹窗里还没点「确定」的逐格文本：只保存成草稿，不触发一次生成（ADR 0099 D-5）。"""
+
+    prompt: str = Field(default="", max_length=12000)
+
+
+class AuthorShotGridPromptRequest(_GridSpecRequest):
+    pass
 
 
 class _AuthoredFrame(BaseModel):
@@ -252,6 +247,42 @@ def get_shot_grid_image(project_name: str, grid_id: str, t: Translator):
     return FileResponse(image_path, media_type="image/png")
 
 
+@router.put("/draft")
+def save_shot_grid_draft(project_name: str, req: SaveShotGridDraftRequest, t: Translator):
+    """把弹窗里未提交的逐格文本存成草稿，关闭弹窗或 AI 生成返回时调用（ADR 0099 D-5）。
+
+    只写 ``prompt``：``status`` / ``composite_path`` / ``task_id`` / ``image_basis`` / ``cells``
+    留证与 ``scene_revision`` 全部保持原样——草稿是「下次打开弹窗回填什么」，不是一次提交，
+    因此既不会清掉已出的宫格图，也不会让「分镜提示词已变更」的提示提前消失。规格只在记录尚不
+    存在时按弹窗当前选择新建：已有记录的 ``rows/cols`` 决定既成宫格图的切分口径，不能在草稿
+    里被悄悄改掉。
+    """
+
+    project_manager = get_project_manager()
+    script = project_manager.load_script(project_name, req.script_file)
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
+    if script.get("episode") != req.episode or shot is None:
+        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+    _assert_layout(req, t)
+    manager = ShotGridManager(project_manager.get_project_path(project_name))
+    grid = manager.find(script_file=req.script_file, shot_id=req.shot_id)
+    if grid is None:
+        grid = ShotGrid.create(
+            episode=req.episode,
+            script_file=req.script_file,
+            shot_id=req.shot_id,
+            rows=req.rows,
+            cols=req.cols,
+        )
+    if grid.prompt == req.prompt:
+        return grid.to_dict()
+    grid.prompt = req.prompt
+    grid.updated_at = datetime.now(UTC).isoformat()
+    manager.save(grid)
+    return grid.to_dict()
+
+
 @router.put("")
 def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
     """保存宫格规格与逐格镜头文本，在「确定」入队前落盘（ADR 0099 D-4）。
@@ -272,6 +303,8 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
     manager = ShotGridManager(project_manager.get_project_path(project_name))
     grid = manager.find(script_file=req.script_file, shot_id=req.shot_id)
     if grid is None:
+        # 首次保存：记录按本次规格新建，逐格文本与留证照常落盘——新建分支不能吞掉 prompt，
+        # 否则弹窗里写好的逐格文本在「确定」这一步被丢掉，出图只能回退去解析 scene。
         grid = ShotGrid.create(
             episode=req.episode,
             script_file=req.script_file,
@@ -279,22 +312,21 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
             rows=req.rows,
             cols=req.cols,
         )
-        manager.save(grid)
-        return grid.to_dict()
-
-    prompt = req.prompt if req.prompt is not None else grid.prompt
-    if (grid.rows, grid.cols) == (req.rows, req.cols) and req.prompt is None:
-        # 规格与提示词都没动：只刷新 scene 指纹（「分镜提示词已变更」的提示据此消失），不碰生成状态。
-        if grid.scene_revision != scene_revision:
-            grid.scene_revision = scene_revision
-            grid.updated_at = datetime.now(UTC).isoformat()
-            manager.save(grid)
-        return grid.to_dict()
-
-    if grid.status == "confirmed" and (grid.rows, grid.cols) != (req.rows, req.cols):
-        raise HTTPException(status_code=409, detail=t("shot_grid_spec_locked"))
-    if grid.status in _GENERATING_STATUSES:
-        raise HTTPException(status_code=409, detail=t("shot_grid_busy"))
+        prompt = req.prompt or ""
+    else:
+        prompt = req.prompt if req.prompt is not None else grid.prompt
+        if (grid.rows, grid.cols) == (req.rows, req.cols) and prompt == grid.prompt:
+            # 规格与逐格文本都没动：只刷新 scene 指纹（「分镜提示词已变更」的提示据此消失），
+            # 不碰生成状态，已出的宫格图不会被「看一眼」清掉。
+            if grid.scene_revision != scene_revision:
+                grid.scene_revision = scene_revision
+                grid.updated_at = datetime.now(UTC).isoformat()
+                manager.save(grid)
+            return grid.to_dict()
+        if grid.status == "confirmed" and (grid.rows, grid.cols) != (req.rows, req.cols):
+            raise HTTPException(status_code=409, detail=t("shot_grid_spec_locked"))
+        if grid.status in _GENERATING_STATUSES:
+            raise HTTPException(status_code=409, detail=t("shot_grid_busy"))
 
     grid.rows, grid.cols = req.rows, req.cols
     grid.prompt = prompt
@@ -354,8 +386,8 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
         task_type="shot_grid",
         media_type="image",
         resource_id=grid.id,
-        payload={"shot_grid_id": grid.id, "script_file": req.script_file},
-        script_file=req.script_file,
+        payload={"shot_grid_id": grid.id, "script_file": script_file},
+        script_file=script_file,
         source="webui",
         user_id=user.id,
     )

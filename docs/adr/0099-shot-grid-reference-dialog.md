@@ -119,10 +119,14 @@ scene 指纹，用于"分镜提示词已变更"提示）。`cells[].prompt` 降�
 这个缺陷会被放大成必现事故。改为：**仅当 `rows/cols/prompt` 任一与库中不同才重置**；完全相同
 （含打开即取消）不动任何字段；`status == "confirmed"` 一律拒绝改规格（0098 已要求）。
 
-**D-5 「AI 生成提示词」走新的同步端点，不落盘。** 请求带 `script_file / episode / shot_id /
-rows / cols`，返回 `{ prompt }`，前端回填输入框。落盘只发生在点「确定」时——避免"AI 生成了但用户
-点取消"污染记录。输入 = 当前 `image_prompt.scene` + 该分镜登记资产（只给名字与类型，外观由参考图
-承担）+ 项目风格 + 格数；输出 = 纯逐格镜头文本，**不含**网格指令 / 锚点 / 约束。
+**D-5 「AI 生成提示词」走新的同步端点，返回后立即存草稿。** 请求带 `script_file / episode /
+shot_id / rows / cols`，返回 `{ prompt }`，前端回填输入框并调 `PUT /shot-grids/draft` 落草稿。
+草稿只写 `ShotGrid.prompt`，**不动** `status / composite_path / task_id / image_basis / cells /
+scene_revision`：关窗（取消 / Esc / ×）也把输入框里的文本存成草稿，下次打开自动回填；「确定」才
+把规格与文本作为一次提交（`PUT` + `POST /generate`）。AI 生成即按提交落盘会让"生成了但点取消"留下
+半截生成状态，而完全不落盘会丢掉一次模型产出的文本——草稿是两者之间唯一不产生歧义的形态。
+输入 = 当前 `image_prompt.scene` + 该分镜登记资产（只给名字与类型，外观由参考图承担）+ 项目风格 +
+格数；输出 = 纯逐格镜头文本，**不含**网格指令 / 锚点 / 约束。
 
 **D-6 整图比例由 `(rows, cols, canvas_ratio)` 算出。** 复用 `lib/script/grid/layout.py` 的
 `grid_aspect_ratio_for` 思路，方形档取视频比例本身；非方形档的比例取值见 **R4**（待拍板）。
@@ -190,11 +194,12 @@ _STEP_IDS = (
 
 - **打开**：`getShotGrid` → 有记录则预填 `rows/cols` 与 `prompt`；无记录则 2×2 + 空。
 - **AI 生成提示词**：调 `POST /shot-grids/author-prompt`，按钮转 loading、输入框禁用；返回后回填
-  （若输入框非空，先提示"将覆盖当前内容"）。失败 toast，输入框保持原样。
+  （若输入框非空，先提示"将覆盖当前内容"）并立即存草稿（**D-5**）。失败 toast，输入框保持原样。
 - **切换规格**：若 `prompt` 非空，给出"格数已变，请重新生成镜头提示词"的提示，不自动改写文本。
 - **确定**：`saveShotGrid({rows, cols, prompt})` → `generateShotGrid` → **关闭弹窗**，
   由 `ReferenceMaterialsSection` 继续轮询并在分镜详情里呈现宫格图。
-- **取消**：不落盘、不入队。
+- **取消 / 关闭**：把输入框里未提交的逐格文本存成草稿（**D-5**），不保存规格、不入队；草稿不会
+  清掉已出的宫格图。
 - **弹窗不含参考资产区**：资产已在分镜详情的「引用」区陈述，这里再列一遍会让人以为可以增改。
 - 手改只在**这一次出图**生效：整集重做按 `image_prompt.scene` 重解析，会覆盖它（**D-11**，提示文案见
   **R11**）。
@@ -272,7 +277,8 @@ class ShotGrid:
 | 端点 | 改动 |
 | --- | --- |
 | `PUT ""` | `SaveShotGridRequest` 增 `prompt: str \| None = None`（`None` = 不变，清空传 `""`）；默认 `rows/cols` 3→2；按 **D-4** 收敛重置语义；`confirmed` 拒绝改规格 |
-| `POST /author-prompt`（新） | 同步生成逐格镜头文本，不落盘，返回 `{ prompt }` |
+| `PUT /draft`（新） | 只写 `prompt` 的草稿：不动生成状态与既有规格（**D-5**）；记录不存在时按弹窗规格新建 |
+| `POST /author-prompt`（新） | 同步生成逐格镜头文本，返回 `{ prompt }`，由前端立即存草稿 |
 | `POST /generate` | 守卫改为「`grid.prompt` 可解析出至少一格」（**D-7**） |
 | `GET ""` / `confirm` / `tasks` | 不变（`to_dict` 多带两个字段） |
 
@@ -369,7 +375,8 @@ class ShotGrid:
   放弃，走轻量同步端点。
 - **把镜头提示词写回 `image_prompt.scene`**：会让 scene 同时承担"意图"与"某次出图参数"两种语义，
   与 0098 D-A 的镜头序列格式冲突——放弃。
-- **AI 生成即落盘**：用户点取消会留下半截状态，与 D-4 的"打开即取消不留痕"矛盾——放弃。
+- **AI 生成即按提交落盘**（`PUT` + `generate`）：用户点取消会真的排一次生成、留下半截状态，与 D-4
+  的"打开即取消不留痕"矛盾——放弃。改为只落草稿（**D-5**）：文本不丢，生成状态不动。
 
 ---
 

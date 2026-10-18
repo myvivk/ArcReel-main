@@ -41,6 +41,8 @@ export interface ProjectSettingsForm {
   /** 口播语速估算（阅读单位 / 秒）；null 按项目语言的默认速度估算。 */
   speechRate: number | null;
   episodeTargetDuration: number | null;
+  /** 全剧规划总集数（集）；自定义输入不是正整数时为 null，拦住保存。 */
+  totalEpisodes: number | null;
   /** 广告项目的目标总时长（秒）；自定义输入不是正整数时为 null，拦住保存。 */
   adTargetDuration: number | null;
   style: ProjectStyle;
@@ -57,7 +59,7 @@ export interface ProjectSettingsForm {
 
 /** 属于各表单分页的字段，用于在侧栏标出有修改的分页。 */
 export const FORM_TAB_FIELDS = {
-  basics: ["aspectRatio", "gridStoryboard", "speechRate", "episodeTargetDuration", "adTargetDuration"],
+  basics: ["aspectRatio", "gridStoryboard", "speechRate", "episodeTargetDuration", "totalEpisodes", "adTargetDuration"],
   style: ["style"],
   models: ["models"],
   voice: ["narration", "voiceBinding"],
@@ -89,6 +91,7 @@ const ALL_FIELDS = Object.keys({
   speechRate: 0,
   episodeTargetDuration: 0,
   adTargetDuration: 0,
+  totalEpisodes: 0,
   style: 0,
   models: 0,
   narration: 0,
@@ -183,6 +186,7 @@ export function deriveForm(
     gridStoryboard: project.grid_storyboard === true,
     speechRate: finiteOrNull(project.speech_rate_units_per_second),
     episodeTargetDuration: finiteOrNull(project.episode_target_duration),
+    totalEpisodes: finiteOrNull(project.total_episodes),
     adTargetDuration: typeof rawTarget === "number" && Number.isInteger(rawTarget) && rawTarget > 0 ? rawTarget : null,
     style: styleImage
       ? {
@@ -278,7 +282,11 @@ function fullProjectPatch(
       ? value.adTargetDuration !== null
         ? { target_duration: value.adTargetDuration }
         : {}
-      : { default_duration: models.defaultDuration, episode_target_duration: value.episodeTargetDuration }),
+      : {
+          default_duration: models.defaultDuration,
+          episode_target_duration: value.episodeTargetDuration,
+          total_episodes: value.totalEpisodes,
+        }),
     model_settings: modelSettings,
     ...stylePatch,
   };

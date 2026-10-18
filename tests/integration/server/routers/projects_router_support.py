@@ -169,6 +169,7 @@ class _FakePM:
         aspect_ratio="9:16",
         default_duration=None,
         episode_target_duration=None,
+        total_episodes=None,
         style_template_id=None,
         extras=None,
         target_duration=None,
@@ -182,6 +183,8 @@ class _FakePM:
             "aspect_ratio": aspect_ratio,
             "episodes": [],
         }
+        if total_episodes is not None:
+            payload["total_episodes"] = total_episodes
         if content_mode == "ad":
             # 镜像真实 ProjectManager 的 ad 形状：常量直接取自生产代码，避免第二份真相
             from lib.project.project_manager import ProjectManager

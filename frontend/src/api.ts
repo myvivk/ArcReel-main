@@ -118,7 +118,7 @@ import type {
   EpisodeItemRef,
 } from "@/types";
 import type { GridCapability, GridGeneration } from "@/types/grid";
-import type { SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
+import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
 import type {
   PresentationReadModel,
   PresentationRequestOptions,
@@ -3876,7 +3876,15 @@ class API {
     });
   }
 
-  /** 同步生成逐格镜头文本：不落盘、不入队，由用户在弹窗里改完再「确定」（ADR 0099 D-5）。 */
+  /** 关弹窗或 AI 生成返回时留下输入框里的文本；只存草稿，不动生成状态（D-5）。 */
+  static async saveShotGridDraft(projectName: string, payload: SaveShotGridDraftPayload): Promise<ShotGridPlan> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/draft`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /** 同步生成逐格镜头文本：不入队，返回后立刻存成草稿，由用户在弹窗里改完再「确定」（ADR 0099 D-5）。 */
   static async authorShotGridPrompt(
     projectName: string,
     payload: { script_file: string; episode: number; shot_id: string; rows: number; cols: number },

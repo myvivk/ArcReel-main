@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, Sparkles } from "lucide-react";
 import { API } from "@/api";
@@ -43,7 +43,8 @@ function writtenCells(prompt: string): number {
  *
  * 规格 2×2 / 2×3 / 3×3，默认 2×2；打开时读这一分镜已有的宫格记录，逐格文本回填输入框。
  * 已确认的宫格锁死规格——重做只能改提示词重新生成（R7），换规格被服务端 409 拒绝。
- * 「确定」= 保存配置 + 入队；「取消」不写入任何东西，AI 生成了但没确定也不会留下半截状态。
+ * 「确定」= 保存配置 + 入队；AI 生成返回与关窗（取消 / Esc / ×）都把输入框里的文本存成草稿，
+ * 下次打开自动回填——草稿只写逐格文本，不动生成状态，也不会清掉已出的宫格图。
  */
 export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRequest; onClose: () => void }) {
   const { t } = useTranslation("dashboard");
@@ -54,13 +55,29 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
   const [prompt, setPrompt] = useState(plan?.prompt ?? "");
   const [authoring, setAuthoring] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  //: 已落盘的逐格文本：只有它与输入框不一致才需要存草稿。
+  const baseline = useRef(plan?.prompt ?? "");
 
   const [rows, cols] = LAYOUTS[layout];
   const count = rows * cols;
   const locked = plan?.status === "confirmed";
   const generating = plan?.status === "generating";
   const written = writtenCells(prompt);
+  const busy = submitting || closing;
+
+  const persistDraft = async (text: string) => {
+    await API.saveShotGridDraft(projectName, {
+      script_file: scriptFile,
+      episode,
+      shot_id: shotId,
+      rows,
+      cols,
+      prompt: text,
+    });
+    baseline.current = text;
+  };
 
   const author = async () => {
     setAuthoring(true);
@@ -73,13 +90,33 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
         rows,
         cols,
       });
-      // AI 产出的是整套逐格文本：回填后由用户在手改里定稿。
+      // AI 产出的是整套逐格文本：回填后由用户在手改里定稿；先落成草稿，关窗也不会丢。
       setPrompt(result.prompt);
+      await persistDraft(result.prompt).catch(() => {
+        // 草稿没存上不影响回填：文本还在输入框里，关窗时会再存一次。
+      });
     } catch (err) {
       setError(errMsg(err));
     } finally {
       setAuthoring(false);
     }
+  };
+
+  const closeWithDraft = async () => {
+    if (busy) return;
+    if (prompt === baseline.current) {
+      onClose();
+      return;
+    }
+    setClosing(true);
+    try {
+      await persistDraft(prompt);
+    } catch {
+      // 草稿写失败不挡关闭：下次打开至多回到上一次落盘的文本。
+    } finally {
+      setClosing(false);
+    }
+    onClose();
   };
 
   const submit = async () => {
@@ -114,10 +151,10 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
     <Dialog
       open
       onOpenChange={(next) => {
-        if (!next && !submitting) onClose();
+        if (!next) void closeWithDraft();
       }}
     >
-      <DialogContent size="lg" showCloseButton={!submitting}>
+      <DialogContent size="lg" showCloseButton={!busy}>
         <DialogHeader>
           <DialogTitle>{t("shot_grid_dialog_title")}</DialogTitle>
           <DialogDescription>{t("shot_grid_dialog_desc")}</DialogDescription>
@@ -152,7 +189,7 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
                   type="button"
                   variant="outline"
                   size="xs"
-                  disabled={authoring || submitting}
+                  disabled={authoring || busy}
                   onClick={() => void author()}
                 >
                   {authoring ? (
@@ -176,6 +213,7 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
               />
               <p className="text-xs text-muted-foreground">{hint}</p>
               <p className="text-xs text-muted-foreground">{t("shot_grid_prompt_note")}</p>
+              <p className="text-xs text-muted-foreground">{t("shot_grid_prompt_draft_note")}</p>
             </div>
             {error ? (
               <p role="alert" className="text-xs text-destructive">
@@ -185,10 +223,10 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" disabled={submitting} onClick={onClose}>
+          <Button variant="outline" disabled={busy} onClick={() => void closeWithDraft()}>
             {t("common:cancel")}
           </Button>
-          <Button disabled={submitting || authoring || generating || written === 0} onClick={() => void submit()}>
+          <Button disabled={busy || authoring || generating || written === 0} onClick={() => void submit()}>
             {submitting ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : null}
             {submitting ? t("shot_grid_submitting") : t("shot_grid_confirm")}
           </Button>

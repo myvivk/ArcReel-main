@@ -879,7 +879,11 @@ class GenerateEpisodeScriptRequest(BaseModel):
     )
     rewrite: bool = Field(
         default=False,
-        description="显式重写范围内条目的本次提示词字段；省略时补缺，已有的本次字段保留",
+        description=(
+            "显式重写范围内条目的本次提示词字段；省略时补缺，已有的本次字段保留。"
+            "分镜类（segments/scenes/shots）必须与 fields 同用：省略 fields 时本次写的是 image_prompt，"
+            "光一句 rewrite=true 等于「没说改哪层就改分镜提示词」，服务端直接拒绝"
+        ),
     )
     fields: list[Literal["image_prompt", "video_prompt"]] | SkipJsonSchema[None] = Field(
         default=None,

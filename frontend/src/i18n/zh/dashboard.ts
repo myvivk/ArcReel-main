@@ -19,6 +19,7 @@ export default {
   shot_materials_hint: "根据分镜提示词生成连续关键帧，按从左到右、从上到下的顺序排列。",
   shot_materials_unavailable: "保存当前集与分镜后，即可生成参考素材。",
   shot_materials_preview: "镜头关键帧宫格图",
+  shot_materials_preview_open: "点击查看大图",
   shot_materials_failed: "参考素材生成失败，请重试。",
   shot_configure_materials: "配置参考素材",
   shot_grid_dialog_title: "配置参考素材",

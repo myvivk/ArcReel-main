@@ -1926,6 +1926,7 @@ class TestPublicFileRouteServesMediaOnly:
             "props/玉佩.png",
             "products/refs/cup_1.jpg",
             "grids/grid_1.png",
+            "shot_grids/shot_grid_123456789abc.png",
             "audio/segment_E1S01.wav",
             "versions/storyboards/scene_E1S01_v1_20260101T000000.png",
             "versions/audio/segment_E1S01_v2_20260101T000000.wav",

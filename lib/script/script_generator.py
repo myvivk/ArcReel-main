@@ -226,6 +226,25 @@ _KIND_PARSE_SCHEMA: dict[str, type[BaseModel]] = {
 }
 
 
+def _require_rewrite_fields(kind: str, rewrite: bool, fields: Iterable[str]) -> None:
+    """显式重写必须点名本次写哪一层；参考生视频单元的视觉层只有正文，不在此列。
+
+    分镜类省略 ``fields`` 时默认是 ``image_prompt``。一次「没说明白要改哪层」的显式重写会把代价最重的
+    那一层整份替换：分镜提示词一变，该分镜已生成的分镜图与已确认的宫格参考素材同时过期，而丢失清单
+    只说「图片提示词」。宁可回一句参数怎么传，也不替调用方猜。
+    """
+
+    if kind == "video_units" or not rewrite:
+        return
+    if tuple(fields):
+        return
+    raise PromptAuthoringTargetError(
+        '显式重写必须用 fields 点名本次编写的字段（分镜类传 fields=["image_prompt"] 或 '
+        'fields=["video_prompt"]）；省略 fields 按分镜提示词重写，会让该分镜已生成的分镜图与'
+        "已确认的宫格参考素材一并过期"
+    )
+
+
 def _visual_response_schema(targets: "PromptAuthoringTargets") -> type[BaseModel]:
     fields = {field for entry in targets.selection.entries for field in entry.fields}
     if fields == {"image_prompt"}:
@@ -454,6 +473,7 @@ class ScriptGenerator:
         except FileNotFoundError:
             return None
         kind = resolve_declared_kind(self.content_mode, self.generation_mode)
+        _require_rewrite_fields(kind, rewrite, fields)
         raw_items, id_field, _kind = resolve_kind_items(script, kind=kind)
         if not isinstance(raw_items, list):
             raise ValueError(f"集（id={episode}）正式脚本的 {kind} 不是条目数组，无法编写提示词")

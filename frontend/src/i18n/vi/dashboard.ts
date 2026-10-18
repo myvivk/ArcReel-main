@@ -19,6 +19,7 @@ export default {
   shot_materials_hint: "Tạo các khung hình liên tiếp từ lời nhắc phân cảnh, theo thứ tự từ trái sang phải và từ trên xuống dưới.",
   shot_materials_unavailable: "Lưu tập và cảnh quay để tạo tư liệu tham chiếu.",
   shot_materials_preview: "Lưới khung hình chính",
+  shot_materials_preview_open: "Nhấn để xem ảnh lớn",
   shot_materials_failed: "Không tạo được tư liệu tham chiếu. Hãy thử lại.",
   shot_configure_materials: "Cấu hình tư liệu tham chiếu",
   shot_grid_dialog_title: "Cấu hình tư liệu tham chiếu",

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Loader2, Sparkles } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ShotGridPlan } from "@/types/shot-grid";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
@@ -48,6 +49,8 @@ export function ReferenceMaterialsSection({
   const dialogOpen = useShotGridDialogStore((s) => s.request) !== null;
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  //: 宫格图的放大预览：缩略图按可用宽度等比缩放，点击进查看器看原图。
+  const [previewing, setPreviewing] = useState(false);
   // 弹窗关掉就重读：确定入队了这一条要接着轮询它的任务，取消则回到原样。
   const [reloadKey, setReloadKey] = useState(0);
   const wasOpen = useRef(dialogOpen);
@@ -188,7 +191,35 @@ export function ReferenceMaterialsSection({
       <p className="text-xs text-muted-foreground">{t("shot_materials_hint")}</p>
       {plan?.error_message ? <p role="alert" className="text-xs text-destructive">{plan.error_message}</p> : null}
       {compositeUrl ? (
-        <img src={compositeUrl} alt={t("shot_materials_preview")} className="max-h-80 w-full rounded-md border border-border object-contain" />
+        <>
+          <button
+            type="button"
+            aria-label={t("shot_materials_preview_open")}
+            onClick={() => setPreviewing(true)}
+            className="focus-ring group flex h-[min(60vh,560px)] w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-md border border-border bg-muted/20"
+          >
+            {/* 宫格图按容器等比缩放（contain 不裁切），点击进查看器看原图 */}
+            <img
+              src={compositeUrl}
+              alt={t("shot_materials_preview")}
+              className="size-full object-contain transition-transform duration-200 group-hover:scale-[1.01]"
+            />
+          </button>
+          <Dialog open={previewing} onOpenChange={setPreviewing}>
+            <DialogContent size="viewer">
+              <DialogHeader>
+                <DialogTitle>{t("shot_materials_preview")}</DialogTitle>
+              </DialogHeader>
+              <DialogBody className="flex min-h-0 items-center justify-center">
+                <img
+                  src={compositeUrl}
+                  alt={t("shot_materials_preview")}
+                  className="size-full object-contain"
+                />
+              </DialogBody>
+            </DialogContent>
+          </Dialog>
+        </>
       ) : plan?.cells.length ? (
         <div className={`grid ${columns} gap-2`}>
           {plan.cells.map((cell) => (

@@ -68,7 +68,7 @@ from lib.generation.video_request_facts import (
 )
 from lib.infra.async_thread import run_noninterruptible_sync
 from lib.infra.path_safety import safe_join, try_safe_join
-from lib.infra.thumbnail import extract_video_thumbnail
+from lib.infra.thumbnail import extract_video_last_frame, extract_video_thumbnail
 from lib.project.asset_derivatives import DERIVATIVE_ASSET_TYPE, DERIVATIVE_TASK_TYPE
 from lib.project.asset_types import (
     ASSET_SPECS,
@@ -105,6 +105,8 @@ from lib.script.script_skeleton import SKELETON_ENTITY_TYPES, SKELETON_ITEM_LABE
 from lib.script.storyboard_sequence import (
     find_storyboard_item,
     get_storyboard_items,
+    resolve_previous_storyboard_path,
+    resolve_storyboard_video_cells,
 )
 from lib.speech.audio_utils import (
     AUDIO_REFERENCE_MAX_BYTES,
@@ -1083,7 +1085,7 @@ async def execute_video_task(
     artifact_episode = script_input.episode
     formal_input_claims: list[ArtifactInputClaim] = [script_input.claim]
     currency_resolver = active_artifact_currency_resolver(project_path, project)
-    storyboard_file, end_image = resolve_usable_storyboard_video_inputs(
+    storyboard_file, _legacy_end_image = resolve_usable_storyboard_video_inputs(
         project_path=project_path,
         project=project,
         episode=artifact_episode,
@@ -1101,6 +1103,18 @@ async def execute_video_task(
         resolver=currency_resolver,
         claims=formal_input_claims,
     )
+    cells = resolve_storyboard_video_cells(project_path=project_path, resource_id=resource_id, item=item)
+    previous_start = await asyncio.to_thread(
+        resolve_previous_storyboard_path, project_path, _items, _id_field, resource_id
+    )
+    if cells:
+        provider_start_image = previous_start or cells[0]
+        provider_end_image = cells[-1] if len(cells) > 1 else None
+        reference_images = cells[:-1] if previous_start else cells[1:-1]
+    else:
+        provider_start_image = previous_start or storyboard_file
+        provider_end_image = None
+        reference_images = []
     aspect_ratio = get_aspect_ratio(project, "videos")
     seed = payload.get("seed")
 
@@ -1124,7 +1138,7 @@ async def execute_video_task(
         ).digest
 
     def _current_visual_basis_digest() -> str:
-        return _visual_basis_digest_for(storyboard_file, end_image)
+        return _visual_basis_digest_for(provider_start_image, provider_end_image)
 
     visual_basis_digest = await asyncio.to_thread(_current_visual_basis_digest)
 
@@ -1171,9 +1185,6 @@ async def execute_video_task(
     assert_duration_supported(duration_seconds, supported_durations)
     duration_seconds = int(float(duration_seconds))
 
-    provider_start_image = storyboard_file
-    provider_end_image = end_image
-
     async def _admit_before_submit() -> Mapping[str, object] | None:
         await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, formal_input_claims)
         return None
@@ -1198,7 +1209,7 @@ async def execute_video_task(
         )
         media_inputs = [
             ProviderMediaInput(
-                path=storyboard_file,
+                path=provider_start_image,
                 role="start_image",
                 logical_type="storyboard",
                 logical_name=resource_id,
@@ -1214,12 +1225,12 @@ async def execute_video_task(
                 kind=f"grid_cell_{index}",
             )
             for index, image in enumerate(reference_images)
-            if len(reference_images) > 1 or image != storyboard_file
+            if image != provider_start_image
         )
-        if end_image is not None:
+        if provider_end_image is not None:
             media_inputs.append(
                 ProviderMediaInput(
-                    path=end_image,
+                    path=provider_end_image,
                     role="end_image",
                     logical_type="storyboard",
                     logical_name=resource_id,
@@ -1339,8 +1350,7 @@ async def execute_video_task(
                 safe_join(project_path, media.staged_locator, require_file=True)
                 for media in staged_media
                 if media.role == "reference_image"
-            ]
-            or list(reference_images),
+            ],
             aspect_ratio=aspect_ratio,
             duration_seconds=duration_seconds,
             resolution=resolution,
@@ -1423,6 +1433,17 @@ async def finalize_video_task(
     await asyncio.to_thread(_update_video_metadata)
 
     video_file = project_path / f"videos/scene_{resource_id}.mp4"
+    tail_frame_file = project_path / f"end_frames/scene_{resource_id}.png"
+    tail_frame = await extract_video_last_frame(video_file, tail_frame_file)
+    if tail_frame is not None:
+        await asyncio.to_thread(
+            get_project_manager().update_scene_asset,
+            project_name=project_name,
+            script_filename=script_file,
+            scene_id=resource_id,
+            asset_type="end_frame_image",
+            asset_path=f"end_frames/scene_{resource_id}.png",
+        )
     thumbnail_file = project_path / f"thumbnails/scene_{resource_id}.jpg"
     if await extract_video_thumbnail(video_file, thumbnail_file):
         await asyncio.to_thread(

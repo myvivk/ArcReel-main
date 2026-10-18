@@ -412,7 +412,9 @@ function ShotDetailContent({
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const [endFrameSubmitting, setEndFrameSubmitting] = useState(false);
   const editingBlocked = readOnly || saving || materialsBusy;
-  const materials = plan?.status === "confirmed" ? plan.cells.filter((cell) => cell.image_path) : [];
+  const materials = plan && ["completed", "confirmed"].includes(plan.status)
+    ? plan.cells.filter((cell) => cell.image_path)
+    : [];
   const hasConfirmedMaterials = materials.length > 0;
   const gridBusy = () =>
     isScriptFileBusy("grid", scriptFile, projectName) || isScriptFileBusy("shot_grid", scriptFile, projectName);
@@ -603,6 +605,7 @@ function ShotDetailContent({
           scriptFile={scriptFile}
           episode={episode}
           shotId={segmentId}
+          aspectRatio={aspectRatio}
           readOnly={readOnly}
           disabled={saving || refreshPending || !!generatingStoryboard || !!generatingVideo}
           videoPromptFilled={videoText.trim().length > 0}
@@ -625,7 +628,7 @@ function ShotDetailContent({
               }]}
               onSelect={(token: string) => insertReference("video", token)}
             />
-            {episode !== undefined && !readOnly && hasConfirmedMaterials ? (
+            {episode !== undefined && !readOnly && materials.length > 0 ? (
               <PromptAuthoringButton
                 projectName={projectName}
                 episode={episode}
@@ -643,7 +646,7 @@ function ShotDetailContent({
             ariaLabel={t("detail_video_prompt_title")}
             value={videoText}
             onChange={(next) => setField("video_prompt", next)}
-            cellCount={plan?.status === "confirmed" ? plan.cells.length : 0}
+            cellCount={plan && ["completed", "confirmed"].includes(plan.status) ? plan.cells.length : 0}
             durationSeconds={fields.duration_seconds}
             readOnly={editingBlocked}
             placeholder={t("detail_video_prompt_placeholder")}

@@ -283,9 +283,10 @@ def render_storyboard_video_prompt(
     grid = assets.get("shot_grid") if isinstance(assets, Mapping) else None
     cells = grid.get("cell_paths") if isinstance(grid, Mapping) else None
     if isinstance(cells, list) and cells:
+        last = len(cells) - 1
         instruction = (
-            f"Keyframe references K0–K{len(cells) - 1} correspond to the {len(cells)} reference images "
-            "in their supplied order. They are consecutive moments of one shot, from opening to ending. "
+            f"K0 is the opening frame of this shot. The reference images are K1–K{max(0, last - 1)} "
+            f"in their supplied order, followed by the final keyframe K{last} as the last frame. "
             "Follow this temporal order and preserve character, setting and action continuity."
         )
         if instruction not in rendered:

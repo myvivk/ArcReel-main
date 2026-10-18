@@ -2,8 +2,8 @@
 
 视频提示词正文只存正式脚本（D-12），这里不落任何文本，只回答三个结构问题：
 
-- 哪些分镜「宫格已确认、视频提示词还空着」——整集批量补缺的目标；
-- 哪些分镜「宫格还没确认」——不进本批，只在行上提示报数；
+- 哪些分镜「宫格已生成、视频提示词还空着」——整集批量补缺的目标；
+- 哪些分镜「宫格还没生成完成」——不进本批，只在行上提示报数；
 - 哪些分镜「提示词是按旧宫格写的」——标 stale，不阻断视频生成，重写只单个走详情。
 """
 
@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from lib.script.grid.shot_models import ShotGrid
+
+_GENERATED_GRID_STATUSES = frozenset({"completed", "confirmed"})
 
 #: 宫格指纹长度：与 scene 指纹同一口径，只留 12 位十六进制。
 CELLS_REVISION_LENGTH = 12
@@ -65,7 +67,7 @@ def is_video_prompt_stale(item: Mapping[str, Any], grid: ShotGrid | None) -> boo
     """提示词是否按「不是当前这张宫格」写的。
 
     - ``basis`` 缺失：手工 / 存量，**不算 stale**（不误报）；
-    - 宫格缺失或未确认：同样不判 stale——那属于「还没到写这一步」，不是「文本过期」。
+    - 宫格缺失或未生成完成：同样不判 stale——那属于「还没到写这一步」，不是「文本过期」。
     """
 
     basis = video_prompt_basis(item)
@@ -82,9 +84,9 @@ class VideoPromptTargets:
 
     #: 本集全部分镜，按剧本顺序。
     unit_ids: tuple[str, ...]
-    #: 宫格已确认且视频提示词为空：整集批量补缺的目标。
+    #: 宫格已生成且视频提示词为空：整集批量补缺的目标。
     targets: tuple[str, ...]
-    #: 宫格还没确认：不进本批，行上按它报数。
+    #: 宫格还没生成完成：不进本批，行上按它报数。
     awaiting_grid: tuple[str, ...]
     #: 提示词按旧宫格写的：标 stale，不阻断视频生成，重写只单个走详情。
     stale: tuple[str, ...]
@@ -115,7 +117,7 @@ def plan_video_prompt_targets(
         unit_id = str(raw_id)
         unit_ids.append(unit_id)
         grid = grids.get(unit_id)
-        if grid is None or grid.status != "confirmed":
+        if grid is None or grid.status not in _GENERATED_GRID_STATUSES:
             awaiting.append(unit_id)
             continue
         if not video_prompt_text(item):

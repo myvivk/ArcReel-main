@@ -129,6 +129,7 @@ export function PromptAuthoringDialog({
     () => request.defaultFields ?? (unitMode ? [] : ["image_prompt"]),
   );
   const fieldsLocked = request.lockFields === true && !unitMode && fields.length === 1;
+  const currentOnly = request.scope === "current" && currentEntryId !== null;
   const [instructions, setInstructions] = useState(savedInstructions);
   const [submitting, setSubmitting] = useState(false);
   const [overwrite, setOverwrite] = useState<PromptOverwrite | null>(null);
@@ -239,19 +240,23 @@ export function PromptAuthoringDialog({
                 <span id={scopeLabelId} className="text-sm font-medium">
                   {t("prompt_authoring_scope_label")}
                 </span>
-                <RadioGroup
-                  aria-labelledby={scopeLabelId}
-                  value={scope}
-                  onValueChange={(next) => setScope(next as PromptAuthoringScope)}
-                  disabled={submitting}
-                >
-                  {scopes.map((option) => (
-                    <Label key={option.value}>
-                      <RadioGroupItem value={option.value} disabled={option.disabled} />
-                      {option.label}
-                    </Label>
-                  ))}
-                </RadioGroup>
+                {currentOnly ? (
+                  <p className="text-sm text-muted-foreground">{scopeLabel}</p>
+                ) : (
+                  <RadioGroup
+                    aria-labelledby={scopeLabelId}
+                    value={scope}
+                    onValueChange={(next) => setScope(next as PromptAuthoringScope)}
+                    disabled={submitting}
+                  >
+                    {scopes.map((option) => (
+                      <Label key={option.value}>
+                        <RadioGroupItem value={option.value} disabled={option.disabled} />
+                        {option.label}
+                      </Label>
+                    ))}
+                  </RadioGroup>
+                )}
                 {scope === "custom" && (
                   <ul
                     className="relative flex max-h-48 flex-col gap-0.5 overflow-y-auto rounded-lg border border-border p-1.5"

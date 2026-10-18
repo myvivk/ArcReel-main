@@ -842,10 +842,10 @@ class WorkflowStateService:
             if grid.episode != episode:
                 continue
             current = grids.get(grid.shot_id)
-            # 同一分镜只认一条：已确认的优先，同状态取更新更晚的一条。
+            # 同一分镜只认一条：已完成/已确认的优先，同状态取更新更晚的一条。
             if (
                 current is None
-                or (current.status != "confirmed" and grid.status == "confirmed")
+                or (current.status not in {"completed", "confirmed"} and grid.status in {"completed", "confirmed"})
                 or (current.status == grid.status and grid.updated_at > current.updated_at)
             ):
                 grids[grid.shot_id] = grid
@@ -856,7 +856,7 @@ class WorkflowStateService:
             grid = grids.get(resource_id)
             if (
                 grid is None
-                or grid.status != "confirmed"
+                or grid.status not in {"completed", "confirmed"}
                 or not grid.composite_path
                 or grid.image_basis is None
                 or resolver is None
@@ -897,10 +897,10 @@ class WorkflowStateService:
             if grid.episode != episode:
                 continue
             current = grids.get(grid.shot_id)
-            # 同一分镜只认一条：已确认的优先，同状态取更新更晚的一条（与参考素材行同口径）。
+            # 同一分镜只认一条：已完成/已确认的优先，同状态取更新更晚的一条。
             if (
                 current is None
-                or (current.status != "confirmed" and grid.status == "confirmed")
+                or (current.status not in {"completed", "confirmed"} and grid.status in {"completed", "confirmed"})
                 or (current.status == grid.status and grid.updated_at > current.updated_at)
             ):
                 grids[grid.shot_id] = grid
@@ -909,7 +909,7 @@ class WorkflowStateService:
         stale = set(plan.stale)
         collection["missing_ids"] = list(plan.targets)
         collection["stale_ids"] = list(plan.stale)
-        # 宫格还没确认的分镜：不进本批，行上只按它报数（D-20）。
+        # 宫格尚未生成完成的分镜：不进本批，行上只按它报数（D-20）。
         collection["awaiting_grid_ids"] = list(plan.awaiting_grid)
         collection["current_ids"] = [
             unit_id for unit_id in plan.unit_ids if unit_id not in missing and unit_id not in stale

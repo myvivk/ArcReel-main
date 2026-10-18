@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Loader2, Sparkles } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -138,6 +138,12 @@ export function ReferenceMaterialsSection({
   const cellHeight = Math.round(cellWidth * (9 / 16));
   const gridWidth = (plan?.cols ?? 2) * cellWidth;
   const gridHeight = (plan?.rows ?? 2) * cellHeight;
+  const describeCell = (cell: ShotGridPlan["cells"][number]) => cell.prompt.trim() || cell.continuity_notes.trim();
+  const shotLabel = (index: number) => {
+    if (index === 0) return "开场";
+    if (index === (plan?.cells.length ?? 1) - 1) return "收尾";
+    return "过渡";
+  };
 
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-2">
@@ -178,36 +184,75 @@ export function ReferenceMaterialsSection({
       <p className="text-xs text-muted-foreground">{t("shot_materials_hint")}</p>
       {plan?.error_message ? <p role="alert" className="text-xs text-destructive">{plan.error_message}</p> : null}
       {plan?.cells.some((cell) => cell.image_path) ? (
-        <div
-          className={`grid ${columns} gap-0 overflow-hidden rounded-md border border-border bg-muted/20`}
-          style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}
-        >
-          {plan.cells.map((cell) => (
-            <button
-              key={cell.index}
-              type="button"
-              aria-label={t("shot_keyframe", { index: cell.index })}
-              onClick={() => {
-                if (cell.image_path) {
-                  setPreviewUrl(API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 1280 }));
-                }
-              }}
-              className="focus-ring relative min-h-0 overflow-hidden bg-muted/40"
-              style={{ aspectRatio: `${cellWidth} / ${cellHeight}` }}
-            >
-              {cell.image_path ? (
-                <img
-                  src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 640 })}
-                  alt={t("shot_keyframe", { index: cell.index })}
-                  className="size-full object-contain"
-                />
-              ) : null}
-              <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                K{cell.index}
-              </span>
-            </button>
-          ))}
-        </div>
+        aspectRatio === "9:16" ? (
+          <div className="flex max-w-full items-stretch gap-2 overflow-x-auto pb-1">
+            {plan.cells.map((cell, index) => (
+              <div key={cell.index} className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={t("shot_keyframe", { index: cell.index })}
+                  onClick={() => {
+                    if (cell.image_path) {
+                      setPreviewUrl(API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 1280 }));
+                    }
+                  }}
+                  className="focus-ring relative w-[140px] overflow-hidden rounded-lg border border-border bg-muted/40 p-1.5 text-left shadow-sm"
+                >
+                  <div className="overflow-hidden rounded-md bg-background" style={{ aspectRatio: "9 / 16" }}>
+                    {cell.image_path ? (
+                      <img
+                        src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 640 })}
+                        alt={t("shot_keyframe", { index: cell.index })}
+                        className="size-full object-contain"
+                      />
+                    ) : null}
+                  </div>
+                  <div className="px-1 pb-1 pt-1.5">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs font-semibold text-foreground">K{cell.index}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{shotLabel(index)}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{describeCell(cell)}</p>
+                  </div>
+                </button>
+                {index < plan.cells.length - 1 ? <ArrowRight aria-hidden className="size-4 shrink-0 text-muted-foreground" /> : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            className={`grid ${columns} gap-2 overflow-hidden rounded-md border border-border bg-muted/20 p-2`}
+            style={{ width: gridWidth, maxWidth: "100%" }}
+          >
+            {plan.cells.map((cell) => (
+              <button
+                key={cell.index}
+                type="button"
+                aria-label={t("shot_keyframe", { index: cell.index })}
+                onClick={() => {
+                  if (cell.image_path) {
+                    setPreviewUrl(API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 1280 }));
+                  }
+                }}
+                className="focus-ring min-w-0 overflow-hidden rounded-md border border-border bg-muted/40 text-left"
+              >
+                <div className="relative overflow-hidden bg-background" style={{ aspectRatio: `${cellWidth} / ${cellHeight}` }}>
+                  {cell.image_path ? (
+                    <img
+                      src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 640 })}
+                      alt={t("shot_keyframe", { index: cell.index })}
+                      className="size-full object-contain"
+                    />
+                  ) : null}
+                  <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">K{cell.index}</span>
+                </div>
+                <div className="px-2 py-1.5">
+                  <p className="line-clamp-2 text-[11px] leading-4 text-muted-foreground">{describeCell(cell)}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )
       ) : compositeUrl ? (
         <button
           type="button"

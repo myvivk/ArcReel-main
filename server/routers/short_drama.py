@@ -62,9 +62,7 @@ class ShortDramaImportBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episodes: list[ShortDramaSeriesItem] = Field(description="本批要导入的多集剧本（每集一份 Markdown）")
-    continue_on_error: bool = Field(
-        default=True, description="单集解析/落盘失败时是否跳过继续，而非整体失败"
-    )
+    continue_on_error: bool = Field(default=True, description="单集解析/落盘失败时是否跳过继续，而非整体失败")
 
 
 class ShortDramaSourceUpdateRequest(BaseModel):
@@ -129,10 +127,7 @@ def _require_source_episode(project_name: str, episode: int) -> None:
         raise NotFoundError("project_not_found", name=project_name) from exc
     if project.get("content_mode") != "drama":
         raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
-    if not any(
-        isinstance(entry, dict) and entry.get("episode") == episode
-        for entry in project.get("episodes") or []
-    ):
+    if not any(isinstance(entry, dict) and entry.get("episode") == episode for entry in project.get("episodes") or []):
         raise NotFoundError("episode_not_found", episode=episode)
 
 
@@ -227,10 +222,7 @@ async def import_artifacts(project_name: str, req: ShortDramaArtifactImportReque
             ingest_short_drama_artifacts,
             manager,
             project_name,
-            [
-                (item.path, decode_artifact_content(None, item.content_base64))
-                for item in req.artifacts
-            ],
+            [(item.path, decode_artifact_content(None, item.content_base64)) for item in req.artifacts],
         )
         # 每集工厂 Markdown 登记为该集 OWN 源文本：分集页本集正文与下游建立在工厂正文上。
         register_factory_episode_sources(
@@ -256,9 +248,7 @@ async def import_one(
     scope, caller, services = short_drama_context(project_name, user.id)
     outcome = await import_short_drama_script(
         ToolRequest(
-            ImportShortDramaScriptRequest(
-                episode_id=req.episode_id, markdown=req.markdown, legacy_compat=True
-            )
+            ImportShortDramaScriptRequest(episode_id=req.episode_id, markdown=req.markdown, legacy_compat=True)
         ),
         scope,
         caller,

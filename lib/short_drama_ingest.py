@@ -60,13 +60,7 @@ class ShortDramaArtifact:
 
 
 def classify_short_drama_artifact(path: str) -> tuple[str, int | None]:
-    if (
-        not isinstance(path, str)
-        or "\\" in path
-        or path.startswith("/")
-        or ".." in Path(path).parts
-        or Path(path).is_absolute()
-    ):
+    if "\\" in path or path.startswith("/") or ".." in Path(path).parts or Path(path).is_absolute():
         raise ShortDramaArtifactError("工件路径必须是 source/short_drama 下的安全相对路径")
     for kind, pattern in _ARTIFACT_PATTERNS:
         match = pattern.fullmatch(path)

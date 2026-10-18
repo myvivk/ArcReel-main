@@ -35,7 +35,10 @@ class TestCharacterPrompt:
             "inconsistent accessories, extra characters, extra limbs, cropped body, dynamic pose, text, labels, watermark, logo, "
             "水印、多余文字、Logo"
         )
-        assert "16:9 horizontal professional character reference sheet on a pure white seamless studio background." in prompt
+        assert (
+            "16:9 horizontal professional character reference sheet on a pure white seamless studio background."
+            in prompt
+        )
         assert "左侧为正脸头肩特写" in prompt
         assert "年龄、性别、身高和体型" in prompt
         assert "sharp focus" in prompt

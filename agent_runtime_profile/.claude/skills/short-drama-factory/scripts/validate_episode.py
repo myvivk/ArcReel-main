@@ -28,39 +28,92 @@
     E14 角色外观: [人物] 每个角色须带 ≥8 字外观，必要时与人物圣经一致 FAIL
 退出码: 0=通过(可含WARN), 1=FAIL, 2=用法错误
 """
+
 import math
 import re
 import sys
 
 # 剧本文本体量阈值(仅计正文: 对白行 + △动作行 + 断章卡点画面描述)
-NET_MIN, NET_MAX = 350, 500          # 实拍短剧
+NET_MIN, NET_MAX = 350, 500  # 实拍短剧
 NET_MIN_ANIME, NET_MAX_ANIME = 260, 400  # 漫剧/竖屏动画
-NET_LONG_MIN, NET_LONG_MAX = 650, 850          # 长档(约3分钟) 实拍
+NET_LONG_MIN, NET_LONG_MAX = 650, 850  # 长档(约3分钟) 实拍
 NET_LONG_ANIME_MIN, NET_LONG_ANIME_MAX = 520, 680  # 长档 漫剧/竖屏动画
-SENT_MAX = 25                        # 单句台词硬上限(常规 12~18)
-BEAT_SECONDS = 2.0                   # E12：每拍按 2 秒预算
-CHARACTER_APPEARANCE_MIN = 8         # E14：挡住只有状态标签的 [人物] 行
+SENT_MAX = 25  # 单句台词硬上限(常规 12~18)
+BEAT_SECONDS = 2.0  # E12：每拍按 2 秒预算
+CHARACTER_APPEARANCE_MIN = 8  # E14：挡住只有状态标签的 [人物] 行
 
 # 档位 profile（体量区间另按 profile + 是否漫剧解析，见 net_band()）
 PROFILES = {
-    "auto":     {"scenes": 2, "lines": 4, "midhook": False, "label": "自动分档"},
+    "auto": {"scenes": 2, "lines": 4, "midhook": False, "label": "自动分档"},
     "standard": {"scenes": 2, "lines": 4, "midhook": False, "label": "标准档 90~120 秒"},
-    "long":     {"scenes": 3, "lines": 8, "midhook": True,  "label": "长档 约3分钟"},
-    "manju":    {"scenes": 2, "lines": 4, "midhook": False, "label": "漫剧档 60~90 秒"},
+    "long": {"scenes": 3, "lines": 8, "midhook": True, "label": "长档 约3分钟"},
+    "manju": {"scenes": 2, "lines": 4, "midhook": False, "label": "漫剧档 60~90 秒"},
 }
 
-OPEN_BAN_WORDS = ["早晨起床", "起床", "拉窗帘", "太阳升起", "醒过来", "走在路上",
-                  "整理衣服", "开车上班", "喝咖啡闲聊", "悠闲的清晨", "阳光明媚的早晨"]
+OPEN_BAN_WORDS = [
+    "早晨起床",
+    "起床",
+    "拉窗帘",
+    "太阳升起",
+    "醒过来",
+    "走在路上",
+    "整理衣服",
+    "开车上班",
+    "喝咖啡闲聊",
+    "悠闲的清晨",
+    "阳光明媚的早晨",
+]
 
 # 注: 不含 "△" —— 动作行本身不等于冲突, 否则任何以动作开场的剧本恒过 E4
-CONFLICT_SIGNALS = ["！?", "！", "枪", "刀", "巴掌", "扔", "砸", "吼", "冷笑",
-                    "逼", "跪", "撕", "拍在", "顶在", "推", "踹", "骂", "羞辱", "退婚",
-                    "病危", "签字", "死", "滚", "住手", "救", "断裂", "炸", "烧", "血"]
+CONFLICT_SIGNALS = [
+    "！?",
+    "！",
+    "枪",
+    "刀",
+    "巴掌",
+    "扔",
+    "砸",
+    "吼",
+    "冷笑",
+    "逼",
+    "跪",
+    "撕",
+    "拍在",
+    "顶在",
+    "推",
+    "踹",
+    "骂",
+    "羞辱",
+    "退婚",
+    "病危",
+    "签字",
+    "死",
+    "滚",
+    "住手",
+    "救",
+    "断裂",
+    "炸",
+    "烧",
+    "血",
+]
 
 BREAK_WORDS = ["断章", "卡点", "黑屏", "悬念"]
 
-REDLINE_WORDS = ["断肢", "开膛", "破肚", "身首异处", "凌迟", "活埋", "注射死刑", "吸毒",
-                 "制毒", "自杀方法", "下蛊害人", "蛊毒害人", "真实的国家机关"]
+REDLINE_WORDS = [
+    "断肢",
+    "开膛",
+    "破肚",
+    "身首异处",
+    "凌迟",
+    "活埋",
+    "注射死刑",
+    "吸毒",
+    "制毒",
+    "自杀方法",
+    "下蛊害人",
+    "蛊毒害人",
+    "真实的国家机关",
+]
 
 
 def _is_dialogue(line):
@@ -183,10 +236,7 @@ def _bible_section(bible, name):
 
 
 def beat_count(text):
-    return sum(
-        bool(line.strip().startswith("△") or _is_dialogue(line))
-        for line in text.splitlines()
-    )
+    return sum(bool(line.strip().startswith("△") or _is_dialogue(line)) for line in text.splitlines())
 
 
 def _split_character_entries(value):
@@ -239,9 +289,7 @@ def _declared_asset_names(text):
         if person_match:
             characters.update(
                 name
-                for name, _ in (
-                    _character_entry(token) for token in _split_character_entries(person_match.group(1))
-                )
+                for name, _ in (_character_entry(token) for token in _split_character_entries(person_match.group(1)))
                 if name
             )
         scene_match = re.match(r"^\[场景\][：:]\s*(.+)$", stripped)
@@ -254,7 +302,9 @@ def first_content_lines(text, n=3):
     out = []
     for line in text.splitlines():
         s = line.strip()
-        if not s or s.startswith(("#", ">", "第", "【所属", "【黄金", "【情绪", "【本集时长", "[场景", "[人物", "【场景", "【人物")):
+        if not s or s.startswith(
+            ("#", ">", "第", "【所属", "【黄金", "【情绪", "【本集时长", "[场景", "[人物", "【场景", "【人物")
+        ):
             continue
         out.append(s)
         if len(out) >= n:
@@ -342,9 +392,7 @@ def validate(text, prev_texts=(), profile="auto", bible=None):
                 fails.append(_issue("E13", f"道具「{name}」在本集中重复登记", line_number))
             prop_entries[name] = line_number
             if name in character_names or name in scene_names:
-                warns.append(
-                    _issue("E13", f"道具「{name}」与角色或场景重名，导入时会记录资产冲突", line_number)
-                )
+                warns.append(_issue("E13", f"道具「{name}」与角色或场景重名，导入时会记录资产冲突", line_number))
             if not any(name in body for body in body_lines if not body.startswith(("[道具]", "[人物]", "[场景]"))):
                 warns.append(_issue("E13", f"道具「{name}」已登记但未在动作或台词中出现", line_number))
 
@@ -368,9 +416,7 @@ def validate(text, prev_texts=(), profile="auto", bible=None):
                     if section is None:
                         fails.append(_issue("E14", f"人物圣经里没有 {name}，外观抄无可抄", line_number))
                     elif re.sub(r"\s", "", appearance) not in re.sub(r"\s", "", section):
-                        fails.append(
-                            _issue("E14", f"{name} 的外观不是从人物圣经原样抄入（被改写或漏抄）", line_number)
-                        )
+                        fails.append(_issue("E14", f"{name} 的外观不是从人物圣经原样抄入（被改写或漏抄）", line_number))
 
     for prev in prev_texts:
         prev_set = {re.sub(r"\s", "", p) for p in (_is_dialogue(line) for line in prev.splitlines()) if p}
@@ -488,9 +534,11 @@ def self_test():
         print("FAIL self-test: BAD 应报 E5 开篇禁词")
         ok = 0
     # 回归：新增三项硬闸的最小样本（体量/场景不在本组断言范围）
-    compact = ("第【1】集\n【本集时长】：4 秒\n[场景]：内景·仓库·夜\n"
-               "[人物]：甲（隐退杀手｜短发、旧夹克，右眉有疤）\n[道具]：铁门｜锈迹斑斑、门轴下垂\n"
-               "△ 甲推开铁门，冷笑。\n甲：滚开。\n【本集断章卡点】：门外传来巨响。（黑屏）\n")
+    compact = (
+        "第【1】集\n【本集时长】：4 秒\n[场景]：内景·仓库·夜\n"
+        "[人物]：甲（隐退杀手｜短发、旧夹克，右眉有疤）\n[道具]：铁门｜锈迹斑斑、门轴下垂\n"
+        "△ 甲推开铁门，冷笑。\n甲：滚开。\n【本集断章卡点】：门外传来巨响。（黑屏）\n"
+    )
 
     def new_gate_fails(sample):
         fails, _, _ = validate(sample)
@@ -505,7 +553,9 @@ def self_test():
     if not any("E13" in x for x in new_gate_fails(compact.replace("｜锈迹斑斑、门轴下垂", ""))):
         print("FAIL self-test: 缺道具外观应报 E13")
         ok = 0
-    if not any("E14" in x for x in new_gate_fails(compact.replace("（隐退杀手｜短发、旧夹克，右眉有疤）", "（隐退杀手）"))):
+    if not any(
+        "E14" in x for x in new_gate_fails(compact.replace("（隐退杀手｜短发、旧夹克，右眉有疤）", "（隐退杀手）"))
+    ):
         print("FAIL self-test: 缺人物外观应报 E14")
         ok = 0
     bible = "【角色】：甲\n外形：短发、旧夹克，右眉有疤\n"
@@ -530,17 +580,19 @@ def self_test():
         ok = 0
 
     # 回归3: 漫剧档体量(260~400)与 75 秒拍数应可用
-    anime = ("第【1】集：漫剧\n【情绪流变】：受辱 ➔ 隐忍 ➔ 反杀 ➔ 绝命断章\n[场景]：内景·堂·日\n"
-             "[人物]：甲（长子｜圆脸、短发，眉尾有疤）、乙（管家｜窄脸、长发束起，灰色制服）\n"
-             + "".join(f"△ 第{i}掌落下，发麻。\n" for i in range(34))
-             + "甲：你确定要这么做？\n乙：我确定。\n甲：那就别怪我。\n乙：来吧。\n"
-               "【本集断章卡点】：灯灭人散，只余一击。（黑屏：下滑解锁）\n")
+    anime = (
+        "第【1】集：漫剧\n【情绪流变】：受辱 ➔ 隐忍 ➔ 反杀 ➔ 绝命断章\n[场景]：内景·堂·日\n"
+        "[人物]：甲（长子｜圆脸、短发，眉尾有疤）、乙（管家｜窄脸、长发束起，灰色制服）\n"
+        + "".join(f"△ 第{i}掌落下，发麻。\n" for i in range(34))
+        + "甲：你确定要这么做？\n乙：我确定。\n甲：那就别怪我。\n乙：来吧。\n"
+        "【本集断章卡点】：灯灭人散，只余一击。（黑屏：下滑解锁）\n"
+    )
     f, w, nc = validate(anime)
     if any("E1" in x for x in f):
-        print("FAIL self-test: 漫剧档不应报 E1 区冲突:", [x for x in f if 'E1' in x], "体量", nc)
+        print("FAIL self-test: 漫剧档不应报 E1 区冲突:", [x for x in f if "E1" in x], "体量", nc)
         ok = 0
     if any("E12" in x for x in f):
-        print("FAIL self-test: 漫剧档 75 秒 38 拍不应报 E12:", [x for x in f if 'E12' in x])
+        print("FAIL self-test: 漫剧档 75 秒 38 拍不应报 E12:", [x for x in f if "E12" in x])
         ok = 0
 
     # 回归4: 台词硬上限 25
@@ -551,14 +603,17 @@ def self_test():
         ok = 0
 
     # 回归5: 长档（约3分钟）—— 双回合 + 中段小钩 + 体量 650~850，auto 档自检
-    long_body = ("".join(f"△ 巴掌第{i}次扇落。\n" for i in range(82))
-                 + "".join(f"林辰：第{i}句话说完就走。\n" for i in range(8)))
-    long_good = ("第【1】集：长档样例（长档·约3分钟）\n【本集时长】：180 秒\n"
-                 "[场景]：内景·会所·夜\n[场景]：内景·走廊·夜\n[人物]：林辰（隐忍龙王｜三十岁上下，寸头）、陈峰（嚣张富二代｜宽脸浓眉，金表晃眼）\n"
-                 + long_body
-                 + "【本集中段小钩】：手机亮起病危通知单，缴费截止今晚，对面按下挂断键。\n"
-                 + "△ 林辰反手拧腕，骨裂声起，铁棍滚落。\n"
-                 + "【本集断章卡点】：电话那头传来绝望哭嚎，陈峰双腿发抖。（黑屏：下滑解锁第2集）\n")
+    long_body = "".join(f"△ 巴掌第{i}次扇落。\n" for i in range(82)) + "".join(
+        f"林辰：第{i}句话说完就走。\n" for i in range(8)
+    )
+    long_good = (
+        "第【1】集：长档样例（长档·约3分钟）\n【本集时长】：180 秒\n"
+        "[场景]：内景·会所·夜\n[场景]：内景·走廊·夜\n[人物]：林辰（隐忍龙王｜三十岁上下，寸头）、陈峰（嚣张富二代｜宽脸浓眉，金表晃眼）\n"
+        + long_body
+        + "【本集中段小钩】：手机亮起病危通知单，缴费截止今晚，对面按下挂断键。\n"
+        + "△ 林辰反手拧腕，骨裂声起，铁棍滚落。\n"
+        + "【本集断章卡点】：电话那头传来绝望哭嚎，陈峰双腿发抖。（黑屏：下滑解锁第2集）\n"
+    )
     f, w, nc = validate(long_good)
     if f:
         print("FAIL self-test: 长档样例不应 FAIL:", f, "体量", nc)

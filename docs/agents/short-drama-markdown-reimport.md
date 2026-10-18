@@ -660,6 +660,8 @@ adc2d7bf827f713453d4ad5662bb0f11e21b660a766f9132bb05beebd18b285d  tests/integrat
 ### 分镜页入口
 
 - `ShortDramaStoryboardButton`（`components/canvas/shared/`）：已导入短剧集在分镜页页头显示「AI 分镜」/「AI 重新分镜」，弹窗展示源稿行数/字数、已有分镜时要求勾选覆盖确认，提交即 `reimportShortDramaSource`，成功后弹窗内显示分镜数、缺描述黄条与「去补描述」。
+
+**与方案 §8.2 的差异（用户确认后追加）**：弹窗多一个默认勾选的「同时用 AI 补齐缺描述资产」。分镜成功后对回执里每个缺描述资产顺序调用 `POST /projects/{p}/{type}s/{name}/ai-fill`，弹窗内显示「正在补全 n / m：名字」进度；单个资产失败不中断，剩余项留在黄条里可手动补。取消勾选则完全不动资产，行为与方案原设计一致。选默认勾选而非静默补齐，是因为补齐会产生 N 次模型调用并改写 `project.json`，需要用户可见可取消。
 - `FactoryStoryboardStart`：工厂集还没转写时，分镜页空态从「请在左侧选择剧集」换成生成入口 + 「先看剧本」。
 - `EpisodePage` 把 `hasShortDramaSource` 注入 `EpisodeCanvasContext`，`StudioCanvasRouter` 再传给 `TimelineCanvas` / `GridImageToVideoCanvas`。
 - 剧本页移除「重新导入」按钮，只留「保存源稿」，并在已有媒体时提示入口已移到分镜页。
@@ -676,6 +678,10 @@ short_drama_ai_storyboard_source
 short_drama_ai_storyboard_source_missing
 short_drama_ai_storyboard_overwrite
 short_drama_ai_storyboard_overwrite_confirm
+short_drama_ai_storyboard_autofill
+short_drama_ai_storyboard_autofill_hint
+short_drama_ai_storyboard_filling
+short_drama_ai_storyboard_filled
 short_drama_ai_storyboard_submit
 short_drama_ai_restoryboard_submit
 short_drama_ai_storyboard_result

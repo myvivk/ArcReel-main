@@ -547,9 +547,7 @@ class AgentAccessPolicy:
         )
 
     @classmethod
-    def deny_legacy_drama_import(
-        cls, content_mode: str, tool_name: str, *, legacy_compat: bool
-    ) -> str | None:
+    def deny_legacy_drama_import(cls, content_mode: str, tool_name: str, *, legacy_compat: bool) -> str | None:
         """drama 模式下默认拒绝旧单集/批量导入入口：它们会把工厂 Markdown 重写为 ArcReel
         JSON、丢弃 6 类工件并重投影，违反「零处理原样落盘」。仅当用户在请求中显式置
         ``legacy_compat``（明确点名旧工作区 / 转原生剧本 JSON）时放行。返回拒绝原因，

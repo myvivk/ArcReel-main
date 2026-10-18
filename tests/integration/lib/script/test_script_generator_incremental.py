@@ -179,9 +179,7 @@ def _drama_visual(*ids: str, mark: str = "画面", fields: tuple[str, ...] = ("i
                     else {}
                 )
                 | (
-                    {
-                        "video_prompt": {"action": "动作", "camera_motion": "Static", "ambiance_audio": "风声"}
-                    }
+                    {"video_prompt": {"action": "动作", "camera_motion": "Static", "ambiance_audio": "风声"}}
                     if "video_prompt" in fields
                     else {}
                 )

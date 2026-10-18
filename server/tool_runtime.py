@@ -1103,7 +1103,9 @@ async def ingest_short_drama_artifacts_tool(
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     except ShortDramaArtifactError as exc:
         return ToolOutcome(problem=ToolProblem("short_drama_import_refused", str(exc)))
-    return ToolOutcome(value={"imported": len(result), "artifacts": [item.as_dict(include_content=False) for item in result]})
+    return ToolOutcome(
+        value={"imported": len(result), "artifacts": [item.as_dict(include_content=False) for item in result]}
+    )
 
 
 class ShortDramaFactoryGenRequest(BaseModel):
@@ -1118,7 +1120,9 @@ class ShortDramaFactoryGenRequest(BaseModel):
 
     prompt: str = Field(description="组装好的写作 prompt（含 references / 模板 / 本集上下文 / 指令）")
     system_prompt: str | None = Field(default=None, description="可选的系统提示，约束文风与输出格式")
-    artifact: str | None = Field(default=None, description="工件类型标签（如 episode_plan / episode_NN），仅用于记账与回显")
+    artifact: str | None = Field(
+        default=None, description="工件类型标签（如 episode_plan / episode_NN），仅用于记账与回显"
+    )
     max_output_tokens: int | None = Field(default=None, description="可选输出上限；缺省按模型登记上限")
 
 
@@ -1175,8 +1179,7 @@ class ImportShortDramaScriptRequest(BaseModel):
     legacy_compat: bool = Field(
         default=False,
         description=(
-            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区"
-            "转原生剧本 JSON 时置 true。"
+            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区转原生剧本 JSON 时置 true。"
         ),
     )
 
@@ -1200,9 +1203,7 @@ async def import_short_drama_script(
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     content_mode = project.get("content_mode", "narration")
     if content_mode != "drama":
-        return ToolOutcome(
-            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
-        )
+        return ToolOutcome(problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目"))
     if reason := AgentAccessPolicy.deny_legacy_drama_import(
         content_mode, "import_short_drama_script", legacy_compat=request.value.legacy_compat
     ):
@@ -1239,8 +1240,7 @@ class ImportShortDramaSeriesRequest(BaseModel):
     legacy_compat: bool = Field(
         default=False,
         description=(
-            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区"
-            "转原生剧本 JSON 时置 true。"
+            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区转原生剧本 JSON 时置 true。"
         ),
     )
 
@@ -1264,13 +1264,12 @@ async def import_short_drama_series(
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     content_mode = project.get("content_mode", "narration")
     if content_mode != "drama":
-        return ToolOutcome(
-            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
-        )
+        return ToolOutcome(problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目"))
     if reason := AgentAccessPolicy.deny_legacy_drama_import(
         content_mode, "import_short_drama_series", legacy_compat=request.value.legacy_compat
     ):
         return ToolOutcome(problem=ToolProblem("legacy_import_blocked", reason))
+
     async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
         try:
             result = await import_short_drama_episode(

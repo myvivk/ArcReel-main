@@ -378,9 +378,7 @@ def delete_episodes(
         p["episodes"] = [
             entry
             for entry in (entries if isinstance(entries, list) else [])
-            if not (
-                isinstance(entry, Mapping) and parse_positive_episode_num(entry.get("episode")) in wanted_set
-            )
+            if not (isinstance(entry, Mapping) and parse_positive_episode_num(entry.get("episode")) in wanted_set)
         ]
         try:
             snapshot = ProjectArtifactManifestAdapter(project_dir).snapshot_entries()
@@ -550,10 +548,7 @@ def render_episode_batch_deletion_text(
     translate: Callable[..., str],
 ) -> str:
     """把批量删除的丢失清单渲染成确认文本：逐个点名（超出的汇总），损失按类合并计数。"""
-    data = [
-        impact.to_dict() if isinstance(impact, EpisodeDeletionImpact) else dict(impact)
-        for impact in impacts
-    ]
+    data = [impact.to_dict() if isinstance(impact, EpisodeDeletionImpact) else dict(impact) for impact in impacts]
     separator = translate("episode_delete_separator")
 
     def name(episode: int) -> str:

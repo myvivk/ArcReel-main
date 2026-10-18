@@ -18,13 +18,20 @@ scene 形态：可选导语 + 镜头序列，``【镜头N｜景别】正文``，
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+#: scene 指纹长度：只留前 12 位十六进制，够辨识「分镜提示词已变更」，不把整段摘要写进记录。
+SCENE_REVISION_LENGTH = 12
+
 #: scene 的镜头标记：``【镜头N｜景别】``，景别可缺省（``【镜头N】``）。分隔符兼容全角｜与半角 |。
 _SHOT_MARK = re.compile(r"【\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?】")
+
+#: 宫格镜头提示词的逐格标记：``第N格（景别）：``，括号与冒号兼容全角/半角，景别可缺省。
+_CELL_MARK = re.compile(r"^[ \t]*第\s*(\d+)\s*格\s*(?:[（(]\s*([^）)\n]*?)\s*[）)])?\s*[：:][ \t]*")
 
 #: 正文里的 K 引用：``K0`` / ``K12``；小写 ``k4`` 同样算引用（写错的大小写不该绕过边界检查）。
 _KEYFRAME_REF = re.compile(r"[Kk](\d+)")
@@ -96,6 +103,64 @@ def parse_scene_shots(scene: str) -> SceneShots:
     return SceneShots(opening=opening, shots=tuple(shots))
 
 
+def parse_grid_prompt_cells(prompt: str) -> list[ShotFrame]:
+    """解析宫格镜头提示词（``ShotGrid.prompt``）为逐格文本。
+
+    标准形态是每行以 ``第N格（景别）：`` 开头（AI 产出与弹窗输入框的约定形态），标记行的
+    续行并入该格；正文里没有任何 ``第N格`` 标记时按朴素形态处理——每个非空行即一格，
+    景别缺省。序号不连续按出现序重排、重复序号留首、正文为空的格丢弃。prompt 为空时返回
+    空列表（保存允许空提示词，出图守卫据此拒绝）。
+    """
+
+    text = prompt.strip()
+    if not text:
+        return []
+    marked: list[tuple[int, str, list[str]]] = []
+    for line in text.splitlines():
+        mark = _CELL_MARK.match(line)
+        if mark is not None:
+            marked.append((int(mark.group(1)), (mark.group(2) or "").strip(), [line[mark.end() :]]))
+        elif marked and line.strip():
+            marked[-1][2].append(line)
+    if not marked:
+        return [
+            ShotFrame(number=number, shot_size="", text=body)
+            for number, body in enumerate((line.strip() for line in text.splitlines() if line.strip()), start=1)
+        ]
+    frames: list[ShotFrame] = []
+    seen: set[int] = set()
+    for number, shot_size, parts in marked:
+        if number in seen:
+            continue
+        body = _clean_lines(parts)
+        if not body:
+            continue
+        seen.add(number)
+        frames.append(ShotFrame(number=len(frames) + 1, shot_size=shot_size, text=body))
+    return frames
+
+
+def format_grid_prompt(frames: Sequence[ShotFrame]) -> str:
+    """把镜头序列写回宫格镜头提示词的逐格形态：``第N格（景别）：正文``。
+
+    :func:`parse_grid_prompt_cells` 的逆操作：AI 产出的结构化帧按它规整后回填弹窗输入框，
+    序号只数真正写出的格、从 1 起，正文为空的格丢弃——与解析口径一致，同一个序列写出的
+    文本因此唯一（PUT 的幂等判定逐字比它）。
+    """
+
+    lines: list[str] = []
+    number = 0
+    for frame in frames:
+        text = frame.text.strip()
+        if not text:
+            continue
+        number += 1
+        shot_size = frame.shot_size.strip()
+        prefix = f"第{number}格（{shot_size}）" if shot_size else f"第{number}格"
+        lines.append(f"{prefix}：{text}")
+    return "\n".join(lines)
+
+
 def shot_scene_text(shot: Mapping[str, Any]) -> str:
     """分镜条目上的 ``image_prompt.scene`` 正文；结构化与纯文本两种形态同一出口。"""
 
@@ -104,6 +169,12 @@ def shot_scene_text(shot: Mapping[str, Any]) -> str:
         value = image_prompt.get("scene", "")
         return value if isinstance(value, str) else ""
     return image_prompt if isinstance(image_prompt, str) else ""
+
+
+def scene_revision_of(scene_text: str) -> str:
+    """``image_prompt.scene`` 的指纹：SHA-256 前 12 位。"""
+
+    return hashlib.sha256(scene_text.encode("utf-8")).hexdigest()[:SCENE_REVISION_LENGTH]
 
 
 def keyframe_reference_problems(text: str, cell_count: int) -> list[str]:
@@ -198,11 +269,15 @@ def join_action_segments(segments: Sequence[ActionSegment], duration_seconds: fl
 
 __all__ = [
     "ActionSegment",
+    "SCENE_REVISION_LENGTH",
     "SceneShots",
     "ShotFrame",
+    "format_grid_prompt",
     "join_action_segments",
     "keyframe_reference_problems",
+    "parse_grid_prompt_cells",
     "parse_scene_shots",
+    "scene_revision_of",
     "shot_scene_text",
     "split_action_segments",
 ]

@@ -306,15 +306,16 @@ export async function enqueueImageEdit(
 }
 
 /**
- * 直接按规格入队参考素材（不预存提示词）：逐格文本由服务端从分镜提示词现解析（D-1 / D-3）。
+ * 按已保存的宫格入队参考素材：逐格文本以 `ShotGrid.prompt` 优先，空则回退 scene 现解析。
  */
 export async function enqueueShotGrid(
   projectName: string,
-  params: SaveShotGridPayload,
+  scriptFile: string,
+  shotId: string,
 ): Promise<EnqueueResult> {
   const res = await submit(
-    [markScriptFile(projectName, "shot_grid", params.script_file)],
-    () => API.generateShotGrid(projectName, params),
+    [markScriptFile(projectName, "shot_grid", scriptFile)],
+    () => API.generateShotGrid(projectName, scriptFile, shotId),
     oneTaskId,
   );
   return { taskIds: [res.task_id], deduped: false };

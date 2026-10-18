@@ -597,13 +597,10 @@ class TestAssetContextCanon:
         root = tmp_path / "short_drama_project" / "source" / "short_drama"
         (root / "episodes").mkdir(parents=True)
         (root / "character-bible.md").write_text(
-            "【角色】：林辰\n【外形】：三十岁上下，寸头，旧夹克磨白\n"
-            "【角色】：陈峰\n【外形】：宽脸浓眉，金表晃眼\n",
+            "【角色】：林辰\n【外形】：三十岁上下，寸头，旧夹克磨白\n【角色】：陈峰\n【外形】：宽脸浓眉，金表晃眼\n",
             encoding="utf-8",
         )
-        (root / "series-outline.md").write_text(
-            "第 1 集 仓库对峙\n第 2 集 会所亮令\n", encoding="utf-8"
-        )
+        (root / "series-outline.md").write_text("第 1 集 仓库对峙\n第 2 集 会所亮令\n", encoding="utf-8")
         (root / "episodes" / "episode_01.md").write_text(
             "[场景]：城郊仓库｜水泥地，铁门单侧顶光\n"
             "[人物]：林辰（隐忍龙王｜三十岁上下，寸头，旧夹克磨白）\n"
@@ -616,9 +613,7 @@ class TestAssetContextCanon:
     def test_character_canon_comes_from_bible(self, tmp_path):
         from server.routers._asset_router_factory import _collect_asset_context
 
-        context = _collect_asset_context(
-            self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {}
-        )
+        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
 
         canon = "\n".join(context["canon"])
         assert "三十岁上下，寸头，旧夹克磨白" in canon
@@ -627,9 +622,7 @@ class TestAssetContextCanon:
     def test_prop_canon_comes_from_episode_marker_lines(self, tmp_path):
         from server.routers._asset_router_factory import _collect_asset_context
 
-        context = _collect_asset_context(
-            self._project_dir(tmp_path), {"episodes": []}, "prop", "铁门", {}
-        )
+        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "prop", "铁门", {})
 
         canon = "\n".join(context["canon"])
         assert "锈迹斑斑，门轴下垂" in canon
@@ -638,9 +631,7 @@ class TestAssetContextCanon:
     def test_scene_canon_includes_outline_and_marker_lines(self, tmp_path):
         from server.routers._asset_router_factory import _collect_asset_context
 
-        context = _collect_asset_context(
-            self._project_dir(tmp_path), {"episodes": []}, "scene", "城郊仓库", {}
-        )
+        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "scene", "城郊仓库", {})
 
         canon = "\n".join(context["canon"])
         assert "水泥地，铁门单侧顶光" in canon
@@ -651,9 +642,7 @@ class TestAssetContextCanon:
             _collect_asset_context,
         )
 
-        context = _collect_asset_context(
-            self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {}
-        )
+        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
         prompt = _build_ai_fill_prompt("character", "林辰", context)
 
         assert "【项目设定｜优先依据】" in prompt

@@ -36,9 +36,10 @@ FIXTURES: dict[str, tuple[str, str | None]] = {
     "prop_without_separator": (_BASE.replace("｜锈迹斑斑，门轴下垂", ""), None),
     "prop_appearance_empty": (_BASE.replace("锈迹斑斑，门轴下垂", ""), None),
     "duplicate_prop": (_BASE.replace("[道具]：铁门", "[道具]：铁门｜掉漆\n[道具]：铁门"), None),
-    "prop_not_in_body": (_BASE.replace("｜锈迹斑斑，门轴下垂", "｜锈迹斑斑").replace(
-        "[道具]：铁门｜锈迹斑斑", "[道具]：玉佩｜羊脂白玉"
-    ), None),
+    "prop_not_in_body": (
+        _BASE.replace("｜锈迹斑斑，门轴下垂", "｜锈迹斑斑").replace("[道具]：铁门｜锈迹斑斑", "[道具]：玉佩｜羊脂白玉"),
+        None,
+    ),
     "character_without_appearance": (_BASE.replace("（杀手｜短发，旧夹克，右眉有疤）", "（杀手）"), None),
     "bible_match": (_BASE, _BIBLE),
     "bible_rewritten": (_BASE.replace("右眉有疤", "左眉有疤"), _BIBLE),
@@ -64,9 +65,7 @@ def test_cli_and_lib_report_identical_gate_results(name: str) -> None:
     assert Counter(cli_lines) == Counter(lib_lines), f"{name}: CLI={cli_lines} lib={lib_lines}"
 
 
-@pytest.mark.parametrize(
-    "example", ["ep01-longwang-demo.md", "long-format-3min-demo.md"]
-)
+@pytest.mark.parametrize("example", ["ep01-longwang-demo.md", "long-format-3min-demo.md"])
 def test_factory_examples_pass_both_gates(example: str) -> None:
     markdown = (SKILL / "examples" / example).read_text(encoding="utf-8")
     fails, warns, _ = _load_cli().validate(markdown)

@@ -19,9 +19,17 @@ export function StoryPlanningCanvas({ projectName }: { projectName: string }) {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
+  // 换项目或重试时先清空：在渲染期对齐请求键，避免在 effect 里同步 setState 触发级联渲染。
+  const requestKey = `${projectName}#${attempt}`;
+  const [syncedKey, setSyncedKey] = useState(requestKey);
+  if (syncedKey !== requestKey) {
+    setSyncedKey(requestKey);
+    setArtifacts(null);
+    setError(null);
+  }
+
   useEffect(() => {
     const controller = new AbortController();
-    setArtifacts(null);
     API.getStoryPlanning(projectName, { signal: controller.signal })
       .then((result) => {
         if (!controller.signal.aborted) {
@@ -61,7 +69,7 @@ function ArtifactReader({ artifacts }: { artifacts: StoryPlanningArtifacts }) {
           <p className="mt-1 text-sm text-muted-foreground">短剧工厂原文阅读器</p>
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-6 [scrollbar-gutter:stable]">
+      <div className="relative min-h-0 flex-1 overflow-y-auto p-6 [scrollbar-gutter:stable]">
         <Tabs defaultValue="bible">
           <TabsList variant="line" aria-label="故事规划内容">
             <TabsTrigger value="bible">人物圣经</TabsTrigger>
@@ -94,7 +102,7 @@ function EpisodePlans({ plans, initial }: { plans: ShortDramaArtifactView[]; ini
   const current = plans.find((plan) => plan.path === selected) ?? initial;
   return (
     <div className="mt-5 grid min-h-0 grid-cols-[minmax(9rem,24%)_minmax(0,1fr)] gap-4">
-      <div className="min-h-0 overflow-y-auto rounded-lg border border-border p-2">
+      <div className="relative min-h-0 overflow-y-auto rounded-lg border border-border p-2">
         {plans.length ? plans.map((plan) => (
           <button key={plan.path} type="button" className={`focus-ring mb-1 w-full rounded-md px-3 py-2 text-left text-sm ${plan.path === current?.path ? "bg-primary/10 text-primary" : "hover:bg-muted"}`} onClick={() => setSelected(plan.path)}>
             第 {plan.episode} 集

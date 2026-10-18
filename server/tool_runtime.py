@@ -26,6 +26,8 @@ from lib.artifacts.artifact_activation import ArtifactCurrencyResolver, active_a
 from lib.backends.providers import CallPurpose
 from lib.backends.text_backends.base import (
     TextGenerationRequest as TextBackendRequest,
+)
+from lib.backends.text_backends.base import (
     TextOutputTruncatedError,
     TextTaskType,
 )

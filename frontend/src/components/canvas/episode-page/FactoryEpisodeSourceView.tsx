@@ -54,7 +54,7 @@ export function FactoryEpisodeSourceView({ projectName, episode }: { projectName
     );
   }
   return (
-    <article className="min-h-0 overflow-y-auto p-6 [scrollbar-gutter:stable]">
+    <article className="relative min-h-0 overflow-y-auto p-6 [scrollbar-gutter:stable]">
       <p className="mb-4 font-mono text-xs text-muted-foreground">{result.value.path}</p>
       <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">{result.value.markdown}</pre>
     </article>

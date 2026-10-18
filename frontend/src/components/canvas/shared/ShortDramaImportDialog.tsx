@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, FolderOpen, Loader2 } from "lucide-react";
 import {
@@ -9,7 +9,6 @@ import {
   type ShortDramaImportDetail,
 } from "@/actions/shortDrama";
 import { Button } from "@/components/ui/button";
-import { useAppStore } from "@/stores/app-store";
 import {
   Dialog,
   DialogBody,
@@ -119,6 +118,36 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
     } finally {
       setCreating(false);
     }
+  };
+
+  const readArtifactFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const generation = ++fileGeneration.current;
+    const files = Array.from(event.target.files ?? []);
+    const loaded: Array<{ path: string; content_base64: string }> = [];
+    try {
+      for (const file of files) {
+        loaded.push({
+          path: normalizeArtifactPath(file.webkitRelativePath || file.name),
+          content_base64: encodeBase64(new Uint8Array(await file.arrayBuffer())),
+        });
+      }
+    } catch {
+      if (fileGeneration.current === generation) {
+        setArtifactFiles([]);
+        setArtifactError(t("short_drama_import_artifacts_read_failed"));
+      }
+      return;
+    }
+    if (fileGeneration.current !== generation) return;
+    const invalid = loaded.filter((item) => !ARTIFACT_PATH_RE.test(item.path));
+    const accepted = loaded.filter((item) => ARTIFACT_PATH_RE.test(item.path));
+    const duplicates = accepted.filter((item, index) => accepted.findIndex((other) => other.path === item.path) !== index);
+    setArtifactFiles(accepted);
+    setArtifactError(
+      invalid.length || duplicates.length
+        ? t("short_drama_import_artifacts_invalid", { invalid: invalid.length, duplicates: duplicates.length })
+        : null,
+    );
   };
 
   const submit = async () => {
@@ -231,34 +260,7 @@ function ShortDramaImportDialog({ request, onClose }: DialogProps) {
                   {...{ webkitdirectory: "" }}
                   accept=".md,text/markdown"
                   disabled={submitting}
-                  onChange={async (event) => {
-                    const generation = ++fileGeneration.current;
-                    const files = Array.from(event.target.files ?? []);
-                    const loaded: Array<{ path: string; content_base64: string }> = [];
-                    try {
-                      for (const file of files) {
-                        loaded.push({
-                          path: normalizeArtifactPath(file.webkitRelativePath || file.name),
-                          content_base64: encodeBase64(new Uint8Array(await file.arrayBuffer())),
-                        });
-                      }
-                    } catch {
-                      if (fileGeneration.current === generation) {
-                        setArtifactFiles([]);
-                        setArtifactError(t("short_drama_import_artifacts_read_failed"));
-                      }
-                      return;
-                    }
-                    if (fileGeneration.current !== generation) return;
-                    const invalid = loaded.filter((item) => !ARTIFACT_PATH_RE.test(item.path));
-                    const accepted = loaded.filter((item) => ARTIFACT_PATH_RE.test(item.path));
-                    const duplicates = accepted.filter((item, index) => accepted.findIndex((other) => other.path === item.path) !== index);
-                    setArtifactFiles(accepted);
-                    setArtifactError(invalid.length || duplicates.length ? t("short_drama_import_artifacts_invalid", {
-                      invalid: invalid.length,
-                      duplicates: duplicates.length,
-                    }) : null);
-                  }}
+                  onChange={(event) => void readArtifactFiles(event)}
                 />
                 <p className="text-xs text-muted-foreground">{t("short_drama_import_artifacts_hint")}</p>
                 {artifactError ? <p role="alert" className="text-sm text-destructive">{artifactError}</p> : null}

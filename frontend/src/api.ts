@@ -1495,6 +1495,7 @@ class API {
     registered_assets?: Record<string, string[]>;
     asset_conflicts?: Array<Record<string, string>>;
     asset_registration_failed?: string;
+    assets_without_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/short-drama/import`,
@@ -1521,6 +1522,7 @@ class API {
       registered_assets?: Record<string, string[]>;
       asset_conflicts?: Array<Record<string, string>>;
       asset_registration_failed?: string;
+      assets_without_description?: Array<{ type: string; name: string; reason: string }>;
     }>;
   }> {
     return this.request(
@@ -1575,7 +1577,13 @@ class API {
     episode: number,
     sourceRevision: string,
     confirmArtifacts: boolean,
-  ): Promise<{ episode: number; scenes: number; source_path: string; source_revision: string }> {
+  ): Promise<{
+    episode: number;
+    scenes: number;
+    source_path: string;
+    source_revision: string;
+    assets_without_description?: Array<{ type: string; name: string; reason: string }>;
+  }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source/reimport`,
       {
@@ -3860,6 +3868,7 @@ class API {
     );
   }
 
+  /** 只存规格：规格没变服务端一个字段都不动，变了才重置（D-4）。 */
   static async saveShotGrid(projectName: string, payload: SaveShotGridPayload): Promise<ShotGridPlan> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids`, {
       method: "PUT",
@@ -3867,22 +3876,11 @@ class API {
     });
   }
 
-  /** 同步生成逐格镜头文本：不落盘、不入队，由用户在弹窗里改完再「确定」（ADR 0099 D-5）。 */
-  static async authorShotGridPrompt(
-    projectName: string,
-    payload: { script_file: string; episode: number; shot_id: string; rows: number; cols: number },
-  ): Promise<{ prompt: string }> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/author-prompt`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  }
-
-  static async generateShotGrid(projectName: string, scriptFile: string, shotId: string) {
-    const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
+  /** 直接按规格入队：逐格文本从 `image_prompt.scene` 现解析，没有提示词参数（D-1 / D-3）。 */
+  static async generateShotGrid(projectName: string, payload: SaveShotGridPayload) {
     return this.request<{ task_id: string; status: string }>(
-      `/projects/${encodeURIComponent(projectName)}/shot-grids/generate?${params.toString()}`,
-      { method: "POST" },
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/generate`,
+      { method: "POST", body: JSON.stringify(payload) },
     );
   }
 

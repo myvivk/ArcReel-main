@@ -16,6 +16,7 @@ import { useStaysInEpisodeView } from "@/components/canvas/episode-page/EpisodeV
 import { PromptPreviewButton } from "@/components/shared/PromptPreviewButton";
 import { ReferencesSection } from "./ReferencesSection";
 import { ReferenceMaterialsSection } from "./ReferenceMaterialsSection";
+import { VideoPromptEditor } from "./VideoPromptEditor";
 import { PromptReferenceMenu } from "./PromptReferenceMenu";
 import { MediaCard } from "./MediaCard";
 import { EndFrameRow } from "./EndFrameRow";
@@ -604,6 +605,7 @@ function ShotDetailContent({
           shotId={segmentId}
           readOnly={readOnly}
           disabled={saving || refreshPending || !!generatingStoryboard || !!generatingVideo}
+          videoPromptFilled={videoText.trim().length > 0}
           saveFirst={dirty}
           beforeGenerate={prepareGeneration}
           onPlanChange={setPlan}
@@ -637,13 +639,14 @@ function ShotDetailContent({
             ) : null}
             {promptActions("video")}
           </div>
-          <Textarea
-            aria-label={t("detail_video_prompt_title")}
+          <VideoPromptEditor
+            ariaLabel={t("detail_video_prompt_title")}
             value={videoText}
-            onChange={(event) => setField("video_prompt", event.target.value)}
+            onChange={(next) => setField("video_prompt", next)}
+            cellCount={plan?.status === "confirmed" ? plan.cells.length : 0}
+            durationSeconds={fields.duration_seconds}
             readOnly={editingBlocked}
             placeholder={t("detail_video_prompt_placeholder")}
-            className="max-h-none min-h-22"
           />
         </ShotSection>
       </ShotGroup>

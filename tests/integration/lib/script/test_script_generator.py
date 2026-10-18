@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 

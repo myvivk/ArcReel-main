@@ -44,6 +44,12 @@ class ShotGridCell:
 
 @dataclass
 class ShotGrid:
+    """一个分镜的参考素材宫格记录。
+
+    记录里没有任何"可编辑文本"字段：逐格镜头文本的真相源是 ``image_prompt.scene``，
+    出图时现解析并回填 ``cells`` 只作本次出图的留证（D-3）。
+    """
+
     id: str
     episode: int
     script_file: str
@@ -51,8 +57,6 @@ class ShotGrid:
     rows: int
     cols: int
     cells: list[ShotGridCell] = field(default_factory=list)
-    prompt: str = ""
-    scene_revision: str | None = None
     composite_path: str | None = None
     status: str = "draft"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -70,8 +74,6 @@ class ShotGrid:
             "rows": self.rows,
             "cols": self.cols,
             "cells": [cell.to_dict() for cell in self.cells],
-            "prompt": self.prompt,
-            "scene_revision": self.scene_revision,
             "composite_path": self.composite_path,
             "status": self.status,
             "created_at": self.created_at,
@@ -91,8 +93,6 @@ class ShotGrid:
             rows=int(data.get("rows", DEFAULT_ROWS)),
             cols=int(data.get("cols", DEFAULT_COLS)),
             cells=[ShotGridCell.from_dict(cell) for cell in data.get("cells", [])],
-            prompt=str(data.get("prompt", "")),
-            scene_revision=data.get("scene_revision"),
             composite_path=data.get("composite_path"),
             status=str(data.get("status", "draft")),
             created_at=str(data.get("created_at", datetime.now(UTC).isoformat())),
@@ -120,7 +120,8 @@ class ShotGrid:
             shot_id=shot_id,
             rows=rows,
             cols=cols,
-            cells=[ShotGridCell(index=index) for index in range(rows * cols)],
+            # 逐格留证在出图时按 scene 现解析回填，记录本身不预置空格（D-3）。
+            cells=[],
             created_at=now,
             updated_at=now,
         )

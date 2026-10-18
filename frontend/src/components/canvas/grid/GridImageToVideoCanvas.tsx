@@ -8,6 +8,8 @@ import { EpisodeHeaderActions } from "../episode-page/EpisodeHeaderActions";
 import type { EpisodeCanvasContext } from "../episode-page/EpisodePage";
 import { ScriptReviewGate } from "../timeline/ScriptReviewGate";
 import { PromptAuthoringButton } from "../shared/PromptAuthoringButton";
+import { ShortDramaStoryboardButton } from "../shared/ShortDramaStoryboardButton";
+import { FactoryStoryboardStart } from "../shared/FactoryStoryboardStart";
 import { RetainedEditUnit } from "@/components/shared/edit-unit/RetainedEditUnit";
 import { ShotSplitView } from "../timeline/ShotSplitView";
 import { EmptyScriptState } from "../timeline/EmptyScriptState";
@@ -73,6 +75,7 @@ export function GridImageToVideoCanvas({
   view,
   onViewChange,
   hasDraft,
+  hasShortDramaSource,
   episodeScript,
   scriptFile,
   projectData,
@@ -173,6 +176,12 @@ export function GridImageToVideoCanvas({
   }, [onGenerateGrid, scriptFile, episode, invalidateGrids]);
 
   if (!projectData || (!episodeScript && !hasDraft)) {
+    // 工厂集还没转写：给「AI 分镜」入口，而不是「没选剧集」。
+    if (projectData && editorContentMode === "drama" && hasShortDramaSource && !demoReadOnly) {
+      return (
+        <FactoryStoryboardStart projectName={projectName} episode={episode} className="min-h-0" />
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
         {t("select_episode_hint")}
@@ -199,6 +208,9 @@ export function GridImageToVideoCanvas({
       : undefined;
   const handleRemoveShot =
     onRemoveShot && !demoReadOnly ? (itemId: string) => onRemoveShot(itemId, scriptFile) : undefined;
+  const importedShortDrama =
+    editorContentMode === "drama" &&
+    (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -229,6 +241,13 @@ export function GridImageToVideoCanvas({
 
       {view === "board" && hasScript && (
         <EpisodeHeaderActions>
+          {importedShortDrama && !demoReadOnly && (
+            <ShortDramaStoryboardButton
+              projectName={projectName}
+              episode={episode}
+              storyboardCount={segments.length}
+            />
+          )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
           <BatchFillButton
             kind="videos"

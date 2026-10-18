@@ -12,16 +12,29 @@ from server.error_handlers import register_error_handlers
 from server.routers import short_drama
 from tests.auth_deps import AUTH_DEPENDENCIES
 
-MARKDOWN = """\
-第【1】集：雨夜重逢
-【本集时长】：8秒
-【本集断章卡点】：门外的人竟然是她
 
-[场景]：旧公寓
-[人物]：林夏、周明
-△ 门外暴雨倾盆，林夏握紧门把手。
-周明（压低声音）：开门。
-"""
+def _episode_markdown(newline: str = "\n") -> str:
+    """合规单集：105 秒 53 拍，角色与道具都带外观，能通过工厂机检。"""
+    lines = [
+        "第【1】集：雨夜重逢",
+        "【本集时长】：105 秒",
+        "[场景]：旧公寓｜水泥楼道，声控灯忽明忽暗",
+        "[人物]：林夏（女主｜齐肩短发，米色风衣，右腕有旧疤）、周明（前夫｜寸头，深灰西装，领口松开）",
+        "[道具]：铁门｜锈迹斑斑，门轴下垂",
+        "△ 铁门被砸得连响。",
+    ]
+    lines += [f"△ 铁门第{index}下被敲响。" for index in range(1, 49)]
+    lines += [
+        "林夏（压声）：谁在外面？",
+        "周明：开门，我回来了。",
+        "林夏：你走错门了。",
+        "周明：我带了钥匙。",
+        "【本集断章卡点】：门缝里塞进一张旧照片。（黑屏：下滑解锁第2集）",
+    ]
+    return newline.join(lines) + newline
+
+
+MARKDOWN = _episode_markdown()
 
 
 def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
@@ -49,7 +62,7 @@ def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
 
 def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatch, tmp_path: Path) -> None:
     client, manager = _client(monkeypatch, tmp_path)
-    original = "角色：林夏\r\n台词：打开门。\r\n".encode("utf-8")
+    original = _episode_markdown("\r\n").encode("utf-8")
     payload = {
         "artifacts": [
             {
@@ -80,8 +93,8 @@ def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatc
 
 def test_ingested_episode_artifact_visible_as_short_drama_source(monkeypatch, tmp_path: Path) -> None:
     """复现：工厂工件包导入后，分集页经 getShortDramaSource 应能读到本集正文。"""
-    client, manager = _client(monkeypatch, tmp_path)
-    original = "第【1】集：雨夜重逢\n[场景]：旧公寓\n林夏：开门。\n".encode("utf-8")
+    client, _manager = _client(monkeypatch, tmp_path)
+    original = MARKDOWN.encode("utf-8")
     payload = {
         "artifacts": [
             {
@@ -104,7 +117,7 @@ def test_ingested_episode_artifact_visible_as_short_drama_source(monkeypatch, tm
 def test_ingest_registers_episode_as_own_source(monkeypatch, tmp_path: Path) -> None:
     """复现断点：导入后每集工厂 Markdown 须登记为该集 OWN 源文本，分集页本集正文才有内容、下游才建得上。"""
     client, manager = _client(monkeypatch, tmp_path)
-    original = "第【1】集：雨夜重逢\n[场景]：旧公寓\n林夏：开门。\n".encode("utf-8")
+    original = MARKDOWN.encode("utf-8")
     payload = {
         "artifacts": [
             {
@@ -160,14 +173,47 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
         )
 
     assert imported.status_code == 200
-    assert imported.json()["scenes"] == 1
+    assert imported.json()["scenes"] >= 1
     script = manager.load_script("demo", "episode_1.json")
     assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
     assert script["short_drama_meta"]["source_revision"] == saved["revision"]
+    assert all(
+        12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]
+    ), [scene["duration_seconds"] for scene in script["scenes"]]
     project = manager.load_project("demo")
     assert "林夏" in project["characters"]
     assert "周明" in project["characters"]
     assert "旧公寓" in project["scenes"]
+    assert "铁门" in project["props"]
+    assert project["characters"]["林夏"]["description"] == "齐肩短发，米色风衣，右腕有旧疤"
+    assert "assets_without_description" not in imported.json()
+
+
+def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path) -> None:
+    client, manager = _client(monkeypatch, tmp_path)
+    manager.update_project(
+        "demo",
+        lambda project: project.setdefault("characters", {}).update({"周明": {"description": ""}}),
+    )
+    markdown = (
+        MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）")
+        .replace("（前夫｜寸头，深灰西装，领口松开）", "（前夫）")
+    )
+
+    with client:
+        saved = client.put(
+            "/api/v1/projects/demo/episodes/1/short-drama-source",
+            json={"markdown": markdown, "expected_revision": None},
+        ).json()
+        imported = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": saved["revision"], "confirm_artifacts": False},
+        ).json()
+
+    missing = {(item["name"], item["reason"]) for item in imported["assets_without_description"]}
+    assert ("林夏", "source_missing") in missing
+    assert ("周明", "existing_blank") in missing
+    assert all(item["type"] == "character" for item in imported["assets_without_description"])
 
 
 def test_initial_import_persists_markdown_source(monkeypatch, tmp_path: Path) -> None:

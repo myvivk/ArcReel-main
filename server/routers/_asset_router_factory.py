@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -214,15 +215,88 @@ def _scene_mentions(scene: dict[str, Any], asset_type: str, name: str) -> bool:
     return False
 
 
+def _short_drama_sources(project_dir: Path) -> list[Path]:
+    """``source/short_drama/`` 下的工厂 Markdown（系列级参考稿 + 单集原文）。"""
+    root = project_dir / "source" / "short_drama"
+    return sorted(root.rglob("*.md")) if root.is_dir() else []
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _bible_section(bible: str, name: str) -> str:
+    """人物圣经里 ``【角色】：名字`` 起到下一个角色前的整段。"""
+    lines = bible.splitlines()
+    collected: list[str] = []
+    start: int | None = None
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*【角色】[：:]\s*(.+)$", line)
+        if not match:
+            continue
+        if start is not None:
+            collected.append("\n".join(lines[start:index]).strip())
+        raw_name = re.split(r"[（(]", match.group(1), maxsplit=1)[0].strip()
+        start = index if raw_name == name else None
+    if start is not None:
+        collected.append("\n".join(lines[start:]).strip())
+    return collected[0] if collected else ""
+
+
+def _marker_lines(sources: list[Path], marker: str, name: str, limit: int = 8) -> list[str]:
+    """各集 ``[marker]`` 行里出现该资产名的原文行，带文件名便于模型定位。"""
+    hits: list[str] = []
+    pattern = re.compile(rf"^\[{marker}\][：:]\s*(.+)$")
+    for path in sources:
+        for line in _read_text(path).splitlines():
+            match = pattern.match(line.strip())
+            if match and name in match.group(1):
+                hits.append(f"{path.name}｜{line.strip()}")
+                break
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def _collect_canon(project_dir: Path, asset_type: str, name: str) -> list[str]:
+    """补全用的项目设定摘要：优先级高于正式剧本摘录。"""
+    sources = _short_drama_sources(project_dir)
+    canon: list[str] = []
+    if asset_type == "character":
+        for path in sources:
+            if path.name in {"character-bible.md", "character_bible.md"}:
+                section = _bible_section(_read_text(path), name)
+                if section:
+                    canon.append(section)
+                    break
+        canon += _marker_lines(sources, "人物", name, limit=3)
+    elif asset_type == "scene":
+        for path in sources:
+            if path.name in {"series-outline.md", "series_outline.md", "outline.md"}:
+                for line in _read_text(path).splitlines():
+                    if name in line:
+                        canon.append(line.strip())
+                        break
+                break
+        canon += _marker_lines(sources, "场景", name)
+    elif asset_type == "prop":
+        canon += _marker_lines(sources, "道具", name)
+    return [item for item in canon if item]
+
+
 def _collect_asset_context(
     project_dir: Path, project: dict[str, Any], asset_type: str, name: str, entry: dict[str, Any]
 ) -> dict[str, Any]:
-    """从项目剧本里搜集该资产出现过的场景描写与台词，作为补全提示的上下文。"""
+    """从短剧工厂源稿（canon）和正式剧本（摘录）搜集资产补全上下文。"""
     context: dict[str, Any] = {
         "title": project.get("title") or "",
         "premise": project.get("premise") or project.get("logline") or "",
         "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
         "excerpts": [],
+        "canon": _collect_canon(project_dir, asset_type, name),
     }
     total_chars = 0
     for ep in project.get("episodes") or []:
@@ -284,6 +358,8 @@ def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -
         )
         or "（剧本中未检索到该资产的直接引用）"
     )
+    canon = context.get("canon") or []
+    canon_block = "\n\n".join(str(item) for item in canon)
 
     from lib.prompts.prompt_templates.builtin import builtin_templates
 
@@ -307,9 +383,12 @@ def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -
         f"资产类型：{type_label}\n资产名：{name}\n"
         f"项目标题：{context.get('title') or '（未知）'}\n"
         f"项目前提：{context.get('premise') or '（未知）'}\n\n"
+        "【项目设定｜优先依据】\n"
+        "（来源：人物圣经 / 全剧大纲 / 单集标记行；与剧本摘录冲突时以此为准）\n"
+        f"{canon_block or '（无工厂源稿设定，按剧本摘录与题材补全）'}\n\n"
         f"已有字段（保留，不要修改或重复）：\n{existing_block}\n\n"
-        f"剧本上下文：\n{excerpt_block}\n\n"
-        "请补全以下空白字段（已有内容绝不覆盖）：\n"
+        f"剧本摘录：\n{excerpt_block}\n\n"
+        "优先级：项目设定 > 剧本摘录 > 题材补全。请补全以下空白字段（已有内容绝不覆盖）：\n"
         f"{scope}\n"
         "只输出一个 JSON 对象，结构如下（不输出任何解释文字）：\n"
         '{"description": "", "voice_style": "", "aliases": [], "derivatives": [{"name": "", "description": ""}]}'

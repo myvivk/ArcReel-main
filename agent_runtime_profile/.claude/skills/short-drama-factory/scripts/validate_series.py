@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """short-drama-factory v3.2 全剧台账机检
 
 用法:
@@ -22,9 +21,9 @@
     S7  台账必备四表齐全                                      FAIL(缺表)
 退出码: 0=通过, 1=FAIL, 2=用法错误
 """
+import pathlib
 import re
 import sys
-import pathlib
 
 WALL_RANGES = {60: [(8, 11), (21, 24), (41, 44)], 80: [(10, 15), (28, 32), (55, 58)], 100: [(13, 19), (35, 40), (68, 73)],
                # 长档（约 3 分钟/集）：集数减半，墙集区间同步折算
@@ -49,9 +48,7 @@ def _rows(text, section_kw):
 def validate_ledger(text, total_eps=80, scripts=None):
     fails, warns = [], []
     # S7 四表存在
-    for kw in TABLE_KEYS.values():
-        if not re.search(r"#+.*?" + kw, text):
-            fails.append(f"S7 台账缺「{kw}」表")
+    fails.extend(f"S7 台账缺「{kw}」表" for kw in TABLE_KEYS.values() if not re.search(r"#+.*?" + kw, text))
     # 当前集 = 台账"最后更新集"或剧本最大集数
     mm = re.search(r"当前集[:：]\s*(\d+)", text)
     cur = int(mm.group(1)) if mm else (max(scripts) if scripts else total_eps)
@@ -65,7 +62,8 @@ def validate_ledger(text, total_eps=80, scripts=None):
         try:
             pn = int(plan)
         except ValueError:
-            warns.append(f"S1 伏笔「{r[1][:12]}」拟收集数非数字: {plan}"); continue
+            warns.append(f"S1 伏笔「{r[1][:12]}」拟收集数非数字: {plan}")
+            continue
         # 状态宽松匹配: 埋/养/未收 归为待收; "收"开头视为已收
         is_open = ("埋" in state or "养" in state or "未收" in state) and not state.startswith("收")
         if is_open and cur > pn + 3:
@@ -106,9 +104,11 @@ def validate_ledger(text, total_eps=80, scripts=None):
 
     # S5 断章缺失
     if scripts:
-        for ep in sorted(scripts):
-            if not re.search(r"【本集断章卡点】|\[本集断章", scripts[ep]):
-                fails.append(f"S5 第{ep}集缺【本集断章卡点】")
+        fails.extend(
+            f"S5 第{ep}集缺【本集断章卡点】"
+            for ep in sorted(scripts)
+            if not re.search(r"【本集断章卡点】|\[本集断章", scripts[ep])
+        )
 
     # S6 付费墙标记
     ranges = WALL_RANGES.get(total_eps, WALL_RANGES[80])
@@ -170,39 +170,47 @@ EP_BAD = """第【4】集
 def self_test():
     ok = 1
     scripts = {3: EP_GOOD, 4: EP_BAD}
-    f, w, cur = validate_ledger(LEDGER_GOOD, 80, scripts)
+    f, w, _cur = validate_ledger(LEDGER_GOOD, 80, scripts)
     if not any("S5" in x and "第4集" in x for x in f):
-        print("FAIL self-test: 第4集缺断章应报 S5:", f); ok = 0
+        print("FAIL self-test: 第4集缺断章应报 S5:", f)
+        ok = 0
     if any("S1" in x for x in w):
-        print("FAIL self-test: 未超期不应报 S1:", w); ok = 0
+        print("FAIL self-test: 未超期不应报 S1:", w)
+        ok = 0
     # 死人开口: 给第30集加陈峰对白
     scripts2 = {3: EP_GOOD, 4: EP_BAD, 30: "第【30】集\n[场景]：内景·大宅\n△ 对峙。\n陈峰（阴笑）：我回来了。\n【本集断章卡点】：灯灭。（黑屏）\n"}
     f2, _, _ = validate_ledger(LEDGER_GOOD, 80, scripts2)
     if not any("S3" in x for x in f2):
-        print("FAIL self-test: 死人开口应报 S3:", f2); ok = 0
+        print("FAIL self-test: 死人开口应报 S3:", f2)
+        ok = 0
     if any("S5" in x and "第30集" in x for x in f2):
-        print("FAIL self-test: 第30集有断章不该报 S5"); ok = 0
+        print("FAIL self-test: 第30集有断章不该报 S5")
+        ok = 0
     f3, _, _ = validate_ledger("空台账", 80)
     if len([x for x in f3 if x.startswith("S7")]) < 4:
-        print("FAIL self-test: 空台账应报 4 条 S7:", f3); ok = 0
+        print("FAIL self-test: 空台账应报 4 条 S7:", f3)
+        ok = 0
 
     # 回归: S1 状态宽松(已埋/未收 也算待收) + S4 噪音名过滤
     led2 = LEDGER_GOOD.replace("| FB-02 | 神秘来电 | 12 | 31 | 养 | 反派内讧线 |",
                                "| FB-02 | 神秘来电 | 12 | 8 | 已埋 | 反派内讧线 |")
-    f4, w4, _ = validate_ledger(led2, 80, scripts)
-    if not any("S1" in x and "FB" not in x or "神秘来电" in x for x in w4):
-        print("FAIL self-test: 状态'已埋'超期应报 S1:", w4); ok = 0
+    _f4, w4, _ = validate_ledger(led2, 80, scripts)
+    if not any(("S1" in x and "FB" not in x) or "神秘来电" in x for x in w4):
+        print("FAIL self-test: 状态'已埋'超期应报 S1:", w4)
+        ok = 0
     ep_noise = {5: "第【5】集\n[场景]：内景\n△ 拍桌。\n声音：轰鸣。\n林辰：谁？\n陈峰：我。\n【本集断章卡点】：黑屏（黑屏）\n"}
     _, w5, _ = validate_ledger(LEDGER_GOOD, 80, ep_noise)
     if any("「声音」" in x for x in w5):
-        print("FAIL self-test: '声音:' 旁白不应报 S4:", w5); ok = 0
+        print("FAIL self-test: '声音:' 旁白不应报 S4:", w5)
+        ok = 0
 
     # 回归: S4 同集同角色多行台词只报一次(去重)
     ep_dup = {9: "第【9】集\n[场景]：内景\n△ 对峙。\n陌生人：你是谁？\n陌生人：说话！\n陌生人：再不说我动手了。\n林辰：别急。\n【本集断章卡点】：黑屏（黑屏）\n"}
     _, w6, _ = validate_ledger(LEDGER_GOOD, 80, ep_dup)
     dup_cnt = sum(1 for x in w6 if "「陌生人」" in x)
     if dup_cnt != 1:
-        print(f"FAIL self-test: S4 同名角色应只报 1 次，实得 {dup_cnt}", w6); ok = 0
+        print(f"FAIL self-test: S4 同名角色应只报 1 次，实得 {dup_cnt}", w6)
+        ok = 0
 
     # 回归: 长档付费墙区间（40 集长档：一级 5~8 / 二级 14~16 / 三级 27~29）
     led_long = LEDGER_GOOD.replace(
@@ -210,10 +218,12 @@ def self_test():
         "付费墙落位: 一级墙 第6集(中点转换) / 二级墙 第15集 / 三级墙 第28集")
     _, w7, _ = validate_ledger(led_long, 40)
     if any("S6" in x for x in w7):
-        print("FAIL self-test: 长档 40 集墙落位不应报 S6:", w7); ok = 0
+        print("FAIL self-test: 长档 40 集墙落位不应报 S6:", w7)
+        ok = 0
     _, w8, _ = validate_ledger(LEDGER_GOOD, 40)
     if not any("S6" in x for x in w8):
-        print("FAIL self-test: 标准档墙集数按长档 40 集核对应报 S6:", w8); ok = 0
+        print("FAIL self-test: 标准档墙集数按长档 40 集核对应报 S6:", w8)
+        ok = 0
 
     print("[+] self-test PASSED" if ok else "[-] self-test FAILED")
     return 0 if ok else 1
@@ -222,29 +232,35 @@ def self_test():
 def main():
     args = sys.argv[1:]
     if not args:
-        print(__doc__); return 2
+        print(__doc__)
+        return 2
     if args[0] == "--self-test":
         return self_test()
     try:
         led = pathlib.Path(args[0]).read_text(encoding="utf-8")
     except FileNotFoundError:
-        print(f"[-] 找不到台账文件: {args[0]}"); return 2
+        print(f"[-] 找不到台账文件: {args[0]}")
+        return 2
     except UnicodeDecodeError:
-        print(f"[-] 台账不是 UTF-8 文本: {args[0]}"); return 2
+        print(f"[-] 台账不是 UTF-8 文本: {args[0]}")
+        return 2
     total = 80
     if "--episodes" in args:
         try:
             total = int(args[args.index("--episodes") + 1])
         except (IndexError, ValueError):
-            print("[-] --episodes 需要一个整数"); return 2
+            print("[-] --episodes 需要一个整数")
+            return 2
     scripts = None
     if "--script-dir" in args:
         try:
             d = pathlib.Path(args[args.index("--script-dir") + 1])
         except IndexError:
-            print("[-] --script-dir 需要一个目录路径"); return 2
+            print("[-] --script-dir 需要一个目录路径")
+            return 2
         if not d.is_dir():
-            print(f"[-] 剧本目录不存在: {d}"); return 2
+            print(f"[-] 剧本目录不存在: {d}")
+            return 2
         scripts = {}
         for p in sorted(d.glob("*.md")):
             m = re.search(r"(\d+)", p.stem)
@@ -260,7 +276,8 @@ def main():
     for x in warns:
         print("[!] WARN:", x)
     if fails:
-        print("结果: FAILED"); return 1
+        print("结果: FAILED")
+        return 1
     print("结果: PASSED" + ("（含 WARN）" if warns else ""))
     return 0
 

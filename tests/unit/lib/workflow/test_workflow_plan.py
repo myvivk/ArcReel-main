@@ -102,12 +102,15 @@ def test_rules_exhaust_the_six_content_and_generation_mode_combinations() -> Non
         step_ids = [step.id for step in rule.steps]
         assert "narration_delivery" not in step_ids
         assert "export" not in step_ids
-        # 「参考素材」行紧跟在「分镜图 / 宫格」之后；它随分镜图模式置 applicable，
-        # 参考生视频里仍在行列表里、只是不适用（ADR 0099）。
-        assert step_ids[-4:] == ["storyboard", "shot_grid", "video", "edit"]
+        # 「参考素材」与「视频提示词」紧跟在「分镜图 / 宫格」之后；它们随分镜图模式置
+        # applicable，参考生视频里仍在行列表里、只是不适用（D-19）。
+        assert step_ids[-5:] == ["storyboard", "shot_grid", "video_prompt", "video", "edit"]
         storyboard = next(step for step in rule.steps if step.id == "storyboard")
         assert storyboard.applicable is (generation_mode == "storyboard")
         assert next(step for step in rule.steps if step.id == "shot_grid").applicable is (
+            generation_mode == "storyboard"
+        )
+        assert next(step for step in rule.steps if step.id == "video_prompt").applicable is (
             generation_mode == "storyboard"
         )
         assert next(step for step in rule.steps if step.id == "edit").applicable is True

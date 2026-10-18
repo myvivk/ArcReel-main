@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
@@ -52,6 +53,19 @@ from server.services.admission.video_batch_admission import (
     screen_script_entries,
     speech_admission_problems,
 )
+
+
+def _task_payload_fields(task: Mapping[str, Any]) -> list[str] | None:
+    """文本任务 payload 里的 ``fields``（本次编写哪几个提示词字段）；其余任务为 ``None``。
+
+    视频提示词与分镜提示词共用一个任务类型，进度归行只能靠这一位区分（D-19）。
+    """
+
+    payload = task.get("payload")
+    raw = payload.get("fields") if isinstance(payload, Mapping) else None
+    if not isinstance(raw, list):
+        return None
+    return [str(field) for field in raw]
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +304,7 @@ class WorkflowPlanner:
                     batch_id=str(task["batch_id"]) if task.get("batch_id") is not None else None,
                     task_type=str(task.get("task_type") or ""),
                     status=str(task.get("status") or ""),
+                    fields=_task_payload_fields(task),
                     provider_checkpoint=(
                         WorkflowProviderCheckpoint(submitted=checkpoint.submitted) if checkpoint is not None else None
                     ),

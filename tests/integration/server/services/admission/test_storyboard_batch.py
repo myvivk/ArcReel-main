@@ -15,7 +15,7 @@ from lib.generation.batch_admission import BatchAdmissionDecision
 from lib.generation.generation_queue import GenerationQueue
 from lib.generation.video_request_facts import VideoRequestCostFacts
 from lib.project.project_manager import ProjectManager
-from lib.script.grid.keyframe_parser import format_grid_prompt, parse_scene_shots
+from lib.script.grid.keyframe_parser import parse_scene_shots
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from server.services.admission.cost_estimation import quote_video_request_from_price
@@ -474,7 +474,6 @@ async def test_shot_grid_batch_writes_records_from_scene_and_submits_one_batch(
         assert grid.image_basis is None
         # 逐格文本从 scene 现解析，留证与拼装出口读到的序列同一个。
         frames = parse_scene_shots(scene["image_prompt"]["scene"]).shots
-        assert grid.prompt == format_grid_prompt(frames)
         assert len(grid.cells) == SHOT_GRID_BATCH_ROWS * SHOT_GRID_BATCH_COLS
         assert [cell.prompt for cell in grid.cells[: len(frames)]] == [frame.text for frame in frames]
         assert [cell.continuity_notes for cell in grid.cells[: len(frames)]] == [frame.shot_size for frame in frames]

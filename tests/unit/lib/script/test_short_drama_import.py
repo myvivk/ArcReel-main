@@ -6,6 +6,8 @@ from lib.script.short_drama_import import (
     STORY_SCENE_WINDOW_SECONDS,
     convert_to_drama_script,
     parse_short_drama_episode,
+    referenced_asset_descriptions,
+    referenced_asset_names,
 )
 from lib.script.storyboard_sequence import group_scenes_by_segment_break
 
@@ -109,3 +111,63 @@ def test_legacy_tier_path_is_untouched() -> None:
         supported_durations=[8],
     )
     assert [scene["duration_seconds"] for scene in script["scenes"]] == [8] * len(script["scenes"])
+
+
+PROP_MARKDOWN = """第【1】集：道具
+【本集时长】：30秒
+[场景]：仓库｜水泥地，铁门单侧顶光
+[人物]：林辰（隐忍龙王｜三十岁上下，寸头）、陈峰（嚣张富二代）
+[道具]：铁门｜锈迹斑斑，门轴下垂
+[道具]：断椅｜木刺外翻，缺一条腿
+
+△ 林辰推开铁门。
+林辰：门后有东西。
+
+[场景]：走廊
+[人物]：林辰（隐忍龙王｜三十岁上下，寸头）
+[道具]：断椅｜木刺外翻，缺一条腿
+
+△ 林辰踢开断椅。
+林辰：走。
+"""
+
+
+def test_prop_line_keeps_appearance_with_punctuation() -> None:
+    parsed = parse_short_drama_episode(PROP_MARKDOWN)
+
+    assert parsed.blocks[1].prop_appearances == {"铁门": "锈迹斑斑，门轴下垂", "断椅": "木刺外翻，缺一条腿"}
+
+
+def test_scene_appearance_is_split_from_location() -> None:
+    parsed = parse_short_drama_episode(PROP_MARKDOWN)
+
+    assert parsed.blocks[1].location == "仓库"
+    assert parsed.blocks[1].scene_appearance == "水泥地，铁门单侧顶光"
+
+
+def test_prop_only_attaches_to_scenes_that_mention_it() -> None:
+    script = convert_to_drama_script(
+        parse_short_drama_episode(PROP_MARKDOWN), 1, scene_window=STORY_SCENE_WINDOW_SECONDS
+    )
+    props_by_scene = [scene["props"] for scene in script["scenes"]]
+
+    assert any("铁门" in props for props in props_by_scene)
+    assert any("断椅" in props for props in props_by_scene)
+    assert not any("铁门" in props and "断椅" in props for props in props_by_scene)
+
+
+def test_referenced_asset_descriptions_cover_character_scene_and_prop() -> None:
+    descriptions = referenced_asset_descriptions(parse_short_drama_episode(PROP_MARKDOWN))
+
+    assert descriptions["character"] == {"林辰": "三十岁上下，寸头"}
+    assert descriptions["scene"] == {"仓库": "水泥地，铁门单侧顶光"}
+    assert descriptions["prop"] == {"铁门": "锈迹斑斑，门轴下垂", "断椅": "木刺外翻，缺一条腿"}
+
+
+def test_referenced_asset_names_include_props() -> None:
+    script = convert_to_drama_script(
+        parse_short_drama_episode(PROP_MARKDOWN), 1, scene_window=STORY_SCENE_WINDOW_SECONDS
+    )
+    names = referenced_asset_names(script)
+
+    assert names["prop"] == ["铁门", "断椅"]

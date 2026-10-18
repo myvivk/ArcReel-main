@@ -119,6 +119,9 @@ class WorkflowTaskObservation(BaseModel):
     batch_id: str | None = None
     task_type: str
     status: str
+    #: 文本任务本次编写的字段（``["image_prompt"]`` / ``["video_prompt"]``）；其余任务为 ``None``。
+    #: 同一任务类型承载两种编写，归行只能靠它区分（D-19）。
+    fields: list[str] | None = None
     provider_checkpoint: WorkflowProviderCheckpoint | None = None
 
 
@@ -170,6 +173,7 @@ _ARTIFACT_BY_STEP: dict[str, str] = {
     "final_script": "script",
     "storyboard": "storyboards",
     "shot_grid": "shot_grids",
+    "video_prompt": "video_prompts",
     "video": "videos",
     "edit": "edit_timelines",
 }
@@ -209,6 +213,9 @@ def _task_step(observation: WorkflowTaskObservation) -> str | None:
     if observation.task_type == TEXT_DRAFT_REPAIR_TASK_TYPE:
         prompt_authoring = observation.unit_id.endswith(f"-{_PROMPT_AUTHORING_DRAFT_DOC_TYPE}")
         return "final_script" if prompt_authoring else "script_plan_content"
+    if observation.task_type == "text_episode_script" and observation.fields == ["video_prompt"]:
+        # 视频提示词与分镜提示词同任务类型：按 payload 的 fields 归行（D-19）。
+        return "video_prompt"
     return _TASK_STEP.get(observation.task_type)
 
 
@@ -231,6 +238,7 @@ _ACTION_STEP: dict[WorkflowActionType, str] = {
     WorkflowActionType.REPAIR_VIDEO_UNITS: "script_structure",
     WorkflowActionType.GENERATE_STORYBOARDS: "storyboard",
     WorkflowActionType.GENERATE_SHOT_GRIDS: "shot_grid",
+    WorkflowActionType.AUTHOR_VIDEO_PROMPTS: "video_prompt",
     WorkflowActionType.GENERATE_GRID: "storyboard",
     WorkflowActionType.GENERATE_VIDEOS: "video",
     WorkflowActionType.CREATE_EDIT_TIMELINE: "edit",
@@ -295,6 +303,10 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
         return has_items and not artifacts.get("storyboards", {}).get("missing_ids")
     if step_id == "shot_grid":
         return has_items and not artifacts.get("shot_grids", {}).get("missing_ids")
+    if step_id == "video_prompt":
+        # 过期不算完成：宫格重出之后提示词要按新 K 帧重写（D-18）。
+        prompts = artifacts.get("video_prompts", {})
+        return has_items and not prompts.get("missing_ids") and not prompts.get("stale_ids")
     if step_id == "video":
         return has_items and not artifacts.get("videos", {}).get("missing_ids")
     if step_id == "edit":

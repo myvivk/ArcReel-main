@@ -53,6 +53,8 @@ class _Block:
     scene_appearance: str = ""
     characters: list[str] = field(default_factory=list)
     character_appearances: dict[str, str] = field(default_factory=dict)
+    props: list[str] = field(default_factory=list)
+    prop_appearances: dict[str, str] = field(default_factory=dict)
     beats: list[_Beat] = field(default_factory=list)
 
 
@@ -83,6 +85,7 @@ _HEADER_PATTERNS: dict[str, re.Pattern[str]] = {
 _EPISODE_RE = re.compile(r"^(?:#\s*)?第\s*[【\[]?\s*(\d+)\s*[】\]]?\s*集(?:\s*[：:]?\s*(.*))?$")
 _SCENE_RE = re.compile(r"^\[场景\][：:]\s*(.+)$")
 _PERSON_RE = re.compile(r"^\[人物\][：:]\s*(.+)$")
+_PROP_RE = re.compile(r"^\[道具\][：:]\s*(.+)$")
 _ACTION_PREFIX = "△"
 _DIALOGUE_RE = re.compile(r"^(?P<speaker>.+?)(?:（(?P<stage>[^）]+)）)?[：:]\s*(?P<text>.+)$")
 _NARRATION_HINTS = ("旁白", "画外音", "解说", "narrator", "vo")
@@ -110,6 +113,14 @@ def _parse_character_entry(token: str) -> tuple[str, str]:
                 appearance = inner.split(sep, 1)[1].strip()
                 break
     return (name, appearance)
+
+
+def _parse_prop_entry(line: str) -> tuple[str, str]:
+    """解析一行 ``名称｜外观`` 道具声明；有意不按描述中的顿号拆分。"""
+    name, separator, appearance = line.partition("｜")
+    if not separator:
+        name, separator, appearance = line.partition("|")
+    return name.strip(), appearance.strip() if separator else ""
 
 
 def _split_character_entries(line: str) -> list[tuple[str, str]]:
@@ -194,6 +205,15 @@ def parse_short_drama_episode(markdown: str) -> ParsedEpisode:
                 current.characters.append(name)
                 if appearance:
                     current.character_appearances.setdefault(name, appearance)
+            continue
+
+        prop_match = _PROP_RE.match(line)
+        if prop_match:
+            name, appearance = _parse_prop_entry(prop_match.group(1))
+            if name:
+                current.props.append(name)
+                if appearance:
+                    current.prop_appearances.setdefault(name, appearance)
             continue
 
         if line.startswith(_ACTION_PREFIX):
@@ -335,6 +355,7 @@ def _build_scene(
     sub_beats: list[_Beat],
     duration: int,
     characters: list[str] | None = None,
+    props: list[str] | None = None,
 ) -> dict[str, Any]:
     """一幕的剧本载荷。``characters`` 缺省取所属块的人物；跨块合并的幕由调用方给并集。
 
@@ -344,17 +365,19 @@ def _build_scene(
     需要硬切的场景由创作者在界面上显式标记。
     """
 
+    source_text = "\n".join(beat.raw.strip() for beat in sub_beats)
+    prop_names = props if props is not None else block.props
     return {
         "scene_id": f"E{episode}S{scene_index + 1}",
         "duration_seconds": duration,
         "segment_break": False,
         "characters_in_scene": sorted(set(characters if characters is not None else block.characters)),
         "scenes": [block.location] if block.location else [],
-        "props": [],
+        "props": sorted({name for name in prop_names if name and name in source_text}),
         "image_prompt": None,
         "video_prompt": None,
         "utterances": _build_utterances(sub_beats),
-        "source_text": "\n".join(beat.raw.strip() for beat in sub_beats),
+        "source_text": source_text,
         "scene_description": _build_scene_description(sub_beats),
         "generated_assets": {},
         "pending_authoring": True,
@@ -403,6 +426,7 @@ def _split_by_story_window(
         blocks = [block for block, _ in bucket]
         # 跨块合并的幕：场景名取首块（一幕一个主场景），在场角色取各块并集，画面提示词才不会漏人。
         characters = sorted({name for block in blocks for name in block.characters})
+        props = sorted({name for block in blocks for name in block.props})
         scenes.append(
             _build_scene(
                 episode,
@@ -411,6 +435,7 @@ def _split_by_story_window(
                 [beat for _, beat in bucket],
                 durations[index],
                 characters,
+                props,
             )
         )
     return scenes
@@ -539,13 +564,17 @@ def referenced_asset_descriptions(parsed: ParsedEpisode) -> dict[str, dict[str, 
     """
     characters: dict[str, str] = {}
     scenes: dict[str, str] = {}
+    props: dict[str, str] = {}
     for block in parsed.blocks:
         for name, appearance in block.character_appearances.items():
             if appearance and name not in characters:
                 characters[name] = appearance
         if block.location and block.scene_appearance:
             scenes[block.location] = block.scene_appearance
-    return {"character": characters, "scene": scenes, "prop": {}}
+        for name, appearance in block.prop_appearances.items():
+            if appearance and name not in props:
+                props[name] = appearance
+    return {"character": characters, "scene": scenes, "prop": props}
 
 
 def convert_to_drama_script(

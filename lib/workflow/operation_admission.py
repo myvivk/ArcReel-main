@@ -51,6 +51,7 @@ class AdmissionReason(StrEnum):
     AD_INPUTS_MISSING = "ad_brief_and_products_missing"
     NO_AVAILABLE_VIDEO = "no_available_video"
     NO_MISSING_SHOT_GRID = "no_missing_shot_grid"
+    NO_MISSING_VIDEO_PROMPT = "no_missing_video_prompt"
 
 
 class OperationAdmission(BaseModel):
@@ -219,6 +220,27 @@ def admit_shot_grids(
     return ADMITTED
 
 
+def admit_author_video_prompts(
+    content_mode: object,
+    *,
+    generation_mode: object,
+    formal_script: bool,
+    target_ids: Sequence[str],
+) -> OperationAdmission:
+    """视频提示词编写：分镜图项目里，宫格已确认且视频提示词还空着的分镜至少一个。
+
+    没有已确认的参考素材就无从按 K 帧写动作；一个都不缺时这条操作无事可做。
+    """
+
+    if content_mode == "ad" or generation_mode != "storyboard":
+        return NOT_APPLICABLE
+    if not formal_script:
+        return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
+    if not target_ids:
+        return _refused(AdmissionReason.NO_MISSING_VIDEO_PROMPT)
+    return ADMITTED
+
+
 __all__ = [
     "ADMITTED",
     "NOT_APPLICABLE",
@@ -228,6 +250,7 @@ __all__ = [
     "ad_inputs_present",
     "admit_ad_script",
     "admit_author_prompts",
+    "admit_author_video_prompts",
     "admit_edit_timeline",
     "admit_plan_episodes",
     "admit_script_plan",

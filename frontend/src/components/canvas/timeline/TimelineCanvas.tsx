@@ -11,6 +11,8 @@ import { AdScriptButton, AdScriptProgress } from "@/components/canvas/shared/AdS
 import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { ShortDramaVisualButton } from "@/components/canvas/shared/ShortDramaVisualDialog";
+import { ShortDramaStoryboardButton } from "@/components/canvas/shared/ShortDramaStoryboardButton";
+import { FactoryStoryboardStart } from "@/components/canvas/shared/FactoryStoryboardStart";
 import { NoScriptBlankState } from "@/components/canvas/shared/StartBlankScriptButton";
 import { BatchFillButton, useBatchGap } from "@/components/canvas/episode-page/BatchFillButton";
 import { EpisodeHeaderActions } from "@/components/canvas/episode-page/EpisodeHeaderActions";
@@ -90,6 +92,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     view,
     onViewChange,
     hasDraft,
+    hasShortDramaSource,
     episodeScript,
     scriptFile,
     projectData,
@@ -177,6 +180,16 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   }
 
   if (!projectData || (!episodeScript && !hasDraft)) {
+    // 工厂集默认落在剧本页；切到分镜页时这里是「还没分镜」，不是「没选剧集」。
+    if (projectData && editorContentMode === "drama" && hasShortDramaSource && !demoReadOnly) {
+      return (
+        <FactoryStoryboardStart
+          projectName={projectName}
+          episode={episode}
+          className="min-h-0"
+        />
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         {t("select_episode_hint")}
@@ -224,6 +237,13 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
               <ShortDramaImportButton projectName={projectName} episode={episode} />
               <ShortDramaVisualButton projectName={projectName} episode={episode} />
             </>
+          )}
+          {editorContentMode === "drama" && !demoReadOnly && importedShortDrama && (
+            <ShortDramaStoryboardButton
+              projectName={projectName}
+              episode={episode}
+              storyboardCount={segments.length}
+            />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
           <BatchFillButton

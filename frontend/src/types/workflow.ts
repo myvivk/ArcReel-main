@@ -46,6 +46,7 @@ export const WORKFLOW_ACTION_TYPES = [
   "generate_asset_sheets",
   "generate_storyboards",
   "generate_shot_grids",
+  "author_video_prompts",
   "generate_grid",
   "repair_video_units",
   "generate_videos",
@@ -127,6 +128,8 @@ export interface WorkflowArtifactCollection {
   current_ids?: string[];
   stale_ids?: string[];
   missing_ids?: string[];
+  /** 视频提示词专用：宫格还没确认、因此不进本批的分镜。 */
+  awaiting_grid_ids?: string[];
   path?: string;
   [key: string]: unknown;
 }

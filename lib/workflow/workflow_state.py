@@ -59,6 +59,7 @@ from lib.script.draft_quarantine import (
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
+from lib.script.grid.video_prompt_targets import plan_video_prompt_targets
 from lib.script.reference_video.text_parser import derive_references_from_text
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
@@ -70,6 +71,7 @@ from lib.workflow.operation_admission import (
     ad_inputs_present,
     admit_ad_script,
     admit_author_prompts,
+    admit_author_video_prompts,
     admit_edit_timeline,
     admit_plan_episodes,
     admit_script_plan,
@@ -144,6 +146,7 @@ class WorkflowActionType(StrEnum):
     GENERATE_ASSET_SHEETS = "generate_asset_sheets"
     GENERATE_STORYBOARDS = "generate_storyboards"
     GENERATE_SHOT_GRIDS = "generate_shot_grids"
+    AUTHOR_VIDEO_PROMPTS = "author_video_prompts"
     GENERATE_GRID = "generate_grid"
     REPAIR_VIDEO_UNITS = "repair_video_units"
     GENERATE_VIDEOS = "generate_videos"
@@ -870,6 +873,49 @@ class WorkflowStateService:
             )
         return collection
 
+    @classmethod
+    def _video_prompt_collection(
+        cls,
+        project_path: Path,
+        items: list[dict[str, Any]],
+        kind: str | None,
+        *,
+        episode: int,
+    ) -> dict[str, Any]:
+        """「视频提示词」产物集合：宫格已确认且正文空着的进 missing，按旧宫格写的进 stale。
+
+        它不是文件产物：正文读正式脚本，依据读 ``generated_assets.video_prompt_basis``（D-18），
+        所以不走 ``_classify_artifact``——没有路径可登记，时效按逐格指纹比对。
+        """
+
+        collection: dict[str, Any] = _empty_collection()
+        if kind is None:
+            return collection
+        id_field = SKELETONS[kind].id_field
+        grids: dict[str, ShotGrid] = {}
+        for grid in ShotGridManager(project_path).list_all():
+            if grid.episode != episode:
+                continue
+            current = grids.get(grid.shot_id)
+            # 同一分镜只认一条：已确认的优先，同状态取更新更晚的一条（与参考素材行同口径）。
+            if (
+                current is None
+                or (current.status != "confirmed" and grid.status == "confirmed")
+                or (current.status == grid.status and grid.updated_at > current.updated_at)
+            ):
+                grids[grid.shot_id] = grid
+        plan = plan_video_prompt_targets(items, id_field=id_field, grids=grids)
+        missing = set(plan.targets)
+        stale = set(plan.stale)
+        collection["missing_ids"] = list(plan.targets)
+        collection["stale_ids"] = list(plan.stale)
+        # 宫格还没确认的分镜：不进本批，行上只按它报数（D-20）。
+        collection["awaiting_grid_ids"] = list(plan.awaiting_grid)
+        collection["current_ids"] = [
+            unit_id for unit_id in plan.unit_ids if unit_id not in missing and unit_id not in stale
+        ]
+        return collection
+
     def get_status(self, project_name: str, episode: int | None = None) -> WorkflowStatus:
         project_path = self.pm.get_project_path(project_name)
         try:
@@ -1380,6 +1426,7 @@ class WorkflowStateService:
             "script": {"state": "missing"},
             "storyboards": _empty_collection(),
             "shot_grids": _empty_collection(),
+            "video_prompts": _empty_collection(),
             "videos": _empty_collection(),
             "audio": _empty_collection(),
         }
@@ -1749,6 +1796,11 @@ class WorkflowStateService:
                 if generation_mode == "storyboard"
                 else _not_applicable_collection()
             )
+            artifacts["video_prompts"] = (
+                self._video_prompt_collection(project_path, items, kind, episode=number)
+                if generation_mode == "storyboard"
+                else _not_applicable_collection()
+            )
             artifacts["videos"] = self._media_collection(
                 project_path,
                 items,
@@ -1783,6 +1835,9 @@ class WorkflowStateService:
             artifacts["shot_grids"] = (
                 _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
             )
+            artifacts["video_prompts"] = (
+                _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
+            )
         content.pending_authoring_ids = pending_ids
         content.needs_replan_ids = replan_ids
         # 剪辑时间线只陈述这一类内容：视频是否齐全不影响列出已有的几条。
@@ -1815,6 +1870,12 @@ class WorkflowStateService:
             generation_mode=generation_mode,
             formal_script=formal_present,
             missing_ids=artifacts["shot_grids"].get("missing_ids", []),
+        )
+        operations[WorkflowActionType.AUTHOR_VIDEO_PROMPTS] = admit_author_video_prompts(
+            mode,
+            generation_mode=generation_mode,
+            formal_script=formal_present,
+            target_ids=artifacts["video_prompts"].get("missing_ids", []),
         )
 
         episode_args = {"episode_id": number}
@@ -1956,6 +2017,16 @@ class WorkflowStateService:
                     ids=artifacts["shot_grids"]["missing_ids"],
                 ),
             )
+        if generation_mode == "storyboard" and artifacts["video_prompts"]["missing_ids"]:
+            return respond(
+                target,
+                _action(
+                    WorkflowActionType.AUTHOR_VIDEO_PROMPTS,
+                    "video prompts are missing for confirmed reference materials",
+                    args=episode_args,
+                    ids=artifacts["video_prompts"]["missing_ids"],
+                ),
+            )
         if artifacts["videos"]["missing_ids"]:
             return respond(
                 target,
@@ -2040,6 +2111,7 @@ class WorkflowStateService:
                 "script": {"state": "missing"},
                 "storyboards": _empty_collection(),
                 "shot_grids": _empty_collection(),
+                "video_prompts": _empty_collection(),
                 "videos": _empty_collection(),
                 "audio": _empty_collection(),
             },

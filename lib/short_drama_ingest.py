@@ -8,10 +8,14 @@ import re
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from lib.infra.json_io import atomic_write_bytes
 from lib.infra.path_safety import safe_join
+from lib.short_drama_quality import check_episode
+
+if TYPE_CHECKING:
+    from lib.project.project_manager import ProjectManager
 
 
 class ShortDramaArtifactError(ValueError):
@@ -120,11 +124,24 @@ def ingest_short_drama_artifacts(
         raise ShortDramaArtifactError("同一导入包内不能重复提交工件")
     expected = expected_revisions or {}
     with manager.locked_source_mutation(project_name) as source_dir:
+        bible_path = source_dir / "short_drama" / "character-bible.md"
+        bible = bible_path.read_text(encoding="utf-8") if bible_path.is_file() else None
         for item in prepared:
             path = source_dir / "short_drama" / item.path
             current = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
             if item.path in expected and current != expected[item.path]:
                 raise ShortDramaArtifactError(f"工件已被其他修改更新: {item.path}")
+            if item.kind == "character-bible":
+                bible = item.content.decode("utf-8")
+        for item in prepared:
+            if item.kind != "episode":
+                continue
+            issues = check_episode(item.content.decode("utf-8"), bible=bible)
+            failures = [issue for issue in issues if issue.level == "fail"]
+            if failures:
+                detail = "；".join(issue.render() for issue in failures)
+                episode = item.episode or "?"
+                raise ShortDramaArtifactError(f"第 {episode} 集机检未过：{detail}")
         for item in prepared:
             path = source_dir / "short_drama" / item.path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +186,10 @@ def register_factory_episode_sources(
         except UnicodeDecodeError:
             continue
         try:
-            set_episode_source_text(manager, project_name, episode, text, source_kind="screenplay")
+            # 登记源文本要走项目锁与账本，只有真正的 ProjectManager 做得到；协议只用来解耦落盘路径。
+            set_episode_source_text(
+                cast("ProjectManager", manager), project_name, episode, text, source_kind="screenplay"
+            )
         except EpisodeSourceError:
             # 集不在账本 / 已是切出集：跳过，工件仍原样保留
             continue

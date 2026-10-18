@@ -144,6 +144,37 @@ def decode_artifact_content(content: str | None, content_base64: str | None) -> 
     return content.encode("utf-8")
 
 
+def register_factory_episode_sources(
+    manager: _ArtifactManager, project_name: str, artifacts: list[tuple[str, bytes]]
+) -> None:
+    """把导入包里的 ``episodes/episode_NN.md`` 登记为该集的 OWN 源文本（drama 工厂必需）：
+
+    让分集页「本集正文」与下游脚本规划建立在工厂 Markdown 上，而不是空起稿。集不在账本时
+    跳过该集（工件仍原样保留）。源文本类型记为剧本（screenplay）。
+
+    与 :func:`ingest_short_drama_artifacts` 的零处理落盘互补：落盘保证工件字节完整，登记保证
+    每集正文对前端与制作链路可见、可用。
+    """
+    from lib.episode.episode_source_commands import EpisodeSourceError, set_episode_source_text
+
+    for path, raw in artifacts:
+        try:
+            kind, episode = classify_short_drama_artifact(path)
+        except ShortDramaArtifactError:
+            continue
+        if kind != "episode" or episode is None:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        try:
+            set_episode_source_text(manager, project_name, episode, text, source_kind="screenplay")
+        except EpisodeSourceError:
+            # 集不在账本 / 已是切出集：跳过，工件仍原样保留
+            continue
+
+
 __all__ = [
     "ShortDramaArtifact",
     "ShortDramaArtifactError",

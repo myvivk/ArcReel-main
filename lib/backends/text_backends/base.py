@@ -218,6 +218,7 @@ class TextTaskType(StrEnum):
     SCRIPT = "script"
     OVERVIEW = "overview"
     STYLE_ANALYSIS = "style"
+    FACTORY = "factory"
 
 
 class TextTaskTier(StrEnum):
@@ -237,6 +238,7 @@ TEXT_TASK_TIERS: dict[TextTaskType, TextTaskTier] = {
     TextTaskType.SCRIPT: TextTaskTier.COMPLEX,
     TextTaskType.OVERVIEW: TextTaskTier.SIMPLE,
     TextTaskType.STYLE_ANALYSIS: TextTaskTier.SIMPLE,
+    TextTaskType.FACTORY: TextTaskTier.COMPLEX,
 }
 
 if _missing := set(TextTaskType) - set(TEXT_TASK_TIERS):

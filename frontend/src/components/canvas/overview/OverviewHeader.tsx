@@ -1,5 +1,7 @@
 import { Settings2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
+import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { Link } from "wouter";
 
 import { projectSettingsPath } from "@/app-routes";
@@ -57,13 +59,16 @@ export function OverviewHeader({
         <p className="num mt-1 text-sm text-muted-foreground">{meta.join(" · ")}</p>
       </div>
       {readOnly ? null : (
-        <Link
-          href={`~${projectSettingsPath(projectName)}`}
-          className={buttonVariants({ variant: "ghost", size: "sm", className: "shrink-0" })}
-        >
-          <Settings2 aria-hidden data-icon="inline-start" />
-          {t("project_settings")}
-        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          {data.content_mode === "drama" ? <ShortDramaGenerateButton projectName={projectName} episode={0} /> : null}
+          <Link
+            href={`~${projectSettingsPath(projectName)}`}
+            className={buttonVariants({ variant: "ghost", size: "sm" })}
+          >
+            <Settings2 aria-hidden data-icon="inline-start" />
+            {t("project_settings")}
+          </Link>
+        </div>
       )}
     </header>
   );

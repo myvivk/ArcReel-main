@@ -4,7 +4,7 @@
  * | 取值 | 视图 | 何时出现 |
  * | --- | --- | --- |
  * | `setting` | 故事设定（广告项目的梗概、类型、主题与世界观） | 只在广告项目出现，排第一 |
- * | `plan` | 脚本规划（内容确认页；剧本未生成时是集原文确认） | 非广告项目，有脚本规划中间稿、集原文待确认，或参考生视频项目 |
+ * | `plan` | 脚本规划（内容确认页；剧本未生成时是集原文确认） | 非广告、非工厂/短剧导入项目，有脚本规划中间稿、集原文待确认，或参考生视频项目 |
  * | `grid` | 多宫格分镜图 | 分镜图生视频且开启宫格；集原文待确认时不可选 |
  * | `board` | 分镜（参考生视频项目称「视频单元」） | 恒有；有脚本规划却还没有正式剧本时不可选 |
  * | `edit` | 剪辑 | 有正式剧本的非演示项目 |
@@ -50,39 +50,43 @@ export interface EpisodeViewTab {
 
 function planAvailable(facts: EpisodeViewFacts): boolean {
   if (facts.isAd) return false;
-  // 短剧工厂导入的集不走脚本规划（Markdown 直转正式脚本）：规划不存在时藏掉页签。
-  // 之后真跑了原生规划，产物态变为 current/stale，页签自动回来（内容确认还要用它）。
+  // 短剧工厂导入的集不走脚本规划（Markdown 直转正式脚本）：规划不存在时页签置灰而非隐藏。
+  // 之后真跑了原生规划，产物态变为 current/stale，页签自动点亮（内容确认还要用它）。
   if (facts.shortDrama && facts.scriptPlanState !== "current" && facts.scriptPlanState !== "stale") return false;
   return facts.sourceReview || facts.hasDraft || (facts.route === "reference_video" && facts.hasScript);
 }
 
 /** 集页页头的视图 tab，按显示顺序排列：内容在前、产物在后（原文/剧本 → 分镜 → 剪辑）。 */
 export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
-  const plan = planAvailable(facts);
   const tabs: EpisodeViewTab[] = [];
-  if (facts.isAd) tabs.push({ view: "setting", disabled: false });
-  if (plan) tabs.push({ view: "plan", disabled: false });
-  // 集原文/剧本常驻可查可改，排在分镜之前——先读内容再看产物；脚本规划视图正在做集原文确认时
-  // 不重复给（那已经是同一个编辑器）。
-  if (
-    !facts.isAd &&
-    !facts.demo &&
-    !facts.sourceReview &&
-    (facts.hasShortDramaSource || facts.hasScript || facts.hasDraft)
-  ) {
-    tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  if (facts.isAd) {
+    tabs.push({ view: "setting", disabled: false });
+    tabs.push({ view: "board", disabled: false });
+    if (facts.hasScript && !facts.demo) tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
+    return tabs;
   }
-  if (facts.grid) tabs.push({ view: "grid", disabled: facts.sourceReview });
-  // 参考生视频的单元列表在中间稿阶段就可查看；分镜图生视频要等正式剧本。没有脚本规划时分镜是唯一视图。
-  const boardEnabled =
-    facts.hasScript || !plan || (facts.route === "reference_video" && !facts.sourceReview);
-  tabs.push({ view: "board", disabled: !boardEnabled });
-  if (facts.hasScript && !facts.demo) tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
+  if (facts.demo) {
+    tabs.push({ view: "board", disabled: false });
+    return tabs;
+  }
+
+  // 工厂/短剧导入集不走原生脚本规划（Markdown 直转正式脚本），不显示「脚本规划」页签。
+  const factory = facts.shortDrama || facts.hasShortDramaSource;
+
+  // 普通集：脚本规划/剧本/分镜/剪辑常驻显示且可点；工厂集只给剧本/分镜/剪辑（不藏、不置灰）。
+  if (!factory) tabs.push({ view: "plan", disabled: false });
+  tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  if (facts.grid) tabs.push({ view: "grid", disabled: false });
+  tabs.push({ view: "board", disabled: false });
+  tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
   return tabs;
 }
 
 export function defaultEpisodeView(facts: EpisodeViewFacts): EpisodeView {
   if (facts.hasScript) return "board";
+  // 短剧工厂登记的集：工厂 Markdown 就是本集剧本，落地先看剧本（分镜随后在分镜视图生成）。
+  // 未登记的集仍在集原文确认态（sourceReview），不落入这里。
+  if (facts.hasShortDramaSource && !facts.sourceReview) return EPISODE_VIEW_SOURCE;
   return planAvailable(facts) ? "plan" : "board";
 }
 

@@ -38,4 +38,15 @@ describe("showsEpisodeSource", () => {
     expect(showsEpisodeSource(project({}, "ad"), 3, null, false)).toBe(false);
     expect(showsEpisodeSource(project({}), 3, null, true)).toBe(false);
   });
+
+  it("短剧工厂登记的集（自带剧本型源文）不进入集原文确认态", () => {
+    expect(
+      showsEpisodeSource(project({ source_origin: "own", source_kind: "screenplay" }, "drama"), 3, null, false),
+    ).toBe(false);
+    // 手贴的小说型自带原文仍是确认态；工厂登记但已有正式剧本也不受影响。
+    expect(showsEpisodeSource(project({ source_origin: "own", source_kind: "novel" }, "drama"), 3, null, false)).toBe(
+      true,
+    );
+    expect(showsEpisodeSource(project({ source_origin: "own" }, "drama"), 3, null, false)).toBe(true);
+  });
 });

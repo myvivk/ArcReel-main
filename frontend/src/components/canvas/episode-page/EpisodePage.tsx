@@ -78,6 +78,16 @@ export function showsEpisodeSource(
   demo: boolean,
 ): boolean {
   const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
+  if (
+    meta !== undefined &&
+    projectData?.content_mode === "drama" &&
+    meta.source_origin === "own" &&
+    meta.source_kind === "screenplay"
+  ) {
+    // 短剧工厂登记的集：工厂 Markdown 就是已确认的本集剧本，不走「集原文确认」，
+    // 也不再给「AI 规划 / 从空白开始」起步区（那会把工厂正文引向空起稿死路）。
+    return false;
+  }
   return meta !== undefined && !script && !hasEpisodeDraft(meta) && projectData?.content_mode !== "ad" && !demo;
 }
 

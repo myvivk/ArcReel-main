@@ -26,7 +26,7 @@ description: >-
 
 ### description 编写指南
 
-生成或修改角色 `description` 时，严格遵循共享标准 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md`。该标准要求依据原始设定写成可直接登记的叙事段落；不把图像布局、白底、灯光或反向提示词混入描述。角色衍生只写相对本体的变化。信息不足时不得臆造关键身份或服装设定，先依据源文补充，仍无依据则向用户确认。
+生成或修改角色 `description` 时，严格遵循共享标准 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md`。该标准要求依据原始设定写成可直接登记的叙事段落；不把图像布局、白底、灯光或反向提示词混入描述。角色衍生只写相对本体的变化。信息不足时优先依据项目内设定工件补全（短剧项目为 `source/short_drama/character-bible.md` 人物圣经、系列大纲与单集原文标记行）；工件也没有的按题材合理、自洽地补全，无需向用户逐项确认。
 
 ### 输出布局
 

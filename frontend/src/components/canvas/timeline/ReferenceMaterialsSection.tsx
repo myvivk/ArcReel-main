@@ -196,6 +196,7 @@ export function ReferenceMaterialsSection({
                       setPreviewUrl(API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 1280 }));
                     }
                   }}
+                  title={describeCell(cell)}
                   className="focus-ring relative w-[140px] overflow-hidden rounded-lg border border-border bg-muted/40 p-1.5 text-left shadow-sm"
                 >
                   <div className="overflow-hidden rounded-md bg-background" style={{ aspectRatio: "9 / 16" }}>

@@ -4,7 +4,7 @@
  * | 取值 | 视图 | 何时出现 |
  * | --- | --- | --- |
  * | `setting` | 故事设定（广告项目的梗概、类型、主题与世界观） | 只在广告项目出现，排第一 |
- * | `plan` | 脚本规划（内容确认页；剧本未生成时是集原文确认） | 非广告项目，有脚本规划中间稿、集原文待确认，或参考生视频项目 |
+ * | `plan` | 脚本规划（内容确认页；剧本未生成时是集原文确认） | 非广告、非工厂/短剧导入项目，有脚本规划中间稿、集原文待确认，或参考生视频项目 |
  * | `grid` | 多宫格分镜图 | 分镜图生视频且开启宫格；集原文待确认时不可选 |
  * | `board` | 分镜（参考生视频项目称「视频单元」） | 恒有；有脚本规划却还没有正式剧本时不可选 |
  * | `edit` | 剪辑 | 有正式剧本的非演示项目 |
@@ -70,8 +70,11 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
     return tabs;
   }
 
-  // 所有流程页签常驻显示且默认可用：不隐藏、不置灰（按需求，页签始终完整可见可点）。
-  tabs.push({ view: "plan", disabled: false });
+  // 工厂/短剧导入集不走原生脚本规划（Markdown 直转正式脚本），不显示「脚本规划」页签。
+  const factory = facts.shortDrama || facts.hasShortDramaSource;
+
+  // 普通集：脚本规划/剧本/分镜/剪辑常驻显示且可点；工厂集只给剧本/分镜/剪辑（不藏、不置灰）。
+  if (!factory) tabs.push({ view: "plan", disabled: false });
   tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
   if (facts.grid) tabs.push({ view: "grid", disabled: false });
   tabs.push({ view: "board", disabled: false });

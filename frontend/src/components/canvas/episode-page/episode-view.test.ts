@@ -51,7 +51,7 @@ describe("episodeViewTabs", () => {
     expect(tabs).toContainEqual({ view: "source", disabled: false });
   });
 
-  it("hides the plan tab for registered factory episodes and lands on the script view", () => {
+  it("hides the plan tab for factory episodes and lands on the script view", () => {
     const factory: EpisodeViewFacts = {
       ...SCRIPTED,
       hasScript: false,
@@ -59,9 +59,15 @@ describe("episodeViewTabs", () => {
       sourceReview: false,
       hasShortDramaSource: true,
     };
-    // 工厂 Markdown 就是剧本：不给「脚本规划」（避免诱导空起稿），但所有页签常驻显示。
-    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["plan", "source", "board", "edit"]);
+    // 工厂 Markdown 就是剧本：不显示「脚本规划」页签（避免诱导空起稿），只给剧本/分镜/剪辑。
+    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["source", "board", "edit"]);
     expect(defaultEpisodeView(factory)).toBe("source");
+    // 工厂集用顶层 short_drama 标志时同样不显示规划页签。
+    expect(episodeViewTabs({ ...factory, shortDrama: true }).map((tab) => tab.view)).toEqual([
+      "source",
+      "board",
+      "edit",
+    ]);
     // 未登记的集仍在集原文确认态：缺省行为不变（plan 可用时不落剧本）。
     expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false, hasDraft: false, sourceReview: true })).toBe("plan");
   });

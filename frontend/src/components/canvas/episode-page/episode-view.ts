@@ -83,6 +83,9 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
 
 export function defaultEpisodeView(facts: EpisodeViewFacts): EpisodeView {
   if (facts.hasScript) return "board";
+  // 短剧工厂登记的集：工厂 Markdown 就是本集剧本，落地先看剧本（分镜随后在分镜视图生成）。
+  // 未登记的集仍在集原文确认态（sourceReview），不落入这里。
+  if (facts.hasShortDramaSource && !facts.sourceReview) return EPISODE_VIEW_SOURCE;
   return planAvailable(facts) ? "plan" : "board";
 }
 

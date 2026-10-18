@@ -31,12 +31,13 @@ describe("episodeViewTabs", () => {
     ]);
   });
 
-  it("keeps the board closed while a storyboard episode only has its script plan", () => {
+  it("lists all flow tabs for a storyboard episode that only has its script plan", () => {
     const tabs = episodeViewTabs({ ...SCRIPTED, hasScript: false });
     expect(tabs).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
-      { view: "board", disabled: true },
+      { view: "board", disabled: false },
+      { view: "edit", disabled: false },
     ]);
   });
 
@@ -58,8 +59,8 @@ describe("episodeViewTabs", () => {
       sourceReview: false,
       hasShortDramaSource: true,
     };
-    // 工厂 Markdown 就是剧本：不给「脚本规划」（避免诱导空起稿），缺省落在「剧本」。
-    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["source", "board"]);
+    // 工厂 Markdown 就是剧本：不给「脚本规划」（避免诱导空起稿），但所有页签常驻显示。
+    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["plan", "source", "board", "edit"]);
     expect(defaultEpisodeView(factory)).toBe("source");
     // 未登记的集仍在集原文确认态：缺省行为不变（plan 可用时不落剧本）。
     expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false, hasDraft: false, sourceReview: true })).toBe("plan");
@@ -70,12 +71,14 @@ describe("episodeViewTabs", () => {
     expect(tabs.find((tab) => tab.view === "board")).toEqual({ view: "board", disabled: false });
   });
 
-  it("disables everything but the plan while the episode source is under review", () => {
+  it("lists all flow tabs while the episode source is under review", () => {
     const facts = { ...SCRIPTED, grid: true, hasScript: false, hasDraft: false, sourceReview: true };
     expect(episodeViewTabs(facts)).toEqual([
       { view: "plan", disabled: false },
-      { view: "grid", disabled: true },
-      { view: "board", disabled: true },
+      { view: "source", disabled: false },
+      { view: "grid", disabled: false },
+      { view: "board", disabled: false },
+      { view: "edit", disabled: false },
     ]);
   });
 
@@ -102,7 +105,7 @@ describe("resolveEpisodeView", () => {
     expect(resolveEpisodeView("grid", SCRIPTED)).toBe("board");
     expect(resolveEpisodeView("nonsense", SCRIPTED)).toBe("board");
     expect(resolveEpisodeView(null, SCRIPTED)).toBe("board");
-    expect(resolveEpisodeView("board", { ...SCRIPTED, hasScript: false })).toBe("plan");
+    expect(resolveEpisodeView("board", { ...SCRIPTED, hasScript: false })).toBe("board");
   });
 });
 

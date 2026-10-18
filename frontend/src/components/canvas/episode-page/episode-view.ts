@@ -50,34 +50,32 @@ export interface EpisodeViewTab {
 
 function planAvailable(facts: EpisodeViewFacts): boolean {
   if (facts.isAd) return false;
-  // 短剧工厂导入的集不走脚本规划（Markdown 直转正式脚本）：规划不存在时藏掉页签。
-  // 之后真跑了原生规划，产物态变为 current/stale，页签自动回来（内容确认还要用它）。
+  // 短剧工厂导入的集不走脚本规划（Markdown 直转正式脚本）：规划不存在时页签置灰而非隐藏。
+  // 之后真跑了原生规划，产物态变为 current/stale，页签自动点亮（内容确认还要用它）。
   if (facts.shortDrama && facts.scriptPlanState !== "current" && facts.scriptPlanState !== "stale") return false;
   return facts.sourceReview || facts.hasDraft || (facts.route === "reference_video" && facts.hasScript);
 }
 
 /** 集页页头的视图 tab，按显示顺序排列：内容在前、产物在后（原文/剧本 → 分镜 → 剪辑）。 */
 export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
-  const plan = planAvailable(facts);
   const tabs: EpisodeViewTab[] = [];
-  if (facts.isAd) tabs.push({ view: "setting", disabled: false });
-  if (plan) tabs.push({ view: "plan", disabled: false });
-  // 集原文/剧本常驻可查可改，排在分镜之前——先读内容再看产物；脚本规划视图正在做集原文确认时
-  // 不重复给（那已经是同一个编辑器）。
-  if (
-    !facts.isAd &&
-    !facts.demo &&
-    !facts.sourceReview &&
-    (facts.hasShortDramaSource || facts.hasScript || facts.hasDraft)
-  ) {
-    tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  if (facts.isAd) {
+    tabs.push({ view: "setting", disabled: false });
+    tabs.push({ view: "board", disabled: false });
+    if (facts.hasScript && !facts.demo) tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
+    return tabs;
   }
-  if (facts.grid) tabs.push({ view: "grid", disabled: facts.sourceReview });
-  // 参考生视频的单元列表在中间稿阶段就可查看；分镜图生视频要等正式剧本。没有脚本规划时分镜是唯一视图。
-  const boardEnabled =
-    facts.hasScript || !plan || (facts.route === "reference_video" && !facts.sourceReview);
-  tabs.push({ view: "board", disabled: !boardEnabled });
-  if (facts.hasScript && !facts.demo) tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
+  if (facts.demo) {
+    tabs.push({ view: "board", disabled: false });
+    return tabs;
+  }
+
+  // 所有流程页签常驻显示且默认可用：不隐藏、不置灰（按需求，页签始终完整可见可点）。
+  tabs.push({ view: "plan", disabled: false });
+  tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  if (facts.grid) tabs.push({ view: "grid", disabled: false });
+  tabs.push({ view: "board", disabled: false });
+  tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });
   return tabs;
 }
 

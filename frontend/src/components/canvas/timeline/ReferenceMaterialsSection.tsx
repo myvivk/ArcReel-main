@@ -134,9 +134,10 @@ export function ReferenceMaterialsSection({
     ? API.getFileUrl(projectName, plan.composite_path, fingerprints[plan.composite_path] ?? null, { width: 1280 })
     : null;
   const columns = GRID_COLUMNS[plan?.cols ?? 2] ?? "grid-cols-2";
-  const gridAspectClass = aspectRatio === "9:16"
-    ? plan?.rows === plan?.cols ? "aspect-[9/16]" : plan?.rows === 2 && plan?.cols === 3 ? "aspect-[3/4]" : "aspect-[4/3]"
-    : plan?.rows === plan?.cols ? "aspect-video" : plan?.rows === 2 && plan?.cols === 3 ? "aspect-[3/4]" : "aspect-[4/3]";
+  const cellWidth = 200;
+  const cellHeight = Math.round(cellWidth * (9 / 16));
+  const gridWidth = (plan?.cols ?? 2) * cellWidth;
+  const gridHeight = (plan?.rows ?? 2) * cellHeight;
 
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-2">
@@ -177,7 +178,10 @@ export function ReferenceMaterialsSection({
       <p className="text-xs text-muted-foreground">{t("shot_materials_hint")}</p>
       {plan?.error_message ? <p role="alert" className="text-xs text-destructive">{plan.error_message}</p> : null}
       {plan?.cells.some((cell) => cell.image_path) ? (
-        <div className={`grid ${columns} ${gridAspectClass} gap-0 overflow-hidden rounded-md border border-border bg-muted/20`}>
+        <div
+          className={`grid ${columns} gap-0 overflow-hidden rounded-md border border-border bg-muted/20`}
+          style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}
+        >
           {plan.cells.map((cell) => (
             <button
               key={cell.index}
@@ -189,12 +193,13 @@ export function ReferenceMaterialsSection({
                 }
               }}
               className="focus-ring relative min-h-0 overflow-hidden bg-muted/40"
+              style={{ aspectRatio: `${cellWidth} / ${cellHeight}` }}
             >
               {cell.image_path ? (
                 <img
                   src={API.getFileUrl(projectName, cell.image_path, fingerprints[cell.image_path] ?? null, { width: 640 })}
                   alt={t("shot_keyframe", { index: cell.index })}
-                  className="size-full object-cover"
+                  className="size-full object-contain"
                 />
               ) : null}
               <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">
@@ -208,7 +213,8 @@ export function ReferenceMaterialsSection({
           type="button"
           aria-label={t("shot_materials_preview")}
           onClick={() => setPreviewUrl(compositeUrl)}
-          className={`focus-ring relative block w-full overflow-hidden rounded-md border border-border bg-muted/20 ${gridAspectClass}`}
+          className="focus-ring relative block overflow-hidden rounded-md border border-border bg-muted/20"
+          style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}
         >
           <img src={compositeUrl} alt={t("shot_materials_preview")} className="size-full object-contain" />
         </button>

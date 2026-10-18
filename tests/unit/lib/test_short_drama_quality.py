@@ -44,9 +44,7 @@ def test_density_reports_shortfall_in_beats() -> None:
 
 
 def test_declared_duration_defaults_to_profile_when_missing() -> None:
-    markdown = _episode(10, 5, characters="甲（杀手｜短发，旧夹克，右眉有疤）").replace(
-        "【本集时长】：10 秒\n", ""
-    )
+    markdown = _episode(10, 5, characters="甲（杀手｜短发，旧夹克，右眉有疤）").replace("【本集时长】：10 秒\n", "")
     # 未声明时长时按标准档 105 秒兜底，5 拍远不够。
     assert "E12" in _codes(check_episode(markdown))
 

@@ -12,6 +12,7 @@
 
 ``--root`` 是 projects 容器目录（其下每个子目录是一个项目，含 ``project.json``）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,10 +56,7 @@ def main() -> None:
         if not sd_episodes.exists():
             print(f"[skip] {name}: 无 source/short_drama/episodes")
             continue
-        artifacts = [
-            (f"episodes/{f.name}", f.read_bytes())
-            for f in sorted(sd_episodes.glob("episode_*.md"))
-        ]
+        artifacts = [(f"episodes/{f.name}", f.read_bytes()) for f in sorted(sd_episodes.glob("episode_*.md"))]
         if not artifacts:
             print(f"[skip] {name}: 无 episode_*.md 工件")
             continue

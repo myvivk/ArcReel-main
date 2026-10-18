@@ -177,9 +177,9 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
     script = manager.load_script("demo", "episode_1.json")
     assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
     assert script["short_drama_meta"]["source_revision"] == saved["revision"]
-    assert all(
-        12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]
-    ), [scene["duration_seconds"] for scene in script["scenes"]]
+    assert all(12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]), [
+        scene["duration_seconds"] for scene in script["scenes"]
+    ]
     project = manager.load_project("demo")
     assert "林夏" in project["characters"]
     assert "周明" in project["characters"]
@@ -195,9 +195,8 @@ def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path
         "demo",
         lambda project: project.setdefault("characters", {}).update({"周明": {"description": ""}}),
     )
-    markdown = (
-        MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）")
-        .replace("（前夫｜寸头，深灰西装，领口松开）", "（前夫）")
+    markdown = MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）").replace(
+        "（前夫｜寸头，深灰西装，领口松开）", "（前夫）"
     )
 
     with client:

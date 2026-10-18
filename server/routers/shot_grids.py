@@ -1,12 +1,14 @@
 """Per-shot multi-frame grid planning API.
 
-宫格没有"草稿文本"这一类状态：逐格镜头文本的真相源是 ``image_prompt.scene``（D-1 / D-3），
-PUT 只存规格，POST /generate 现解析 scene 后直接入队。因此也不存在"打开看一眼再取消就把
-已出的图清掉"的路径，更没有 AI 生成提示词的同步端点（D-5）。
+单分镜出图以 ``ShotGrid.prompt`` 为逐格文本真相源（ADR 0099 D-2）：弹窗在「确定」前落盘，
+POST /generate 与任务层都用它；``image_prompt.scene`` 仅作「prompt 为空」时的回退（整集批量
+走这条，不预存 prompt）。AI 生成提示词的同步端点 ``/author-prompt`` 把 scene + 资产 + 画风
+喂给模型，产出纯逐格文本回填弹窗输入框，落盘仍发生在用户点「确定」时。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from datetime import UTC, datetime
@@ -21,10 +23,13 @@ from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor
 from lib.artifacts.formal_write import formal_write_transaction
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.path_safety import safe_join
-from lib.project.project_manager import ProjectManager, get_project_manager
+from lib.project.project_manager import get_project_manager
 from lib.script.grid.keyframe_parser import (
-    SceneShots,
+    ShotFrame,
+    format_grid_prompt,
+    parse_grid_prompt_cells,
     parse_scene_shots,
+    scene_revision_of,
     shot_scene_text,
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
@@ -60,33 +65,164 @@ class ShotGridSpecRequest(BaseModel):
         return self.rows, self.cols
 
 
-def _load_shot(project_name: str, req: ShotGridSpecRequest, t: Translator) -> tuple[ProjectManager, dict]:
-    """按 (集, 分镜) 取剧本条目；寻址不对一律 404，不把「写错 id」拖到入队之后。"""
-
-    project_manager = get_project_manager()
-    script = project_manager.load_script(project_name, req.script_file)
-    items, id_field, _, _, _ = get_storyboard_items(script)
-    shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
-    if script.get("episode") != req.episode or shot is None:
-        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
-    return project_manager, shot
-
-
 def _assert_layout(req: ShotGridSpecRequest, t: Translator) -> None:
     if req.layout not in SUPPORTED_LAYOUTS:
         raise HTTPException(status_code=400, detail=t("shot_grid_layout_invalid"))
 
 
-def _scene_shots(shot: dict, t: Translator) -> SceneShots:
-    """逐格文本的唯一来源：现解析 ``image_prompt.scene``（D-7 的守卫与拼装共用）。"""
+class SaveShotGridRequest(BaseModel):
+    script_file: str = Field(min_length=1)
+    episode: int = Field(ge=1)
+    shot_id: str = Field(min_length=1, max_length=200)
+    rows: int = Field(default=2, ge=2, le=3)
+    cols: int = Field(default=2, ge=2, le=3)
+    #: 本次出图的逐格镜头文本；``None`` 表示保持原值，``""`` 表示明确清空（ADR 0099 D-4）。
+    prompt: str | None = Field(default=None, max_length=12000)
 
-    scene = shot_scene_text(shot)
-    if not scene.strip():
+
+class AuthorShotGridPromptRequest(BaseModel):
+    script_file: str = Field(min_length=1)
+    episode: int = Field(ge=1)
+    shot_id: str = Field(min_length=1, max_length=200)
+    rows: int = Field(default=2, ge=2, le=3)
+    cols: int = Field(default=2, ge=2, le=3)
+
+
+class _AuthoredFrame(BaseModel):
+    """AI 产出的一格：景别与自包含的关键帧画面描述。"""
+
+    shot_size: str = Field(default="", max_length=40)
+    description: str = Field(min_length=1, max_length=4000)
+
+
+class _AuthoredGridPrompt(BaseModel):
+    frames: list[_AuthoredFrame] = Field(min_length=1)
+
+
+_AUTHORED_SYSTEM_PROMPT = """你是分镜画师的提示词编辑助理。用户给你一个分镜的画面描述（镜头序列）和这一镜要画的格数，你为每一格写一段自包含的关键帧画面描述。只输出结构化结果，不写任何解释。"""
+
+_AUTHORED_USER_TEMPLATE = """【分镜画面】
+{scene}
+
+【出场资产】（只写名字，不要描述外观，外观由参考图承担）
+{assets}
+
+【项目画风】
+{style}
+
+【任务】
+把上面这个分镜拆成 {count} 个关键帧，一格一个，按画面里的时间顺序排列。
+要求：
+- 恰好 {count} 个画面，一个不多一个不少
+- 景别从「远景、全景、中景、近景、特写」中选，同一分镜内要有明显变化
+- 每段是自包含的关键帧画面：主体姿态、表情、服装、环境、光线、氛围，用叙述句
+- 资产直接写名字，不要写 @[] 之类的引用记号
+- 不得增删事件，所有格必须在同一时空里连续发生
+"""
+
+#: 引用字段名 → 资产类型标签，喂给 AI 时只给名字与类型。
+_REFERENCE_TYPE_LABELS = {"product": "商品", "character": "角色", "scene": "场景", "prop": "道具"}
+
+
+def _shot_asset_lines(item: dict, char_field: str | None) -> str:
+    """这一分镜登记的资产名单（名字 + 类型），按字段序。"""
+
+    lines: list[str] = []
+    for field_name, asset_type in (
+        ("products_in_shot", "product"),
+        (char_field, "character"),
+        ("scenes_in_shot", "scene"),
+        ("props_in_shot", "prop"),
+    ):
+        if not field_name:
+            continue
+        names = item.get(field_name)
+        if not isinstance(names, list):
+            continue
+        lines.extend(
+            f"- {name.strip()}（{_REFERENCE_TYPE_LABELS[asset_type]}）"
+            for name in names
+            if isinstance(name, str) and name.strip()
+        )
+    return "\n".join(lines) if lines else "- （这一分镜没有登记资产）"
+
+
+def _serialize_authored_frames(frames: list[_AuthoredFrame], count: int) -> str:
+    """结构化产出规整为弹窗输入框的逐格文本；超出格数的尾格丢弃，不足留给延续格。"""
+
+    return format_grid_prompt(
+        [
+            ShotFrame(number=index + 1, shot_size=frame.shot_size, text=frame.description)
+            for index, frame in enumerate(frames[:count])
+        ]
+    )
+
+
+@router.post("/author-prompt")
+async def author_shot_grid_prompt(
+    project_name: str, req: AuthorShotGridPromptRequest, user: CurrentUser, t: Translator
+) -> dict[str, str]:
+    """同步生成逐格镜头文本，不落盘、不入队（ADR 0099 D-5）。
+
+    输入是当前 ``image_prompt.scene`` + 该分镜登记资产（只给名字与类型）+ 项目画风 + 格数；
+    输出是纯逐格镜头文本，由前端回填弹窗输入框。落盘只发生在用户点「确定」时——AI 生成了但
+    用户取消，不会留下半截状态。
+    """
+
+    from pydantic import ValidationError
+
+    from lib.backends.providers import CallPurpose
+    from lib.backends.text_backends.base import (
+        TextGenerationRequest,
+        TextOutputTruncatedError,
+        TextTaskType,
+    )
+    from lib.backends.text_generator import TextGenerator
+
+    project_manager = get_project_manager()
+    script = project_manager.load_script(project_name, req.script_file)
+    items, id_field, char_field, _, _ = get_storyboard_items(script)
+    shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
+    if script.get("episode") != req.episode or shot is None:
+        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+    if (req.rows, req.cols) not in SUPPORTED_LAYOUTS:
+        raise HTTPException(status_code=400, detail=t("shot_grid_layout_invalid"))
+    scene_text = shot_scene_text(shot)
+    if not scene_text.strip():
         raise HTTPException(status_code=400, detail=t("shot_grid_scene_missing"))
     try:
-        return parse_scene_shots(scene)
+        parse_scene_shots(scene_text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=t("shot_grid_scene_not_sequence")) from exc
+
+    project = await asyncio.to_thread(project_manager.load_project, project_name)
+    count = req.rows * req.cols
+    generator = await TextGenerator.create(
+        TextTaskType.SCRIPT, project_name, purpose=CallPurpose.SCRIPT_GENERATION, user_id=user.id
+    )
+    try:
+        result = await generator.generate(
+            TextGenerationRequest(
+                prompt=_AUTHORED_USER_TEMPLATE.format(
+                    scene=scene_text.strip(),
+                    assets=_shot_asset_lines(shot, char_field),
+                    style=(project.get("style") or "").strip() or "（未设置）",
+                    count=count,
+                ),
+                system_prompt=_AUTHORED_SYSTEM_PROMPT,
+                response_schema=_AuthoredGridPrompt,
+                max_output_tokens=4000,
+            ),
+            project_name=project_name,
+        )
+        authored = _AuthoredGridPrompt.model_validate_json(result.text)
+    except (TextOutputTruncatedError, ValidationError, ValueError) as exc:
+        logger.warning("shot grid author-prompt rejected the model output: %s", exc)
+        raise HTTPException(status_code=502, detail=t("shot_grid_author_failed")) from exc
+    except Exception as exc:
+        logger.exception("shot grid author-prompt failed")
+        raise HTTPException(status_code=502, detail=t("shot_grid_author_failed")) from exc
+    return {"prompt": _serialize_authored_frames(authored.frames, count)}
 
 
 @router.get("")
@@ -117,15 +253,21 @@ def get_shot_grid_image(project_name: str, grid_id: str, t: Translator):
 
 
 @router.put("")
-def save_shot_grid(project_name: str, req: ShotGridSpecRequest, t: Translator):
-    """只存规格（D-4）：规格没变就一个字段都不动，变了才重置生成状态。
+def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
+    """保存宫格规格与逐格镜头文本，在「确定」入队前落盘（ADR 0099 D-4）。
 
-    旧实现无条件把 ``status`` 打回 ``draft`` 并清 ``composite_path``，改一次规格就等于把
-    已出的图连整图一起清掉。这里把"重置"收敛到"规格真的变了"这一种情形。已确认的宫格锁
-    规格：要换规格得先取消确认（R7）。
+    幂等：规格、逐格文本与解析出的留证完全相同（含打开即取消式的原样保存）时不动任何生成
+    状态，已出的宫格图不会被「看一眼」清掉。仅逐格文本变化才重置为待生成；已确认的宫格禁止
+    改规格，改提示词后重新走一遍生成 + 确认（R7）。
     """
 
-    project_manager, _ = _load_shot(project_name, req, t)
+    project_manager = get_project_manager()
+    script = project_manager.load_script(project_name, req.script_file)
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
+    if script.get("episode") != req.episode or shot is None:
+        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+    scene_revision = scene_revision_of(shot_scene_text(shot))
     _assert_layout(req, t)
     manager = ShotGridManager(project_manager.get_project_path(project_name))
     grid = manager.find(script_file=req.script_file, shot_id=req.shot_id)
@@ -139,18 +281,27 @@ def save_shot_grid(project_name: str, req: ShotGridSpecRequest, t: Translator):
         )
         manager.save(grid)
         return grid.to_dict()
-    if (grid.rows, grid.cols) == req.layout:
-        # 规格相同：幂等返回，不碰 status / composite_path / cells / 任务。
+
+    prompt = req.prompt if req.prompt is not None else grid.prompt
+    if (grid.rows, grid.cols) == (req.rows, req.cols) and req.prompt is None:
+        # 规格与提示词都没动：只刷新 scene 指纹（「分镜提示词已变更」的提示据此消失），不碰生成状态。
+        if grid.scene_revision != scene_revision:
+            grid.scene_revision = scene_revision
+            grid.updated_at = datetime.now(UTC).isoformat()
+            manager.save(grid)
         return grid.to_dict()
 
-    if grid.status == "confirmed":
+    if grid.status == "confirmed" and (grid.rows, grid.cols) != (req.rows, req.cols):
         raise HTTPException(status_code=409, detail=t("shot_grid_spec_locked"))
     if grid.status in _GENERATING_STATUSES:
         raise HTTPException(status_code=409, detail=t("shot_grid_busy"))
 
-    grid.rows, grid.cols = req.layout
-    # 旧格的行列与新规格对不上，合并只会产出自相矛盾的图：整体重解析（D-11）。
-    grid.cells = []
+    grid.rows, grid.cols = req.rows, req.cols
+    grid.prompt = prompt
+    grid.scene_revision = scene_revision
+    # 逐格文本是唯一输入：服务端解析并回填留证（正文进 prompt、景别进 continuity_notes）。
+    frames = parse_grid_prompt_cells(prompt) if prompt else []
+    grid.cells = shot_grid_cells(frames, grid.rows, grid.cols) if frames else []
     grid.status = "draft"
     grid.composite_path = None
     grid.task_id = None
@@ -162,31 +313,34 @@ def save_shot_grid(project_name: str, req: ShotGridSpecRequest, t: Translator):
 
 
 @router.post("/generate")
-async def generate_shot_grid(project_name: str, req: ShotGridSpecRequest, user: CurrentUser, t: Translator):
-    """按规格与 ``image_prompt.scene`` 直接入队，不预存任何草稿（D-1 / D-3 / D-7）。"""
+async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, user: CurrentUser, t: Translator):
+    """保存过的宫格按 ``ShotGrid.prompt`` 出图；prompt 为空时回退到 ``image_prompt.scene`` 现解析
+    （整集批量走这条，不预存 prompt）。不预存任何草稿（D-1 / D-3 / D-7）。"""
 
-    project_manager, shot = _load_shot(project_name, req, t)
-    _assert_layout(req, t)
-    parsed = _scene_shots(shot, t)
+    project_manager = get_project_manager()
     project_path = project_manager.get_project_path(project_name)
     manager = ShotGridManager(project_path)
-    grid = manager.find(script_file=req.script_file, shot_id=req.shot_id)
-    if grid is not None and grid.status == "generating":
-        return {"task_id": grid.task_id, "status": grid.status}
-    if grid is not None and grid.status == "confirmed" and (grid.rows, grid.cols) != req.layout:
-        raise HTTPException(status_code=409, detail=t("shot_grid_spec_locked"))
-
+    grid = manager.find(script_file=script_file, shot_id=shot_id)
     if grid is None:
-        grid = ShotGrid.create(
-            episode=req.episode,
-            script_file=req.script_file,
-            shot_id=req.shot_id,
-            rows=req.rows,
-            cols=req.cols,
-        )
-    grid.rows, grid.cols = req.layout
-    # 本次出图实际使用的逐格文本回填留证（正文进 prompt、景别进 continuity_notes）。
-    grid.cells = shot_grid_cells(parsed.shots, grid.rows, grid.cols)
+        raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
+    if grid.status == "generating":
+        return {"task_id": grid.task_id, "status": grid.status}
+
+    # 逐格文本：用户填的 prompt 优先，否则现解析 scene（批量同路径）。
+    frames = parse_grid_prompt_cells(grid.prompt) if grid.prompt else []
+    if not frames:
+        script = project_manager.load_script(project_name, script_file)
+        items, id_field, _, _, _ = get_storyboard_items(script)
+        shot = next((item for item in items if str(item.get(id_field, "")) == shot_id), None)
+        if shot is None:
+            raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+        if not shot_scene_text(shot).strip():
+            raise HTTPException(status_code=400, detail=t("shot_grid_scene_missing"))
+        try:
+            frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=t("shot_grid_scene_not_sequence")) from exc
+    grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
     grid.composite_path = None
     grid.image_basis = None
     grid.error_message = None

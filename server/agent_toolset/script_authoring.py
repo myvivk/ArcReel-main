@@ -53,7 +53,7 @@ GENERATE_EPISODE_SCRIPT = ToolDeclaration(
     description=(
         "提示词编写：为正式脚本中待编写的分镜 / 视频单元补出视觉层，输入是正式脚本自身的内容，不读脚本规划。"
         "默认补缺：范围是全部待编写条目或 entry_ids 点名的条目，分镜类默认只写 image_prompt；"
-        "video_prompt 依赖已确认参考素材，必须在参考素材确认后以 fields=[\"video_prompt\"] 单独请求；"
+        'video_prompt 依赖已确认参考素材，必须在参考素材确认后以 fields=["video_prompt"] 单独请求；'
         "同一次请求不能同时写 image_prompt 和 video_prompt。参考生视频按待编写标记展开单元正文。"
         "rewrite=true 显式重写范围内条目的本次提示词字段；"
         "会覆盖已有内容时返回 prompt_overwrite_required，回执正文即服务端生成的丢失清单，"

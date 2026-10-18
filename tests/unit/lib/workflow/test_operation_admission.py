@@ -113,9 +113,7 @@ def test_script_plan_needs_the_episode_source(
     content_mode: str, episode_source: bool, formal_script: bool, expected: tuple
 ) -> None:
     assert (
-        _conclusion(
-            admit_script_plan(content_mode, episode_source=episode_source, formal_script=formal_script)
-        )
+        _conclusion(admit_script_plan(content_mode, episode_source=episode_source, formal_script=formal_script))
         == expected
     )
 

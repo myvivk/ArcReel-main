@@ -710,15 +710,14 @@ def test_deny_legacy_drama_import_non_drama_passes() -> None:
         AgentAccessPolicy.deny_legacy_drama_import("narration", "import_short_drama_script", legacy_compat=False)
         is None
     )
-    assert (
-        AgentAccessPolicy.deny_legacy_drama_import("ad", "import_short_drama_series", legacy_compat=False)
-        is None
-    )
+    assert AgentAccessPolicy.deny_legacy_drama_import("ad", "import_short_drama_series", legacy_compat=False) is None
 
 
 def test_deny_legacy_drama_import_other_tool_passes() -> None:
     """非旧导入类工具在 drama 模式下不受影响。"""
-    assert AgentAccessPolicy.deny_legacy_drama_import("drama", "ingest_short_drama_artifacts", legacy_compat=False) is None
+    assert (
+        AgentAccessPolicy.deny_legacy_drama_import("drama", "ingest_short_drama_artifacts", legacy_compat=False) is None
+    )
 
 
 def test_deny_legacy_drama_import_drama_default_blocked() -> None:

@@ -802,7 +802,9 @@ def storyboard_video_prompt(
         raise TypeError(f"分镜 video_prompt 类型无效（期望 str 或 dict）: {item_id}")
     # 与执行路径共用 render_storyboard_video_prompt：入队快照与实发文本同构，反向约束尾词
     # 由该出口统一追加（执行期对已带尾词的字符串幂等）。
-    rendered = render_storyboard_video_prompt(prompt, item, content_mode=content_mode, voice_characters=voice_characters)
+    rendered = render_storyboard_video_prompt(
+        prompt, item, content_mode=content_mode, voice_characters=voice_characters
+    )
     # K 引用有界（D-17）：越界文本写回时已被拒，这里在计费前再拦一次——声明了不存在的参考图
     # 只会在供应商那边失败，成本更高。
     assets = get_generated_assets(item)

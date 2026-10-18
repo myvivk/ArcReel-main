@@ -21,13 +21,20 @@
     S7  台账必备四表齐全                                      FAIL(缺表)
 退出码: 0=通过, 1=FAIL, 2=用法错误
 """
+
 import pathlib
 import re
 import sys
 
-WALL_RANGES = {60: [(8, 11), (21, 24), (41, 44)], 80: [(10, 15), (28, 32), (55, 58)], 100: [(13, 19), (35, 40), (68, 73)],
-               # 长档（约 3 分钟/集）：集数减半，墙集区间同步折算
-               30: [(4, 6), (10, 12), (20, 22)], 40: [(5, 8), (14, 16), (27, 29)], 50: [(7, 10), (17, 20), (34, 37)]}
+WALL_RANGES = {
+    60: [(8, 11), (21, 24), (41, 44)],
+    80: [(10, 15), (28, 32), (55, 58)],
+    100: [(13, 19), (35, 40), (68, 73)],
+    # 长档（约 3 分钟/集）：集数减半，墙集区间同步折算
+    30: [(4, 6), (10, 12), (20, 22)],
+    40: [(5, 8), (14, 16), (27, 29)],
+    50: [(7, 10), (17, 20), (34, 37)],
+}
 TABLE_KEYS = {"伏笔": "伏笔账", "人物": "人物账", "道具": "道具账", "规则": "世界观规则账"}
 
 
@@ -73,7 +80,7 @@ def validate_ledger(text, total_eps=80, scripts=None):
 
     # S3 死人开口
     dead = {}
-    for r in (_rows(text, "人物") or []):
+    for r in _rows(text, "人物") or []:
         if len(r) < 3:
             continue
         if re.search(r"死|殒|失踪", r[2]):
@@ -90,11 +97,30 @@ def validate_ledger(text, total_eps=80, scripts=None):
     # S4 名册外角色
     roster = {r[0].strip() for r in (_rows(text, "人物") or []) if len(r) > 0}
     if scripts and roster:
-        NOISE = {"第", "场景", "人物", "本集", "所属", "黄金", "情绪", "备注", "接上",
-                 "声音", "旁白", "画外音", "内心独白", "镜头", "字幕", "提示", "音效"}
+        NOISE = {
+            "第",
+            "场景",
+            "人物",
+            "本集",
+            "所属",
+            "黄金",
+            "情绪",
+            "备注",
+            "接上",
+            "声音",
+            "旁白",
+            "画外音",
+            "内心独白",
+            "镜头",
+            "字幕",
+            "提示",
+            "音效",
+        }
         for ep in sorted(scripts):
             seen = set()
-            for m2 in re.finditer(r"^([\u4e00-\u9fa5A-Za-z0-9]{1,8})(?:（[^）]*）|\([^)]*\))?\s*[:：]", scripts[ep], re.M):
+            for m2 in re.finditer(
+                r"^([\u4e00-\u9fa5A-Za-z0-9]{1,8})(?:（[^）]*）|\([^)]*\))?\s*[:：]", scripts[ep], re.M
+            ):
                 nm = m2.group(1)
                 if nm in NOISE or nm in seen:
                     continue
@@ -178,7 +204,11 @@ def self_test():
         print("FAIL self-test: 未超期不应报 S1:", w)
         ok = 0
     # 死人开口: 给第30集加陈峰对白
-    scripts2 = {3: EP_GOOD, 4: EP_BAD, 30: "第【30】集\n[场景]：内景·大宅\n△ 对峙。\n陈峰（阴笑）：我回来了。\n【本集断章卡点】：灯灭。（黑屏）\n"}
+    scripts2 = {
+        3: EP_GOOD,
+        4: EP_BAD,
+        30: "第【30】集\n[场景]：内景·大宅\n△ 对峙。\n陈峰（阴笑）：我回来了。\n【本集断章卡点】：灯灭。（黑屏）\n",
+    }
     f2, _, _ = validate_ledger(LEDGER_GOOD, 80, scripts2)
     if not any("S3" in x for x in f2):
         print("FAIL self-test: 死人开口应报 S3:", f2)
@@ -192,20 +222,25 @@ def self_test():
         ok = 0
 
     # 回归: S1 状态宽松(已埋/未收 也算待收) + S4 噪音名过滤
-    led2 = LEDGER_GOOD.replace("| FB-02 | 神秘来电 | 12 | 31 | 养 | 反派内讧线 |",
-                               "| FB-02 | 神秘来电 | 12 | 8 | 已埋 | 反派内讧线 |")
+    led2 = LEDGER_GOOD.replace(
+        "| FB-02 | 神秘来电 | 12 | 31 | 养 | 反派内讧线 |", "| FB-02 | 神秘来电 | 12 | 8 | 已埋 | 反派内讧线 |"
+    )
     _f4, w4, _ = validate_ledger(led2, 80, scripts)
     if not any(("S1" in x and "FB" not in x) or "神秘来电" in x for x in w4):
         print("FAIL self-test: 状态'已埋'超期应报 S1:", w4)
         ok = 0
-    ep_noise = {5: "第【5】集\n[场景]：内景\n△ 拍桌。\n声音：轰鸣。\n林辰：谁？\n陈峰：我。\n【本集断章卡点】：黑屏（黑屏）\n"}
+    ep_noise = {
+        5: "第【5】集\n[场景]：内景\n△ 拍桌。\n声音：轰鸣。\n林辰：谁？\n陈峰：我。\n【本集断章卡点】：黑屏（黑屏）\n"
+    }
     _, w5, _ = validate_ledger(LEDGER_GOOD, 80, ep_noise)
     if any("「声音」" in x for x in w5):
         print("FAIL self-test: '声音:' 旁白不应报 S4:", w5)
         ok = 0
 
     # 回归: S4 同集同角色多行台词只报一次(去重)
-    ep_dup = {9: "第【9】集\n[场景]：内景\n△ 对峙。\n陌生人：你是谁？\n陌生人：说话！\n陌生人：再不说我动手了。\n林辰：别急。\n【本集断章卡点】：黑屏（黑屏）\n"}
+    ep_dup = {
+        9: "第【9】集\n[场景]：内景\n△ 对峙。\n陌生人：你是谁？\n陌生人：说话！\n陌生人：再不说我动手了。\n林辰：别急。\n【本集断章卡点】：黑屏（黑屏）\n"
+    }
     _, w6, _ = validate_ledger(LEDGER_GOOD, 80, ep_dup)
     dup_cnt = sum(1 for x in w6 if "「陌生人」" in x)
     if dup_cnt != 1:
@@ -215,7 +250,8 @@ def self_test():
     # 回归: 长档付费墙区间（40 集长档：一级 5~8 / 二级 14~16 / 三级 27~29）
     led_long = LEDGER_GOOD.replace(
         "付费墙落位: 一级墙 第12集(中点转换) / 二级墙 第30集 / 三级墙 第56集",
-        "付费墙落位: 一级墙 第6集(中点转换) / 二级墙 第15集 / 三级墙 第28集")
+        "付费墙落位: 一级墙 第6集(中点转换) / 二级墙 第15集 / 三级墙 第28集",
+    )
     _, w7, _ = validate_ledger(led_long, 40)
     if any("S6" in x for x in w7):
         print("FAIL self-test: 长档 40 集墙落位不应报 S6:", w7)

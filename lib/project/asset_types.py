@@ -352,7 +352,7 @@ def register_missing_assets(
             continue
         type_descriptions = descriptions_by_type.get(asset_type) or {}
         for raw_name in names or ():
-            if not isinstance(raw_name, str) or not raw_name.strip():
+            if not raw_name.strip():
                 continue
             try:
                 name = validate_asset_name(raw_name)

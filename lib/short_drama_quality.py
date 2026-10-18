@@ -50,10 +50,7 @@ def _dialogue(line: str) -> bool:
     value = line.strip()
     if not value or value.startswith(("[", "△", "【", "#", ">")):
         return False
-    return (
-        re.match(r"^[\u4e00-\u9fa5A-Za-z0-9]{1,8}(?:（[^）]*）|\([^)]*\))?\s*[:：]\s*.+$", value)
-        is not None
-    )
+    return re.match(r"^[\u4e00-\u9fa5A-Za-z0-9]{1,8}(?:（[^）]*）|\([^)]*\))?\s*[:：]\s*.+$", value) is not None
 
 
 def _character_entries(value: str) -> list[tuple[str, str]]:
@@ -133,19 +130,13 @@ def _compact(value: str) -> str:
     return re.sub(r"\s+", "", value)
 
 
-def check_episode(
-    markdown: str, *, bible: str | None = None, profile: str = "auto"
-) -> list[QualityIssue]:
+def check_episode(markdown: str, *, bible: str | None = None, profile: str = "auto") -> list[QualityIssue]:
     """校验 E12 拍数、E13 道具行和 E14 角色外观；WARN 不阻止落盘。"""
     selected_profile = _resolve_profile(markdown, profile)
     seconds_match = _EPISODE_SECONDS_RE.search(markdown)
-    seconds = (
-        int(seconds_match.group(1)) if seconds_match else _PROFILE_SECONDS[selected_profile]
-    )
+    seconds = int(seconds_match.group(1)) if seconds_match else _PROFILE_SECONDS[selected_profile]
     required = math.ceil(seconds / BEAT_SECONDS)
-    beats = sum(
-        line.strip().startswith("△") or _dialogue(line) for line in markdown.splitlines()
-    )
+    beats = sum(line.strip().startswith("△") or _dialogue(line) for line in markdown.splitlines())
     issues: list[QualityIssue] = []
     if beats < required:
         issues.append(
@@ -170,16 +161,13 @@ def check_episode(
                     QualityIssue(
                         "E13",
                         "fail",
-                        f"道具行缺少有效名称或「｜」后的外观描述："
-                        f"{name or prop_match.group(1).strip()}",
+                        f"道具行缺少有效名称或「｜」后的外观描述：{name or prop_match.group(1).strip()}",
                         line_number,
                     )
                 )
                 continue
             if name in prop_entries:
-                issues.append(
-                    QualityIssue("E13", "fail", f"道具「{name}」在本集中重复登记", line_number)
-                )
+                issues.append(QualityIssue("E13", "fail", f"道具「{name}」在本集中重复登记", line_number))
             prop_entries[name] = line_number
             if name in character_names or name in scene_names:
                 issues.append(
@@ -190,11 +178,7 @@ def check_episode(
                         line_number,
                     )
                 )
-            if not any(
-                name in body
-                for body in body_lines
-                if not body.startswith(("[道具]", "[人物]", "[场景]"))
-            ):
+            if not any(name in body for body in body_lines if not body.startswith(("[道具]", "[人物]", "[场景]"))):
                 issues.append(
                     QualityIssue(
                         "E13",
@@ -222,11 +206,7 @@ def check_episode(
                 elif bible is not None:
                     section = _bible_section(bible, name)
                     if section is None:
-                        issues.append(
-                            QualityIssue(
-                                "E14", "fail", f"人物圣经里没有 {name}，外观抄无可抄", line_number
-                            )
-                        )
+                        issues.append(QualityIssue("E14", "fail", f"人物圣经里没有 {name}，外观抄无可抄", line_number))
                     elif _compact(appearance) not in _compact(section):
                         issues.append(
                             QualityIssue(

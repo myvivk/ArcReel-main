@@ -59,6 +59,10 @@ export function ShortDramaStoryboardButton({
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ scenes: number; missing: MissingAsset[] } | null>(null);
+  /** 分镜成功后顺手补齐缺描述资产：默认勾上，用户可取消。 */
+  const [autoFill, setAutoFill] = useState(true);
+  const [filling, setFilling] = useState<{ done: number; total: number; name: string } | null>(null);
+  const [filledCount, setFilledCount] = useState(0);
 
   const hasStoryboards = storyboardCount > 0;
 
@@ -78,6 +82,8 @@ export function ShortDramaStoryboardButton({
     setConfirmed(false);
     setResult(null);
     setError(null);
+    setFilling(null);
+    setFilledCount(0);
     setOpen(true);
     void load();
   };
@@ -93,20 +99,48 @@ export function ShortDramaStoryboardButton({
     setError(null);
     try {
       const res = await reimportShortDramaSource(projectName, episode, revision, hasStoryboards);
+      const missing = res.assets_without_description ?? [];
       // 先落结果再刷新：刷新带来的重渲染不该把「已生成」和缺描述黄条抹掉。
-      setResult({ scenes: res.scenes, missing: res.assets_without_description ?? [] });
-      if (res.assets_without_description?.length) {
+      setResult({ scenes: res.scenes, missing });
+      if (autoFill && missing.length > 0) {
+        const failed: MissingAsset[] = [];
+        let filled = 0;
+        for (const [index, asset] of missing.entries()) {
+          setFilling({ done: index, total: missing.length, name: asset.name });
+          try {
+            await API.fillAssetFields(projectName, asset.type, asset.name);
+            filled += 1;
+          } catch {
+            // 单个资产补全失败不动整次分镜结果，留在黄条里让用户手动补。
+            failed.push(asset);
+          }
+          setFilling({ done: index + 1, total: missing.length, name: asset.name });
+        }
+        setFilledCount(filled);
+        setResult({ scenes: res.scenes, missing: failed });
+        if (failed.length > 0) {
+          useAppStore.getState().pushToast(
+            t("short_drama_ai_storyboard_missing", {
+              count: failed.length,
+              assets: failed.map((asset) => asset.name).join("、"),
+            }),
+            "warning",
+          );
+        }
+      } else if (missing.length > 0) {
         useAppStore.getState().pushToast(
           t("short_drama_ai_storyboard_missing", {
-            count: res.assets_without_description.length,
-            assets: res.assets_without_description.map((asset) => asset.name).join("、"),
+            count: missing.length,
+            assets: missing.map((asset) => asset.name).join("、"),
           }),
           "warning",
         );
       }
+      setFilling(null);
       await refreshAfterWrite(projectName, t);
     } catch (err) {
       setError(errMsg(err));
+      setFilling(null);
     } finally {
       setSubmitting(false);
     }
@@ -183,12 +217,38 @@ export function ShortDramaStoryboardButton({
                 </div>
               ) : null}
 
+              <div>
+                <label className="flex items-center gap-2">
+                  <Checkbox
+                    checked={autoFill}
+                    onCheckedChange={(value) => setAutoFill(value === true)}
+                    disabled={submitting}
+                  />
+                  <span>{t("short_drama_ai_storyboard_autofill")}</span>
+                </label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("short_drama_ai_storyboard_autofill_hint")}
+                </p>
+              </div>
+
+              {filling ? (
+                <p className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 aria-hidden className="size-4 animate-spin" />
+                  {t("short_drama_ai_storyboard_filling", filling)}
+                </p>
+              ) : null}
+
               {result ? (
                 <div className="flex flex-col gap-2 border-t border-border pt-3">
                   <p className="flex items-center gap-2 text-good">
                     <Check aria-hidden className="size-4" />
                     {t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
                   </p>
+                  {filledCount > 0 ? (
+                    <p className="text-good">
+                      {t("short_drama_ai_storyboard_filled", { count: filledCount })}
+                    </p>
+                  ) : null}
                   {result.missing.length > 0 ? (
                     <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
                       <AlertTriangle aria-hidden className="size-4 shrink-0" />

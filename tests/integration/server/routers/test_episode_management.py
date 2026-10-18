@@ -115,9 +115,7 @@ def test_batch_delete_returns_the_loss_text_first_then_deletes_with_its_revision
     client, pm = _client(monkeypatch, tmp_path, [_cut(1, 0, 5), _cut(2, 5, 10), _cut(3, 10, len(NOVEL))])
 
     with client:
-        preview = client.post(
-            "/api/v1/projects/demo/episodes/delete-batch", json={"episodes": [3, 1]}
-        )
+        preview = client.post("/api/v1/projects/demo/episodes/delete-batch", json={"episodes": [3, 1]})
         body = preview.json()
         deleted = client.post(
             "/api/v1/projects/demo/episodes/delete-batch",

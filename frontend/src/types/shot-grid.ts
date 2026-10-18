@@ -22,6 +22,10 @@ export interface ShotGridPlan {
   rows: number;
   cols: number;
   cells: ShotGridCell[];
+  /** 逐格镜头文本（`第N格（景别）：正文`），出图的优先输入；为空时回退到 scene 现解析。 */
+  prompt?: string;
+  /** 出图时 `image_prompt.scene` 的指纹；与当前 scene 不一致时提示重新生成。 */
+  scene_revision?: string | null;
   composite_path: string | null;
   composite_url?: string;
   status: ShotGridStatus;
@@ -31,11 +35,12 @@ export interface ShotGridPlan {
   error_message: string | null;
 }
 
-/** PUT 只存规格：逐格文本由服务端在出图时从 `image_prompt.scene` 现解析（D-3 / D-4）。 */
+/** PUT 保存规格与逐格镜头文本；`prompt` 为 `null` 时保持原值（D-4）。 */
 export interface SaveShotGridPayload {
   script_file: string;
   episode: number;
   shot_id: string;
   rows: number;
   cols: number;
+  prompt: string | null;
 }

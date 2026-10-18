@@ -110,9 +110,7 @@ def select_prompt_authoring(
         fill = tuple(field for field in _fill_fields(kind, item) if field in target_fields)
         if rewrite:
             overwritten = tuple(
-                field
-                for field in target_fields
-                if field not in fill and visual_field_filled(item.get(field))
+                field for field in target_fields if field not in fill and visual_field_filled(item.get(field))
             )
             entries.append(AuthoringEntry(entry_id, target_fields, overwritten))
         elif fill:

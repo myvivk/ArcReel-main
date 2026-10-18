@@ -63,9 +63,7 @@ async def _setup_drama_project(services: Services, name: str = "demo") -> Projec
     caller = CallerContext(user_id="test", source="mcp")
     await create_project(
         ToolRequest(
-            CreateProjectToolRequest(
-                name=name, title="Demo", content_mode="drama", generation_mode="storyboard"
-            )
+            CreateProjectToolRequest(name=name, title="Demo", content_mode="drama", generation_mode="storyboard")
         ),
         caller,
         services,
@@ -233,11 +231,7 @@ async def test_import_short_drama_does_not_resolve_video_capabilities(tmp_path: 
     services = _services(tmp_path, capabilities=_NoTierCapabilities())
     scope = await _setup_drama_project(services)
     caller = CallerContext(user_id="test", source="mcp")
-    md = (
-        "第【1】集：逆袭开局\n"
-        "【本集时长】：120秒\n"
-        "[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
-    )
+    md = "第【1】集：逆袭开局\n【本集时长】：120秒\n[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
     outcome = await import_short_drama_script(
         ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md, legacy_compat=True)),
         scope,
@@ -261,10 +255,7 @@ async def test_import_short_drama_reports_duration_shortfall_in_result(tmp_path:
     scope = await _setup_drama_project(services)
     caller = CallerContext(user_id="test", source="mcp")
     md = (
-        "第【1】集：逆袭开局\n"
-        "【本集时长】：200秒\n"
-        "【本集断章卡点】：卡点\n"
-        "\n[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
+        "第【1】集：逆袭开局\n【本集时长】：200秒\n【本集断章卡点】：卡点\n\n[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
     )
     outcome = await import_short_drama_script(
         ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md, legacy_compat=True)),
@@ -287,11 +278,7 @@ async def test_import_short_drama_script_blocked_in_drama_without_opt_in(tmp_pat
     services = _services(tmp_path)
     scope = await _setup_drama_project(services)
     caller = CallerContext(user_id="test", source="mcp")
-    md = (
-        "第【1】集：逆袭开局\n"
-        "【本集时长】：120秒\n"
-        "[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
-    )
+    md = "第【1】集：逆袭开局\n【本集时长】：120秒\n[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
     outcome = await import_short_drama_script(
         ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md)),
         scope,
@@ -308,17 +295,11 @@ async def test_import_short_drama_series_blocked_in_drama_without_opt_in(tmp_pat
     caller = CallerContext(user_id="test", source="mcp")
 
     def _ep(n: int, char: str, scene: str) -> str:
-        return (
-            f"第【{n}】集：第{n}集\n"
-            "【本集时长】：120秒\n"
-            f"\n[场景]：{scene}\n[人物]：{char}\n\n△ 动作。\n"
-        )
+        return f"第【{n}】集：第{n}集\n【本集时长】：120秒\n\n[场景]：{scene}\n[人物]：{char}\n\n△ 动作。\n"
 
     outcome = await import_short_drama_series(
         ToolRequest(
-            ImportShortDramaSeriesRequest(
-                episodes=[{"episode_id": 1, "markdown": _ep(1, "林辰", "豪宅客厅")}]
-            )
+            ImportShortDramaSeriesRequest(episodes=[{"episode_id": 1, "markdown": _ep(1, "林辰", "豪宅客厅")}])
         ),
         scope,
         caller,

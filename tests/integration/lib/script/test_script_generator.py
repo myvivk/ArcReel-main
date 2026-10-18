@@ -1556,14 +1556,30 @@ class TestMergeVisualLayer:
         segments = [
             {
                 **_script_plan_seg("E1S01", "甲"),
-                "image_prompt": {"scene": "旧图", "composition": {"shot_type": "Medium Shot", "lighting": "旧光", "ambiance": "旧气氛"}},
-                "video_prompt": {"action": "旧动作", "camera_motion": "Static", "ambiance_audio": "旧环境音", "dialogue": []},
+                "image_prompt": {
+                    "scene": "旧图",
+                    "composition": {"shot_type": "Medium Shot", "lighting": "旧光", "ambiance": "旧气氛"},
+                },
+                "video_prompt": {
+                    "action": "旧动作",
+                    "camera_motion": "Static",
+                    "ambiance_audio": "旧环境音",
+                    "dialogue": [],
+                },
             }
         ]
         image_targets = _segment_targets(segments, ["E1S01"], fields=("image_prompt",))
         image_merged = ScriptGenerator._merge_visual_layer(
             image_targets,
-            [{"segment_id": "E1S01", "image_prompt": {"scene": "新图", "composition": {"shot_type": "Medium Shot", "lighting": "新光", "ambiance": "新气氛"}}}],
+            [
+                {
+                    "segment_id": "E1S01",
+                    "image_prompt": {
+                        "scene": "新图",
+                        "composition": {"shot_type": "Medium Shot", "lighting": "新光", "ambiance": "新气氛"},
+                    },
+                }
+            ],
             1,
         )
         assert image_merged[0]["image_prompt"]["scene"] == "新图"
@@ -1572,7 +1588,17 @@ class TestMergeVisualLayer:
         video_targets = _segment_targets(segments, ["E1S01"], fields=("video_prompt",))
         video_merged = ScriptGenerator._merge_visual_layer(
             video_targets,
-            [{"segment_id": "E1S01", "video_prompt": {"action": "新动作", "camera_motion": "Static", "ambiance_audio": "新环境音", "dialogue": []}}],
+            [
+                {
+                    "segment_id": "E1S01",
+                    "video_prompt": {
+                        "action": "新动作",
+                        "camera_motion": "Static",
+                        "ambiance_audio": "新环境音",
+                        "dialogue": [],
+                    },
+                }
+            ],
             1,
         )
         assert video_merged[0]["image_prompt"]["scene"] == "旧图"

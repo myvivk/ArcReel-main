@@ -87,7 +87,7 @@ from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resou
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.prompts.reference_image_numbering import clamp_reference_images
-from lib.script.grid.keyframe_parser import parse_scene_shots, shot_scene_text
+from lib.script.grid.keyframe_parser import parse_grid_prompt_cells, parse_scene_shots, shot_scene_text
 from lib.script.grid.layout import grid_aspect_ratio_for
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_prompt_builder import build_shot_grid_prompt, shot_grid_cells
@@ -1594,9 +1594,10 @@ async def execute_shot_grid_task(
 ) -> dict[str, Any]:
     """Execute a per-shot reference-material (keyframe grid) generation task.
 
-    逐格镜头文本只有 ``image_prompt.scene`` 一个来源（D-1 / D-3）：入队与执行都从 scene
-    现解析，任务不读取任何保存下来的提示词。出图前把解析结果回填 ``cells`` 只作本次留证。
-    已确认的宫格允许按同一规格重做——规格由 PUT / generate 的 409 锁死（R7）。
+    逐格镜头文本以 ``ShotGrid.prompt`` 为优先来源（单分镜弹窗填写，ADR 0099 D-2）；``prompt``
+    为空时回退到 ``image_prompt.scene`` 现解析（整集批量走这条，不预存 prompt）。出图前把解析
+    结果回填 ``cells`` 只作本次留证。已确认的宫格允许按同一规格重做——规格由 PUT / generate
+    的 409 锁死（R7）。
     """
 
     project_path = get_project_manager().get_project_path(project_name)
@@ -1614,14 +1615,17 @@ async def execute_shot_grid_task(
     try:
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
         script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
-        items, id_field, _, _, _ = get_storyboard_items(script)
-        shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
-        if shot is None:
-            raise ValueError(f"shot not found in script: {grid.shot_id}")
-        try:
-            frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
-        except ValueError as exc:
-            raise ValueError(f"shot grid scene has no shot sequence: {grid.shot_id}") from exc
+        # 逐格文本：ShotGrid.prompt 优先（单分镜弹窗填写），否则现解析 scene（整集批量）。
+        frames = parse_grid_prompt_cells(grid.prompt) if grid.prompt else []
+        if not frames:
+            items, id_field, _, _, _ = get_storyboard_items(script)
+            shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
+            if shot is None:
+                raise ValueError(f"shot not found in script: {grid.shot_id}")
+            try:
+                frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
+            except ValueError as exc:
+                raise ValueError(f"shot grid scene has no shot sequence: {grid.shot_id}") from exc
         # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
         grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
         grid.updated_at = datetime.now(UTC).isoformat()

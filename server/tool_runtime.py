@@ -23,7 +23,13 @@ from pydantic.json_schema import SkipJsonSchema
 
 from lib.agent.profile_manifest import ContentMode
 from lib.artifacts.artifact_activation import ArtifactCurrencyResolver, active_artifact_currency_resolver
-from lib.backends.text_backends.base import TextOutputTruncatedError
+from lib.backends.providers import CallPurpose
+from lib.backends.text_backends.base import (
+    TextGenerationRequest as TextBackendRequest,
+    TextOutputTruncatedError,
+    TextTaskType,
+)
+from lib.backends.text_generator import TextGenerator
 from lib.config.resolver import ConfigResolver, caps_generation_mode, video_bucket_for_generation_mode
 from lib.db import async_session_factory
 from lib.db.base import DEFAULT_USER_ID
@@ -1073,16 +1079,24 @@ async def ingest_short_drama_artifacts_tool(
     _caller: CallerContext,
     services: Services,
 ) -> ToolOutcome[Any]:
-    from lib.short_drama_ingest import ShortDramaArtifactError, decode_artifact_content, ingest_short_drama_artifacts
+    from lib.short_drama_ingest import (
+        ShortDramaArtifactError,
+        decode_artifact_content,
+        ingest_short_drama_artifacts,
+        register_factory_episode_sources,
+    )
 
     try:
         await asyncio.to_thread(services.projects.load_project, scope.project_name)
+        payload = [(item.path, decode_artifact_content(None, item.content_base64)) for item in request.value.artifacts]
         result = await _run_sync_transaction(
             ingest_short_drama_artifacts,
             services.projects,
             scope.project_name,
-            [(item.path, decode_artifact_content(None, item.content_base64)) for item in request.value.artifacts],
+            payload,
         )
+        # 每集工厂 Markdown 登记为该集 OWN 源文本：分集页本集正文与下游建立在工厂正文上。
+        await asyncio.to_thread(register_factory_episode_sources, services.projects, scope.project_name, payload)
     except FileNotFoundError as exc:
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     except ShortDramaArtifactError as exc:
@@ -1090,11 +1104,79 @@ async def ingest_short_drama_artifacts_tool(
     return ToolOutcome(value={"imported": len(result), "artifacts": [item.as_dict(include_content=False) for item in result]})
 
 
+class ShortDramaFactoryGenRequest(BaseModel):
+    """短剧工厂文本生成请求：把某一类工厂工件的写作交给文本模型。
+
+    Agent 负责从 references / 模板 / 本集上下文 / 指令组装好 ``prompt``（与可选
+    ``system_prompt``），本工具经 ``TextGenerator`` 用 COMPLEX 档文本模型产出该工件
+    Markdown 原文并返回；不解析、不转写为 ArcReel JSON。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    prompt: str = Field(description="组装好的写作 prompt（含 references / 模板 / 本集上下文 / 指令）")
+    system_prompt: str | None = Field(default=None, description="可选的系统提示，约束文风与输出格式")
+    artifact: str | None = Field(default=None, description="工件类型标签（如 episode_plan / episode_NN），仅用于记账与回显")
+    max_output_tokens: int | None = Field(default=None, description="可选输出上限；缺省按模型登记上限")
+
+
+async def generate_short_drama_factory(
+    request: ToolRequest[ShortDramaFactoryGenRequest],
+    scope: ProjectScope,
+    _caller: CallerContext,
+    _services: Services,
+) -> ToolOutcome[Any]:
+    """工厂文本生成：写作交文本模型（核心原则①），Agent 不自己写正文。
+
+    经 ``TextGenerator``（``TextTaskType.FACTORY`` → COMPLEX 档，复用用户配置的强文本模型）
+    产出工厂工件 Markdown；记账 purpose 复用 ``SCRIPT_GENERATION``。
+    """
+    value = request.value
+    try:
+        generator = await TextGenerator.create(
+            TextTaskType.FACTORY,
+            scope.project_name,
+            purpose=CallPurpose.SCRIPT_GENERATION,
+        )
+        result = await generator.generate(
+            TextBackendRequest(
+                prompt=value.prompt,
+                system_prompt=value.system_prompt,
+                max_output_tokens=value.max_output_tokens,
+            ),
+            require_complete=True,
+        )
+    except TextOutputTruncatedError as exc:
+        return ToolOutcome(
+            problem=ToolProblem(
+                "text_output_truncated",
+                f"工厂文本生成被模型输出上限截断（provider={exc.provider}, model={exc.model}）；"
+                "请缩小单批体量或调高文本模型输出上限后重试。",
+            )
+        )
+    return ToolOutcome(
+        value={
+            "text": result.text,
+            "model": result.model,
+            "provider": result.provider,
+            "truncated": result.truncated,
+            "artifact": value.artifact,
+        }
+    )
+
+
 class ImportShortDramaScriptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
     markdown: str = Field(description="兼容入口：该集短剧工厂 Markdown 原文；新流程请使用工件包导入并原样保存。")
+    legacy_compat: bool = Field(
+        default=False,
+        description=(
+            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区"
+            "转原生剧本 JSON 时置 true。"
+        ),
+    )
 
 
 async def import_short_drama_script(
@@ -1104,11 +1186,25 @@ async def import_short_drama_script(
     services: Services,
 ) -> ToolOutcome[Any]:
     """兼容旧单集入口；新的工厂交稿请通过工件包接口原样写入 source/short_drama。"""
+    from server.agent_runtime.agent_access_policy import AgentAccessPolicy
     from server.services.short_drama_workflow import (
         ShortDramaWorkflowError,
         import_short_drama_episode,
     )
 
+    try:
+        project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
+    except FileNotFoundError as exc:
+        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
+    content_mode = project.get("content_mode", "narration")
+    if content_mode != "drama":
+        return ToolOutcome(
+            problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
+        )
+    if reason := AgentAccessPolicy.deny_legacy_drama_import(
+        content_mode, "import_short_drama_script", legacy_compat=request.value.legacy_compat
+    ):
+        return ToolOutcome(problem=ToolProblem("legacy_import_blocked", reason))
     try:
         result = await import_short_drama_episode(
             project_name=scope.project_name,
@@ -1138,6 +1234,13 @@ class ImportShortDramaSeriesRequest(BaseModel):
         default=True,
         description="单集解析/落盘失败时是否跳过继续（默认 true，整体仍返回各集明细）；false 则任一一集失败即整体报错。",
     )
+    legacy_compat: bool = Field(
+        default=False,
+        description=(
+            "drama 项目下本旧入口默认禁用（会重写 JSON、丢 6 类工件）。仅在明确要将旧工作区"
+            "转原生剧本 JSON 时置 true。"
+        ),
+    )
 
 
 async def import_short_drama_series(
@@ -1147,6 +1250,7 @@ async def import_short_drama_series(
     services: Services,
 ) -> ToolOutcome[Any]:
     """兼容旧批量入口；新的工厂交稿请通过工件包接口原样写入 source/short_drama。"""
+    from server.agent_runtime.agent_access_policy import AgentAccessPolicy
     from server.services.short_drama_workflow import (
         ShortDramaWorkflowError,
         import_short_drama_episode,
@@ -1156,10 +1260,15 @@ async def import_short_drama_series(
         project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
     except FileNotFoundError as exc:
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
-    if project.get("content_mode") != "drama":
+    content_mode = project.get("content_mode", "narration")
+    if content_mode != "drama":
         return ToolOutcome(
             problem=ToolProblem("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
         )
+    if reason := AgentAccessPolicy.deny_legacy_drama_import(
+        content_mode, "import_short_drama_series", legacy_compat=request.value.legacy_compat
+    ):
+        return ToolOutcome(problem=ToolProblem("legacy_import_blocked", reason))
     async def _import_one(item: ImportShortDramaEpisodeItem) -> dict[str, Any]:
         try:
             result = await import_short_drama_episode(

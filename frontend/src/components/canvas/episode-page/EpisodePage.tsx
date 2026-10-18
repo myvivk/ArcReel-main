@@ -126,7 +126,8 @@ function EpisodePageContent({
   const grid = gridStoryboardEnabled(projectData);
   const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
   const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
-  const hasShortDramaSource = projectData?.content_mode === "drama" && meta?.script_file == null;
+  const hasShortDramaSource =
+    projectData?.content_mode === "drama" && (meta?.script_file == null || meta?.source_origin === "own");
   // 起步区据此给剧情演绎模式追加「AI 原创剧本」入口；演示态不可写入，不追加。
   const scriptContentMode = demo ? undefined : projectData?.content_mode === "drama" ? "drama" : undefined;
   const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);

@@ -12,6 +12,7 @@ from lib.generation.generation_batch import GenerationBatchReadModel
 from lib.script.draft_quarantine import OPEN_DRAFT_TOOL_NAME, PROMOTE_TOOL_NAME
 from server.agent_toolset.declaration import BLOCKED, TEXT_OUTPUT_TRUNCATED_NOTE, ToolDeclaration
 from server.agent_toolset.envelope import json_value
+from server.agent_toolset.short_drama_factory_gen import GENERATE_SHORT_DRAMA_FACTORY
 from server.tool_runtime import (
     ConfirmScriptReviewRequest,
     DiscardDraftRequest,
@@ -23,10 +24,12 @@ from server.tool_runtime import (
     IngestShortDramaArtifactsRequest,
     PatchDraftRequest,
     PromoteDraftRequest,
+    ShortDramaFactoryGenRequest,
     confirm_script_review,
     discard_draft,
     generate_episode_script,
     generate_script_plan,
+    generate_short_drama_factory,
     import_short_drama_script,
     import_short_drama_series,
     ingest_short_drama_artifacts_tool,
@@ -106,9 +109,11 @@ INGEST_SHORT_DRAMA_ARTIFACTS = ToolDeclaration(
     name="ingest_short_drama_artifacts",
     description=(
         "短剧工厂唯一新交稿入口：将七类 Markdown 工件按传入相对路径原样写入 source/short_drama。"
-        "content_base64 必须是工件 UTF-8 原文的 Base64 编码；不解析、不重写、不生成原生剧本 JSON、不登记资产、不修改 project.json。"
-        "允许路径：character-bible.md、series-outline.md、ledger.md、episode-plan/episode_NN.plan.md、"
-        "episodes/episode_NN.md、reports/episode_NN.machine.md、compliance/episode_NN.compliance.md。"
+        "content_base64 必须是工件 UTF-8 原文的 Base64 编码；不解析、不重写、不生成原生剧本 JSON。"
+        "每集 episodes/episode_NN.md 会同时登记为该集 OWN 源文本（类型记作剧本），使分集页本集正文"
+        "与下游脚本规划建立在工厂正文上，而不是空起稿。允许路径：character-bible.md、series-outline.md、"
+        "ledger.md、episode-plan/episode_NN.plan.md、episodes/episode_NN.md、reports/episode_NN.machine.md、"
+        "compliance/episode_NN.compliance.md。"
     ),
     request_model=IngestShortDramaArtifactsRequest,
     migration=BLOCKED,
@@ -184,6 +189,7 @@ SCRIPT_AUTHORING_TOOLS = (
     GENERATE_SCRIPT_PLAN,
     CONFIRM_SCRIPT_REVIEW,
     INGEST_SHORT_DRAMA_ARTIFACTS,
+    GENERATE_SHORT_DRAMA_FACTORY,
     IMPORT_SHORT_DRAMA_SCRIPT,
     IMPORT_SHORT_DRAMA_SERIES,
     OPEN_DRAFT,

@@ -161,7 +161,7 @@ async def test_import_short_drama_script_registers_assets(tmp_path: Path) -> Non
         "林辰：滚。\n"
     )
     outcome = await import_short_drama_script(
-        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md)),
+        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md, legacy_compat=True)),
         scope,
         caller,
         services,
@@ -203,7 +203,8 @@ async def test_import_short_drama_series_registers_assets_across_episodes(tmp_pa
                 episodes=[
                     {"episode_id": 1, "markdown": _ep(1, "林辰", "豪宅客厅")},
                     {"episode_id": 2, "markdown": _ep(2, "苏婉", "公司大楼")},
-                ]
+                ],
+                legacy_compat=True,
             )
         ),
         scope,
@@ -238,7 +239,7 @@ async def test_import_short_drama_does_not_resolve_video_capabilities(tmp_path: 
         "[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
     )
     outcome = await import_short_drama_script(
-        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md)),
+        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md, legacy_compat=True)),
         scope,
         caller,
         services,
@@ -266,7 +267,7 @@ async def test_import_short_drama_reports_duration_shortfall_in_result(tmp_path:
         "\n[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
     )
     outcome = await import_short_drama_script(
-        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md)),
+        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md, legacy_compat=True)),
         scope,
         caller,
         services,
@@ -275,3 +276,53 @@ async def test_import_short_drama_reports_duration_shortfall_in_result(tmp_path:
     assert outcome.value["duration_shortfall"] is True
     assert outcome.value["declared_seconds"] == 200
     assert outcome.value["actual_seconds"] < 200
+
+
+# --------------------------------------------------------------------------- #
+# 后端：drama 模式默认硬禁旧导入入口（须显式 legacy_compat 才放行）
+# --------------------------------------------------------------------------- #
+
+
+async def test_import_short_drama_script_blocked_in_drama_without_opt_in(tmp_path: Path) -> None:
+    services = _services(tmp_path)
+    scope = await _setup_drama_project(services)
+    caller = CallerContext(user_id="test", source="mcp")
+    md = (
+        "第【1】集：逆袭开局\n"
+        "【本集时长】：120秒\n"
+        "[场景] 豪宅客厅\n[人物] 林辰\n\n△ 动作。\n"
+    )
+    outcome = await import_short_drama_script(
+        ToolRequest(ImportShortDramaScriptRequest(episode_id=1, markdown=md)),
+        scope,
+        caller,
+        services,
+    )
+    assert outcome.problem is not None
+    assert outcome.problem.code == "legacy_import_blocked"
+
+
+async def test_import_short_drama_series_blocked_in_drama_without_opt_in(tmp_path: Path) -> None:
+    services = _services(tmp_path)
+    scope = await _setup_drama_project(services)
+    caller = CallerContext(user_id="test", source="mcp")
+
+    def _ep(n: int, char: str, scene: str) -> str:
+        return (
+            f"第【{n}】集：第{n}集\n"
+            "【本集时长】：120秒\n"
+            f"\n[场景]：{scene}\n[人物]：{char}\n\n△ 动作。\n"
+        )
+
+    outcome = await import_short_drama_series(
+        ToolRequest(
+            ImportShortDramaSeriesRequest(
+                episodes=[{"episode_id": 1, "markdown": _ep(1, "林辰", "豪宅客厅")}]
+            )
+        ),
+        scope,
+        caller,
+        services,
+    )
+    assert outcome.problem is not None
+    assert outcome.problem.code == "legacy_import_blocked"

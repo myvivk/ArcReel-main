@@ -15,6 +15,7 @@ from lib.short_drama_ingest import (
     decode_artifact_content,
     ingest_short_drama_artifacts,
     load_short_drama_artifacts,
+    register_factory_episode_sources,
 )
 from lib.project.project_manager import get_project_manager
 from lib.script.short_drama_source import (
@@ -231,6 +232,12 @@ async def import_artifacts(project_name: str, req: ShortDramaArtifactImportReque
                 for item in req.artifacts
             ],
         )
+        # 每集工厂 Markdown 登记为该集 OWN 源文本：分集页本集正文与下游建立在工厂正文上。
+        register_factory_episode_sources(
+            manager,
+            project_name,
+            [(item.path, decode_artifact_content(None, item.content_base64)) for item in req.artifacts],
+        )
     except FileNotFoundError as exc:
         raise NotFoundError("project_not_found", name=project_name) from exc
     except ShortDramaArtifactError as exc:
@@ -248,7 +255,11 @@ async def import_one(
     """导入一集短剧工厂剧本：Markdown → 正式剧情演绎剧本并落盘，返回集号与场景数。"""
     scope, caller, services = short_drama_context(project_name, user.id)
     outcome = await import_short_drama_script(
-        ToolRequest(ImportShortDramaScriptRequest(episode_id=req.episode_id, markdown=req.markdown)),
+        ToolRequest(
+            ImportShortDramaScriptRequest(
+                episode_id=req.episode_id, markdown=req.markdown, legacy_compat=True
+            )
+        ),
         scope,
         caller,
         services,
@@ -275,6 +286,7 @@ async def import_batch(
                     for item in req.episodes
                 ],
                 continue_on_error=req.continue_on_error,
+                legacy_compat=True,
             )
         ),
         scope,

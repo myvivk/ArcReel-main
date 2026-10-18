@@ -78,6 +78,51 @@ def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatc
     assert not (project_path / "scripts/episode_1.json").exists()
 
 
+def test_ingested_episode_artifact_visible_as_short_drama_source(monkeypatch, tmp_path: Path) -> None:
+    """复现：工厂工件包导入后，分集页经 getShortDramaSource 应能读到本集正文。"""
+    client, manager = _client(monkeypatch, tmp_path)
+    original = "第【1】集：雨夜重逢\n[场景]：旧公寓\n林夏：开门。\n".encode("utf-8")
+    payload = {
+        "artifacts": [
+            {
+                "path": "episodes/episode_01.md",
+                "content_base64": base64.b64encode(original).decode("ascii"),
+            }
+        ]
+    }
+    with client:
+        import_resp = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
+        source_resp = client.get("/api/v1/projects/demo/episodes/1/short-drama-source")
+
+    assert import_resp.status_code == 200
+    assert source_resp.status_code == 200
+    body = source_resp.json()
+    assert body["exists"] is True, body
+    assert "雨夜重逢" in body["markdown"]
+
+
+def test_ingest_registers_episode_as_own_source(monkeypatch, tmp_path: Path) -> None:
+    """复现断点：导入后每集工厂 Markdown 须登记为该集 OWN 源文本，分集页本集正文才有内容、下游才建得上。"""
+    client, manager = _client(monkeypatch, tmp_path)
+    original = "第【1】集：雨夜重逢\n[场景]：旧公寓\n林夏：开门。\n".encode("utf-8")
+    payload = {
+        "artifacts": [
+            {
+                "path": "episodes/episode_01.md",
+                "content_base64": base64.b64encode(original).decode("ascii"),
+            }
+        ]
+    }
+    with client:
+        resp = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
+    assert resp.status_code == 200
+    project = manager.load_project("demo")
+    entry = next(e for e in project["episodes"] if e.get("episode") == 1)
+    assert entry.get("source_origin") == "own", entry
+    source_file = manager.get_project_path("demo") / "source" / "episode_1.txt"
+    assert source_file.read_text(encoding="utf-8") == original.decode("utf-8")
+
+
 def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: Path) -> None:
     client, _manager = _client(monkeypatch, tmp_path)
 

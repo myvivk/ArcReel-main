@@ -110,6 +110,12 @@ class AgentAccessPolicy:
     # 单一真相源（format_bash_whitelist_deny_message 从此派生）。
     WINDOWS_BASH_PREFIX_WHITELIST: ClassVar[tuple[str, ...]] = (_PYTHON_SKILLS_PREFIX,)
 
+    # 旧单集/批量导入入口（会把工厂 Markdown 重写为 ArcReel JSON），drama 模式默认硬禁。
+    # 仅当用户在请求中显式 opt-in legacy_compat（明确点名旧工作区/转原生剧本 JSON）时放行。
+    LEGACY_DRAMA_IMPORT_TOOLS: ClassVar[frozenset[str]] = frozenset(
+        {"import_short_drama_script", "import_short_drama_series"}
+    )
+
     # Windows 回退白名单的 shell metachar 黑名单：``;`` ``&`` ``|`` ``<`` ``>``
     # `` ` `` ``$`` 与换行都可能在白名单前缀后挂任意命令（链式/管道/重定向/
     # 命令替换）。不解析引号语境，引号内出现也整串拒——宁可误拒（fail-closed），
@@ -538,6 +544,31 @@ class AgentAccessPolicy:
         return (
             f"子智能体 {agent_type} 是只读的，不能调用 {tool_name}；"
             f"只能使用 {'、'.join(sorted(allowed))}。需要改动时把建议写进报告，交给主对话执行。"
+        )
+
+    @classmethod
+    def deny_legacy_drama_import(
+        cls, content_mode: str, tool_name: str, *, legacy_compat: bool
+    ) -> str | None:
+        """drama 模式下默认拒绝旧单集/批量导入入口：它们会把工厂 Markdown 重写为 ArcReel
+        JSON、丢弃 6 类工件并重投影，违反「零处理原样落盘」。仅当用户在请求中显式置
+        ``legacy_compat``（明确点名旧工作区 / 转原生剧本 JSON）时放行。返回拒绝原因，
+        None 表示放行。
+
+        规则真相源集中在本类：handler 调用本方法求值，旧入口在 drama 新建项目里彻底失效，
+        但旧工作区仍可经 ``legacy_compat`` 走兼容入口，不破坏存量数据。
+        """
+        if content_mode != "drama":
+            return None
+        if tool_name not in cls.LEGACY_DRAMA_IMPORT_TOOLS:
+            return None
+        if legacy_compat:
+            return None
+        return (
+            "访问被拒绝：drama 项目下旧单集/批量导入入口默认不可用，它们会把工厂 Markdown "
+            "重写为 ArcReel JSON、丢弃 6 类工件并重投影，违反「零处理原样落盘」。新交稿请改用 "
+            "ingest_short_drama_artifacts 原样写入七类 Markdown 工件。确需在旧工作区转原生剧本 JSON 时，"
+            "在请求中显式置 legacy_compat=true。"
         )
 
     def filter_allowed_tools(self, tools: list[str]) -> list[str]:

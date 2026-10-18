@@ -700,6 +700,43 @@ def test_wrap_bash_command_passthrough_when_no_command(tmp_path: Path) -> None:
 
 
 # ============================================================
+# 旧单集/批量导入入口：drama 模式硬禁（须显式 legacy_compat 才放行）
+# ============================================================ #
+
+
+def test_deny_legacy_drama_import_non_drama_passes() -> None:
+    """非 drama 项目（narration/ad）不触发此门禁，返回 None。"""
+    assert (
+        AgentAccessPolicy.deny_legacy_drama_import("narration", "import_short_drama_script", legacy_compat=False)
+        is None
+    )
+    assert (
+        AgentAccessPolicy.deny_legacy_drama_import("ad", "import_short_drama_series", legacy_compat=False)
+        is None
+    )
+
+
+def test_deny_legacy_drama_import_other_tool_passes() -> None:
+    """非旧导入类工具在 drama 模式下不受影响。"""
+    assert AgentAccessPolicy.deny_legacy_drama_import("drama", "ingest_short_drama_artifacts", legacy_compat=False) is None
+
+
+def test_deny_legacy_drama_import_drama_default_blocked() -> None:
+    """drama 模式下未显式 opt-in 时，两个旧入口都返回拒绝原因。"""
+    for tool in ("import_short_drama_script", "import_short_drama_series"):
+        reason = AgentAccessPolicy.deny_legacy_drama_import("drama", tool, legacy_compat=False)
+        assert reason is not None
+        assert "ingest_short_drama_artifacts" in reason
+        assert "legacy_compat" in reason
+
+
+def test_deny_legacy_drama_import_drama_opt_in_allowed() -> None:
+    """drama 模式下显式 opt-in legacy_compat 时放行（旧工作区转原生 JSON）。"""
+    for tool in ("import_short_drama_script", "import_short_drama_series"):
+        assert AgentAccessPolicy.deny_legacy_drama_import("drama", tool, legacy_compat=True) is None
+
+
+# ============================================================
 # 受保护写路径规则表：hook 与 sandbox denyWrite 同表投影
 # ============================================================
 

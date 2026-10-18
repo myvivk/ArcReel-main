@@ -261,6 +261,8 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const { t } = useTranslation("dashboard");
   const ledger = useEpisodeLedger();
   const episodeMetas = useProjectsStore((s) => s.currentProjectData?.episodes);
+  // 项目级「全剧规划总集数」：首次生成时落库，后续续写读回，避免每次打开弹窗都从 1 开始。
+  const projectTotal = useProjectsStore((s) => s.currentProjectData?.total_episodes ?? null);
   // 创建模式下优先填末尾已有的空白集，避免留下永久空集让剧集从第 2 集才开始。
   const reusable = useMemo(() => trailingBlankEpisodes(episodeMetas), [episodeMetas]);
   const fieldId = useId();
@@ -270,11 +272,20 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const [brief, setBrief] = useState("");
   const [tone, setTone] = useState("");
   const [count, setCount] = useState(1);
-  const [total, setTotal] = useState(1);
+  const [total, setTotal] = useState<number>(projectTotal && projectTotal >= 1 ? projectTotal : 1);
   const [format, setFormat] = useState<ShortDramaFormat>("standard");
   const [submitting, setSubmitting] = useState(false);
 
-  const canSubmit = genre.trim().length > 0 && count >= 1;
+  // 续写约束：本次续写后累计集数不得超过项目规划总集数。
+  // 「已存在集数」取当前最大集号（集号连续时即已有集数）；有末尾空白集时从空白集开始续写。
+  const maxEpisode = ledger.reduce((max, entry) => Math.max(max, entry.episode), 0);
+  const reusedCount = createMode ? Math.min(reusable.length, Number(count)) : 0;
+  const newEpisodeCount = Math.max(0, Number(count) - reusedCount);
+  const startEpisode = createMode ? reusable[0] ?? maxEpisode + 1 : Number(episode);
+  const projectedTotal = maxEpisode + newEpisodeCount;
+  const overflow = createMode && Number.isFinite(total) && total >= 1 && projectedTotal > total;
+
+  const canSubmit = genre.trim().length > 0 && count >= 1 && !overflow;
 
   const storyController = useRef(new AbortController());
   useEffect(() => {
@@ -284,6 +295,10 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const handOff = async () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
+    // 创建模式：把「全剧规划总集数」落库，后续续写再打开弹窗时读回，不再默认 1。
+    if (createMode && Number.isFinite(total) && total >= 1 && total !== projectTotal) {
+      void API.updateProject(request.projectName, { total_episodes: total }).catch(() => {});
+    }
     // 创建模式：优先复用末尾的空白集，不够再补建；上下文取这批目标集之前的内容，
     // 保证连写从正确的位置接着写（填第 1 集时上下文为空，等于从头起故事）。
     const reused = createMode ? reusable.slice(0, Number(count)) : [];
@@ -438,6 +453,21 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
             {createMode && reusable.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 {t("short_drama_generate_reuse_hint", { count: Math.min(reusable.length, count) })}
+              </p>
+            )}
+            {createMode && (
+              <p className="text-xs text-muted-foreground">
+                {t("short_drama_generate_existing_hint", {
+                  existing: maxEpisode,
+                  start: startEpisode,
+                  projected: projectedTotal,
+                  planned: total,
+                })}
+              </p>
+            )}
+            {overflow && (
+              <p className="text-xs text-destructive">
+                {t("short_drama_generate_overflow", { projected: projectedTotal, planned: total })}
               </p>
             )}
 

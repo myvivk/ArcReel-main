@@ -101,7 +101,7 @@ export function OverviewCanvas({ projectName, projectData, readOnly = false }: O
           }
         />
       ) : (
-        <div className="flex w-full max-w-190 shrink-0 flex-col gap-6">
+        <div className="flex w-full shrink-0 flex-col gap-6">
           <div className="flex flex-col gap-3">
             <OverviewHeader projectName={projectName} data={projectData} readOnly={readOnly} />
             <div className="flex flex-col gap-1.5">

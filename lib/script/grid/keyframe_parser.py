@@ -268,8 +268,8 @@ def join_action_segments(segments: Sequence[ActionSegment], duration_seconds: fl
 
 
 __all__ = [
-    "ActionSegment",
     "SCENE_REVISION_LENGTH",
+    "ActionSegment",
     "SceneShots",
     "ShotFrame",
     "format_grid_prompt",

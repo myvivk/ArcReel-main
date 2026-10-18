@@ -53,6 +53,12 @@ from lib.episode.episode_target_duration import (
     MIN_EPISODE_TARGET_DURATION,
     is_valid_episode_target_duration,
 )
+from lib.episode.episode_total import (
+    MAX_TOTAL_EPISODES,
+    MIN_TOTAL_EPISODES,
+    TOTAL_EPISODES_FIELD,
+    is_valid_total_episodes,
+)
 from lib.episode.source_kinds import SourceKind
 from lib.generation.video_request_facts import ResolutionOverride, VideoRequestFactsError, planning_durations
 from lib.i18n import render_generation_input_error, render_message
@@ -242,6 +248,24 @@ def _validated_episode_target_duration(value: int, _t: Translator) -> int:
     return value
 
 
+def _validated_total_episodes(value: int, _t: Translator) -> int:
+    """把创建 / PATCH 传入的全剧规划总集数收进硬区间，越界即 422。
+
+    区间与 ``lib.episode.episode_total`` 的读时守卫、``patch_project`` 的强制转换、
+    前端输入校验同一把尺（``is_valid_total_episodes``），不在这里另写边界数字。
+    """
+    if not is_valid_total_episodes(value):
+        raise HTTPException(
+            status_code=422,
+            detail=_t(
+                "total_episodes_out_of_range",
+                min=MIN_TOTAL_EPISODES,
+                max=MAX_TOTAL_EPISODES,
+            ),
+        )
+    return value
+
+
 def _validated_speech_rate(value: float, _t: Translator) -> float:
     """把创建 / PATCH 传入的口播语速估算收进硬区间，越界即 422。
 
@@ -265,6 +289,8 @@ class CreateProjectRequest(BaseModel):
     default_duration: int | None = None
     # 单集目标时长（秒）：可选软偏好，非 ad 项目适用；区间校验在 _validated_episode_target_duration。
     episode_target_duration: int | None = None
+    # 全剧规划总集数（集）：可选，非 ad 项目适用；区间校验在 _validated_total_episodes。
+    total_episodes: int | None = None
     # 仅 content_mode=ad：目标总时长（秒）。UI 给四档（15/30/60/90，默认 60），
     # 数据层不硬枚举，任意正整数合法。
     target_duration: int | None = Field(default=None, gt=0)
@@ -318,6 +344,8 @@ class UpdateProjectRequest(BaseModel):
     default_duration: int | None = None
     # 单集目标时长（秒）：显式 null 清除该偏好；ad 项目对字段出现本身即拒绝
     episode_target_duration: int | None = None
+    # 全剧规划总集数（集）：显式 null 清除；ad 项目对字段出现本身即拒绝
+    total_episodes: int | None = None
     # 仅 ad 项目：目标总时长（秒），任意正整数合法，不可清空
     target_duration: int | None = Field(default=None, gt=0)
     # 仅 ad 项目：创作诉求短文本；显式 null 清为空字符串
@@ -700,6 +728,12 @@ async def create_project(
                 if req.episode_target_duration is None
                 else _validated_episode_target_duration(req.episode_target_duration, _t)
             )
+            # 全剧规划总集数：同理在 create_project 之前判，越界请求不留下半成品项目目录。
+            total_episodes = (
+                None
+                if req.total_episodes is None
+                else _validated_total_episodes(req.total_episodes, _t)
+            )
 
             try:
                 manager.create_project(project_name, content_mode=req.content_mode or "narration")
@@ -723,6 +757,7 @@ async def create_project(
                     aspect_ratio=req.aspect_ratio,
                     default_duration=req.default_duration,
                     episode_target_duration=episode_target_duration,
+                    total_episodes=total_episodes,
                     style_template_id=req.style_template_id,
                     extras=extras or None,
                     target_duration=req.target_duration,
@@ -1058,6 +1093,14 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                         project[EPISODE_TARGET_DURATION_FIELD] = _validated_episode_target_duration(
                             req.episode_target_duration, _t
                         )
+                if "total_episodes" in req.model_fields_set:
+                    # 与 episode_target_duration 同口径：ad 项目对字段出现本身即拒绝（含 null）
+                    if is_ad:
+                        raise HTTPException(status_code=400, detail=_t("ad_no_total_episodes"))
+                    if req.total_episodes is None:
+                        project.pop(TOTAL_EPISODES_FIELD, None)
+                    else:
+                        project[TOTAL_EPISODES_FIELD] = _validated_total_episodes(req.total_episodes, _t)
                 if "target_duration" in req.model_fields_set:
                     if not is_ad:
                         raise HTTPException(status_code=400, detail=_t("ad_only_field", field="target_duration"))

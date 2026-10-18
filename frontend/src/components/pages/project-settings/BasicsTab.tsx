@@ -100,6 +100,29 @@ export function BasicsTab({ value, savedValue, onChange, facts }: BasicsTabProps
           )}
         </div>
       </SettingsBlock>
+
+      {/* 全剧规划总集数：仅非 ad 项目；剧情演绎连写 / 续写据此告知 Agent 全剧体量 */}
+      {facts.contentMode !== "ad" && (
+        <SettingsBlock title={t("project_settings_total_episodes_label")}>
+          <input
+            id="total-episodes"
+            type="number"
+            min={1}
+            max={1000}
+            className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+            value={value.totalEpisodes ?? ""}
+            onChange={(event) => {
+              const raw = event.target.value;
+              const parsed = raw === "" ? null : Number(raw);
+              onChange((prev) => ({
+                ...prev,
+                totalEpisodes: parsed !== null && Number.isFinite(parsed) ? Math.floor(parsed) : null,
+              }));
+            }}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">{t("project_settings_total_episodes_hint")}</p>
+        </SettingsBlock>
+      )}
     </div>
   );
 }

@@ -1,0 +1,31 @@
+[gate] ��� HEAD �Ķ� 32 ���ļ���������backend tests conventions frontend
+
+$ uv run ruff check .
+All checks passed!
+[gate] ok in 0s
+
+$ uv run ruff format --check .
+unformatted: File would be reformatted
+   --> server\routers\projects.py:732:30
+    |
+731 |             # 全剧规划总集数：同理在 create_project 之前判，越界请求不留下半成品项目目录。
+    -             total_episodes = (
+    -                 None
+    -                 if req.total_episodes is None
+    -                 else _validated_total_episodes(req.total_episodes, _t)
+    -             )
+732 +             total_episodes = None if req.total_episodes is None else _validated_total_episodes(req.total_episodes, _t)
+733 |
+    |
+
+unformatted: File would be reformatted
+   --> 方案设计\3. 镜头宫格生成方案.md:296:23
+    |
+295 |     ...
+    -     prompt: str = ""                # 单分镜弹窗手填的宫格提示词（D-3），批量路径为空
+296 +     prompt: str = ""  # 单分镜弹窗手填的宫格提示词（D-3），批量路径为空
+297 |     scene_revision: str | None = None  # 写 prompt 时的 scene 指纹，供视频提示词时效比对（D-18）
+    |
+
+2 files would be reformatted, 2052 files already formatted
+[gate] exit 1 in 0s

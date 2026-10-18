@@ -39,6 +39,12 @@ from lib.episode.episode_target_duration import (
     MIN_EPISODE_TARGET_DURATION,
     is_valid_episode_target_duration,
 )
+from lib.episode.episode_total import (
+    MAX_TOTAL_EPISODES,
+    MIN_TOTAL_EPISODES,
+    TOTAL_EPISODES_FIELD,
+    is_valid_total_episodes,
+)
 from lib.episode.source_kinds import SOURCE_KIND_FIELD, SOURCE_KINDS, is_source_kind
 from lib.infra.json_io import load_json_or_none
 from lib.infra.path_safety import PathTraversalError, safe_join
@@ -388,6 +394,9 @@ class DataValidator:
         if project.get(EPISODE_TARGET_DURATION_FIELD) is not None:
             errors.append(_m("val_ad_no_episode_target_duration"))
 
+        if project.get(TOTAL_EPISODES_FIELD) is not None:
+            errors.append(_m("val_ad_no_total_episodes"))
+
         if project.get("grid_storyboard") is True:
             errors.append(_m("val_ad_no_grid_storyboard"))
 
@@ -459,6 +468,22 @@ class DataValidator:
                         value=episode_target_duration,
                         min=MIN_EPISODE_TARGET_DURATION,
                         max=MAX_EPISODE_TARGET_DURATION,
+                    )
+                )
+
+        # 全剧规划总集数（集）：可选字段，缺省即未设；出现即须是落在硬区间内的正整数。
+        total_episodes = project.get(TOTAL_EPISODES_FIELD)
+        if total_episodes is not None:
+            if isinstance(total_episodes, bool) or not isinstance(total_episodes, int):
+                errors.append(_m("val_field_type_integer", field=TOTAL_EPISODES_FIELD))
+            elif not is_valid_total_episodes(total_episodes):
+                errors.append(
+                    _m(
+                        "val_field_out_of_range",
+                        field=TOTAL_EPISODES_FIELD,
+                        value=total_episodes,
+                        min=MIN_TOTAL_EPISODES,
+                        max=MAX_TOTAL_EPISODES,
                     )
                 )
 

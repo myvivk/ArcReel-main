@@ -51,7 +51,11 @@ export interface EpisodeAssetGenerationResult extends AssetSheetBatchSubmitted {
   registered: Partial<Record<AssetSheetType, string[]>>;
   /** 名字被别的资产类型占用、没能登记的项。 */
   conflicts: { name: string; asset_type: AssetSheetType; reason: string }[];
-  /** 登记了但缺描述、进不了这一批生成的资产图。 */
+  /** 本次按本集剧本补上描述的资产；已有描述的一律不动。 */
+  description_filled: { asset_type: AssetSheetType; name: string }[];
+  /** 补全调用失败（模型截断或调用异常）的资产，描述仍为空。 */
+  description_fill_failed: { asset_type: AssetSheetType; name: string; reason: string }[];
+  /** 描述没补上、进不了这一批生成的资产图。 */
   without_description: AssetSheetRef[];
 }
 

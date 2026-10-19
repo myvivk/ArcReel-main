@@ -55,7 +55,7 @@ export function EpisodeAssetsView({ projectName, episode, projectData }: { proje
   const goToAll = () => setLocation(`/${activeType === "character" ? "characters" : activeType === "scene" ? "scenes" : "props"}`);
   const scriptPath = `/episodes/${episode}`;
 
-  /** 一键：抽取本集剧本引用 → 补登记未登记的资产 → 按集提交资产图批量生成。 */
+  /** 一键：抽取本集剧本引用 → 补登记未登记的资产 → 按本集剧本补描述 → 批量生成资产图。 */
   const handleGenerate = async () => {
     setGenerating(true);
     try {
@@ -76,6 +76,25 @@ export function EpisodeAssetsView({ projectName, episode, projectData }: { proje
         useAppStore
           .getState()
           .pushToast(t("episode_assets_registered", { ns: "dashboard", count: registeredCount }), "success");
+      }
+      if (result.description_filled.length > 0) {
+        useAppStore
+          .getState()
+          .pushToast(
+            t("episode_assets_description_filled", { ns: "dashboard", count: result.description_filled.length }),
+            "success",
+          );
+      }
+      if (result.description_fill_failed.length > 0) {
+        useAppStore
+          .getState()
+          .pushToast(
+            t("episode_assets_description_fill_failed", {
+              ns: "dashboard",
+              count: result.description_fill_failed.length,
+            }),
+            "warning",
+          );
       }
       if (result.without_description.length > 0) {
         useAppStore

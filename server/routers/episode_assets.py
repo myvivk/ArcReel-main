@@ -4,10 +4,12 @@
 （集层批量生成资产图、Agent 按集列出待生成资产都取这份），本路由只按集取正式脚本并把它
 落成接口形状。
 
-一键链路（:func:`generate_episode_assets`）把资产页这三步合成一个请求：从本集正式脚本的
-引用数组抽取名字 → 把还没登记的名字补进项目资产表并落盘 → 按集范围提交资产图批量生成。
-登记与生成之间不预览：抽取出来的名字就是本集剧本写到的名字，登记只是补条目、不动已登记
-资产，而生成前要给出名单与预估费用就必须先登记——本集引用是只读不出来未登记名字的。
+一键链路（:func:`generate_episode_assets`）把资产页这四步合成一个请求：从本集正式脚本的
+引用数组抽取名字 → 把还没登记的名字补进项目资产表并落盘 → 给缺描述的资产按本集剧本 AI 补全
+描述（D-35：本集定稿优先）→ 按集范围提交资产图批量生成。
+
+补全夹在登记与生成之间，是因为资产图按描述出图、缺描述会被准入挡下；原生剧本只写名字不
+写外观，不补就是「登记了 N 个、出图 0 张」。补全只填空字段，已登记资产的描述一律不动。
 """
 
 from __future__ import annotations
@@ -36,6 +38,11 @@ from server.services.admission.asset_sheet_batch import (
     load_asset_sheet_batch_plan,
     load_episode_script,
     submit_asset_sheet_batch,
+)
+from server.services.asset_ai_fill import (
+    apply_asset_fill,
+    assets_without_description,
+    fill_assets,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,17 +137,63 @@ def register_episode_assets(project_name: str, episode: int) -> tuple[dict[str, 
     return registered, conflicts
 
 
+async def fill_episode_asset_descriptions(
+    project_name: str, episode: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """给本集引用到、描述为空的资产按本集剧本补全描述，返回 ``(已补全, 补全失败)``。
+
+    补全依据是**本集正式剧本**（D-35）：本集里该资产出场的场景与台词优先于工厂源稿，
+    与「本集资产视图按本集定稿收窄」的语义一致。只填尚为空的字段，已有描述一律不动。
+
+    N 个资产并发调模型、但只在一次项目锁里批量写回：逐条落盘会互相覆盖，也会把项目写 N 遍。
+    """
+
+    manager = get_project_manager()
+    project = await asyncio.to_thread(manager.load_project, project_name)
+    script = load_episode_script(manager, project_name, episode)
+    if script is None:
+        return [], []
+    targets = assets_without_description(project, script_asset_names(script))
+    if not targets:
+        return [], []
+    fills, failed = await fill_assets(
+        project, manager.get_project_path(project_name), targets, project_name, episode=episode
+    )
+    if not fills:
+        return [], failed
+    filled: list[dict[str, str]] = []
+
+    def _mutate(current: dict[str, Any]) -> None:
+        for (asset_type, asset_name), fill in fills.items():
+            spec = ASSET_SPECS.get(asset_type)
+            if spec is None:
+                continue
+            bucket = current.get(spec.bucket_key)
+            if not isinstance(bucket, dict):
+                continue
+            entry = bucket.get(asset_name)
+            if not isinstance(entry, dict):
+                continue
+            if "description" in apply_asset_fill(entry, asset_type, asset_name, fill):
+                filled.append({"asset_type": asset_type, "name": asset_name})
+
+    with project_change_source("webui"):
+        await asyncio.to_thread(manager.update_project, project_name, _mutate)
+    return filled, failed
+
+
 @router.post("/projects/{name}/episodes/{episode}/generate-assets")
 async def generate_episode_assets(name: str, episode: int, user: CurrentUser, _t: Translator) -> dict[str, Any]:
-    """一键：抽取本集剧本引用 → 补登记未登记资产 → 按集提交资产图批量生成。
+    """一键：抽取本集剧本引用 → 补登记未登记资产 → 补描述 → 按集提交资产图批量生成。
 
-    提交不等待结果，成员任务的终态由界面按任务跟踪；缺描述的资产登记了但进不了这一批，
+    提交不等待结果，成员任务的终态由界面按任务跟踪；补不出描述或补全失败的资产进不了这一批，
     逐条回执在 ``members`` 的 ``problem_code`` 里（``asset_description_required`` 等），
-    同时另给一份 ``without_description`` 供界面直接提示「先补描述」。
+    同时另给一份 ``without_description`` 供界面直接提示「描述没补上」。
     """
 
     try:
         registered, conflicts = await asyncio.to_thread(register_episode_assets, name, episode)
+        filled, fill_failed = await fill_episode_asset_descriptions(name, episode)
         _project, plan = await load_asset_sheet_batch_plan(
             get_project_manager(),
             get_generation_queue(),
@@ -176,6 +229,8 @@ async def generate_episode_assets(name: str, episode: int, user: CurrentUser, _t
         "batch_id": batch.batch_id,
         "members": members,
         "registered": registered,
+        "description_filled": filled,
+        "description_fill_failed": fill_failed,
         "conflicts": conflicts,
         "without_description": [
             {key: member[key] for key in ("unit_id", "asset_type", "name", "derivative")}

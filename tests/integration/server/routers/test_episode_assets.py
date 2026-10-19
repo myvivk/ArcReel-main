@@ -18,6 +18,7 @@ from lib.project.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import episode_assets
+from server.services import asset_ai_fill
 from tests.auth_deps import AUTH_DEPENDENCIES, override_auth
 
 SCRIPT_FILE = "scripts/episode_1.json"
@@ -171,12 +172,27 @@ async def generate_client(
         yield http, pm, pm.get_project_path("demo")
 
 
+def _patch_fill(monkeypatch, *, description: str = "剧本补全出的描述", fail: bool = False, sink=None):
+    """替掉文本模型调用：补全链路本身（并发、按本集取上下文、批量写回）仍走真实代码。"""
+
+    async def _fake(project_name: str, asset_type: str, name: str, context: dict) -> asset_ai_fill.AssetFillResponse:
+        if sink is not None:
+            sink.append((asset_type, name, context))
+        if fail:
+            raise RuntimeError("text model unavailable")
+        return asset_ai_fill.AssetFillResponse(description=description)
+
+    monkeypatch.setattr(asset_ai_fill, "generate_asset_fill", _fake)
+
+
 class TestGenerateEpisodeAssets:
-    async def test_registers_the_referenced_names_then_queues_the_episode_batch(self, generate_client):
+    async def test_fills_descriptions_then_queues_the_episode_batch(self, generate_client, monkeypatch):
         client, pm, project_path = generate_client
-        # 场景已登记且有描述，能直接出图；角色与道具只在剧本里出现，本条链路补登记。
+        # 场景已登记且有描述；角色与道具只在剧本里出现，本条链路补登记并补描述。
         pm.add_project_scene("demo", "茶楼", "临街二层")
         atomic_write_json(project_path / SCRIPT_FILE, _script())
+        fills: list[tuple[str, str, dict]] = []
+        _patch_fill(monkeypatch, sink=fills)
 
         response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
 
@@ -184,19 +200,50 @@ class TestGenerateEpisodeAssets:
         body = response.json()
         assert body["registered"] == {"character": ["阿岚"], "prop": ["玉佩"]}
         assert body["conflicts"] == []
-        project = pm.load_project("demo")
-        assert "阿岚" in project["characters"]
-        assert "玉佩" in project["props"]
 
+        # 只补缺描述的：已登记有描述的场景不进补全名单，描述也不被动过。
+        assert {(asset_type, name) for asset_type, name, _ in fills} == {("character", "阿岚"), ("prop", "玉佩")}
+        # D-35：本集剧本是补全依据，本集摘录单独成组且排在项目设定之前。
+        assert all(context["focus_episode"] == "1" for _, _, context in fills)
+        assert all(context["episode_excerpts"] for _, _, context in fills)
+        assert body["description_filled"] == [
+            {"asset_type": "character", "name": "阿岚"},
+            {"asset_type": "prop", "name": "玉佩"},
+        ]
+
+        project = pm.load_project("demo")
+        assert project["characters"]["阿岚"]["description"] == "剧本补全出的描述"
+        assert project["props"]["玉佩"]["description"] == "剧本补全出的描述"
+        assert project["scenes"]["茶楼"]["description"] == "临街二层"
+
+        # 补上描述后三者都进得了这一批，不再有「登记了却出不了图」。
         members = {member["unit_id"]: member for member in body["members"]}
-        # 补登记的资产没有描述，进不了这一批；已登记有描述的场景拿到了任务。
+        assert members["scene/茶楼"]["task_id"]
+        assert members["character/阿岚"]["task_id"]
+        assert members["prop/玉佩"]["task_id"]
+        assert body["without_description"] == []
+
+    async def test_a_failed_fill_is_reported_and_blocks_only_that_asset(self, generate_client, monkeypatch):
+        client, pm, project_path = generate_client
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+        atomic_write_json(project_path / SCRIPT_FILE, _script())
+        _patch_fill(monkeypatch, fail=True)
+
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert {(item["asset_type"], item["name"]) for item in body["description_fill_failed"]} == {
+            ("character", "阿岚"),
+            ("prop", "玉佩"),
+        }
+        assert body["description_filled"] == []
+        members = {member["unit_id"]: member for member in body["members"]}
+        # 补全失败不拖垮别的资产：已登记有描述的场景照常出图。
         assert members["scene/茶楼"]["task_id"]
         assert members["character/阿岚"]["status"] == "blocked"
-        assert members["prop/玉佩"]["status"] == "blocked"
-        assert [item["unit_id"] for item in body["without_description"]] == [
-            "character/阿岚",
-            "prop/玉佩",
-        ]
+        assert [item["unit_id"] for item in body["without_description"]] == ["character/阿岚", "prop/玉佩"]
+        assert pm.load_project("demo")["characters"]["阿岚"]["description"] == ""
 
     async def test_an_episode_without_its_formal_script_is_rejected(self, generate_client):
         client, _pm, _project_path = generate_client

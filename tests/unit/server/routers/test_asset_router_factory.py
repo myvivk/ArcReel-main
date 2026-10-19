@@ -498,7 +498,7 @@ class TestAssetAiFill:
     """ai-fill 端点：用 mock 的文本生成器补全空白字段，且不覆盖已有内容。"""
 
     def _client_with_generator(self, monkeypatch, payload):
-        from server.routers import _asset_router_factory as factory_mod
+        from server.services import asset_ai_fill
 
         fake_pm = _FakePM()
         monkeypatch.setattr(characters, "get_project_manager", lambda: fake_pm)
@@ -511,7 +511,7 @@ class TestAssetAiFill:
             async def generate(self, request, project_name=None, *, require_complete=False):
                 return SimpleNamespace(text=json.dumps(payload))
 
-        monkeypatch.setattr(factory_mod, "TextGenerator", _FakeGenerator)
+        monkeypatch.setattr(asset_ai_fill, "TextGenerator", _FakeGenerator)
 
         app = FastAPI()
         register_error_handlers(app)
@@ -531,10 +531,10 @@ class TestAssetAiFill:
         }
 
     def test_ai_fill_prompt_uses_shared_asset_description_rules(self):
-        from server.routers._asset_router_factory import _build_ai_fill_prompt
+        from server.services.asset_ai_fill import build_ai_fill_prompt
 
         for asset_type in ("character", "scene", "prop", "product"):
-            prompt = _build_ai_fill_prompt(asset_type, "测试资产", {})
+            prompt = build_ai_fill_prompt(asset_type, "测试资产", {})
             assert "只写原文或用户明确设定支持的事实" in prompt
             assert "不得用抽象品性推断" in prompt
             assert "不得依据场景名称补造" in prompt
@@ -611,39 +611,39 @@ class TestAssetContextCanon:
         return tmp_path / "short_drama_project"
 
     def test_character_canon_comes_from_bible(self, tmp_path):
-        from server.routers._asset_router_factory import _collect_asset_context
+        from server.services.asset_ai_fill import collect_asset_context
 
-        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
+        context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
 
         canon = "\n".join(context["canon"])
         assert "三十岁上下，寸头，旧夹克磨白" in canon
         assert "宽脸浓眉" not in canon  # 只取该角色那一段
 
     def test_prop_canon_comes_from_episode_marker_lines(self, tmp_path):
-        from server.routers._asset_router_factory import _collect_asset_context
+        from server.services.asset_ai_fill import collect_asset_context
 
-        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "prop", "铁门", {})
+        context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "prop", "铁门", {})
 
         canon = "\n".join(context["canon"])
         assert "锈迹斑斑，门轴下垂" in canon
         assert "episode_01.md" in canon
 
     def test_scene_canon_includes_outline_and_marker_lines(self, tmp_path):
-        from server.routers._asset_router_factory import _collect_asset_context
+        from server.services.asset_ai_fill import collect_asset_context
 
-        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "scene", "城郊仓库", {})
+        context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "scene", "城郊仓库", {})
 
         canon = "\n".join(context["canon"])
         assert "水泥地，铁门单侧顶光" in canon
 
     def test_prompt_marks_canon_as_priority(self, tmp_path):
-        from server.routers._asset_router_factory import (
-            _build_ai_fill_prompt,
-            _collect_asset_context,
+        from server.services.asset_ai_fill import (
+            build_ai_fill_prompt,
+            collect_asset_context,
         )
 
-        context = _collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
-        prompt = _build_ai_fill_prompt("character", "林辰", context)
+        context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
+        prompt = build_ai_fill_prompt("character", "林辰", context)
 
         assert "【项目设定｜优先依据】" in prompt
         assert "三十岁上下，寸头，旧夹克磨白" in prompt

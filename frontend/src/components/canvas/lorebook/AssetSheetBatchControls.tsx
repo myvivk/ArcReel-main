@@ -14,10 +14,12 @@ export function AssetSheetBatchControls({
   projectName,
   assetType,
   rows,
+  scope,
 }: {
   projectName: string;
   assetType: AssetSheetType;
   rows: AssetSheetStatusRow[];
+  scope?: { episode_id: number };
 }) {
   const { t } = useTranslation("assets");
   const [open, setOpen] = useState(false);
@@ -43,7 +45,7 @@ export function AssetSheetBatchControls({
       {open && (
         <AssetSheetBatchDialog
           projectName={projectName}
-          scope={{ asset_type: assetType }}
+          scope={scope ?? { asset_type: assetType }}
           onClose={() => setOpen(false)}
         />
       )}

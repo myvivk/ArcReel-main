@@ -66,6 +66,7 @@ export function EpisodePageHeader({
   const label: Record<EpisodeView, string> = {
     setting: t("episode_view_setting"),
     plan: t("episode_view_plan"),
+    assets: t("episode_view_assets"),
     grid: t("episode_view_grid"),
     board: boardLabel,
     source: sourceLabel ?? t("episode_view_source"),

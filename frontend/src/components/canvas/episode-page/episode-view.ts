@@ -16,10 +16,10 @@
 import { EPISODE_VIEW_EDIT, EPISODE_VIEW_PARAM, EPISODE_VIEW_SOURCE } from "@/app-routes";
 import type { GenerationRoute } from "@/utils/generation-mode";
 
-export const EPISODE_VIEWS = ["setting", "plan", "grid", "board", EPISODE_VIEW_SOURCE, EPISODE_VIEW_EDIT] as const;
+export const EPISODE_VIEWS = ["setting", "plan", "assets", "grid", "board", EPISODE_VIEW_SOURCE, EPISODE_VIEW_EDIT] as const;
 export type EpisodeView = (typeof EPISODE_VIEWS)[number];
 /** 画布承担的视图；故事设定、集原文与剪辑视图替换整个画布。 */
-export type CanvasView = Exclude<EpisodeView, "setting" | "edit" | "source">;
+export type CanvasView = Exclude<EpisodeView, "setting" | "assets" | "edit" | "source">;
 
 /** 决定集页有哪些视图的事实，由路由层按项目与这一集算出。 */
 export interface EpisodeViewFacts {
@@ -76,6 +76,7 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
   // 普通集：脚本规划/剧本/分镜/剪辑常驻显示且可点；工厂集只给剧本/分镜/剪辑（不藏、不置灰）。
   if (!factory) tabs.push({ view: "plan", disabled: false });
   tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
+  tabs.push({ view: "assets", disabled: false });
   if (facts.grid) tabs.push({ view: "grid", disabled: false });
   tabs.push({ view: "board", disabled: false });
   tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });

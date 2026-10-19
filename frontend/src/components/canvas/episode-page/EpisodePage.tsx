@@ -43,6 +43,7 @@ import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeader
 import { EpisodePageHeader, episodeViewTabId } from "./EpisodePageHeader";
 import { EpisodeViewFactsProvider } from "./EpisodeViewScope";
 import { StorySettingView } from "./StorySettingView";
+import { EpisodeAssetsView } from "./EpisodeAssetsView";
 
 // 剪辑视图（时间线播放器与轨道）只在切到「剪辑」时用到，按需拉取
 const EditTimelineView = lazyNamed(() => import("@/components/canvas/edit/EditTimelineView"), "EditTimelineView");
@@ -244,6 +245,8 @@ function EpisodePageContent({
         <StorySettingView projectName={projectName} overview={projectData?.overview} readOnly={demo} />
       </EpisodeViewFactsProvider>
     );
+  } else if (view === "assets") {
+    body = <EpisodeAssetsView projectName={projectName} episode={episode} projectData={projectData} />;
   } else if (view === "source") {
     // 「原文」视图：短剧工厂导入集编辑其持久化 Markdown 源稿，并显式重新导入正式脚本；
     // 其余集就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。

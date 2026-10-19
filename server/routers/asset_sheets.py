@@ -23,7 +23,6 @@ from lib.config.resolver import ConfigResolver
 from lib.db import async_session_factory
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.api_errors import NotFoundError
-from lib.project.asset_derivatives import split_derivative_artifact_id
 from lib.project.project_manager import get_project_manager
 from server.auth import CurrentUser
 from server.services.admission.asset_sheet_batch import (
@@ -33,6 +32,7 @@ from server.services.admission.asset_sheet_batch import (
     AssetSheetBatchPlan,
     AssetSheetScope,
     asset_sheet_statuses,
+    asset_unit_view,
     load_asset_sheet_batch_plan,
     submit_asset_sheet_batch,
 )
@@ -70,15 +70,6 @@ class AssetSheetBatchRequest(BaseModel):
 
     def scope(self) -> AssetSheetScope:
         return AssetSheetScope(asset_type=self.asset_type, episode_id=self.episode_id)
-
-
-def _unit_view(plan: AssetSheetBatchPlan, unit_id: str) -> dict[str, Any]:
-    unit = plan.units.get(unit_id)
-    if unit is None:
-        asset_type, _, name = unit_id.partition("/")
-        return {"unit_id": unit_id, "asset_type": asset_type, "name": name, "derivative": None}
-    owner, derivative = split_derivative_artifact_id(unit.name) if unit.is_derivative else (unit.name, None)
-    return {"unit_id": unit_id, "asset_type": unit.asset_type, "name": owner, "derivative": derivative}
 
 
 def _skip_reason(code: str) -> str:
@@ -129,12 +120,12 @@ async def preview_asset_sheet_batch(project_name: str, request: AssetSheetBatchR
     project, plan = await _plan(project_name, request, user.id)
     new_ids = plan.new_task_ids
     skipped = [
-        {**_unit_view(plan, unit_id), "reason": "generating"}
+        {**asset_unit_view(plan, unit_id), "reason": "generating"}
         for unit_id in plan.target_ids
         if unit_id in plan.generating
     ]
     skipped.extend(
-        {**_unit_view(plan, item.unit_id), "reason": _skip_reason(item.problem.code if item.problem else "")}
+        {**asset_unit_view(plan, item.unit_id), "reason": _skip_reason(item.problem.code if item.problem else "")}
         for item in plan.preflight.items
     )
     estimated = await estimate_image_batch_cost(
@@ -144,7 +135,9 @@ async def preview_asset_sheet_batch(project_name: str, request: AssetSheetBatchR
         session_factory=async_session_factory,
     )
     return {
-        "targets": [{**_unit_view(plan, unit_id), "depends_on": plan.dependencies.get(unit_id)} for unit_id in new_ids],
+        "targets": [
+            {**asset_unit_view(plan, unit_id), "depends_on": plan.dependencies.get(unit_id)} for unit_id in new_ids
+        ],
         "skipped": skipped,
         "estimated_cost": estimated or None,
     }
@@ -167,7 +160,7 @@ async def submit_asset_sheet_batch_route(project_name: str, request: AssetSheetB
         "batch_id": batch.batch_id,
         "members": [
             {
-                **_unit_view(plan, member.unit_id),
+                **asset_unit_view(plan, member.unit_id),
                 "task_id": task_by_unit[member.unit_id].task_id if member.unit_id in task_by_unit else None,
                 "deduped": member.deduped,
                 "status": member.status,

@@ -1,18 +1,25 @@
-"""「本集资产」：GET /projects/{name}/episodes/{episode}/referenced-assets。"""
+"""「本集资产」：引用的已登记资产，与一键「抽取 → 登记 → 生成图」。"""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from lib.custom_provider import make_provider_id
+from lib.db.repositories.custom_provider_repo import CustomProviderRepository
+from lib.generation.generation_queue import GenerationQueue
 from lib.infra.json_io import atomic_write_json
 from lib.project.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import episode_assets
-from tests.auth_deps import AUTH_DEPENDENCIES
+from server.services import asset_ai_fill
+from tests.auth_deps import AUTH_DEPENDENCIES, override_auth
 
 SCRIPT_FILE = "scripts/episode_1.json"
 
@@ -104,3 +111,143 @@ class TestReferencedAssetsLookups:
         with client:
             assert client.get("/api/v1/projects/missing/episodes/1/referenced-assets").status_code == 404
             assert client.get("/api/v1/projects/demo/episodes/9/referenced-assets").status_code == 404
+
+
+class TestScriptAssetNames:
+    def test_reads_each_type_from_its_own_reference_arrays(self):
+        script = _script()
+
+        assert episode_assets.script_asset_names(script) == {
+            "character": ["阿岚"],
+            "scene": ["茶楼"],
+            "prop": ["玉佩"],
+        }
+
+    def test_a_speaker_without_a_reference_array_is_not_a_registration(self):
+        # 说话人可以是未登记的群演：它不构成「要登记这个资产」。
+        script = _script()
+        script["scenes"][0]["characters_in_scene"] = []
+        script["scenes"][0]["utterances"] = [{"speaker": "路人", "text": "让一让"}]
+
+        assert episode_assets.script_asset_names(script)["character"] == []
+
+
+@pytest.fixture
+async def generate_client(
+    session_factory, tmp_path: Path, monkeypatch
+) -> AsyncIterator[tuple[httpx.AsyncClient, ProjectManager, Path]]:
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create_project("demo")
+    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    pm.update_project("demo", lambda project: project.update({"episodes": [_episode()]}))
+    queue = GenerationQueue(session_factory=session_factory, project_manager=pm)
+    await queue.acquire_or_renew_worker_lease(name="default", owner_id="worker-a", ttl_seconds=60)
+    async with session_factory() as session:
+        provider = await CustomProviderRepository(session).create_provider(
+            display_name="Images",
+            discovery_format="openai",
+            base_url="https://api.example.com",
+            api_key="test",
+            models=[
+                {
+                    "model_id": "text-image",
+                    "display_name": "Text image",
+                    "endpoint": "openai-images-generations",
+                    "price_unit": "image",
+                    "price_input": 0.04,
+                    "currency": "USD",
+                }
+            ],
+        )
+        provider_id = make_provider_id(provider.id)
+        await session.commit()
+    pm.update_project("demo", lambda project: project.update({"image_provider_t2i": f"{provider_id}/text-image"}))
+    monkeypatch.setattr(episode_assets, "get_project_manager", lambda: pm)
+    monkeypatch.setattr(episode_assets, "get_generation_queue", lambda: queue)
+    app = FastAPI()
+    register_error_handlers(app)
+    override_auth(app)
+    app.include_router(episode_assets.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        yield http, pm, pm.get_project_path("demo")
+
+
+def _patch_fill(monkeypatch, *, description: str = "剧本补全出的描述", fail: bool = False, sink=None):
+    """替掉文本模型调用：补全链路本身（并发、按本集取上下文、批量写回）仍走真实代码。"""
+
+    async def _fake(project_name: str, asset_type: str, name: str, context: dict) -> asset_ai_fill.AssetFillResponse:
+        if sink is not None:
+            sink.append((asset_type, name, context))
+        if fail:
+            raise RuntimeError("text model unavailable")
+        return asset_ai_fill.AssetFillResponse(description=description)
+
+    monkeypatch.setattr(asset_ai_fill, "generate_asset_fill", _fake)
+
+
+class TestGenerateEpisodeAssets:
+    async def test_fills_descriptions_then_queues_the_episode_batch(self, generate_client, monkeypatch):
+        client, pm, project_path = generate_client
+        # 场景已登记且有描述；角色与道具只在剧本里出现，本条链路补登记并补描述。
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+        atomic_write_json(project_path / SCRIPT_FILE, _script())
+        fills: list[tuple[str, str, dict]] = []
+        _patch_fill(monkeypatch, sink=fills)
+
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["registered"] == {"character": ["阿岚"], "prop": ["玉佩"]}
+        assert body["conflicts"] == []
+
+        # 只补缺描述的：已登记有描述的场景不进补全名单，描述也不被动过。
+        assert {(asset_type, name) for asset_type, name, _ in fills} == {("character", "阿岚"), ("prop", "玉佩")}
+        # D-35：本集剧本是补全依据，本集摘录单独成组且排在项目设定之前。
+        assert all(context["focus_episode"] == "1" for _, _, context in fills)
+        assert all(context["episode_excerpts"] for _, _, context in fills)
+        assert body["description_filled"] == [
+            {"asset_type": "character", "name": "阿岚"},
+            {"asset_type": "prop", "name": "玉佩"},
+        ]
+
+        project = pm.load_project("demo")
+        assert project["characters"]["阿岚"]["description"] == "剧本补全出的描述"
+        assert project["props"]["玉佩"]["description"] == "剧本补全出的描述"
+        assert project["scenes"]["茶楼"]["description"] == "临街二层"
+
+        # 补上描述后三者都进得了这一批，不再有「登记了却出不了图」。
+        members = {member["unit_id"]: member for member in body["members"]}
+        assert members["scene/茶楼"]["task_id"]
+        assert members["character/阿岚"]["task_id"]
+        assert members["prop/玉佩"]["task_id"]
+        assert body["without_description"] == []
+
+    async def test_a_failed_fill_is_reported_and_blocks_only_that_asset(self, generate_client, monkeypatch):
+        client, pm, project_path = generate_client
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+        atomic_write_json(project_path / SCRIPT_FILE, _script())
+        _patch_fill(monkeypatch, fail=True)
+
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert {(item["asset_type"], item["name"]) for item in body["description_fill_failed"]} == {
+            ("character", "阿岚"),
+            ("prop", "玉佩"),
+        }
+        assert body["description_filled"] == []
+        members = {member["unit_id"]: member for member in body["members"]}
+        # 补全失败不拖垮别的资产：已登记有描述的场景照常出图。
+        assert members["scene/茶楼"]["task_id"]
+        assert members["character/阿岚"]["status"] == "blocked"
+        assert [item["unit_id"] for item in body["without_description"]] == ["character/阿岚", "prop/玉佩"]
+        assert pm.load_project("demo")["characters"]["阿岚"]["description"] == ""
+
+    async def test_an_episode_without_its_formal_script_is_rejected(self, generate_client):
+        client, _pm, _project_path = generate_client
+
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+
+        assert response.status_code == 409

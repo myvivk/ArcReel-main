@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "wouter";
+import { Loader2 } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
 import { AssetGallery } from "@/components/canvas/lorebook/AssetGallery";
+import { useAppStore } from "@/stores/app-store";
+import { useAssetSheetBatchStore } from "@/stores/asset-sheet-batch-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import type { AssetSheetStatusRow, AssetSheetType, ProjectData } from "@/types";
 import { errMsg } from "@/utils/async";
@@ -25,6 +28,7 @@ export function EpisodeAssetsView({ projectName, episode, projectData }: { proje
   const [retry, setRetry] = useState(0);
   const [activeType, setActiveType] = useState<AssetSheetType>("character");
   const [statuses, setStatuses] = useState<AssetSheetStatusRow[]>([]);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -49,6 +53,74 @@ export function EpisodeAssetsView({ projectName, episode, projectData }: { proje
   }, [result]);
 
   const goToAll = () => setLocation(`/${activeType === "character" ? "characters" : activeType === "scene" ? "scenes" : "props"}`);
+  const scriptPath = `/episodes/${episode}`;
+
+  /** 一键：抽取本集剧本引用 → 补登记未登记的资产 → 按本集剧本补描述 → 批量生成资产图。 */
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const result = await API.generateEpisodeAssets(projectName, episode);
+      const members = result.members.filter((member) => member.status !== "blocked");
+      if (members.length > 0) {
+        useAssetSheetBatchStore.getState().track({ batchId: result.batch_id, projectName, members });
+      }
+      const queuedCount = members.filter((member) => member.task_id).length;
+      const registeredCount = Object.values(result.registered).reduce(
+        (sum, names) => sum + (names?.length ?? 0),
+        0,
+      );
+      if (queuedCount > 0) {
+        useAppStore.getState().pushToast(t("sheet_batch_submitted", { ns: "assets", count: queuedCount }), "success");
+      }
+      if (registeredCount > 0) {
+        useAppStore
+          .getState()
+          .pushToast(t("episode_assets_registered", { ns: "dashboard", count: registeredCount }), "success");
+      }
+      if (result.description_filled.length > 0) {
+        useAppStore
+          .getState()
+          .pushToast(
+            t("episode_assets_description_filled", { ns: "dashboard", count: result.description_filled.length }),
+            "success",
+          );
+      }
+      if (result.description_fill_failed.length > 0) {
+        useAppStore
+          .getState()
+          .pushToast(
+            t("episode_assets_description_fill_failed", {
+              ns: "dashboard",
+              count: result.description_fill_failed.length,
+            }),
+            "warning",
+          );
+      }
+      if (result.without_description.length > 0) {
+        useAppStore
+          .getState()
+          .pushToast(
+            t("episode_assets_missing_description", {
+              ns: "dashboard",
+              count: result.without_description.length,
+            }),
+            "warning",
+          );
+      }
+      setRetry((value) => value + 1);
+    } catch (err) {
+      useAppStore.getState().pushToast(errMsg(err), "error");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const generateButton = (
+    <Button variant="default" size="sm" disabled={generating} onClick={() => void handleGenerate()}>
+      {generating && <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />}
+      {generating ? t("episode_assets_generating", { ns: "dashboard" }) : t("episode_assets_generate", { ns: "dashboard" })}
+    </Button>
+  );
   if (error) return <div className="flex flex-col items-center gap-3 p-8" role="alert"><p>{t("episode_assets_load_failed", { ns: "dashboard", message: error })}</p><Button variant="outline" onClick={() => { setError(null); setResult(null); setRetry((value) => value + 1); }}>{t("retry", { ns: "dashboard" })}</Button></div>;
   if (!result) return <div className="p-8 text-sm text-muted-foreground" role="status">{t("episode_assets_loading", { ns: "dashboard" })}</div>;
 
@@ -65,12 +137,29 @@ export function EpisodeAssetsView({ projectName, episode, projectData }: { proje
             {t(`type.${type}`)} <span className="ml-1 text-xs text-muted-foreground">{count} / {Object.keys(projectData?.[type === "character" ? "characters" : type === "scene" ? "scenes" : "props"] ?? {}).length}</span>
           </Button>;
         })}
-        <Button className="ml-auto" variant="outline" size="sm" onClick={goToAll}>{t("episode_assets_all", { ns: "dashboard", type: title, count: total })}</Button>
+        <div className="ml-auto flex items-center gap-2">
+          {generateButton}
+          <Button variant="outline" size="sm" onClick={goToAll}>{t("episode_assets_all", { ns: "dashboard", type: title, count: total })}</Button>
+        </div>
       </nav>
       {Object.keys(assets).length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-          <p className="text-sm font-medium">{t("episode_assets_empty", { ns: "dashboard", type: title })}</p>
-          <p className="text-sm text-muted-foreground">{result.has_script ? t("episode_assets_empty_hint", { ns: "dashboard" }) : t("episode_assets_no_script", { ns: "dashboard" })}</p>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+          {result.has_script ? (
+            <>
+              <p className="text-sm font-medium">{t("episode_assets_empty", { ns: "dashboard", type: title })}</p>
+              <p className="text-sm text-muted-foreground">{t("episode_assets_empty_hint", { ns: "dashboard" })}</p>
+              <div className="flex items-center gap-2">
+                {generateButton}
+                <Button variant="outline" size="sm" onClick={goToAll}>{t("episode_assets_all", { ns: "dashboard", type: title, count: total })}</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium">{t("episode_assets_no_script", { ns: "dashboard" })}</p>
+              <p className="text-sm text-muted-foreground">{t("episode_assets_no_script_hint", { ns: "dashboard" })}</p>
+              <Button variant="default" size="sm" onClick={() => setLocation(scriptPath)}>{t("episode_assets_go_script", { ns: "dashboard" })}</Button>
+            </>
+          )}
         </div>
       ) : (
         <AssetGallery

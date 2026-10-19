@@ -1,26 +1,55 @@
-"""本集资产：一集正式脚本引用到哪些已登记项目资产。
+"""本集资产：一集正式脚本引用到哪些已登记项目资产，以及一键「抽取→登记→生成图」。
 
 引用集合只在 :func:`lib.project.episode_asset_references.episode_referenced_assets` 算一次
 （集层批量生成资产图、Agent 按集列出待生成资产都取这份），本路由只按集取正式脚本并把它
 落成接口形状。
+
+一键链路（:func:`generate_episode_assets`）把资产页这四步合成一个请求：从本集正式脚本的
+引用数组抽取名字 → 把还没登记的名字补进项目资产表并落盘 → 给缺描述的资产按本集剧本 AI 补全
+描述（D-35：本集定稿优先）→ 按集范围提交资产图批量生成。
+
+补全夹在登记与生成之间，是因为资产图按描述出图、缺描述会被准入挡下；原生剧本只写名字不
+写外观，不补就是「登记了 N 个、出图 0 张」。补全只填空字段，已登记资产的描述一律不动。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from lib.infra.api_errors import ApiError, NotFoundError
-from lib.project.asset_types import ASSET_SPECS
+from lib.generation.generation_queue import get_generation_queue
+from lib.infra.api_errors import ApiError, ConflictError, NotFoundError
+from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key, register_missing_assets
 from lib.project.episode_asset_references import episode_referenced_assets
-from lib.project.project_manager import get_project_manager
+from lib.project.project_change_hints import project_change_source
+from lib.project.project_manager import find_episode, get_project_manager
+from lib.references.reference_catalog import split_derivative_reference
+from lib.script.script_references import iter_reference_sites
+from server.auth import CurrentUser
 from server.i18n import Translator
+from server.services.admission.asset_sheet_batch import (
+    DESCRIPTION_REQUIRED_CODES,
+    AssetSheetScope,
+    asset_unit_view,
+    load_asset_sheet_batch_plan,
+    load_episode_script,
+    submit_asset_sheet_batch,
+)
+from server.services.asset_ai_fill import (
+    apply_asset_fill,
+    assets_without_description,
+    fill_assets,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+#: 资产页 tab 的三类；商品不进本集资产视图（本集剧本不引用商品）。
+EPISODE_ASSET_TYPES: tuple[str, ...] = ("character", "scene", "prop")
 
 
 def referenced_asset_items(project: dict[str, Any], script: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -45,6 +74,170 @@ def referenced_asset_items(project: dict[str, Any], script: dict[str, Any] | Non
             continue
         items.append({"asset_type": ref.asset_type, "asset_name": ref.name, "asset": entry})
     return items
+
+
+def script_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:
+    """本集脚本在各类型引用数组里写到的名字，按类型去重保序；未登记的也照样列出。
+
+    只认引用数组（``characters_in_scene`` / ``scenes`` / ``props`` 等各骨架的写法由
+    ``ASSET_SPECS.reference_list_fields`` 给出），名字因此自带类型、可以据此登记。
+    台词说话人与正文 ``@[名称]`` 记号不算：说话人可以是未登记的群演，正文记号只指认本条
+    已声明的资产——两者都不构成「要登记这个资产」。
+
+    引用数组写 ``本体/衍生`` 时只登记本体：衍生要有外观变化描述才成立，剧本里写了它也不
+    等于要新增一套外观，本体先有条目、衍生再由用户按需添加。
+    """
+
+    names: dict[str, list[str]] = {}
+    for asset_type in EPISODE_ASSET_TYPES:
+        collected: list[str] = []
+        seen: set[str] = set()
+        for kind, value, _write in iter_reference_sites(
+            script, frozenset(ASSET_SPECS[asset_type].reference_list_fields), with_speaker=False
+        ):
+            if kind != "name":
+                continue
+            name = split_derivative_reference(value.strip())[0].strip()
+            key = asset_name_comparison_key(name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            collected.append(name)
+        names[asset_type] = collected
+    return names
+
+
+def register_episode_assets(project_name: str, episode: int) -> tuple[dict[str, list[str]], list[dict[str, str]]]:
+    """把本集正式脚本引用到、还没登记的名字补进资产表并落盘，返回 ``(本次登记, 冲突)``。
+
+    登记在项目锁里重读项目后做（:meth:`ProjectManager.update_project`），已登记的条目一律
+    不动——描述与资产图是用户资产；名字被别的类型占着时跳过并记进冲突，不中断这一批。
+    """
+
+    manager = get_project_manager()
+    if not manager.project_exists(project_name):
+        raise NotFoundError("project_not_found", name=project_name)
+    project = manager.load_project(project_name)
+    if find_episode(project, episode) is None:
+        raise NotFoundError("episode_not_found", episode=episode)
+    script = load_episode_script(manager, project_name, episode)
+    if script is None:
+        raise ConflictError("episode_assets_no_script", episode=episode)
+    names = script_asset_names(script)
+    registered: dict[str, list[str]] = {}
+    conflicts: list[dict[str, str]] = []
+
+    def _mutate(current: dict[str, Any]) -> None:
+        new_assets, new_conflicts = register_missing_assets(current, names)
+        registered.update(new_assets)
+        conflicts.extend(new_conflicts)
+
+    with project_change_source("webui"):
+        manager.update_project(project_name, _mutate)
+    return registered, conflicts
+
+
+async def fill_episode_asset_descriptions(
+    project_name: str, episode: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """给本集引用到、描述为空的资产按本集剧本补全描述，返回 ``(已补全, 补全失败)``。
+
+    补全依据是**本集正式剧本**（D-35）：本集里该资产出场的场景与台词优先于工厂源稿，
+    与「本集资产视图按本集定稿收窄」的语义一致。只填尚为空的字段，已有描述一律不动。
+
+    N 个资产并发调模型、但只在一次项目锁里批量写回：逐条落盘会互相覆盖，也会把项目写 N 遍。
+    """
+
+    manager = get_project_manager()
+    project = await asyncio.to_thread(manager.load_project, project_name)
+    script = load_episode_script(manager, project_name, episode)
+    if script is None:
+        return [], []
+    targets = assets_without_description(project, script_asset_names(script))
+    if not targets:
+        return [], []
+    fills, failed = await fill_assets(
+        project, manager.get_project_path(project_name), targets, project_name, episode=episode
+    )
+    if not fills:
+        return [], failed
+    filled: list[dict[str, str]] = []
+
+    def _mutate(current: dict[str, Any]) -> None:
+        for (asset_type, asset_name), fill in fills.items():
+            spec = ASSET_SPECS.get(asset_type)
+            if spec is None:
+                continue
+            bucket = current.get(spec.bucket_key)
+            if not isinstance(bucket, dict):
+                continue
+            entry = bucket.get(asset_name)
+            if not isinstance(entry, dict):
+                continue
+            if "description" in apply_asset_fill(entry, asset_type, asset_name, fill):
+                filled.append({"asset_type": asset_type, "name": asset_name})
+
+    with project_change_source("webui"):
+        await asyncio.to_thread(manager.update_project, project_name, _mutate)
+    return filled, failed
+
+
+@router.post("/projects/{name}/episodes/{episode}/generate-assets")
+async def generate_episode_assets(name: str, episode: int, user: CurrentUser, _t: Translator) -> dict[str, Any]:
+    """一键：抽取本集剧本引用 → 补登记未登记资产 → 补描述 → 按集提交资产图批量生成。
+
+    提交不等待结果，成员任务的终态由界面按任务跟踪；补不出描述或补全失败的资产进不了这一批，
+    逐条回执在 ``members`` 的 ``problem_code`` 里（``asset_description_required`` 等），
+    同时另给一份 ``without_description`` 供界面直接提示「描述没补上」。
+    """
+
+    try:
+        registered, conflicts = await asyncio.to_thread(register_episode_assets, name, episode)
+        filled, fill_failed = await fill_episode_asset_descriptions(name, episode)
+        _project, plan = await load_asset_sheet_batch_plan(
+            get_project_manager(),
+            get_generation_queue(),
+            project_name=name,
+            scope=AssetSheetScope(episode_id=episode),
+            user_id=user.id,
+        )
+        batch, enqueued = await submit_asset_sheet_batch(
+            plan,
+            project_name=name,
+            queue=get_generation_queue(),
+            source="webui",
+            user_id=user.id,
+        )
+    except (HTTPException, ApiError):
+        raise
+    except Exception as exc:
+        logger.exception("Failed to generate episode assets: project=%s episode=%s", name, episode)
+        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
+
+    task_by_unit = {task.unit_id: task for task in enqueued if task.unit_id is not None}
+    members = [
+        {
+            **asset_unit_view(plan, member.unit_id),
+            "task_id": task_by_unit[member.unit_id].task_id if member.unit_id in task_by_unit else None,
+            "deduped": member.deduped,
+            "status": member.status,
+            "problem_code": member.problem.code if member.problem is not None else None,
+        }
+        for member in batch.members
+    ]
+    return {
+        "batch_id": batch.batch_id,
+        "members": members,
+        "registered": registered,
+        "description_filled": filled,
+        "description_fill_failed": fill_failed,
+        "conflicts": conflicts,
+        "without_description": [
+            {key: member[key] for key in ("unit_id", "asset_type", "name", "derivative")}
+            for member in members
+            if member["problem_code"] in DESCRIPTION_REQUIRED_CODES
+        ],
+    }
 
 
 @router.get("/projects/{name}/episodes/{episode}/referenced-assets")

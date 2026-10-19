@@ -45,6 +45,20 @@ export interface AssetSheetBatchSubmitted {
   members: AssetSheetBatchMember[];
 }
 
+/** 一键「抽取本集剧本引用 → 补登记 → 生成图」的回执。 */
+export interface EpisodeAssetGenerationResult extends AssetSheetBatchSubmitted {
+  /** 本次补登记的资产名，按类型分组；已登记的一律不动。 */
+  registered: Partial<Record<AssetSheetType, string[]>>;
+  /** 名字被别的资产类型占用、没能登记的项。 */
+  conflicts: { name: string; asset_type: AssetSheetType; reason: string }[];
+  /** 本次按本集剧本补上描述的资产；已有描述的一律不动。 */
+  description_filled: { asset_type: AssetSheetType; name: string }[];
+  /** 补全调用失败（模型截断或调用异常）的资产，描述仍为空。 */
+  description_fill_failed: { asset_type: AssetSheetType; name: string; reason: string }[];
+  /** 描述没补上、进不了这一批生成的资产图。 */
+  without_description: AssetSheetRef[];
+}
+
 export interface AssetRegenerationImpact {
   /** 服务端此刻对这张资产图的判定是否为过期。 */
   stale: boolean;

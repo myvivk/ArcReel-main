@@ -16,26 +16,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-from lib.backends.providers import CallPurpose
-from lib.backends.text_backends.base import (
-    TextGenerationRequest as BackendTextGenerationRequest,
-)
-from lib.backends.text_backends.base import (
-    TextOutputTruncatedError,
-    TextTaskType,
-)
-from lib.backends.text_generator import TextGenerator
+from lib.backends.text_backends.base import TextOutputTruncatedError
 from lib.infra.api_errors import NotFoundError, UnprocessableError
 from lib.project.asset_merge import (
     MERGEABLE_ASSET_TYPES,
@@ -65,6 +54,11 @@ from server.i18n import Translator
 from server.routers._asset_derivative_status import register_derivative_status_routes
 from server.routers._asset_derivatives import register_derivative_routes
 from server.routers._asset_prompt_preview import register_asset_prompt_preview_routes
+from server.services.asset_ai_fill import (
+    apply_asset_fill,
+    collect_asset_context,
+    generate_asset_fill,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,230 +163,6 @@ def merge_report_payload(report: AssetMergeReport) -> dict[str, Any]:
             for item in report.episodes
         ],
     }
-
-
-class _AssetDerivativeFill(BaseModel):
-    """AI 补全时为角色生成的单个外观变体。"""
-
-    name: str
-    description: str = ""
-
-
-class _AssetFillResponse(BaseModel):
-    """AI 补全的结构化回执。空白字段返回空串/空数组，调用方只应用到尚为空的字段。"""
-
-    description: str = ""
-    voice_style: str = ""
-    aliases: list[str] = Field(default_factory=list)
-    derivatives: list[_AssetDerivativeFill] = Field(default_factory=list)
-
-
-def _extract_json(text: str) -> Any:
-    """从模型回执里取出 JSON 对象，容忍 ```json 围栏与前后说明文字。"""
-    text = (text or "").strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(text[start : end + 1])
-        raise
-
-
-def _scene_mentions(scene: dict[str, Any], asset_type: str, name: str) -> bool:
-    """判断某场景是否引用了该资产（用于截取补全上下文）。"""
-    if asset_type == "character":
-        in_cast = name in (scene.get("characters_in_scene") or [])
-        in_dialogue = any(
-            isinstance(line, dict) and line.get("speaker") == name for line in (scene.get("dialogue") or [])
-        )
-        return in_cast or in_dialogue
-    if asset_type == "scene":
-        return name in (scene.get("scene") or "") or name in (scene.get("scene_description") or "")
-    if asset_type == "prop":
-        return name in (scene.get("props_in_scene") or [])
-    return False
-
-
-def _short_drama_sources(project_dir: Path) -> list[Path]:
-    """``source/short_drama/`` 下的工厂 Markdown（系列级参考稿 + 单集原文）。"""
-    root = project_dir / "source" / "short_drama"
-    return sorted(root.rglob("*.md")) if root.is_dir() else []
-
-
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _bible_section(bible: str, name: str) -> str:
-    """人物圣经里 ``【角色】：名字`` 起到下一个角色前的整段。"""
-    lines = bible.splitlines()
-    collected: list[str] = []
-    start: int | None = None
-    for index, line in enumerate(lines):
-        match = re.match(r"^\s*【角色】[：:]\s*(.+)$", line)
-        if not match:
-            continue
-        if start is not None:
-            collected.append("\n".join(lines[start:index]).strip())
-        raw_name = re.split(r"[（(]", match.group(1), maxsplit=1)[0].strip()
-        start = index if raw_name == name else None
-    if start is not None:
-        collected.append("\n".join(lines[start:]).strip())
-    return collected[0] if collected else ""
-
-
-def _marker_lines(sources: list[Path], marker: str, name: str, limit: int = 8) -> list[str]:
-    """各集 ``[marker]`` 行里出现该资产名的原文行，带文件名便于模型定位。"""
-    hits: list[str] = []
-    pattern = re.compile(rf"^\[{marker}\][：:]\s*(.+)$")
-    for path in sources:
-        for line in _read_text(path).splitlines():
-            match = pattern.match(line.strip())
-            if match and name in match.group(1):
-                hits.append(f"{path.name}｜{line.strip()}")
-                break
-        if len(hits) >= limit:
-            break
-    return hits
-
-
-def _collect_canon(project_dir: Path, asset_type: str, name: str) -> list[str]:
-    """补全用的项目设定摘要：优先级高于正式剧本摘录。"""
-    sources = _short_drama_sources(project_dir)
-    canon: list[str] = []
-    if asset_type == "character":
-        for path in sources:
-            if path.name in {"character-bible.md", "character_bible.md"}:
-                section = _bible_section(_read_text(path), name)
-                if section:
-                    canon.append(section)
-                    break
-        canon += _marker_lines(sources, "人物", name, limit=3)
-    elif asset_type == "scene":
-        for path in sources:
-            if path.name in {"series-outline.md", "series_outline.md", "outline.md"}:
-                for line in _read_text(path).splitlines():
-                    if name in line:
-                        canon.append(line.strip())
-                        break
-                break
-        canon += _marker_lines(sources, "场景", name)
-    elif asset_type == "prop":
-        canon += _marker_lines(sources, "道具", name)
-    return [item for item in canon if item]
-
-
-def _collect_asset_context(
-    project_dir: Path, project: dict[str, Any], asset_type: str, name: str, entry: dict[str, Any]
-) -> dict[str, Any]:
-    """从短剧工厂源稿（canon）和正式剧本（摘录）搜集资产补全上下文。"""
-    context: dict[str, Any] = {
-        "title": project.get("title") or "",
-        "premise": project.get("premise") or project.get("logline") or "",
-        "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
-        "excerpts": [],
-        "canon": _collect_canon(project_dir, asset_type, name),
-    }
-    total_chars = 0
-    for ep in project.get("episodes") or []:
-        if not isinstance(ep, dict):
-            continue
-        script_file = ep.get("script_file")
-        if not isinstance(script_file, str):
-            continue
-        path = project_dir / "scripts" / script_file
-        if not path.exists():
-            continue
-        try:
-            script = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for scene in script.get("scenes") or []:
-            if not isinstance(scene, dict) or not _scene_mentions(scene, asset_type, name):
-                continue
-            excerpt = {
-                "scene": scene.get("scene", ""),
-                "scene_description": scene.get("scene_description", ""),
-                "dialogue": [
-                    f"{line.get('speaker', '')}: {line.get('line', '')}"
-                    for line in (scene.get("dialogue") or [])
-                    if isinstance(line, dict) and line.get("line")
-                ],
-            }
-            context["excerpts"].append(excerpt)
-            total_chars += len(str(excerpt))
-            if len(context["excerpts"]) >= 6 or total_chars > 6000:
-                break
-        if len(context["excerpts"]) >= 6 or total_chars > 6000:
-            break
-    return context
-
-
-def _build_ai_fill_prompt(asset_type: str, name: str, context: dict[str, Any]) -> str:
-    """构造资产字段补全提示词：只补空白字段，给出剧本上下文与期望的 JSON 结构。"""
-    type_label = {"character": "角色", "scene": "场景", "prop": "道具", "product": "商品"}.get(asset_type, asset_type)
-    existing = context.get("existing") or {}
-    existing_parts: list[str] = []
-    if existing.get("description"):
-        existing_parts.append(f"- description（已有，勿改）：{existing['description']}")
-    if asset_type == "character" and existing.get("voice_style"):
-        existing_parts.append(f"- voice_style（已有，勿改）：{existing['voice_style']}")
-    if existing.get(ALIASES_FIELD):
-        existing_parts.append(f"- aliases（已有，勿改）：{', '.join(existing[ALIASES_FIELD])}")
-    if existing.get(DERIVATIVES_FIELD):
-        derivs = ", ".join(f"{k}（{v.get('description', '')}）" for k, v in existing[DERIVATIVES_FIELD].items())
-        existing_parts.append(f"- derivatives（已有，勿改）：{derivs}")
-    existing_block = "\n".join(existing_parts) if existing_parts else "（无已有内容）"
-
-    excerpts = context.get("excerpts") or []
-    excerpt_block = (
-        "\n\n".join(
-            f"【场景】{ex.get('scene', '')}\n场景描写：{ex.get('scene_description', '')}\n"
-            + "\n".join(ex.get("dialogue") or [])
-            for ex in excerpts
-        )
-        or "（剧本中未检索到该资产的直接引用）"
-    )
-    canon = context.get("canon") or []
-    canon_block = "\n\n".join(str(item) for item in canon)
-
-    from lib.prompts.prompt_templates.builtin import builtin_templates
-
-    description_rule = builtin_templates.read_partial("shared/asset_description_rule").source
-    scope = (
-        f"1) description：必须严格遵守以下资产描述规范，不得补充规范未支持的事实：\n{description_rule}\n"
-        "2) aliases：剧本中对该资产的其他称呼（别称、外号、代称）；不要把资产名本身算作别名。\n"
-    )
-    if asset_type == "character":
-        scope += (
-            "3) voice_style：该角色的声音/台词风格（语速、语气、音色倾向），用于配音参考。\n"
-            "4) derivatives：该角色可能出现的外观变体（如不同服装/年龄/状态），每条含 name 与 description；"
-            "没有合适变体时返回空数组。\n"
-        )
-    else:
-        scope += "（voice_style、derivatives 不适用，返回空字符串/空数组即可。）\n"
-
-    return (
-        "你是短视频创作平台的资产字段补全助手。下面给出一个项目资产的信息与剧本上下文，"
-        "请补全其中尚为空白的字段。\n\n"
-        f"资产类型：{type_label}\n资产名：{name}\n"
-        f"项目标题：{context.get('title') or '（未知）'}\n"
-        f"项目前提：{context.get('premise') or '（未知）'}\n\n"
-        "【项目设定｜优先依据】\n"
-        "（来源：人物圣经 / 全剧大纲 / 单集标记行；与剧本摘录冲突时以此为准）\n"
-        f"{canon_block or '（无工厂源稿设定，按剧本摘录与题材补全）'}\n\n"
-        f"已有字段（保留，不要修改或重复）：\n{existing_block}\n\n"
-        f"剧本摘录：\n{excerpt_block}\n\n"
-        "优先级：项目设定 > 剧本摘录 > 题材补全。请补全以下空白字段（已有内容绝不覆盖）：\n"
-        f"{scope}\n"
-        "只输出一个 JSON 对象，结构如下（不输出任何解释文字）：\n"
-        '{"description": "", "voice_style": "", "aliases": [], "derivatives": [{"name": "", "description": ""}]}'
-    )
 
 
 class _CreateRequest(BaseModel):
@@ -595,7 +365,7 @@ def build_asset_router(
         entry = bucket[key]
 
         try:
-            context = _collect_asset_context(
+            context = collect_asset_context(
                 manager.get_project_path(project_name), project, asset_type, entry_name, entry
             )
         except Exception:
@@ -604,19 +374,12 @@ def build_asset_router(
                 "title": project.get("title") or "",
                 "premise": project.get("premise") or project.get("logline") or "",
                 "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
-                "excerpts": [],
+                "episode_excerpts": [],
+                "other_excerpts": [],
+                "canon": [],
             }
-        prompt = _build_ai_fill_prompt(asset_type, entry_name, context)
-
         try:
-            generator = await TextGenerator.create(
-                TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
-            )
-            raw = await generator.generate(
-                BackendTextGenerationRequest(prompt=prompt, response_schema=_AssetFillResponse, max_output_tokens=4000),
-                project_name=project_name,
-            )
-            parsed = _AssetFillResponse.model_validate(_extract_json(raw.text))
+            parsed = await generate_asset_fill(project_name, asset_type, entry_name, context)
         except TextOutputTruncatedError as exc:
             raise HTTPException(status_code=502, detail="资产字段补全被模型截断，请稍后重试") from exc
         except Exception as exc:
@@ -627,23 +390,7 @@ def build_asset_router(
             mgr = pm_getter()
 
             def _mutate(entry: dict[str, Any]) -> None:
-                if not entry.get("description") and parsed.description:
-                    entry["description"] = parsed.description
-                if asset_type == "character" and not entry.get("voice_style") and parsed.voice_style:
-                    entry["voice_style"] = parsed.voice_style
-                if not (entry.get(ALIASES_FIELD) or []) and parsed.aliases:
-                    entry[ALIASES_FIELD] = []
-                    record_asset_aliases(entry, list(parsed.aliases), asset_name=entry_name)
-                if asset_type == "character" and spec.supports_derivatives:
-                    table = entry.get(DERIVATIVES_FIELD) or {}
-                    if not table and parsed.derivatives:
-                        for d in parsed.derivatives:
-                            dname = (d.name or "").strip()
-                            if not dname:
-                                continue
-                            dkey = resolve_asset_key(table, dname) or dname
-                            table[dkey] = {"description": d.description or "", spec.sheet_field: ""}
-                        entry[DERIVATIVES_FIELD] = table
+                apply_asset_fill(entry, asset_type, entry_name, parsed)
 
             with project_change_source("webui"):
                 return mgr.update_asset_entry(asset_type, project_name, entry_name, _mutate)

@@ -96,7 +96,6 @@ from lib.script.reference_video.script_preview import (
 from lib.script.reference_video.text_parser import extract_mentions
 from lib.script.reference_video.unit_capabilities import hydrate_reference_units
 from lib.script.reference_video.voice_settings import VoiceRenderSettings
-from lib.script.script_skeleton import resolve_declared_kind
 from lib.script.script_generator import (
     AdScriptOverwriteRequired,
     AdScriptRejected,
@@ -108,6 +107,7 @@ from lib.script.script_models import (
     build_drama_normalized_script_model,
     build_reference_units_script_plan_model,
 )
+from lib.script.script_skeleton import resolve_declared_kind
 from lib.script.storyboard_mentions import render_storyboard_mention_warnings, storyboard_mention_warnings
 from lib.speech.speech_composition import admit_script_unit
 from lib.speech.speech_rate import project_speech_rate_override
@@ -799,9 +799,7 @@ async def generate_episode_script(
     return TextGenerationResult(summary, warnings, new_assets=registered)
 
 
-def _written_fields(
-    projects: ProjectManager, project_name: str, request: TextGenerationRequest
-) -> tuple[str, ...]:
+def _written_fields(projects: ProjectManager, project_name: str, request: TextGenerationRequest) -> tuple[str, ...]:
     """本次编写动了哪些视觉层字段：回执要能自证，取不到就干脆不写这一行。
 
     省略 ``fields`` 时的缺省值按项目声明的骨架种类取值。这里刻意绕开 ``ScriptGenerator``

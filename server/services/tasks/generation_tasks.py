@@ -1042,9 +1042,21 @@ async def execute_video_task(
             resolve_script_kind(_script),
             _script,
             _script_input,
+            _items,
+            _id_field,
         )
 
-    project, project_path, item, content_mode, script_kind, _script, script_input = await asyncio.to_thread(_load)
+    (
+        project,
+        project_path,
+        item,
+        content_mode,
+        script_kind,
+        _script,
+        script_input,
+        storyboard_items,
+        storyboard_id_field,
+    ) = await asyncio.to_thread(_load)
     # Queue execution re-materializes mutable visual intent from the current script unit. Direct/internal callers
     # without a task row retain the request-prompt fallback for compatibility with synchronous service tests.
     current_prompt = item.get("video_prompt") if isinstance(item, dict) else None
@@ -1105,7 +1117,7 @@ async def execute_video_task(
     )
     cells = resolve_storyboard_video_cells(project_path=project_path, resource_id=resource_id, item=item)
     previous_start = await asyncio.to_thread(
-        resolve_previous_storyboard_path, project_path, _items, _id_field, resource_id
+        resolve_previous_storyboard_path, project_path, storyboard_items, storyboard_id_field, resource_id
     )
     if cells:
         provider_start_image = previous_start or cells[0]

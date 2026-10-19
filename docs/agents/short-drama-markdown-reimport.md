@@ -20,9 +20,8 @@
 
 重新导入不执行以下动作：
 
-- 不调用视频、图像或文本生成供应商。
-- 不生成视觉提示词。
-- 不生成分镜图或视频。
+- 不调用图像或视频生成供应商；文本模型仅用于智能切分、内容优化与分镜提示词编写，不产出任何媒体文件。
+- 不生成分镜图或视频；分镜提示词（`image_prompt`，含景别/机位/运镜/视觉参考）在导入期由文本模型产出，`video_prompt` 仍留待宫格确认后生成。
 - 不把结构化正式脚本反向伪装成历史项目的原始 Markdown。
 
 ## 核心不变量
@@ -40,7 +39,7 @@
 9. 已登记资产不覆盖；跨类型重名记录为 `asset_conflicts`，不破坏已有资产。
 10. 重新导入前检测现有分镜图和视频；存在媒体时必须由用户显式确认。
 11. 重新导入保留旧媒体文件，由 Artifact Manifest 将其判为 stale；不自动删除或重新生成媒体。
-12. 导入阶段不读取视频供应商能力。拆幕使用项目 `default_duration`；该值缺失或非法时使用 8 秒。
+12. 导入阶段不读取视频供应商能力。拆幕使用剧情窗口 `STORY_SCENE_WINDOW_SECONDS`（12–15 秒），不吸附视频档位；档位对齐交给生成期预检。
 13. 视频模型时长档位只在后续视频生成准入阶段校验。
 14. 历史导入没有 Markdown 时，接口返回 `exists=false`，页面明确提示用户重新粘贴；不得从 `source_text` 或正式脚本拼接伪造原稿。
 15. 删除分集时必须同时删除对应短剧 Markdown，并纳入正式文件回滚范围。
@@ -255,7 +254,7 @@ async def import_short_drama_episode(
 2. 校验项目模式和集 ID。
 3. 当 `confirm_artifacts=false` 时加载当前正式脚本，检测 `generated_assets.storyboard_image` 或 `generated_assets.video_clip`。
 4. 解析 Markdown。
-5. 用 `project.default_duration` 或 8 秒调用 `convert_to_drama_script(..., supported_durations=[duration])`。
+5. 用 `scene_window=STORY_SCENE_WINDOW_SECONDS`（12–15 秒）调用 `convert_to_drama_script`，不传 `supported_durations`，不吸附视频档位。
 6. 去掉 `short_drama_meta` 后用 `DramaEpisodeScript.model_validate` 做结构自检。
 7. 首次导入通过 `run_sync_transaction` 保存源稿；重新导入则重新读取已保存源稿，核对 revision 和 Markdown 内容。
 8. 把 `source_path/source_revision` 写入 `short_drama_meta`。
@@ -276,7 +275,7 @@ async def import_short_drama_episode(
 
 删除旧的 `_register_short_drama_assets`、`_duration_shortfall`、`ShortDramaTierUnavailable` 和 `_short_drama_split_durations`，避免 Web 与 Agent 出现两套行为。
 
-`ImportShortDramaScriptRequest.markdown` 的工具说明必须明确：导入按项目默认分镜时长切幕，未设置时为 8 秒，导入阶段不读取视频供应商能力。
+`ImportShortDramaScriptRequest.markdown` 的工具说明必须明确：导入按剧情窗口 12–15 秒切幕，导入阶段不读取视频供应商能力。
 
 同样更新 `server/agent_toolset/script_authoring.py` 中 `IMPORT_SHORT_DRAMA_SCRIPT` 的说明。
 

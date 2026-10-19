@@ -564,6 +564,7 @@ MESSAGES = {
     ),
     # Episode meta
     "episode_not_found": "Không tìm thấy tập (id={episode}) hoặc tập chưa có tệp kịch bản",
+    "episode_assets_no_script": "Tập {episode} chưa có kịch bản chính thức nên không thể trích xuất tài sản của tập; hãy tạo hoặc nhập kịch bản chính thức ở bước kịch bản trước",
     "storyboard_batch_script_invalid": "Không thể dùng kịch bản chính thức của tập {episode} để tạo hàng loạt phân cảnh: cấu trúc kịch bản không khớp với chế độ tạo của dự án, hoặc kịch bản chưa gắn với tập này",
     "episode_source_empty": "Nguyên văn của tập không được để trống",
     "episode_source_derived": "Tập này được cắt từ toàn bộ văn bản nguồn; nguyên văn của tập do lập kế hoạch phân tập tạo ra, không thể sửa tại đây",

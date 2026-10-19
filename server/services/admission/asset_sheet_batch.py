@@ -389,6 +389,20 @@ def plan_asset_sheet_batch(
     )
 
 
+def asset_unit_view(plan: AssetSheetBatchPlan, unit_id: str) -> dict[str, Any]:
+    """一个单元的接口形状：类型、本体名与衍生名。
+
+    单元不在这一批里时（点名了不存在的资产）按 ID 拆出名字照常回执，让调用方逐项报告。
+    """
+
+    unit = plan.units.get(unit_id)
+    if unit is None:
+        asset_type, _, name = unit_id.partition("/")
+        return {"unit_id": unit_id, "asset_type": asset_type, "name": name, "derivative": None}
+    owner, derivative = split_derivative_artifact_id(unit.name) if unit.is_derivative else (unit.name, None)
+    return {"unit_id": unit_id, "asset_type": unit.asset_type, "name": owner, "derivative": derivative}
+
+
 def _owner_status(
     project: Mapping[str, Any], resolver: ArtifactCurrencyResolver, unit: AssetSheetUnit
 ) -> ArtifactStatus | None:
@@ -553,6 +567,7 @@ __all__ = [
     "asset_name_of",
     "asset_sheet_statuses",
     "asset_unit_id",
+    "asset_unit_view",
     "load_asset_sheet_batch_plan",
     "load_episode_script",
     "plan_asset_sheet_batch",

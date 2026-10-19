@@ -49,6 +49,15 @@ function mockResponse(options: JsonResponseOptions = {}): Response {
 }
 
 describe("API", () => {
+  it("loads episode-referenced assets from the episode endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ jsonData: { episode: 3, has_script: true, assets: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signal = new AbortController().signal;
+
+    await expect(API.getEpisodeReferencedAssets("demo project", 3, { signal })).resolves.toEqual({ episode: 3, has_script: true, assets: [] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/projects/demo%20project/episodes/3/referenced-assets", expect.objectContaining({ signal }));
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

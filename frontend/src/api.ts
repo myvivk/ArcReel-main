@@ -1033,6 +1033,17 @@ class API {
 
   // ==================== 资产图状态与批量生成 ====================
 
+  /** 获取一集正式剧本引用到的已登记项目资产。 */
+  static async getEpisodeReferencedAssets(
+    projectName: string,
+    episode: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<{ episode: number; has_script: boolean; assets: { asset_type: AssetSheetType; asset_name: string; asset: Record<string, unknown> }[] }> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/referenced-assets`, {
+      signal: options?.signal,
+    });
+  }
+
   /** 项目里每张资产图（含衍生）按产物清单判定的状态与是否缺描述。 */
   static async getAssetSheetStatus(
     projectName: string,

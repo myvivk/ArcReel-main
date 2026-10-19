@@ -26,8 +26,10 @@ class _FakeGenerator:
         self.text = text
         self.model = "factory-model"
         self.provider = "factory-provider"
+        self.generate_project_name = None
 
-    async def generate(self, request, *, require_complete=False):
+    async def generate(self, request, project_name=None, *, require_complete=False):
+        self.generate_project_name = project_name
         return TextGenerationResult(
             text=self.text,
             provider=self.provider,
@@ -47,7 +49,9 @@ async def test_factory_gen_uses_text_model_and_returns_markdown(monkeypatch, sco
     async def fake_create(task_type, project_name, *, purpose, user_id="default"):
         captured["task_type"] = task_type
         captured["purpose"] = purpose
-        return _FakeGenerator(task_type=task_type, purpose=purpose)
+        generator = _FakeGenerator(task_type=task_type, purpose=purpose)
+        captured["generator"] = generator
+        return generator
 
     monkeypatch.setattr("server.tool_runtime.TextGenerator.create", staticmethod(fake_create))
 
@@ -67,6 +71,8 @@ async def test_factory_gen_uses_text_model_and_returns_markdown(monkeypatch, sco
     assert outcome.problem is None, outcome
     assert captured["task_type"] is TextTaskType.FACTORY
     assert captured["purpose"] is CallPurpose.SCRIPT_GENERATION
+    assert captured["generator"].generate_project_name == "demo"
+    assert outcome.value["text"] == "人物：林夏\n台词：开门。\n"
     assert "林夏" in outcome.value["text"]
     assert outcome.value["artifact"] == "episode_01"
     assert outcome.value["model"] == "factory-model"
@@ -78,7 +84,7 @@ async def test_factory_gen_truncation_is_problem(monkeypatch, scope) -> None:
     async def fake_create(task_type, project_name, *, purpose, user_id="default"):
         return _FakeGenerator(task_type=task_type, purpose=purpose)
 
-    async def fake_generate(self, request, *, require_complete=False):
+    async def fake_generate(self, request, project_name=None, *, require_complete=False):
         raise TextOutputTruncatedError(provider="factory-provider", model="factory-model", output_tokens=100)
 
     monkeypatch.setattr("server.tool_runtime.TextGenerator.create", staticmethod(fake_create))

@@ -44,6 +44,12 @@ export interface AssetGalleryProps<T extends GalleryAssetSource> {
    * 工具栏可从资产库选择。商品不入资产库，不传。需传稳定引用。
    */
   libraryPreview?: (asset: T) => LibraryImportPreview;
+  /** 仅提供本集引用资产时限定批量生成范围；省略时维持类型全局范围。 */
+  batchScope?: { episode_id: number };
+  /** 集内视图隐藏创建、导入与单张生成，防止展示范围/操作范围不一致。 */
+  hideAddActions?: boolean;
+  /** 已经按引用过滤后的状态行，避免画廊再载入全集状态用于集内批量计数。 */
+  statusRows?: import("@/types").AssetSheetStatusRow[];
 }
 
 /**
@@ -61,12 +67,16 @@ export function AssetGallery<T extends GalleryAssetSource>({
   onRestoreVersion,
   onReload,
   libraryPreview,
+  batchScope,
+  hideAddActions = false,
+  statusRows,
 }: AssetGalleryProps<T>) {
   const { t } = useTranslation("assets");
   const occupiedNames = useAssetBusyNames(assetType, projectName);
   // 演示项目不在服务端，没有资产图状态可取
   const demo = useDemoWorkbench();
-  const rows = useAssetSheetStatus(projectName, !demo);
+  const loadedRows = useAssetSheetStatus(projectName, !demo && !statusRows);
+  const rows = statusRows ?? loadedRows;
   const statusByName = useSheetStatusByName(rows, assetType);
   const [filter, setFilter] = useState<GalleryFilter>("all");
   const [editorTarget, setEditorTarget] = useState<AssetEditorTarget | null>(null);
@@ -126,7 +136,8 @@ export function AssetGallery<T extends GalleryAssetSource>({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [search, assets]);
-  const onAdd = readOnly ? undefined : () => setEditorTarget({ mode: "create" });
+  const onAdd = readOnly || hideAddActions ? undefined : () => setEditorTarget({ mode: "create" });
+  const generateAsset = hideAddActions ? () => undefined : onGenerate;
   const viewAsset = useCallback((name: string) => setViewName(name), []);
   // 查看器只在有资产图的资产之间切换，顺序与筛选后的网格一致；判据与卡片的「查看大图」相同
   const viewable = shown
@@ -142,7 +153,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
   };
 
   const importable = libraryPreview !== undefined && assetType !== "product";
-  const onPickFromLibrary = importable && !readOnly ? () => setPicking(true) : undefined;
+  const onPickFromLibrary = importable && !readOnly && !hideAddActions ? () => setPicking(true) : undefined;
   const handleImport = async (ids: string[]) => {
     try {
       await API.applyAssetsToProject({ asset_ids: ids, target_project: projectName, conflict_policy: "skip" });
@@ -166,7 +177,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
         onAdd={onAdd}
         onPickFromLibrary={onPickFromLibrary}
       >
-        {!readOnly && <AssetSheetBatchControls projectName={projectName} assetType={assetType} rows={rows} />}
+        {(!readOnly || batchScope) && <AssetSheetBatchControls projectName={projectName} assetType={assetType} rows={rows} scope={batchScope} />}
       </GalleryToolbar>
       <div className="flex shrink-0 flex-col px-5 py-5" data-onboarding={ONBOARDING_ANCHORS.workbenchLorebook}>
         {items.length === 0 ? (
@@ -200,7 +211,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
                     libraryPreview={previews?.get(asset.name)}
                     onOpen={openAsset}
                     onView={viewAsset}
-                    onGenerate={onGenerate}
+                    onGenerate={generateAsset}
                     onRestoreVersion={onRestoreVersion}
                     onReload={onReload}
                     onWritingChange={handleWritingChange}
@@ -224,7 +235,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
         generatingNames={generatingNames}
         writingNames={writingNames}
         readOnly={readOnly}
-        onGenerate={onGenerate}
+        onGenerate={generateAsset}
       />
 
       {picking && assetType !== "product" && (

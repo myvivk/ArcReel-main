@@ -75,6 +75,18 @@ describe("AssetGallery", () => {
     vi.restoreAllMocks();
   });
 
+  it("hides global write actions and keeps batch scope for an episode gallery", async () => {
+    const user = userEvent.setup();
+    renderGallery({ readOnly: true, batchScope: { episode_id: 4 } });
+
+    expect(screen.queryByRole("button", { name: "新增场景" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "从资产库选择" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /生成待生成的场景/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "「书房」的更多操作" }));
+    expect(screen.queryByRole("menuitem", { name: "生成资产图" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "上传资产图" })).not.toBeInTheDocument();
+  });
+
   it("narrows the grid to pending or stale sheets and marks each card", async () => {
     const user = userEvent.setup();
     renderGallery();

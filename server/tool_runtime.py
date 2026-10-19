@@ -1154,6 +1154,7 @@ async def generate_short_drama_factory(
                 system_prompt=value.system_prompt,
                 max_output_tokens=value.max_output_tokens,
             ),
+            project_name=scope.project_name,
             require_complete=True,
         )
     except TextOutputTruncatedError as exc:

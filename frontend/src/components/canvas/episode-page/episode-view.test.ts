@@ -25,6 +25,7 @@ describe("episodeViewTabs", () => {
     expect(episodeViewTabs({ ...SCRIPTED, grid: true })).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
+      { view: "assets", disabled: false },
       { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
@@ -36,6 +37,7 @@ describe("episodeViewTabs", () => {
     expect(tabs).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
+      { view: "assets", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
     ]);
@@ -60,16 +62,23 @@ describe("episodeViewTabs", () => {
       hasShortDramaSource: true,
     };
     // 工厂 Markdown 就是剧本：不显示「脚本规划」页签（避免诱导空起稿），只给剧本/分镜/剪辑。
-    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["source", "board", "edit"]);
+    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["source", "assets", "board", "edit"]);
     expect(defaultEpisodeView(factory)).toBe("source");
     // 工厂集用顶层 short_drama 标志时同样不显示规划页签。
     expect(episodeViewTabs({ ...factory, shortDrama: true }).map((tab) => tab.view)).toEqual([
       "source",
+      "assets",
       "board",
       "edit",
     ]);
     // 未登记的集仍在集原文确认态：缺省行为不变（plan 可用时不落剧本）。
     expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false, hasDraft: false, sourceReview: true })).toBe("plan");
+  });
+
+  it("includes a separate assets step for regular episodes but not ads or demos", () => {
+    expect(episodeViewTabs(SCRIPTED).map((tab) => tab.view)).toContain("assets");
+    expect(episodeViewTabs({ ...SCRIPTED, isAd: true }).map((tab) => tab.view)).not.toContain("assets");
+    expect(episodeViewTabs({ ...SCRIPTED, demo: true }).map((tab) => tab.view)).not.toContain("assets");
   });
 
   it("opens the unit list during the draft stage on the reference route", () => {
@@ -82,6 +91,7 @@ describe("episodeViewTabs", () => {
     expect(episodeViewTabs(facts)).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
+      { view: "assets", disabled: false },
       { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },

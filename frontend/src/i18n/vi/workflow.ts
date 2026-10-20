@@ -101,6 +101,7 @@ export default {
   'act_agent_edit': 'Giao cho Agent dựng',
   'act_create_edit_timeline': 'Tạo dòng thời gian dựng',
   'act_open_edit_view': 'Mở chế độ dựng',
+  'act_open_assets_view': 'Đi đến bước tài sản',
   'act_go_render': 'Đi xuất phim',
   'act_author_prompts': 'AI viết',
   'act_author_video_prompts_one': 'Viết {{count}} prompt video',

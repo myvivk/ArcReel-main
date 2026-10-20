@@ -161,6 +161,7 @@ import type {
   AssetSheetStatusRow,
   AssetSheetType,
   EpisodeAssetGenerationResult,
+  EpisodeReferencedAssets,
 } from "@/types/asset-sheet";
 import type {
   StoryboardBatchKind,
@@ -1039,13 +1040,13 @@ class API {
     projectName: string,
     episode: number,
     options?: { signal?: AbortSignal },
-  ): Promise<{ episode: number; has_script: boolean; assets: { asset_type: AssetSheetType; asset_name: string; asset: Record<string, unknown> }[] }> {
+  ): Promise<EpisodeReferencedAssets> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/referenced-assets`, {
       signal: options?.signal,
     });
   }
 
-  /** 一键：抽取本集剧本引用 → 补登记未登记的资产 → 按集提交资产图批量生成。 */
+  /** 一键：抽取本集剧本引用 → 补登记未登记的资产 → 生成描述 → 按集提交资产图批量生成。 */
   static async generateEpisodeAssets(projectName: string, episode: number): Promise<EpisodeAssetGenerationResult> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/generate-assets`, {
       method: "POST",

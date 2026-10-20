@@ -52,6 +52,8 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   count?: number;
+  /** 悬停提示：说明这个入口与集页「资产」步骤的「全集 / 子集」关系。 */
+  hint?: string;
 }
 
 /**
@@ -107,12 +109,14 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
             count: episodes.length,
           },
         ]),
+    // 侧栏这三个入口承载「项目全部资产」：集页「资产」步骤是本集引用的子集（D-30 / D-31）。
     {
       key: "characters",
       path: "/characters",
       label: t("dashboard:workspace_nav_characters"),
       icon: Users,
       count: Object.keys(currentProjectData?.characters ?? {}).length,
+      hint: t("dashboard:workspace_nav_all_assets_hint"),
     },
     {
       key: "scenes",
@@ -120,6 +124,7 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
       label: t("dashboard:workspace_nav_scenes"),
       icon: Landmark,
       count: Object.keys(currentProjectData?.scenes ?? {}).length,
+      hint: t("dashboard:workspace_nav_all_assets_hint"),
     },
     {
       key: "props",
@@ -127,6 +132,7 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
       label: t("dashboard:workspace_nav_props"),
       icon: Package,
       count: Object.keys(currentProjectData?.props ?? {}).length,
+      hint: t("dashboard:workspace_nav_all_assets_hint"),
     },
     // 商品资产仅广告/短片项目使用（v1 单商品设定），其余模式隐藏入口
     ...(isAd
@@ -298,6 +304,7 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
     <Link
       href={item.path}
       aria-current={active ? "page" : undefined}
+      title={item.hint}
       className={cn(
         "flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
         active ? "bg-primary/15 text-foreground" : "text-subtle-foreground hover:bg-muted/50 hover:text-foreground",

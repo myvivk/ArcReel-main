@@ -1,14 +1,17 @@
 """资产字段 AI 补全：上下文搜集、提示词构造、模型回执解析与字段写回。
 
-单资产端点（资产详情的「AI 补全」）与集页一键链路（登记后补描述再出图）共用这一份，
+单资产端点（资产详情的「生成描述」）与集页一键链路（登记后补描述再出图）共用这一份，
 两处不得各写一套提示词或写回规则。
 
-来源优先级（D-35）：
+来源优先级（D-35，集页视图与侧栏「全部资产」入口**同一口径，不按视图翻转**）：
 
-- 不传 ``episode``（侧栏「全部资产」入口）：项目设定 canon > 剧本摘录 > 题材补全。
-- 传 ``episode``（本集资产视图）：本集正式剧本摘录 > 项目设定 canon > 其他集摘录 > 题材补全。
+- **剧本（工厂源稿）**：各集 ``[人物]/[场景]/[道具]`` 标记行——名字后面跟的就是外观，是
+  最贴合、最权威的描述来源；本集剧本里该资产出场的场景与台词用于强化。
+- **故事规划**：人物圣经 / 全剧大纲 / 连续性台账 / 分集规划，补标记行没写到的跨集背景。
+- **题材补全**：项目标题与前提，前两级都没有时才据此泛写。
 
-本集正式剧本是定稿、最具体的来源，工厂源稿只是早期导出稿，故在本集上下文里翻转。
+优先级文案与块序在 :func:`build_ai_fill_prompt` 内固定为「剧本（工厂源稿）> 故事规划 >
+题材补全」；``episode`` 只用于把剧本摘录聚焦到本集，不再参与优先级翻转。
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from lib.project.asset_types import (
     resolve_asset_key,
 )
 from lib.references.reference_catalog import split_derivative_reference
+from server.services.story_plan_docs import collect_story_plan
 
 logger = logging.getLogger(__name__)
 
@@ -131,24 +135,6 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _bible_section(bible: str, name: str) -> str:
-    """人物圣经里 ``【角色】：名字`` 起到下一个角色前的整段。"""
-    lines = bible.splitlines()
-    collected: list[str] = []
-    start: int | None = None
-    for index, line in enumerate(lines):
-        match = re.match(r"^\s*【角色】[：:]\s*(.+)$", line)
-        if not match:
-            continue
-        if start is not None:
-            collected.append("\n".join(lines[start:index]).strip())
-        raw_name = re.split(r"[（(]", match.group(1), maxsplit=1)[0].strip()
-        start = index if raw_name == name else None
-    if start is not None:
-        collected.append("\n".join(lines[start:]).strip())
-    return collected[0] if collected else ""
-
-
 def _marker_lines(sources: list[Path], marker: str, name: str, limit: int = 8) -> list[str]:
     """各集 ``[marker]`` 行里出现该资产名的原文行，带文件名便于模型定位。"""
     hits: list[str] = []
@@ -164,30 +150,18 @@ def _marker_lines(sources: list[Path], marker: str, name: str, limit: int = 8) -
     return hits
 
 
-def collect_canon(project_dir: Path, asset_type: str, name: str) -> list[str]:
-    """补全用的项目设定摘要：工厂源稿里对该资产的描写。"""
+def collect_script_source(project_dir: Path, asset_type: str, name: str) -> list[str]:
+    """剧本（工厂源稿）里对该资产的记载：各集 ``[人物]/[场景]/[道具]`` 标记行原文。
+
+    标记行形如 ``名称｜外观描述``——名字后面跟的就是外观，是生成描述的主素材：AI 据此**强化 /
+    规范**，而不是凭空编外观。人物圣经、全剧大纲这类规划文档不算剧本，归
+    :func:`server.services.story_plan_docs.collect_story_plan` 作第二优先级来源。
+    """
     sources = _short_drama_sources(project_dir)
-    canon: list[str] = []
-    if asset_type == "character":
-        for path in sources:
-            if path.name in {"character-bible.md", "character_bible.md"}:
-                section = _bible_section(_read_text(path), name)
-                if section:
-                    canon.append(section)
-                    break
-        canon += _marker_lines(sources, "人物", name, limit=3)
-    elif asset_type == "scene":
-        for path in sources:
-            if path.name in {"series-outline.md", "series_outline.md", "outline.md"}:
-                for line in _read_text(path).splitlines():
-                    if name in line:
-                        canon.append(line.strip())
-                        break
-                break
-        canon += _marker_lines(sources, "场景", name)
-    elif asset_type == "prop":
-        canon += _marker_lines(sources, "道具", name)
-    return [item for item in canon if item]
+    marker = {"character": "人物", "scene": "场景", "prop": "道具"}.get(asset_type)
+    if marker is None:
+        return []
+    return _marker_lines(sources, marker, name)
 
 
 def _append_excerpts(
@@ -237,9 +211,11 @@ def collect_asset_context(
     *,
     episode: int | str | None = None,
 ) -> dict[str, Any]:
-    """从工厂源稿（canon）与正式剧本（摘录）搜集资产补全上下文。
+    """按「剧本（工厂源稿）> 故事规划 > 题材补全」三级搜集资产生成描述的上下文。
 
-    给 ``episode`` 时本集摘录单独成组排在前面，其余集只作补充——本集定稿优先（D-35）。
+    分组与 :func:`build_ai_fill_prompt` 的块序一一对应：``script_source``（工厂源稿标记行）、
+    ``episode_excerpts``（本集剧本的场景与台词）、``story_plan``（故事规划四类文档）。
+    ``episode`` 只把剧本摘录聚焦到本集，**不再翻转优先级**（D-35）。
     """
     episode_key = None if episode is None else str(episode)
     episodes = [item for item in (project.get("episodes") or []) if isinstance(item, dict)]
@@ -268,7 +244,8 @@ def collect_asset_context(
         "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
         "episode_excerpts": episode_excerpts,
         "other_excerpts": other_excerpts,
-        "canon": collect_canon(project_dir, asset_type, name),
+        "script_source": collect_script_source(project_dir, asset_type, name),
+        "story_plan": collect_story_plan(project_dir, asset_type, name, episode=episode),
         "focus_episode": episode_key,
     }
 
@@ -297,8 +274,10 @@ def build_ai_fill_prompt(asset_type: str, name: str, context: Mapping[str, Any])
         existing_parts.append(f"- derivatives（已有，勿改）：{derivs}")
     existing_block = "\n".join(existing_parts) if existing_parts else "（无已有内容）"
 
-    canon = context.get("canon") or []
-    canon_block = "\n\n".join(str(item) for item in canon)
+    script_source = context.get("script_source") or []
+    script_source_block = "\n".join(str(item) for item in script_source)
+    story_plan = context.get("story_plan") or []
+    story_plan_block = "\n\n".join(str(item) for item in story_plan)
 
     from lib.prompts.prompt_templates.builtin import builtin_templates
 
@@ -320,28 +299,29 @@ def build_ai_fill_prompt(asset_type: str, name: str, context: Mapping[str, Any])
     other_excerpts = context.get("other_excerpts") or []
     episode_key = context.get("focus_episode")
 
-    if episode_key:
-        # D-35：本集定稿优先，块序与优先级文案一并翻转；其他集只作补充。
-        episode_block = _excerpt_block(episode_excerpts) or "（本集剧本中未检索到该资产的直接引用）"
-        other_block = _excerpt_block(other_excerpts) or "（其他集剧本中未检索到该资产的直接引用）"
-        evidence = (
-            f"【本集正式剧本摘录｜第 {episode_key} 集｜最高优先级依据】\n"
-            f"（本集定稿：该资产出场的场景与台词；与下面任何内容冲突时以本集为准）\n{episode_block}\n\n"
-            f"【项目设定｜次要依据】\n"
-            f"（来源：人物圣经 / 全剧大纲 / 单集标记行；早期导出稿，可能与本集定稿有出入）\n"
-            f"{canon_block or '（无工厂源稿设定，按剧本摘录与题材补全）'}\n\n"
-            f"【其他集剧本摘录｜补充参考】\n{other_block}\n\n"
-        )
-        priority = "本集正式剧本 > 项目设定 > 其他集剧本摘录 > 题材补全。"
-    else:
-        excerpt_block = _excerpt_block(episode_excerpts) or "（剧本中未检索到该资产的直接引用）"
-        evidence = (
-            "【项目设定｜优先依据】\n"
-            "（来源：人物圣经 / 全剧大纲 / 单集标记行；与剧本摘录冲突时以此为准）\n"
-            f"{canon_block or '（无工厂源稿设定，按剧本摘录与题材补全）'}\n\n"
-            f"剧本摘录：\n{excerpt_block}\n\n"
-        )
-        priority = "项目设定 > 剧本摘录 > 题材补全。"
+    # D-35：块序与优先级文案固定为「剧本（工厂源稿）> 故事规划 > 题材补全」，
+    # 集页视图与侧栏「全部资产」入口同一口径，不按 episode 翻转。
+    episode_label = f"｜第 {episode_key} 集" if episode_key else ""
+    episode_block = _excerpt_block(episode_excerpts) or "（本集剧本中未检索到该资产的直接引用）"
+    other_block = _excerpt_block(other_excerpts)
+    script_block = (
+        f"工厂源稿标记行（名称｜外观描述，是生成描述的主素材，据此强化而非重写）：\n{script_source_block}\n"
+        if script_source_block
+        else "（工厂源稿里没有该资产的标记行）\n"
+    )
+    evidence = (
+        f"【剧本（工厂源稿）{episode_label}｜最高优先级依据】\n"
+        f"（该资产出场的场景与台词；与下面任何内容冲突时以剧本为准）\n{episode_block}\n\n"
+        f"{script_block}\n"
+        + (f"其他集剧本摘录（同属剧本，补充参考）：\n{other_block}\n\n" if other_block else "")
+        + f"【故事规划｜次要依据】\n"
+        f"（来源：人物圣经 / 全剧大纲 / 连续性台账 / 分集规划；补标记行没写到的跨集背景）\n"
+        f"{story_plan_block or '（无故事规划记载，按剧本与题材补全）'}\n\n"
+        f"【题材补全｜兜底】\n"
+        f"（项目标题与前提；前两级都没有记载时才据此泛写，不得编造与剧本冲突的事实）\n"
+        f"项目标题：{context.get('title') or '（未知）'}｜项目前提：{context.get('premise') or '（未知）'}\n\n"
+    )
+    priority = "剧本（工厂源稿）> 故事规划 > 题材补全。"
 
     return (
         "你是短视频创作平台的资产字段补全助手。下面给出一个项目资产的信息与剧本上下文，"
@@ -468,7 +448,8 @@ __all__ = [
     "assets_without_description",
     "build_ai_fill_prompt",
     "collect_asset_context",
-    "collect_canon",
+    "collect_script_source",
+    "collect_story_plan",
     "extract_json",
     "fill_assets",
     "generate_asset_fill",

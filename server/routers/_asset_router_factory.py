@@ -376,7 +376,8 @@ def build_asset_router(
                 "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
                 "episode_excerpts": [],
                 "other_excerpts": [],
-                "canon": [],
+                "script_source": [],
+                "story_plan": [],
             }
         try:
             parsed = await generate_asset_fill(project_name, asset_type, entry_name, context)

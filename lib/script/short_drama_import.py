@@ -390,14 +390,16 @@ def beat_catalog(parsed: ParsedEpisode) -> list[dict[str, Any]]:
     catalog: list[dict[str, Any]] = []
     for block_index, block in enumerate(parsed.blocks):
         for beat in block.beats:
-            catalog.append({
-                "beat_id": len(catalog) + 1,
-                "block_id": block_index,
-                "kind": beat.kind,
-                "speaker": beat.speaker,
-                "text": beat.text,
-                "stage": beat.stage,
-            })
+            catalog.append(
+                {
+                    "beat_id": len(catalog) + 1,
+                    "block_id": block_index,
+                    "kind": beat.kind,
+                    "speaker": beat.speaker,
+                    "text": beat.text,
+                    "stage": beat.stage,
+                }
+            )
     return catalog
 
 
@@ -431,7 +433,7 @@ def convert_planned_scenes(
         beats = [beat for _, beat in entries]
         first_block = entries[0][0]
         characters = sorted({name for block, _ in entries for name in block.characters})
-        props = sorted({name for beat in beats for name in beat.props})
+        props = sorted({name for block, _ in entries for name in block.props})
         scene = _build_scene(episode, index, first_block, beats, duration, characters, props)
         if scene_descriptions is not None:
             scene["scene_description"] = scene_descriptions[index]

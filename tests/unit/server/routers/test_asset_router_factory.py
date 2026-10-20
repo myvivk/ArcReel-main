@@ -590,8 +590,8 @@ class TestAssetAiFill:
         assert resp.status_code == 404
 
 
-class TestAssetContextCanon:
-    """ai-fill 的上下文要读到短剧工厂源稿，而不是只从正式剧本里扒摘录。"""
+class TestAssetContextSources:
+    """ai-fill 的上下文分两块：剧本（工厂源稿标记行）与故事规划（人物圣经 / 大纲等）。"""
 
     def _project_dir(self, tmp_path):
         root = tmp_path / "short_drama_project" / "source" / "short_drama"
@@ -610,33 +610,33 @@ class TestAssetContextCanon:
         )
         return tmp_path / "short_drama_project"
 
-    def test_character_canon_comes_from_bible(self, tmp_path):
+    def test_character_story_plan_comes_from_bible(self, tmp_path):
         from server.services.asset_ai_fill import collect_asset_context
 
         context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
 
-        canon = "\n".join(context["canon"])
-        assert "三十岁上下，寸头，旧夹克磨白" in canon
-        assert "宽脸浓眉" not in canon  # 只取该角色那一段
+        story_plan = "\n".join(context["story_plan"])
+        assert "三十岁上下，寸头，旧夹克磨白" in story_plan
+        assert "宽脸浓眉" not in story_plan  # 只取该角色那一段
 
-    def test_prop_canon_comes_from_episode_marker_lines(self, tmp_path):
+    def test_prop_script_source_comes_from_episode_marker_lines(self, tmp_path):
         from server.services.asset_ai_fill import collect_asset_context
 
         context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "prop", "铁门", {})
 
-        canon = "\n".join(context["canon"])
-        assert "锈迹斑斑，门轴下垂" in canon
-        assert "episode_01.md" in canon
+        script_source = "\n".join(context["script_source"])
+        assert "锈迹斑斑，门轴下垂" in script_source
+        assert "episode_01.md" in script_source
 
-    def test_scene_canon_includes_outline_and_marker_lines(self, tmp_path):
+    def test_scene_script_source_includes_the_marker_line(self, tmp_path):
         from server.services.asset_ai_fill import collect_asset_context
 
         context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "scene", "城郊仓库", {})
 
-        canon = "\n".join(context["canon"])
-        assert "水泥地，铁门单侧顶光" in canon
+        script_source = "\n".join(context["script_source"])
+        assert "水泥地，铁门单侧顶光" in script_source
 
-    def test_prompt_marks_canon_as_priority(self, tmp_path):
+    def test_prompt_puts_the_script_above_the_story_plan(self, tmp_path):
         from server.services.asset_ai_fill import (
             build_ai_fill_prompt,
             collect_asset_context,
@@ -645,6 +645,8 @@ class TestAssetContextCanon:
         context = collect_asset_context(self._project_dir(tmp_path), {"episodes": []}, "character", "林辰", {})
         prompt = build_ai_fill_prompt("character", "林辰", context)
 
-        assert "【项目设定｜优先依据】" in prompt
+        assert "【剧本（工厂源稿）" in prompt
+        assert "【故事规划" in prompt
         assert "三十岁上下，寸头，旧夹克磨白" in prompt
-        assert prompt.index("【项目设定｜优先依据】") < prompt.index("剧本摘录")
+        # D-35：剧本是最贴合的来源，排在故事规划之前。
+        assert prompt.index("【剧本（工厂源稿）") < prompt.index("【故事规划")

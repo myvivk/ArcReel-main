@@ -99,6 +99,7 @@ export default {
   'act_agent_edit': 'Hand to Agent to edit',
   'act_create_edit_timeline': 'New edit timeline',
   'act_open_edit_view': 'Open edit view',
+  'act_open_assets_view': 'Go to assets step',
   'act_go_render': 'Go to render',
   'act_author_prompts': 'AI write',
   'act_author_video_prompts_one': 'Write {{count}} video prompt',

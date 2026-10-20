@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import re
 from dataclasses import dataclass
@@ -16,8 +17,8 @@ from lib.backends.text_backends.base import DEFAULT_MAX_OUTPUT_TOKENS, TextTaskT
 from lib.backends.text_backends.base import TextGenerationRequest as BackendTextGenerationRequest
 from lib.backends.text_generator import TextGenerator
 from lib.episode.episode_paths import episode_script_filename
-from lib.infra.text_utils import strip_json_code_fences
 from lib.infra.async_thread import run_sync_transaction
+from lib.infra.text_utils import strip_json_code_fences
 from lib.project.asset_types import register_missing_assets
 from lib.project.project_manager import ProjectManager
 from lib.script.script_models import DramaEpisodeScript
@@ -56,8 +57,6 @@ class ScenePlanResult(BaseModel):
 
 
 def _validate_plan_quality(plan: ScenePlanResult) -> None:
-    import re
-
     action = re.compile(r"推|拉|转|抬|落|抓|握|奔|停|望|看|举|敲|砸|开|合|走|冲|递|抽|攥|跌|挥|点头|摇头")
     for scene_index, scene in enumerate(plan.scenes, 1):
         prompt = scene.image_prompt
@@ -65,13 +64,17 @@ def _validate_plan_quality(plan: ScenePlanResult) -> None:
         if not blocks:
             raise ValueError(f"scene {scene_index} has no formatted shot blocks")
         for block in blocks:
-            if len(block.strip()) < 70 or not action.search(block) or not re.search(r"(?:角色|场景|道具|风格锚)@\[", block):
+            if (
+                len(block.strip()) < 70
+                or not action.search(block)
+                or not re.search(r"(?:角色|场景|道具|风格锚)@\[", block)
+            ):
                 raise ValueError(f"scene {scene_index} contains an underdeveloped shot block")
             if not re.search(r"景别.{0,16}机位.{0,16}(?:运镜|固定|缓推|缓拉)", block):
                 raise ValueError(f"scene {scene_index} is missing camera grammar")
             if not re.search(r"视觉参考：", block):
                 raise ValueError(f"scene {scene_index} is missing visual reference")
-        for left, right in zip(blocks, blocks[1:]):
+        for left, right in itertools.pairwise(blocks):
             if left.strip() == right.strip():
                 raise ValueError(f"scene {scene_index} contains duplicate filler shots")
 
@@ -189,8 +192,14 @@ async def import_short_drama_episode(
             script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
         else:
             source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
-            revision_key = source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-            cache_path = projects.get_project_path(project_name) / "drafts" / f"short_drama_plan_e{episode}_{revision_key}_s{planning_strength}.json"
+            revision_key = (
+                source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+            )
+            cache_path = (
+                projects.get_project_path(project_name)
+                / "drafts"
+                / f"short_drama_plan_e{episode}_{revision_key}_s{planning_strength}.json"
+            )
             try:
                 plan_data = await asyncio.to_thread(lambda: json.loads(cache_path.read_text(encoding="utf-8")))
                 plan = ScenePlanResult.model_validate(plan_data)
@@ -232,7 +241,10 @@ async def import_short_drama_episode(
                     flat_ids = [beat_id for scene in plan.scenes for beat_id in scene.beat_ids]
                     if flat_ids != list(range(1, len(beats) + 1)):
                         raise ValueError("scene plan must cover source beats exactly once in order")
-                    if any(not STORY_SCENE_WINDOW_SECONDS[0] <= scene.duration_seconds <= STORY_SCENE_WINDOW_SECONDS[1] for scene in plan.scenes):
+                    if any(
+                        not STORY_SCENE_WINDOW_SECONDS[0] <= scene.duration_seconds <= STORY_SCENE_WINDOW_SECONDS[1]
+                        for scene in plan.scenes
+                    ):
                         raise ValueError("scene duration is outside the configured window")
                     _validate_plan_quality(plan)
                     cache_path.parent.mkdir(parents=True, exist_ok=True)

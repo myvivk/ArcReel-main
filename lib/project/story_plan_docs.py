@@ -80,17 +80,25 @@ def story_plan_documents(project_dir: Path) -> dict[str, list[Path]]:
     return found
 
 
-def plan_episode_section(text: str, episode: int | str | None) -> str:
+def plan_episode_section(
+    text: str,
+    episode: int | str | None,
+    *,
+    require_episode_header: bool = False,
+) -> str:
     """按 ``第 N 集`` 标题截取本集那一段；文档不分集（没有集标题）时返回整篇。
 
     给了集号却找不到该集的小节时返回空串——别的集的规划不该被算成本集的资产。
+
+    ``require_episode_header`` 为真时反过来：文档**没有**集标题（不是按集组织的规划）也返回
+    空串——本集视图只能取本集那一节，一份不按集写的规划整篇进来就等于把全项目资产塞进每一集。
     """
 
     if episode is None:
         return text
     headers = [line for line in text.splitlines() if _EPISODE_HEADER_RE.match(line)]
     if not headers:
-        return text
+        return "" if require_episode_header else text
     try:
         wanted = int(str(episode))
     except (TypeError, ValueError):
@@ -200,11 +208,49 @@ def marker_asset_names(text: str) -> dict[str, list[str]]:
     return collected
 
 
+def episode_plan_asset_names(project_dir: Path, *, episode: int | str | None = None) -> dict[str, list[str]]:
+    """**本集**分集规划里定义 / 提及的资产名，按类型去重保序。
+
+    本集引用（集页资产视图、集范围批量出图、制作进度）只认这一份：分集规划按 ``第 N 集``
+    收窄到本集那一节，节里的 ``【角色】`` 清单与 ``[人物]/[场景]/[道具]`` 标记行才是本集要用的。
+
+    人物圣经 / 全剧大纲 / 连续性台账是**项目级**设定，整份进每一集等于把全项目资产塞进每一集
+    （本集视图就成了全集的翻版），它们只在登记完整性与描述生成时参与（见
+    :func:`story_plan_asset_names` 与 :func:`collect_story_plan`）。文档不按集分节时同样不算
+    本集——那是全剧口径，不是本集口径。
+    """
+
+    collected: dict[str, list[str]] = {asset_type: [] for asset_type in EPISODE_ASSET_TYPES}
+
+    def _add(asset_type: str, name: str) -> None:
+        key = (name or "").strip()
+        if key and key not in collected[asset_type]:
+            collected[asset_type].append(key)
+
+    for path in story_plan_documents(project_dir).get("episode_plan", []):
+        text = _read_text(path)
+        body = plan_episode_section(text, episode, require_episode_header=True)
+        if not body.strip():
+            continue
+        for line in body.splitlines():
+            match = _CHARACTER_ROLE_RE.match(line)
+            if match:
+                for name in _split_names(match.group(1)):
+                    _add("character", name)
+        for asset_type, names in marker_asset_names(body).items():
+            for name in names:
+                _add(asset_type, name)
+    return collected
+
+
 def story_plan_asset_names(project_dir: Path, *, episode: int | str | None = None) -> dict[str, list[str]]:
-    """故事规划里定义 / 提及的资产名，按类型去重保序。
+    """故事规划里定义 / 提及的资产名，按类型去重保序（**项目级**口径，供登记完整性用）。
 
     人物圣经的 ``【角色】`` 清单直接给出角色名；四类文档里的 ``[人物]/[场景]/[道具]`` 标记行
     按标记给类型（与逐集源稿同一语法）。分集规划按集号收窄到本集那一节。
+
+    这份是全集口径：保证「剧本尚未点名、但规划已定义」的资产也被登记进项目资产库；**本集引用
+    要用 :func:`episode_plan_asset_names`**，否则每一集都会看到全项目的资产。
     """
 
     collected: dict[str, list[str]] = {asset_type: [] for asset_type in EPISODE_ASSET_TYPES}
@@ -262,6 +308,7 @@ __all__ = [
     "STORY_PLAN_FILES",
     "STORY_PLAN_LABELS",
     "collect_story_plan",
+    "episode_plan_asset_names",
     "marker_asset_names",
     "plan_episode_section",
     "story_plan_asset_names",

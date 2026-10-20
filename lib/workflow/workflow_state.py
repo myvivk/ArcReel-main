@@ -48,7 +48,7 @@ from lib.project.project_migration_failure import (
 )
 from lib.project.project_migration_report import MigrationReport, load_migration_report
 from lib.project.source_revision import SourceRevisionResult, SourceScope, compute_source_revision
-from lib.project.story_plan_docs import story_plan_asset_names
+from lib.project.story_plan_docs import episode_plan_asset_names
 from lib.references.reference_admission import admit_references, admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script import script_review
@@ -1787,7 +1787,7 @@ class WorkflowStateService:
                     shared,
                     issues,
                     source_markdown=read_short_drama_source_markdown(project_path, number),
-                    story_plan_names=story_plan_asset_names(project_path, episode=number),
+                    story_plan_names=episode_plan_asset_names(project_path, episode=number),
                 )
             )
             artifacts["storyboards"] = (

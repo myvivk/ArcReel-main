@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from server.services.story_plan_docs import (
+from lib.project.story_plan_docs import (
     collect_story_plan,
     plan_episode_section,
     story_plan_asset_names,

@@ -111,6 +111,45 @@ class TestReferencedAssets:
             "image_calls": 0,
         }
 
+    def test_each_episode_only_sees_its_own_assets(self, tmp_path, monkeypatch):
+        """本集视图是本集自己的资产：别的集的源稿与别的集的分集规划都不进来。"""
+        client, pm, project_path = _client(monkeypatch, tmp_path, episodes=[_episode(1, ""), _episode(2, "")])
+        for name in ("阿岚", "陈峰", "沈昭"):
+            pm.add_character("demo", name, "角色")
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+        pm.add_project_scene("demo", "医院", "白墙")
+        sources = project_path / "source" / "short_drama" / "episodes"
+        sources.mkdir(parents=True, exist_ok=True)
+        (sources / "episode_01.md").write_text(
+            "第 1 集 开场\n[场景]：茶楼｜临街二层\n[人物]：阿岚｜白衣少女\n",
+            encoding="utf-8",
+        )
+        (sources / "episode_02.md").write_text(
+            "第 2 集 对峙\n[场景]：医院｜白墙\n[人物]：陈峰｜宽脸浓眉\n",
+            encoding="utf-8",
+        )
+        (project_path / "source" / "episode-plan.md").write_text(
+            "第 1 集\n[人物]：沈昭\n\n第 2 集\n[人物]：陈峰\n",
+            encoding="utf-8",
+        )
+
+        with client:
+            first = client.get("/api/v1/projects/demo/episodes/1/referenced-assets").json()
+            second = client.get("/api/v1/projects/demo/episodes/2/referenced-assets").json()
+
+        assert [(item["asset_type"], item["asset_name"]) for item in first["assets"]] == [
+            ("character", "沈昭"),
+            ("character", "阿岚"),
+            ("scene", "茶楼"),
+        ]
+        assert [(item["asset_type"], item["asset_name"]) for item in second["assets"]] == [
+            ("character", "陈峰"),
+            ("scene", "医院"),
+        ]
+        # 清单预估同样是本集口径：别的集的资产不进本批。
+        assert first["plan"]["total"] == 3
+        assert second["plan"]["total"] == 2
+
 
 class TestReferencedAssetsLookups:
     def test_unknown_project_and_unknown_episode_are_not_found(self, tmp_path, monkeypatch):

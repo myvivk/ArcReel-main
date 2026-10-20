@@ -44,7 +44,11 @@ from lib.project.asset_types import (
 from lib.project.episode_asset_references import episode_referenced_assets
 from lib.project.project_change_hints import project_change_source
 from lib.project.project_manager import ProjectManager, find_episode, get_project_manager
-from lib.project.story_plan_docs import marker_asset_names, story_plan_asset_names
+from lib.project.story_plan_docs import (
+    episode_plan_asset_names,
+    marker_asset_names,
+    story_plan_asset_names,
+)
 from lib.references.reference_catalog import split_derivative_reference
 from lib.script.script_references import iter_reference_sites
 from lib.script.short_drama_source import ShortDramaSourceConflict, load_short_drama_source
@@ -173,20 +177,31 @@ def episode_asset_names(
     project_name: str,
     episode: int,
     script: Mapping[str, Any] | None,
+    *,
+    include_project_story_plan: bool = False,
 ) -> dict[str, list[str]]:
-    """本集抽取到的全部资产名：剧本（正式脚本引用数组 + 工厂源稿标记行）与故事规划。
+    """本集抽取到的资产名：正式脚本引用数组 + 本集工厂源稿标记行 + 本集分集规划。
 
-    三个来源互补，合并顺序即优先级：正式脚本给出本集实际用到的名字；工厂源稿标记行补上剧本
-    里还没落进引用数组的名字（标记行已带外观描述）；故事规划补上剧本尚未点名、但规划已定义
-    的角色 / 场景 / 道具——没登记就谈不上生成描述与出图，登记完整性优先。
+    合并顺序即优先级：正式脚本给出本集实际用到的名字；工厂源稿标记行补上剧本里还没落进引用
+    数组的名字（标记行已带外观描述）；分集规划按 ``第 N 集`` 只取本集那一节，补上剧本尚未点名
+    但本集规划已定义的角色 / 场景 / 道具。
+
+    ``include_project_story_plan`` 为真时再并入**项目级**故事规划（人物圣经 / 全剧大纲 /
+    连续性台账）：那是一键**登记**用的口径——保证「规划已定义但还没被任何集点名」的资产也
+    登记进项目资产库；本集引用、集范围出图与清单预估一律用本集口径，否则每一集都会看到全项目
+    的资产。
     """
 
     script_names = script_asset_names(script) if script is not None else {}
-    return merge_asset_names(
+    project_path = manager.get_project_path(project_name)
+    groups: list[Mapping[str, Sequence[str]]] = [
         script_names,
         source_markdown_asset_names(manager, project_name, episode),
-        story_plan_asset_names(manager.get_project_path(project_name), episode=episode),
-    )
+        episode_plan_asset_names(project_path, episode=episode),
+    ]
+    if include_project_story_plan:
+        groups.append(story_plan_asset_names(project_path, episode=episode))
+    return merge_asset_names(*groups)
 
 
 def episode_assets_plan(manager: ProjectManager, project_name: str, episode: int) -> dict[str, Any]:
@@ -246,7 +261,8 @@ def register_episode_assets(project_name: str, episode: int) -> tuple[dict[str, 
     if find_episode(project, episode) is None:
         raise NotFoundError("episode_not_found", episode=episode)
     script = load_episode_script(manager, project_name, episode)
-    names = episode_asset_names(manager, project_name, episode, script)
+    # 登记用项目级口径：规划已定义但剧本还没点名的资产也补进资产库（幂等，只补不存在的）。
+    names = episode_asset_names(manager, project_name, episode, script, include_project_story_plan=True)
     if script is None and not any(names.values()):
         # 既没有正式脚本、工厂源稿与故事规划也抽不出名字：本集无剧本可依。
         raise ConflictError("episode_assets_no_script", episode=episode)
@@ -404,7 +420,7 @@ async def get_episode_referenced_assets(name: str, episode: int, _t: Translator)
         except ShortDramaSourceConflict:
             logger.warning("referenced assets: conflicting short drama source for project %s ep %s", name, episode)
             source = None
-        story_plan_names = story_plan_asset_names(manager.get_project_path(name), episode=episode)
+        story_plan_names = episode_plan_asset_names(manager.get_project_path(name), episode=episode)
         return {
             "episode": episode,
             "has_script": script is not None or source is not None,

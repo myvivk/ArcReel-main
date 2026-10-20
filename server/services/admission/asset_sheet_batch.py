@@ -50,7 +50,7 @@ from lib.project.asset_derivatives import (
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key, resolve_asset_key
 from lib.project.episode_asset_references import ReferencedAsset, episode_referenced_assets
 from lib.project.project_manager import ProjectManager, find_episode
-from lib.project.story_plan_docs import story_plan_asset_names
+from lib.project.story_plan_docs import episode_plan_asset_names
 from lib.prompts.prompt_builders import build_character_derivative_prompt
 from lib.script.short_drama_source import ShortDramaSourceConflict, load_short_drama_source
 
@@ -497,7 +497,7 @@ async def load_asset_sheet_batch_plan(
                 project,
                 load_episode_script(projects, project_name, episode),
                 source_markdown=source.markdown if source is not None else None,
-                story_plan_names=story_plan_asset_names(project_path, episode=episode),
+                story_plan_names=episode_plan_asset_names(project_path, episode=episode),
             )
         return project, resolver, referenced
 

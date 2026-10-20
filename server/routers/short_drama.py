@@ -76,6 +76,9 @@ class ShortDramaReimportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_revision: str = Field(min_length=1)
     confirm_artifacts: bool = False
+    planning_strength: int = Field(default=2, ge=1, le=3)
+    fast_split: bool = False
+    force_regenerate: bool = False
 
 
 class ShortDramaArtifactItem(BaseModel):
@@ -192,6 +195,9 @@ async def reimport_source(
             save_source=False,
             expected_source_revision=req.source_revision,
             confirm_artifacts=req.confirm_artifacts,
+            planning_strength=req.planning_strength,
+            fast_split=req.fast_split,
+            force_regenerate=req.force_regenerate,
         )
     except ShortDramaWorkflowError as exc:
         _raise_workflow_error(exc, project_name, episode)

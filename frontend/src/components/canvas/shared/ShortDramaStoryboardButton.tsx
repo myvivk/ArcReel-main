@@ -57,8 +57,11 @@ export function ShortDramaStoryboardButton({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [planningStrength, setPlanningStrength] = useState(3);
+  const [fastSplit, setFastSplit] = useState(false);
+  const [forceRegenerate, setForceRegenerate] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ scenes: number; missing: MissingAsset[] } | null>(null);
+  const [result, setResult] = useState<{ scenes: number; missing: MissingAsset[]; cached: boolean } | null>(null);
   /** 分镜成功后顺手补齐缺描述资产：默认勾上，用户可取消。 */
   const [autoFill, setAutoFill] = useState(true);
   const [filling, setFilling] = useState<{ done: number; total: number; name: string } | null>(null);
@@ -98,10 +101,18 @@ export function ShortDramaStoryboardButton({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await reimportShortDramaSource(projectName, episode, revision, hasStoryboards);
+      const res = await reimportShortDramaSource(
+        projectName,
+        episode,
+        revision,
+        hasStoryboards,
+        planningStrength,
+        fastSplit,
+        forceRegenerate,
+      );
       const missing = res.assets_without_description ?? [];
       // 先落结果再刷新：刷新带来的重渲染不该把「已生成」和缺描述黄条抹掉。
-      setResult({ scenes: res.scenes, missing });
+      setResult({ scenes: res.scenes, missing, cached: res.planning_cached });
       if (autoFill && missing.length > 0) {
         const failed: MissingAsset[] = [];
         let filled = 0;
@@ -117,7 +128,7 @@ export function ShortDramaStoryboardButton({
           setFilling({ done: index + 1, total: missing.length, name: asset.name });
         }
         setFilledCount(filled);
-        setResult({ scenes: res.scenes, missing: failed });
+        setResult({ scenes: res.scenes, missing: failed, cached: res.planning_cached });
         if (failed.length > 0) {
           useAppStore.getState().pushToast(
             t("short_drama_ai_storyboard_missing", {
@@ -217,6 +228,60 @@ export function ShortDramaStoryboardButton({
                 </div>
               ) : null}
 
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant={fastSplit ? "outline" : "default"}
+                    size="sm"
+                    disabled={submitting}
+                    onClick={() => setFastSplit(false)}
+                  >
+                    {t("short_drama_ai_storyboard_smart_split")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={fastSplit ? "default" : "outline"}
+                    size="sm"
+                    disabled={submitting}
+                    onClick={() => setFastSplit(true)}
+                  >
+                    {t("short_drama_ai_storyboard_fast_split")}
+                  </Button>
+                </div>
+                {!fastSplit && (
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={forceRegenerate}
+                      onCheckedChange={(value) => setForceRegenerate(value === true)}
+                      disabled={submitting}
+                    />
+                    <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
+                  </label>
+                )}
+              </div>
+
+              {!fastSplit && <div>
+                <label htmlFor="short-drama-planning-strength" className="mb-1 block">
+                  {t("short_drama_ai_storyboard_strength", { strength: planningStrength })}
+                </label>
+                <input
+                  id="short-drama-planning-strength"
+                  type="range"
+                  min={1}
+                  max={5}
+                  step={1}
+                  value={planningStrength}
+                  disabled={submitting}
+                  onChange={(event) => setPlanningStrength(Number(event.target.value))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>{t("short_drama_ai_storyboard_strength_long")}</span>
+                  <span>{t("short_drama_ai_storyboard_strength_short")}</span>
+                </div>
+              </div>}
+
               <div>
                 <label className="flex items-center gap-2">
                   <Checkbox
@@ -243,6 +308,7 @@ export function ShortDramaStoryboardButton({
                   <p className="flex items-center gap-2 text-good">
                     <Check aria-hidden className="size-4" />
                     {t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
+                    {result.cached ? ` · ${t("short_drama_ai_storyboard_cache_hit")}` : ""}
                   </p>
                   {filledCount > 0 ? (
                     <p className="text-good">

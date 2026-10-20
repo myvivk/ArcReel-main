@@ -44,6 +44,8 @@ beforeEach(() => {
     source_path: SOURCE.path,
     source_revision: SOURCE.revision,
     assets_without_description: MISSING,
+    planning_strength: 3,
+    planning_cached: false,
   });
   vi.spyOn(API, "fillAssetFields").mockResolvedValue({ success: true });
 });
@@ -88,7 +90,7 @@ describe("AI 分镜弹窗", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, false),
     );
     expect(API.fillAssetFields).not.toHaveBeenCalled();
     await waitFor(() =>
@@ -129,7 +131,7 @@ describe("AI 分镜弹窗", () => {
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 3, false, false),
     );
   });
 });

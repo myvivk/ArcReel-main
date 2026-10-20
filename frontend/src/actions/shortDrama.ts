@@ -156,11 +156,16 @@ export async function reimportShortDramaSource(
   episode: number,
   sourceRevision: string,
   confirmArtifacts: boolean,
+  planningStrength = 2,
+  fastSplit = false,
+  forceRegenerate = false,
 ): Promise<{
   episode: number;
   scenes: number;
   source_path: string;
   source_revision: string;
+  planning_strength: number;
+  planning_cached: boolean;
   assets_without_description?: Array<{ type: string; name: string; reason: string }>;
 }> {
   try {
@@ -169,6 +174,9 @@ export async function reimportShortDramaSource(
       episode,
       sourceRevision,
       confirmArtifacts,
+      planningStrength,
+      fastSplit,
+      forceRegenerate,
     );
     useAppStore
       .getState()

@@ -1596,11 +1596,16 @@ class API {
     episode: number,
     sourceRevision: string,
     confirmArtifacts: boolean,
+    planningStrength = 2,
+    fastSplit = false,
+    forceRegenerate = false,
   ): Promise<{
     episode: number;
     scenes: number;
     source_path: string;
     source_revision: string;
+    planning_strength: number;
+    planning_cached: boolean;
     assets_without_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(
@@ -1610,6 +1615,9 @@ class API {
         body: JSON.stringify({
           source_revision: sourceRevision,
           confirm_artifacts: confirmArtifacts,
+          planning_strength: planningStrength,
+          fast_split: fastSplit,
+          force_regenerate: forceRegenerate,
         }),
       },
     );

@@ -385,6 +385,66 @@ def _build_scene(
     }
 
 
+def beat_catalog(parsed: ParsedEpisode) -> list[dict[str, Any]]:
+    """返回稳定编号的原稿节拍，供模型只规划分组、不改写内容。"""
+    catalog: list[dict[str, Any]] = []
+    for block_index, block in enumerate(parsed.blocks):
+        for beat in block.beats:
+            catalog.append({
+                "beat_id": len(catalog) + 1,
+                "block_id": block_index,
+                "kind": beat.kind,
+                "speaker": beat.speaker,
+                "text": beat.text,
+                "stage": beat.stage,
+            })
+    return catalog
+
+
+def convert_planned_scenes(
+    parsed: ParsedEpisode,
+    episode: int,
+    groups: list[list[int]],
+    durations: list[int],
+    scene_descriptions: list[str] | None = None,
+    image_prompts: list[str] | None = None,
+) -> dict[str, Any]:
+    """由模型规划的 1-based beat id 分组构建剧本，内容字段始终从 Markdown 原稿派生。"""
+    flat = [(block, beat) for block in parsed.blocks for beat in block.beats]
+    if len(groups) != len(durations) or not groups:
+        raise ValueError("scene groups and durations must be non-empty and aligned")
+    if scene_descriptions is not None and len(scene_descriptions) != len(groups):
+        raise ValueError("scene descriptions must align with scene groups")
+    if image_prompts is not None and len(image_prompts) != len(groups):
+        raise ValueError("image prompts must align with scene groups")
+    used: list[int] = []
+    scenes: list[dict[str, Any]] = []
+    for index, (group, duration) in enumerate(zip(groups, durations, strict=True)):
+        if not group or any(isinstance(value, bool) or value < 1 or value > len(flat) for value in group):
+            raise ValueError(f"invalid beat ids in scene {index + 1}")
+        if group != list(range(group[0], group[-1] + 1)):
+            raise ValueError(f"scene {index + 1} beat ids must be contiguous")
+        if used and group[0] != used[-1] + 1:
+            raise ValueError("scene groups must cover beats in source order without gaps")
+        used.extend(group)
+        entries = [flat[value - 1] for value in group]
+        beats = [beat for _, beat in entries]
+        first_block = entries[0][0]
+        characters = sorted({name for block, _ in entries for name in block.characters})
+        props = sorted({name for beat in beats for name in beat.props})
+        scene = _build_scene(episode, index, first_block, beats, duration, characters, props)
+        if scene_descriptions is not None:
+            scene["scene_description"] = scene_descriptions[index]
+        if image_prompts is not None:
+            scene["image_prompt"] = {"scene": image_prompts[index]}
+        scenes.append(scene)
+    if used != list(range(1, len(flat) + 1)):
+        raise ValueError("scene groups must cover every source beat exactly once")
+    result = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
+    result["scenes"] = scenes
+    return result
+
+
 def _split_by_story_window(
     parsed: ParsedEpisode, episode: int, min_seconds: int, max_seconds: int
 ) -> list[dict[str, Any]]:

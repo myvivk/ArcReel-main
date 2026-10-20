@@ -15,7 +15,7 @@
 3. 用户在集页「剧本」页签编辑 Markdown。
 4. 「保存源稿」只保存 Markdown，不修改正式脚本，解析失败的草稿也允许保存。
 5. 「重新导入」从已保存 Markdown 重建正式脚本。
-6. 用户进入「分镜」页签，通过「编写提示词」补齐 `image_prompt` 和 `video_prompt`。
+6. 用户进入「分镜」页签，短剧工厂源稿通过「智能切分」在导入期生成 `image_prompt`；「编写提示词」用于微调分镜提示词并编写 `video_prompt`。
 7. 用户显式触发分镜图和视频生成。
 
 重新导入不执行以下动作：
@@ -46,6 +46,7 @@
 16. `PATCH /script-scenes/{scene_id}` 必须允许保存 `scene_description`。
 17. 已导入短剧的分镜页隐藏「AI 原创剧本」「导入短剧工厂剧本」「AI 生成剧本」，只保留「编写提示词」和媒体生成入口。
 18. 在线程中写源稿或正式脚本必须使用 `run_sync_transaction`，请求取消也要等磁盘事务结算后再传播。
+20. 智能分镜仅调用文本模型，不调用图像/视频供应商；按源稿 revision 与强度缓存 AI scenes，快速切分保留机械分桶，AI 结构或丰满度校验失败时回落机械切分。
 19. 必须保留主线 `patch_episode_script` 的可选 `base_revision` 与 `update.fields` 工具说明，短剧工作流不得回退通用 Agent 编辑能力。
 
 ## 数据模型

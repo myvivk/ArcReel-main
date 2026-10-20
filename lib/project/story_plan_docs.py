@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from lib.script.short_drama_import import parse_short_drama_episode
+
 #: 四类规划文档的候选文件名（小写匹配）；同一类命中多份时按路径排序全部读取。
 STORY_PLAN_FILES: dict[str, tuple[str, ...]] = {
     "character_bible": ("character-bible.md", "character_bible.md", "人物圣经.md"),
@@ -180,8 +182,6 @@ def marker_asset_names(text: str) -> dict[str, list[str]]:
 
     逐集源稿与故事规划共用这套标记行写法，两边都取这一份解析结果。
     """
-
-    from lib.script.short_drama_import import parse_short_drama_episode
 
     parsed = parse_short_drama_episode(text)
     collected: dict[str, list[str]] = {asset_type: [] for asset_type in EPISODE_ASSET_TYPES}

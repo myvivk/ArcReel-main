@@ -42,8 +42,8 @@ from lib.project.asset_types import (
     record_asset_aliases,
     resolve_asset_key,
 )
+from lib.project.story_plan_docs import collect_story_plan
 from lib.references.reference_catalog import split_derivative_reference
-from server.services.story_plan_docs import collect_story_plan
 
 logger = logging.getLogger(__name__)
 

@@ -98,14 +98,39 @@ _NARRATION_HINTS = ("旁白", "画外音", "解说", "narrator", "vo")
 STORY_SCENE_WINDOW_SECONDS: tuple[int, int] = (12, 15)
 
 
+def _split_outside_parens(text: str) -> tuple[str, str, str]:
+    """按**括号外**的第一个 ``｜``（半角 ``|`` 亦可）切成 ``(前, 分隔符, 后)``。
+
+    外观描述里常有竖线，只有括号外的那个才是「名字 | 外观」的分隔。
+    """
+
+    depth = 0
+    for index, ch in enumerate(text):
+        if ch in "（(":
+            depth += 1
+        elif ch in "）)":
+            depth = max(depth - 1, 0)
+        elif ch in "｜|" and depth == 0:
+            return text[:index], ch, text[index + 1 :]
+    return text, "", ""
+
+
 def _parse_character_entry(token: str) -> tuple[str, str]:
-    """解析单个 ``名（状态标签｜外观）`` 片段，返回 ``(名字, 外观)``。"""
+    """解析单个 ``名｜外观`` 或 ``名（状态标签｜外观）`` 片段，返回 ``(名字, 外观)``。
+
+    两种写法都成立（工厂源稿两种都在用）：``陈峰｜宽脸浓眉`` 的竖线在括号外，
+    ``沈昭（冷醒·重生者｜藕荷色西装套裙）`` 的竖线在括号内。名字恒在最前、括号之前。
+    """
+
     token = token.strip()
-    name = re.split(r"[（(]", token, maxsplit=1)[0].strip()
-    appearance = ""
+    head, separator, tail = _split_outside_parens(token)
+    name = re.split(r"[（(]", head, maxsplit=1)[0].strip()
     if not name:
-        return (name, appearance)
-    match = re.search(r"[（(]([^）)]*)[）)]", token)
+        return (name, "")
+    if separator:
+        return (name, tail.strip())
+    appearance = ""
+    match = re.search(r"[（(]([^）)]*)[）)]", head)
     if match:
         inner = match.group(1).strip()
         for sep in ("｜", "|"):
@@ -125,17 +150,19 @@ def _parse_prop_entry(line: str) -> tuple[str, str]:
 
 def _split_character_entries(line: str) -> list[tuple[str, str]]:
     """``林辰（隐忍龙王｜鹅蛋脸、杏眼、青衣）、陈峰（嚣张富二代）`` →
-    ``[("林辰", "鹅蛋脸、杏眼、青衣"), ("陈峰", "")]``。
+    ``[("林辰", "鹅蛋脸、杏眼、青衣"), ("陈峰", "")]``；``陈峰｜宽脸、浓眉`` 同样给
+    ``("陈峰", "宽脸、浓眉")``。
 
     括号内用 ``｜``（半角 ``|`` 亦可）分隔「状态标签」与可选的「外观描述」；
     无 ``｜`` 时整段视作状态标签，外观留空。名字恒在括号之前。
 
-    按括号深度切分，避免把括号内的顿号（外观描写里常见）误判为角色分隔符。
+    按括号深度切分，避免把括号内的顿号（外观描写里常见）误判为角色分隔符；括号外的
+    ``｜`` 之后整段是这条的外观，同样不再按顿号切。
     """
     entries: list[tuple[str, str]] = []
     depth = 0
     current = ""
-    for ch in line:
+    for index, ch in enumerate(line):
         if ch in "（(":
             depth += 1
             current += ch
@@ -146,6 +173,10 @@ def _split_character_entries(line: str) -> list[tuple[str, str]]:
             if current.strip():
                 entries.append(_parse_character_entry(current))
             current = ""
+        elif ch in "｜|" and depth == 0:
+            # 括号外的竖线起，剩下的全是这一条的外观描述（含其中的顿号）。
+            current += line[index:]
+            break
         else:
             current += ch
     if current.strip():

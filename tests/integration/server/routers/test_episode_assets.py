@@ -101,7 +101,15 @@ class TestReferencedAssets:
             resp = client.get("/api/v1/projects/demo/episodes/1/referenced-assets")
 
         assert resp.status_code == 200
-        assert resp.json() == {"episode": 1, "has_script": False, "assets": []}
+        assert resp.json()["has_script"] is False
+        assert resp.json()["assets"] == []
+        # 没有本集剧本（正式脚本与工厂源稿都没有）：本批清单为空。
+        assert resp.json()["plan"] == {
+            "total": 0,
+            "by_type": {"character": 0, "scene": 0, "prop": 0},
+            "text_calls": 0,
+            "image_calls": 0,
+        }
 
 
 class TestReferencedAssetsLookups:
@@ -130,6 +138,87 @@ class TestScriptAssetNames:
         script["scenes"][0]["utterances"] = [{"speaker": "路人", "text": "让一让"}]
 
         assert episode_assets.script_asset_names(script)["character"] == []
+
+
+def _write_source_markdown(project_path: Path) -> None:
+    """本集剧本（工厂源稿）：``[人物]/[场景]/[道具]`` 标记行自带外观描述。"""
+
+    path = project_path / "source" / "short_drama" / "episodes" / "episode_01.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "[场景]：城郊仓库｜水泥地，铁门单侧顶光\n"
+        "[人物]：林辰（隐忍龙王｜三十岁上下，寸头，旧夹克磨白）\n"
+        "[道具]：铁门｜锈迹斑斑，门轴下垂\n"
+        "△ 林辰推开铁门。\n",
+        encoding="utf-8",
+    )
+
+
+def _write_story_plan(project_path: Path) -> None:
+    """故事规划：人物圣经的角色清单 + 分集规划里本集的资产提及。"""
+
+    root = project_path / "source" / "short_drama"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "character-bible.md").write_text(
+        "【角色】：林辰\n【外形】：三十岁上下，寸头\n【角色】：陈峰\n【外形】：宽脸浓眉\n",
+        encoding="utf-8",
+    )
+    (root / "episode-plan.md").write_text(
+        "第 1 集\n[人物]：陈峰\n[场景]：城郊仓库\n\n第 2 集\n[人物]：路人甲\n",
+        encoding="utf-8",
+    )
+
+
+class TestEpisodeAssetExtraction:
+    """抽取的三个来源：正式脚本引用数组、工厂源稿标记行、故事规划。"""
+
+    def test_marker_lines_of_the_factory_source_are_extracted(self, tmp_path, monkeypatch):
+        client, pm, project_path = _client(monkeypatch, tmp_path, episodes=[_episode()])
+        _write_source_markdown(project_path)
+
+        assert episode_assets.source_markdown_asset_names(pm, "demo", 1) == {
+            "character": ["林辰"],
+            "scene": ["城郊仓库"],
+            "prop": ["铁门"],
+        }
+        # 没有本集剧本（正式脚本 + 工厂源稿都没有）的集：抽不到名字。
+        assert episode_assets.source_markdown_asset_names(pm, "demo", 2) == {
+            "character": [],
+            "scene": [],
+            "prop": [],
+        }
+        client.close()
+
+    def test_story_plan_names_are_scoped_to_this_episode(self, tmp_path, monkeypatch):
+        _client_instance, _pm, project_path = _client(monkeypatch, tmp_path, episodes=[_episode()])
+        _client_instance.close()
+        _write_story_plan(project_path)
+
+        assert episode_assets.story_plan_asset_names(project_path, episode=1) == {
+            "character": ["林辰", "陈峰"],
+            "scene": ["城郊仓库"],
+            "prop": [],
+        }
+        # 第 2 集的规划不该算进第 1 集：本集没有点名的名字不进本集资产。
+        assert episode_assets.story_plan_asset_names(project_path, episode=2)["character"] == ["林辰", "陈峰", "路人甲"]
+
+    def test_the_plan_preview_counts_the_batch(self, tmp_path, monkeypatch):
+        client, pm, project_path = _client(monkeypatch, tmp_path, episodes=[_episode()])
+        atomic_write_json(project_path / SCRIPT_FILE, _script())
+        _write_source_markdown(project_path)
+        _write_story_plan(project_path)
+        # 茶楼已登记且有描述：不占文本模型调用（AI 只填空字段）。
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+
+        with client:
+            resp = client.get("/api/v1/projects/demo/episodes/1/referenced-assets")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["plan"]["total"] == 7
+        assert body["plan"]["by_type"] == {"character": 3, "scene": 2, "prop": 2}
+        assert body["plan"]["text_calls"] == 6
+        assert body["plan"]["image_calls"] == 7
 
 
 @pytest.fixture
@@ -245,7 +334,33 @@ class TestGenerateEpisodeAssets:
         assert [item["unit_id"] for item in body["without_description"]] == ["character/阿岚", "prop/玉佩"]
         assert pm.load_project("demo")["characters"]["阿岚"]["description"] == ""
 
-    async def test_an_episode_without_its_formal_script_is_rejected(self, generate_client):
+    async def test_registers_the_names_only_the_source_and_the_plan_wrote(self, generate_client, monkeypatch):
+        # 本集还没有正式脚本：工厂源稿标记行与故事规划照样能抽出名字并登记（D-33 / D-36）。
+        client, pm, project_path = generate_client
+        _write_source_markdown(project_path)
+        _write_story_plan(project_path)
+        _patch_fill(monkeypatch)
+
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+
+        assert response.status_code == 200
+        body = response.json()
+        # 剧本（工厂源稿）与故事规划里写了、资产表里没有的名字都补登记。
+        assert body["registered"] == {
+            "character": ["林辰", "陈峰"],
+            "scene": ["城郊仓库"],
+            "prop": ["铁门"],
+        }
+        assert {(item["asset_type"], item["name"]) for item in body["description_filled"]} == {
+            ("character", "林辰"),
+            ("character", "陈峰"),
+            ("scene", "城郊仓库"),
+            ("prop", "铁门"),
+        }
+        project = pm.load_project("demo")
+        assert project["characters"]["陈峰"]["description"] == "剧本补全出的描述"
+
+    async def test_an_episode_without_any_script_is_rejected(self, generate_client):
         client, _pm, _project_path = generate_client
 
         response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")

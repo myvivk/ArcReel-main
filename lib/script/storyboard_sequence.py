@@ -227,7 +227,7 @@ def resolve_previous_storyboard_path(
         candidate = normalized if "/" in normalized else f"{END_FRAME_RESOURCE_TYPE}/{normalized}"
         end_path = try_safe_join(project_path, candidate)
         expected = safe_join(project_path, resource_relative_path(END_FRAME_RESOURCE_TYPE, previous_id))
-        if end_path == expected and end_path.is_file():
+        if end_path is not None and end_path == expected and end_path.is_file():
             return end_path
 
     previous_grid = previous_assets.get("shot_grid")

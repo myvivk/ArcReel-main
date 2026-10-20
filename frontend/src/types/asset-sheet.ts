@@ -45,7 +45,25 @@ export interface AssetSheetBatchSubmitted {
   members: AssetSheetBatchMember[];
 }
 
-/** 一键「抽取本集剧本引用 → 补登记 → 生成图」的回执。 */
+/** 一键的本批清单预估（只读、不落盘）：将处理多少资产、预计多少次文本 / 图像模型调用。 */
+export interface EpisodeAssetPlan {
+  total: number;
+  by_type: Partial<Record<AssetSheetType, number>>;
+  /** 描述为空、需要生成描述的资产数（AI 只填空字段，已有描述的不占调用）。 */
+  text_calls: number;
+  /** 资产图未就绪（缺图或过期）、将进生成队列的资产数。 */
+  image_calls: number;
+}
+
+/** 本集引用到的已登记资产，与一键的本批清单预估。 */
+export interface EpisodeReferencedAssets {
+  episode: number;
+  has_script: boolean;
+  assets: { asset_type: AssetSheetType; asset_name: string; asset: Record<string, unknown> }[];
+  plan: EpisodeAssetPlan;
+}
+
+/** 一键「抽取本集剧本引用 → 补登记 → 生成描述 → 生成图」的回执。 */
 export interface EpisodeAssetGenerationResult extends AssetSheetBatchSubmitted {
   /** 本次补登记的资产名，按类型分组；已登记的一律不动。 */
   registered: Partial<Record<AssetSheetType, string[]>>;

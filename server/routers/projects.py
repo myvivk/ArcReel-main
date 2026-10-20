@@ -729,11 +729,7 @@ async def create_project(
                 else _validated_episode_target_duration(req.episode_target_duration, _t)
             )
             # 全剧规划总集数：同理在 create_project 之前判，越界请求不留下半成品项目目录。
-            total_episodes = (
-                None
-                if req.total_episodes is None
-                else _validated_total_episodes(req.total_episodes, _t)
-            )
+            total_episodes = None if req.total_episodes is None else _validated_total_episodes(req.total_episodes, _t)
 
             try:
                 manager.create_project(project_name, content_mode=req.content_mode or "narration")

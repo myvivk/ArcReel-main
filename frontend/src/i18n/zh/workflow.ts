@@ -101,6 +101,7 @@ export default {
   'act_agent_edit': '交给 Agent 剪辑',
   'act_create_edit_timeline': '新建剪辑时间线',
   'act_open_edit_view': '打开剪辑视图',
+  'act_open_assets_view': '进入资产步骤',
   'act_go_render': '去出片',
   'act_author_prompts': 'AI 编写',
   'act_author_video_prompts_one': '编写 {{count}} 条视频提示词',

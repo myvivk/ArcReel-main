@@ -131,12 +131,20 @@ export const EPISODE_VIEW_PARAM = "view";
 export const EPISODE_VIEW_EDIT = "edit";
 /** 集页的集原文视图：就地查看与编辑本集原文。 */
 export const EPISODE_VIEW_SOURCE = "source";
+/** 集页的资产视图：本集引用到的角色 / 场景 / 道具。 */
+export const EPISODE_VIEW_ASSETS = "assets";
 export const EPISODE_VIEW_TIMELINE_PARAM = "tl";
 
 /** 项目工作区内打开某集（集 ID）剪辑视图的相对路径；给出 `timelineId` 时切到那条剪辑时间线。 */
 export function episodeEditViewPath(episode: number, timelineId?: string): string {
   const query = new URLSearchParams({ [EPISODE_VIEW_PARAM]: EPISODE_VIEW_EDIT });
   if (timelineId) query.set(EPISODE_VIEW_TIMELINE_PARAM, timelineId);
+  return `/${WORKSPACE_ROUTE_EPISODES}/${episode}?${query.toString()}`;
+}
+
+/** 项目工作区内打开某集（集 ID）资产视图的相对路径：制作进度面板的资产行据此跳到资产步骤。 */
+export function episodeAssetsViewPath(episode: number): string {
+  const query = new URLSearchParams({ [EPISODE_VIEW_PARAM]: EPISODE_VIEW_ASSETS });
   return `/${WORKSPACE_ROUTE_EPISODES}/${episode}?${query.toString()}`;
 }
 

@@ -719,9 +719,7 @@ class TestFillAndRewrite:
 
         assert caught.value.overwrite.fingerprint == _revision(project_dir) != stale
 
-    async def test_rewrite_without_naming_the_field_is_refused(
-        self, tmp_path: Path, prompt_variant: _Variant
-    ) -> None:
+    async def test_rewrite_without_naming_the_field_is_refused(self, tmp_path: Path, prompt_variant: _Variant) -> None:
         """没点名字段的显式重写不许按缺省落到分镜提示词上：缺 fields 等于没说改哪一层。"""
 
         variant = prompt_variant

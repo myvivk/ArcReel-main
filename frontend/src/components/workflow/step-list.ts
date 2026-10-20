@@ -11,7 +11,12 @@ import type {
   WorkflowPlan,
   WorkflowPlanStep,
 } from "@/types/workflow";
-import { ROUTE_APP_SETTINGS, WORKSPACE_ROUTE_PRODUCTS, episodeEditViewPath } from "@/app-routes";
+import {
+  ROUTE_APP_SETTINGS,
+  WORKSPACE_ROUTE_PRODUCTS,
+  episodeAssetsViewPath,
+  episodeEditViewPath,
+} from "@/app-routes";
 import { episodesViewPath } from "@/components/canvas/episodes/episodes-view-model";
 import type { EpisodeSurface } from "@/stores/episode-surface-store";
 import { formatNameList } from "@/utils/list-format";
@@ -685,13 +690,24 @@ function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
     status = t("workflow:status_assets_done");
     tone = stale.length > 0 ? "warn" : "done";
   }
+  // 有正式脚本时给一个进资产步骤的入口：进度提醒与资产步骤就此打通（D-32）。
+  const acts: StepAct[] = formal
+    ? [
+        {
+          key: "open-assets-view",
+          label: t("workflow:act_open_assets_view"),
+          kind: "nav",
+          intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) },
+        },
+      ]
+    : [];
   return {
     key: "assets",
     title: t("workflow:row_assets"),
     tone,
     status,
     notes,
-    acts: [],
+    acts,
     steps: stepsFor(facts, ["asset_sheets"]),
   };
 }

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -49,7 +50,11 @@ from lib.project.asset_derivatives import (
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key, resolve_asset_key
 from lib.project.episode_asset_references import ReferencedAsset, episode_referenced_assets
 from lib.project.project_manager import ProjectManager, find_episode
+from lib.project.story_plan_docs import story_plan_asset_names
 from lib.prompts.prompt_builders import build_character_derivative_prompt
+from lib.script.short_drama_source import ShortDramaSourceConflict, load_short_drama_source
+
+logger = logging.getLogger(__name__)
 
 ASSET_BATCH_OPERATION = "generate_assets"
 
@@ -475,11 +480,24 @@ async def load_asset_sheet_batch_plan(
 
     def _read() -> tuple[dict[str, Any], ArtifactCurrencyResolver, frozenset[ReferencedAsset] | None]:
         project = projects.load_project(project_name)
-        resolver = active_artifact_currency_resolver(projects.get_project_path(project_name), project)
+        project_path = projects.get_project_path(project_name)
+        resolver = active_artifact_currency_resolver(project_path, project)
         referenced = None
         if scope.episode_id is not None:
+            episode = scope.episode_id
+            # 抽取输入 = 本集剧本（工厂源稿）+ 故事规划，与集页资产视图、一键同一口径（方案 §2.2）。
+            try:
+                source = load_short_drama_source(projects, project_name, episode)
+            except ShortDramaSourceConflict:
+                logger.warning(
+                    "asset sheet batch: conflicting short drama source for project %s ep %s", project_name, episode
+                )
+                source = None
             referenced = episode_referenced_assets(
-                project, load_episode_script(projects, project_name, scope.episode_id)
+                project,
+                load_episode_script(projects, project_name, episode),
+                source_markdown=source.markdown if source is not None else None,
+                story_plan_names=story_plan_asset_names(project_path, episode=episode),
             )
         return project, resolver, referenced
 

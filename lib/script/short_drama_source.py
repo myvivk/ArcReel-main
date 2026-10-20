@@ -35,6 +35,23 @@ def short_drama_source_relative_path(episode: int) -> str:
     return f"source/short_drama/episodes/episode_{episode:02d}.md"
 
 
+def read_short_drama_source_markdown(project_path: Path, episode: int) -> str:
+    """按项目路径只读本集工厂源稿文本；没有源稿（或读不到）时为空串。
+
+    供没有 :class:`ProjectManager` 在手的只读场景（如工作流状态计算）复用同一落盘口径，
+    读取顺序与 :func:`load_short_drama_source` 一致（现行路径 → 兼容旧路径）。
+    """
+
+    if type(episode) is not int or episode <= 0:
+        return ""
+    for relative in (short_drama_source_relative_path(episode), _legacy_short_drama_source_relative_path(episode)):
+        try:
+            return (project_path / relative).read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
+
+
 def _legacy_short_drama_source_relative_path(episode: int) -> str:
     return f"source/short_drama/episode_{episode}.md"
 
@@ -115,6 +132,7 @@ __all__ = [
     "ShortDramaSource",
     "ShortDramaSourceConflict",
     "load_short_drama_source",
+    "read_short_drama_source_markdown",
     "replace_short_drama_source",
     "save_short_drama_source",
     "short_drama_source_relative_path",

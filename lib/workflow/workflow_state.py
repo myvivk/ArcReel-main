@@ -48,6 +48,7 @@ from lib.project.project_migration_failure import (
 )
 from lib.project.project_migration_report import MigrationReport, load_migration_report
 from lib.project.source_revision import SourceRevisionResult, SourceScope, compute_source_revision
+from lib.project.story_plan_docs import story_plan_asset_names
 from lib.references.reference_admission import admit_references, admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script import script_review
@@ -63,6 +64,7 @@ from lib.script.grid.video_prompt_targets import plan_video_prompt_targets
 from lib.script.reference_video.text_parser import derive_references_from_text
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
+from lib.script.short_drama_source import read_short_drama_source_markdown
 from lib.speech.narration_config import USE_TTS, project_narration_delivery
 from lib.workflow.operation_admission import (
     AdmissionReason,
@@ -1602,17 +1604,26 @@ class WorkflowStateService:
         kind: str | None,
         shared: _SharedWorkflowFacts,
         issues: list[WorkflowBlocker],
+        *,
+        source_markdown: str | None = None,
+        story_plan_names: dict[str, list[str]] | None = None,
     ) -> tuple[list[str], list[str], list[str]]:
         """本集引用的资产图现状：(待生成且可生成, 过期, 缺描述)。
 
         待生成与资产图批量的集范围同一判定：缺描述的不算；衍生的本体没有可用资产图、也不在同批时不算。
+        抽取输入与本集资产视图、一键同一口径：剧本（工厂源稿）+ 故事规划（方案 §2.2）。
         """
         missing: list[str] = []
         stale: list[str] = []
         without_description: list[str] = []
         accepted_sheets: set[tuple[str, str]] = set()
         for asset in sorted(
-            episode_referenced_assets(project, ({kind: items} if kind else None)),
+            episode_referenced_assets(
+                project,
+                ({kind: items} if kind else None),
+                source_markdown=source_markdown,
+                story_plan_names=story_plan_names,
+            ),
             key=lambda asset: (asset.owner is not None, asset.asset_type, asset.name),
         ):
             spec = ASSET_SPECS[asset.asset_type]
@@ -1769,7 +1780,15 @@ class WorkflowStateService:
             content.referenced_assets_without_sheet = without_sheet
             content.unregistered_references = list(admission.unregistered)
             missing_sheets, content.referenced_asset_sheets_stale, content.referenced_assets_without_description = (
-                self._referenced_sheet_facts(project, items, kind, shared, issues)
+                self._referenced_sheet_facts(
+                    project,
+                    items,
+                    kind,
+                    shared,
+                    issues,
+                    source_markdown=read_short_drama_source_markdown(project_path, number),
+                    story_plan_names=story_plan_asset_names(project_path, episode=number),
+                )
             )
             artifacts["storyboards"] = (
                 self._media_collection(

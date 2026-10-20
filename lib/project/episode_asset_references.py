@@ -1,24 +1,33 @@
-"""本集引用的资产：一集正式脚本里写到的资产与衍生，按资产表的落盘真名给出。
+"""本集引用的资产：一集剧本（工厂源稿 / 正式脚本）与故事规划里写到的资产与衍生。
 
-「本集要用到哪些资产图」只在这里算一次：集层批量生成资产图、Agent 按集列出与生成待生成资产、
+「本集要用到哪些资产」只在这里算一次：集层批量生成资产图、Agent 按集列出与生成待生成资产、
 制作状态里「本集引用的资产缺资产图」都取这一份，三处不各自拼集合。
 
 引用落点与级联改名、引用状态共用 :func:`lib.script.script_references.payload_reference_names`
 （引用数组、``speaker``、正文 ``@[名称]``），名字归属由 :class:`ReferenceCatalog` 决议，未登记的
 名字不算。衍生引用 ``本体/衍生`` 同时算引用了本体：衍生资产图是对本体资产图的一次编辑，
 本体没有可用资产图时衍生无从生成。
+
+抽取输入是**本集剧本（工厂源稿）+ 故事规划**（方案 §2.2）：正式脚本的引用之外，工厂源稿的
+``[人物]/[场景]/[道具]`` 标记行（``名称｜外观描述``）与故事规划（人物圣经 / 全剧大纲 /
+连续性台账 / 分集规划）定义或提及的名字同样算本集引用——剧本尚未落成引用数组、但源稿与
+规划已点名的资产也要进本集视图与批量计划，否则「登记了却看不见、出了描述不出图」。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from lib.project.asset_derivatives import derivative_artifact_id, derivative_table
 from lib.project.asset_types import resolve_asset_key
+from lib.project.story_plan_docs import marker_asset_names
 from lib.references.reference_catalog import build_reference_catalog, split_derivative_reference
 from lib.script.script_references import payload_reference_names
+
+#: 故事规划名字按类型的分组键；与源稿标记行、登记口径同一三类。
+_STORY_PLAN_TYPES: tuple[str, ...] = ("character", "scene", "prop")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,15 +42,33 @@ class ReferencedAsset:
 
 
 def episode_referenced_assets(
-    project: Mapping[str, Any], script: Mapping[str, Any] | None
+    project: Mapping[str, Any],
+    script: Mapping[str, Any] | None,
+    *,
+    source_markdown: str | None = None,
+    story_plan_names: Mapping[str, Sequence[str]] | None = None,
 ) -> frozenset[ReferencedAsset]:
-    """一集正式脚本引用的全部已登记资产与衍生；没有正式脚本时为空。"""
+    """本集剧本（工厂源稿 / 正式脚本）与故事规划引用的全部已登记资产与衍生。
 
-    if script is None:
+    ``source_markdown`` 是本集工厂源稿全文（标记行 ``名称｜外观描述`` 的名字计入）；
+    ``story_plan_names`` 是故事规划里定义 / 提及的资产名（按类型分组，见
+    :func:`lib.project.story_plan_docs.story_plan_asset_names`）。两个补充来源的名字同样
+    经 :class:`ReferenceCatalog` 决议——只算已登记的，未登记的名字不算引用。
+    """
+
+    names: list[str] = list(payload_reference_names(script)) if script is not None else []
+    if source_markdown:
+        markers = marker_asset_names(source_markdown)
+        for asset_type in _STORY_PLAN_TYPES:
+            names.extend(markers.get(asset_type, ()))
+    if story_plan_names:
+        for asset_type in _STORY_PLAN_TYPES:
+            names.extend(story_plan_names.get(asset_type, ()))
+    if not names:
         return frozenset()
     catalog = build_reference_catalog(project)
     referenced: set[ReferencedAsset] = set()
-    for name in payload_reference_names(script):
+    for name in names:
         entry = catalog.resolve(name)
         if entry is None:
             continue

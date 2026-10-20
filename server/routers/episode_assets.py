@@ -14,7 +14,7 @@
 2. 本集剧本（工厂源稿 ``source/short_drama/episodes/episode_NN.md``）的 ``[人物]/[场景]/[道具]``
    标记行（:func:`source_markdown_asset_names`）——标记行形如 ``名称｜外观描述``，本身已带外观；
 3. 故事规划四类文档——人物圣经 / 全剧大纲 / 连续性台账 / 分集规划
-   （:func:`server.services.story_plan_docs.story_plan_asset_names`），补剧本尚未点名、但规划
+   （:func:`lib.project.story_plan_docs.story_plan_asset_names`），补剧本尚未点名、但规划
    已定义的角色 / 场景 / 道具，保证登记完整性。
 
 生成描述夹在登记与生成之间，是因为资产图按描述出图、缺描述会被 ``asset_description_required``
@@ -44,9 +44,10 @@ from lib.project.asset_types import (
 from lib.project.episode_asset_references import episode_referenced_assets
 from lib.project.project_change_hints import project_change_source
 from lib.project.project_manager import ProjectManager, find_episode, get_project_manager
+from lib.project.story_plan_docs import marker_asset_names, story_plan_asset_names
 from lib.references.reference_catalog import split_derivative_reference
 from lib.script.script_references import iter_reference_sites
-from lib.script.short_drama_source import load_short_drama_source
+from lib.script.short_drama_source import ShortDramaSourceConflict, load_short_drama_source
 from server.auth import CurrentUser
 from server.i18n import Translator
 from server.services.admission.asset_sheet_batch import (
@@ -63,7 +64,6 @@ from server.services.asset_ai_fill import (
     assets_without_description,
     fill_assets,
 )
-from server.services.story_plan_docs import marker_asset_names, story_plan_asset_names
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,17 +72,27 @@ router = APIRouter()
 EPISODE_ASSET_TYPES: tuple[str, ...] = ("character", "scene", "prop")
 
 
-def referenced_asset_items(project: dict[str, Any], script: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """本集脚本引用到的资产与它们的资产条目；没有正式脚本时为空。
+def referenced_asset_items(
+    project: dict[str, Any],
+    script: dict[str, Any] | None,
+    *,
+    source_markdown: str | None = None,
+    story_plan_names: Mapping[str, Sequence[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """本集剧本（工厂源稿 / 正式脚本）与故事规划引用到的资产与它们的资产条目。
 
     只列本体：衍生资产图是对本体资产图的一次编辑，集页按本体成卡（卡上带衍生数），集范围的
-    批量生成由服务端自己展开衍生。
+    批量生成由服务端自己展开衍生。抽取口径与一键、批量计划同一份 ``episode_referenced_assets``。
     """
 
-    if script is None:
-        return []
     items: list[dict[str, Any]] = []
-    for ref in sorted(episode_referenced_assets(project, script), key=lambda asset: (asset.asset_type, asset.name)):
+    referenced = episode_referenced_assets(
+        project,
+        script,
+        source_markdown=source_markdown,
+        story_plan_names=story_plan_names,
+    )
+    for ref in sorted(referenced, key=lambda asset: (asset.asset_type, asset.name)):
         if ref.owner is not None:
             continue
         spec = ASSET_SPECS.get(ref.asset_type)
@@ -388,10 +398,22 @@ async def get_episode_referenced_assets(name: str, episode: int, _t: Translator)
             except FileNotFoundError:
                 # 集登记了剧本名但文件不在（还没生成或已删掉）：按没有正式脚本处理。
                 script = None
+        # 抽取输入 = 本集剧本（工厂源稿）+ 故事规划，与一键、批量计划同一口径（方案 §2.2）。
+        try:
+            source = load_short_drama_source(manager, name, episode)
+        except ShortDramaSourceConflict:
+            logger.warning("referenced assets: conflicting short drama source for project %s ep %s", name, episode)
+            source = None
+        story_plan_names = story_plan_asset_names(manager.get_project_path(name), episode=episode)
         return {
             "episode": episode,
-            "has_script": script is not None or load_short_drama_source(manager, name, episode) is not None,
-            "assets": referenced_asset_items(project, script),
+            "has_script": script is not None or source is not None,
+            "assets": referenced_asset_items(
+                project,
+                script,
+                source_markdown=source.markdown if source is not None else None,
+                story_plan_names=story_plan_names,
+            ),
             "plan": episode_assets_plan(manager, name, episode),
         }
 

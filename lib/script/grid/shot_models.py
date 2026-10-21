@@ -67,6 +67,8 @@ class ShotGrid:
     error_message: str | None = None
     task_id: str | None = None
     image_basis: dict[str, object] | None = None
+    #: 生图时冻结的项目画布比例（16:9 或 9:16），供确认切分按该比例 center-crop 对齐单格。
+    video_aspect_ratio: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +88,7 @@ class ShotGrid:
             "error_message": self.error_message,
             "task_id": self.task_id,
             "image_basis": self.image_basis,
+            "video_aspect_ratio": self.video_aspect_ratio,
         }
 
     @classmethod
@@ -107,6 +110,7 @@ class ShotGrid:
             error_message=data.get("error_message"),
             task_id=data.get("task_id"),
             image_basis=data.get("image_basis"),
+            video_aspect_ratio=data.get("video_aspect_ratio"),
         )
 
     @classmethod

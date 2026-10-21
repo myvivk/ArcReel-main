@@ -1673,6 +1673,9 @@ async def execute_shot_grid_task(
         )
         if isinstance(generation_input, InputRefused):
             raise input_refusal_error(generation_input)
+        # 冻结生图时的画布比例（16:9 / 9:16），供确认切分按该比例 center-crop 对齐单格。
+        grid.video_aspect_ratio = generation_input.canvas_ratio
+        manager.save(grid)
         context = await resolve_generation_context(
             project_name,
             payload,

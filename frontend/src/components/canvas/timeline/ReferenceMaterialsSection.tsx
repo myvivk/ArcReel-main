@@ -10,6 +10,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { useShotGridDialogStore } from "@/stores/shot-grid-dialog-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
 import { ShotGridDialogHost } from "./ShotGridDialog";
+import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 
 interface ReferenceMaterialsSectionProps {
   projectName: string;
@@ -51,6 +52,9 @@ export function ReferenceMaterialsSection({
   const dialogOpen = useShotGridDialogStore((s) => s.request) !== null;
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 确认（切分落格 + 登记分镜图）是独立一步：生成完成后必须显式确认，前端才会展示
+  // 切分后的逐格与描述，分镜列表也才拿得到 storyboard_image。
+  const [confirming, setConfirming] = useState(false);
   // 宫格图的放大预览：缩略图按可用宽度等比缩放，点击进查看器看原图。
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   // 弹窗关掉就重读：确定入队了这一条要接着轮询它的任务，取消则回到原样。
@@ -60,7 +64,7 @@ export function ReferenceMaterialsSection({
     if (wasOpen.current && !dialogOpen) setReloadKey((key) => key + 1);
     wasOpen.current = dialogOpen;
   }, [dialogOpen]);
-  const busy = submitting || plan?.status === "generating";
+  const busy = submitting || confirming || plan?.status === "generating";
 
   const updatePlan = useCallback(
     (next: ShotGridPlan | null) => {
@@ -117,6 +121,22 @@ export function ReferenceMaterialsSection({
     openDialog({ projectName, scriptFile, episode, shotId, plan });
   };
 
+  /** 确认参考素材：切分落格 + 登记 storyboard_image；之后才展示逐格与描述、列表才有缩略图。 */
+  const confirm = async () => {
+    if (!plan?.id || confirming) return;
+    setConfirming(true);
+    try {
+      const result = await API.confirmShotGrid(projectName, plan.id);
+      updatePlan(result.grid);
+      // 确认把整图登记为 generated_assets.storyboard_image：刷新项目让分镜列表拿到缩略图。
+      await refreshAfterWrite(projectName, t);
+    } catch {
+      // 失败保留现状，用户可重试
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   /** 宫格完成后进入视频提示词：单分镜、字段锁定为 video_prompt。 */
   const openVideoPrompt = () => {
     if (episode === undefined) return;
@@ -168,6 +188,21 @@ export function ReferenceMaterialsSection({
             <span className="text-xs text-muted-foreground">
               {videoPromptFilled ? t("video_prompt_done") : t("video_prompt_missing")}
             </span>
+            {plan?.status === "completed" ? (
+              <Button
+                type="button"
+                size="xs"
+                disabled={disabled || confirming}
+                onClick={() => void confirm()}
+              >
+                {confirming ? (
+                  <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+                ) : (
+                  <Check aria-hidden data-icon="inline-start" />
+                )}
+                {t("shot_confirm_materials")}
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="xs"
@@ -257,7 +292,7 @@ export function ReferenceMaterialsSection({
       ) : compositeUrl ? (
         <button
           type="button"
-          aria-label={t("shot_materials_preview")}
+          aria-label={t("shot_materials_preview_open")}
           onClick={() => setPreviewUrl(compositeUrl)}
           className="focus-ring relative block overflow-hidden rounded-md border border-border bg-muted/20"
           style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}

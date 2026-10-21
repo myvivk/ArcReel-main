@@ -17,8 +17,10 @@ short-drama-factory 的编剧方法论与模板**原样复刻**在
   ——导入阶段并不知道用户最终用哪个模型生成视频，拿档位去吸附等于用拍脑袋的值替用户做决定，
   档位对齐留给生成期（分镜路线的生成预检）。剧本只给整集总时长、不给逐拍秒数，每拍时长按均匀
   估算分摊。这是格式对齐所需的必要拆分，不丢弃任何内容。
-* 视觉层（``image_prompt`` / ``video_prompt``）留空并置 ``pending_authoring=True``，交给 ArcReel 既有的
-  ``generate_episode_script``（提示词编写）补出——与 ArcReel 两段式（内容层 → 视觉层）一致。
+* 视觉层只给**骨架**：机械切分拿不到语义断点，``image_prompt`` 按标准分镜提示词的固定语序落一版
+  占位文本（中性景别/机位/运镜 + 画面主体 + 资产锚点 + 视觉参考），``pending_authoring`` 仍为 True，
+  由「智能切分」或 ArcReel 既有的 ``generate_episode_script``（提示词编写）写出真正的分镜提示词。
+  ``video_prompt`` 留空——它要等宫格确认后的 K 帧作参考。
 * 短剧专属元信息（所属阶段 / 黄金前3秒钩子 / 情绪流变 / 本集结构 / 中段小钩 / 总时长）无原生字段承载，
   放进顶层命名空间键 ``short_drama_meta``（剧本顶层容忍额外字段，见 ``script_models`` 与
   ``data_validator._validate_episode_payload``）；集尾断章卡点语义对齐 ArcReel 原生 ``hook``（集尾钩子）。
@@ -379,6 +381,40 @@ def _align_to_tiers(values: list[int], tiers: list[int], target: int) -> list[in
     return snapped
 
 
+#: 机械切分/回落时的镜头首行：拿不到语义断点就只能给中性景别与固定机位，由用户或 AI 再改。
+_PLACEHOLDER_SHOT_HEADER = "【镜头1】中景，平视机位，固定。"
+
+
+def _one_line(text: str) -> str:
+    """把多行画面描述压成一句：提示词的「画面主体」是一行，换行会被读成新镜头块。"""
+    return "，".join(part.strip().rstrip("。，；") for part in text.splitlines() if part.strip())
+
+
+def _anchor(label: str, name: str, appearance: str) -> str:
+    """资产锚点 ``标签@[名字/外观]``；外观缺省时退化成 ``标签@[名字]``，仍是合法引用。"""
+    detail = _one_line(appearance).strip("。，；")
+    return f"{label}@[{name}/{detail}]" if detail else f"{label}@[{name}]"
+
+
+def _build_image_prompt_placeholder(block: _Block, scene_description: str) -> str:
+    """机械切分路径的分镜提示词骨架，语序与 AI 产出一致（四要素 + 资产锚点 + 视觉参考）。
+
+    只给一个镜头：机械切分没有语义断点，多写所谓「镜头」等于替创作者编造节奏。景别/机位/运镜
+    取中性值，``pending_authoring`` 仍为 True，界面与回执都还把它当「待编写」。
+    """
+    subject = _one_line(scene_description) or _one_line(block.scene_appearance) or block.location or "本幕画面"
+    anchors = [_anchor("角色", name, block.character_appearances.get(name, "")) for name in block.characters]
+    environment = [_anchor("场景", block.location, block.scene_appearance)] if block.location else []
+    environment.extend(_anchor("道具", name, block.prop_appearances.get(name, "")) for name in block.props)
+    lines = [
+        _PLACEHOLDER_SHOT_HEADER,
+        "画面主体：" + "，".join([subject, *anchors]) + "。",
+        "环境道具：" + ("，".join(environment) if environment else "本幕环境按源稿描述拍摄") + "。",
+        "视觉参考：风格锚@[短剧/本集整体质感]",
+    ]
+    return "\n".join(lines)
+
+
 def _build_scene(
     episode: int,
     scene_index: int,
@@ -398,6 +434,7 @@ def _build_scene(
 
     source_text = "\n".join(beat.raw.strip() for beat in sub_beats)
     prop_names = props if props is not None else block.props
+    scene_description = _build_scene_description(sub_beats)
     return {
         "scene_id": f"E{episode}S{scene_index + 1}",
         "duration_seconds": duration,
@@ -405,11 +442,11 @@ def _build_scene(
         "characters_in_scene": sorted(set(characters if characters is not None else block.characters)),
         "scenes": [block.location] if block.location else [],
         "props": sorted({name for name in prop_names if name and name in source_text}),
-        "image_prompt": None,
+        "image_prompt": _build_image_prompt_placeholder(block, scene_description),
         "video_prompt": None,
         "utterances": _build_utterances(sub_beats),
         "source_text": source_text,
-        "scene_description": _build_scene_description(sub_beats),
+        "scene_description": scene_description,
         "generated_assets": {},
         "pending_authoring": True,
         "note": None,

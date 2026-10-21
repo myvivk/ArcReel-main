@@ -564,7 +564,10 @@ function ShotDetailContent({
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-subtle-foreground">{t("detail_section_prompts")}</h3>
         </div>
-        {segment.pending_authoring ? <p role="status" className="text-xs text-muted-foreground">{t("detail_pending_authoring_hint")}</p> : null}
+        {/* 有骨架提示词的条目不该再喊「尚未编写」：机械切分会预填一版可编辑的分镜提示词。 */}
+        {segment.pending_authoring && !imageText ? (
+          <p role="status" className="text-xs text-muted-foreground">{t("detail_pending_authoring_hint")}</p>
+        ) : null}
         <ShotSection title={t("detail_image_prompt_title")} icon={<ImageIcon aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
             <PromptReferenceMenu

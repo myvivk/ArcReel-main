@@ -132,8 +132,13 @@ def test_convert_to_drama_script_sets_short_drama_meta_and_pending_authoring() -
     assert script["hook"] == "一拳制敌"
     assert script["short_drama_meta"]["duration_seconds"] == 120
     for scene in script["scenes"]:
+        # 机械切分只给骨架：四要素语序齐全、带资产锚点，但仍是「待编写」状态。
         assert scene["pending_authoring"] is True
-        assert scene["image_prompt"] is None
+        prompt = scene["image_prompt"]
+        assert prompt.splitlines()[0] == "【镜头1】中景，平视机位，固定。"
+        assert "画面主体：" in prompt
+        assert "环境道具：" in prompt
+        assert "视觉参考：" in prompt
         assert scene["video_prompt"] is None
 
 

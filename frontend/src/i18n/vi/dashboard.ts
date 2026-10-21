@@ -2445,6 +2445,8 @@ export default {
   'short_drama_ai_storyboard_strength_3': 'Tăng cường',
   'short_drama_ai_storyboard_strength_hint': 'Thận trọng chỉ hình ảnh hóa; Tiêu chuẩn sắp xếp lại thần thái và hành động; Tăng cường có thể điều chỉnh phân bổ hành động và nhịp thoại, lời thoại vẫn giữ nguyên.',
   'short_drama_ai_storyboard_fallback': 'Kết quả AI không qua kiểm định, đã hạ về cách cắt cơ học: {{reason}}',
+  'short_drama_storyboard_fallback_notice': 'Phân cảnh AI không qua kiểm định nên đã hạ về cách cắt cơ học: {{reason}}. Prompt hiện là bản khung, hãy dùng "Chia cảnh lại bằng AI" để viết lại.',
+  'short_drama_storyboard_fast_notice': 'Tập này được cắt cơ học nên prompt chỉ là bản khung. Dùng "Chia cảnh lại bằng AI" và chọn "Cắt thông minh" nếu cần prompt do AI viết.',
   'short_drama_ai_storyboard_cache_hit': 'Đã dùng lại kế hoạch',
   'short_drama_ai_storyboard_smart_split': 'Cắt thông minh',
   'short_drama_ai_storyboard_fast_split': 'Cắt nhanh',

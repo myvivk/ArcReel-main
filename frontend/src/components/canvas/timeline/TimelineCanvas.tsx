@@ -223,6 +223,16 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   const importedShortDrama =
     editorContentMode === "drama" &&
     (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null;
+  // 短剧导入的分镜提示词来自哪条路径：快速切分与「AI 回落」都只给骨架，得让用户看见并知道怎么重写。
+  const storyboardOptions = (episodeScript as DramaEpisodeScript | null)?.short_drama_meta
+    ?.ai_storyboard_options as { mode?: string; fallback?: string } | undefined;
+  const storyboardPlanningNotice = !importedShortDrama
+    ? null
+    : storyboardOptions?.mode === "smart_fallback"
+      ? t("short_drama_storyboard_fallback_notice", { reason: storyboardOptions.fallback ?? "" })
+      : storyboardOptions?.mode === "fast"
+        ? t("short_drama_storyboard_fast_notice")
+        : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -273,6 +283,12 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             />
           )}
         </EpisodeHeaderActions>
+      )}
+
+      {view === "board" && storyboardPlanningNotice && (
+        <p className="mx-4 mt-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-xs text-warn">
+          {storyboardPlanningNotice}
+        </p>
       )}
 
       {batchKind && (

@@ -41,16 +41,23 @@ from lib.script.short_drama_source import (
 
 
 class ScenePlan(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """模型返回的一幕规划。
+
+    字段尽量宽松：模型多写一个 ``video_prompt`` 或漏一个空数组都不该让整次规划作废——语义护栏
+    交给 :func:`_validate_plan_coverage` / :func:`_validate_plan_quality`，那里能给出可回喂的原因，
+    也能让「时长不在 12–15」这类问题走返修而不是直接抛 ValidationError。
+    """
+
+    model_config = ConfigDict(extra="ignore")
     beat_ids: list[int] = Field(min_length=1)
-    duration_seconds: int = Field(ge=12, le=15)
+    duration_seconds: int = Field(ge=1, le=600)
     segment_break: bool = False
     scene_description: str = Field(min_length=1)
     image_prompt: str = Field(min_length=1)
-    utterances: list[dict[str, Any]]
-    characters_in_scene: list[str]
-    scenes: list[str]
-    props: list[str]
+    utterances: list[dict[str, Any]] = Field(default_factory=list)
+    characters_in_scene: list[str] = Field(default_factory=list)
+    scenes: list[str] = Field(default_factory=list)
+    props: list[str] = Field(default_factory=list)
 
 
 class ScenePlanResult(BaseModel):
@@ -93,7 +100,9 @@ _CAMERA_WORDS = (
 )
 _ACTION_WORDS = re.compile(r"推|拉|转|抬|落|抓|握|奔|停|望|看|举|敲|砸|开|合|走|冲|递|抽|攥|跌|挥|点头|摇头")
 _ASSET_ANCHOR = re.compile(r"(?:角色|场景|道具|风格锚)@\[")
-_SHOT_BLOCK = re.compile(r"【镜头\d+】.*?(?=【镜头\d+】|$)", flags=re.S)
+#: 镜头块起点：``【镜头1】`` 是规范写法，模型的 ``【镜头 1】`` / ``[镜头1]`` 变体同样认。
+_SHOT_MARK = r"【?\s*镜头\s*\d+\s*】?"
+_SHOT_BLOCK = re.compile(rf"{_SHOT_MARK}.*?(?={_SHOT_MARK}|$)", flags=re.S)
 
 _PLANNING_STRENGTH_HINTS = {
     1: "保守：只做视觉化与格式落地，不改动作顺序、不碰台词。",
@@ -466,10 +475,14 @@ async def import_short_drama_episode(
     meta["source_path"] = source.path
     meta["source_revision"] = source.revision
     meta["ai_storyboard_options"] = {
-        "mode": "smart" if ai_planning else "fast",
+        # 三态可分辨：AI 成功 / AI 试过但被护栏拒绝回落 / 用户明确要的快速切分。
+        "mode": "fast" if not ai_planning else ("smart" if plan is not None else "smart_fallback"),
         "strength": planning_strength,
         "force_regenerate": force_regenerate,
     }
+    if fallback_reason:
+        # 回落必须留痕：只在 HTTP 回执里说一次，用户关掉弹窗就再也查不到为什么没有提示词。
+        meta["ai_storyboard_options"]["fallback"] = fallback_reason
     names = referenced_asset_names(script)
     descriptions = referenced_asset_descriptions(parsed)
     registered: dict[str, list[str]] = {}

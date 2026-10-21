@@ -2347,6 +2347,8 @@ export default {
   'short_drama_ai_storyboard_strength_3': '增强',
   'short_drama_ai_storyboard_strength_hint': '保守只做视觉化与格式；标准理顺神态与动作归属；增强可调整动作分配与台词节奏，台词仍逐字保留。',
   'short_drama_ai_storyboard_fallback': 'AI 校验未通过，已回落机械切分：{{reason}}',
+  'short_drama_storyboard_fallback_notice': 'AI 分镜未通过校验，已回落机械切分：{{reason}}。当前提示词为骨架，可用「AI 重新分镜」重写。',
+  'short_drama_storyboard_fast_notice': '本集由快速切分生成，提示词为骨架；需要 AI 版分镜提示词请用「AI 重新分镜」并选「智能切分」。',
   'short_drama_ai_storyboard_cache_hit': '已复用规划',
   'short_drama_ai_storyboard_smart_split': '智能切分',
   'short_drama_ai_storyboard_fast_split': '快速切分',

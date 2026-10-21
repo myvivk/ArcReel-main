@@ -181,6 +181,8 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
     script = manager.load_script("demo", "episode_1.json")
     assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
     assert script["short_drama_meta"]["source_revision"] == saved["revision"]
+    # 快速切分也留痕：分镜页据此提示「提示词为骨架，可用 AI 重新分镜重写」。
+    assert script["short_drama_meta"]["ai_storyboard_options"]["mode"] == "fast"
     assert all(12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]), [
         scene["duration_seconds"] for scene in script["scenes"]
     ]
@@ -356,7 +358,14 @@ def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch,
     assert "上一轮输出未通过校验" in model.requests[1].prompt
     script = manager.load_script("demo", "episode_1.json")
     assert script["scenes"], "回落机械切分后仍须产出分镜"
-    assert all(scene["image_prompt"] is None for scene in script["scenes"])
+    # 回落不留白：机械路径给骨架提示词，且回落原因随剧本留痕，用户事后查得到。
+    options = script["short_drama_meta"]["ai_storyboard_options"]
+    assert options["mode"] == "smart_fallback"
+    assert "镜头首行缺景别或运镜" in options["fallback"]
+    for scene in script["scenes"]:
+        assert scene["image_prompt"].startswith("【镜头1】中景，平视机位，固定。")
+        assert "视觉参考：" in scene["image_prompt"]
+        assert scene["pending_authoring"] is True
 
 
 def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:

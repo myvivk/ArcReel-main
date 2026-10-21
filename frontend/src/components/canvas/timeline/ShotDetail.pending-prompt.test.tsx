@@ -66,9 +66,15 @@ describe("ShotDetail 空提示词", () => {
     expect(onUpdatePrompt).toHaveBeenCalledWith("E1S01", { image_prompt: "雨夜街道" });
   });
 
-  it("待编写条目显示待编写提示", () => {
-    renderDetail(makeSegment({ image_prompt: "提示词", video_prompt: "动作", pending_authoring: true }));
+  it("待编写且提示词为空时显示待编写提示", () => {
+    renderDetail(makeSegment({ pending_authoring: true }));
     expect(screen.getByText(/^待编写/)).toBeInTheDocument();
+  });
+
+  it("待编写但已有提示词（机械切分骨架/预填）时不喊尚未编写", () => {
+    // 短剧导入会预填一版骨架提示词，此时条目仍是待编写状态，但框里已有内容可微调。
+    renderDetail(makeSegment({ image_prompt: "【镜头1】中景，平视机位，固定。", pending_authoring: true }));
+    expect(screen.queryByText(/^待编写/)).not.toBeInTheDocument();
   });
 
   it("未带待编写标记的条目即使提示词为空也不显示待编写提示", () => {

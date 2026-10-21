@@ -2348,6 +2348,8 @@ export default {
   'short_drama_ai_storyboard_strength_3': 'Enhanced',
   'short_drama_ai_storyboard_strength_hint': 'Conservative only visualizes; Standard reorders action beats; Enhanced may rebalance action and line pacing while lines stay verbatim.',
   'short_drama_ai_storyboard_fallback': 'AI output failed validation, fell back to mechanical split: {{reason}}',
+  'short_drama_storyboard_fallback_notice': 'AI storyboarding failed validation and fell back to the mechanical split: {{reason}}. The prompts are skeletons; use "AI re-storyboard" to rewrite them.',
+  'short_drama_storyboard_fast_notice': 'This episode was split mechanically, so the prompts are skeletons. Use "AI re-storyboard" with "Smart split" for AI-written shot prompts.',
   'short_drama_ai_storyboard_cache_hit': 'Plan reused',
   'short_drama_ai_storyboard_smart_split': 'Smart split',
   'short_drama_ai_storyboard_fast_split': 'Quick split',

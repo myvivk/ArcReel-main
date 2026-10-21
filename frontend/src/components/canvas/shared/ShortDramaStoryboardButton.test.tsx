@@ -11,6 +11,7 @@ const SOURCE = {
   markdown: "第【3】集：仓库\n[道具]：铁门｜锈迹斑斑\n△ 推门。",
   revision: "rev-3",
   exists: true,
+  assets_missing_description: [] as Array<{ type: string; name: string; reason: string }>,
 };
 
 const MISSING = [
@@ -18,13 +19,14 @@ const MISSING = [
   { type: "prop", name: "铁门", reason: "source_missing" },
 ];
 
-function renderButton(storyboardCount = 0) {
+function renderButton(storyboardCount = 0, sceneIds: string[] = []) {
   return render(
     <Router>
       <ShortDramaStoryboardButton
         projectName="proj"
         episode={3}
         storyboardCount={storyboardCount}
+        sceneIds={sceneIds}
       />
     </Router>,
   );
@@ -43,11 +45,10 @@ beforeEach(() => {
     scenes: 5,
     source_path: SOURCE.path,
     source_revision: SOURCE.revision,
-    assets_without_description: MISSING,
     planning_strength: 2,
     planning_cached: false,
+    ai_authoring: true,
   });
-  vi.spyOn(API, "fillAssetFields").mockResolvedValue({ success: true });
 });
 
 afterEach(() => {
@@ -66,73 +67,73 @@ describe("AI 分镜弹窗", () => {
     expect(within(dialog).queryByText(/\{episode\}/)).not.toBeInTheDocument();
   });
 
-  it("默认勾选补齐：逐个调用 AI 补全并显示补齐结果", async () => {
+  it("首次分镜直接整体提交，不携带分镜选择，也不调用资产补全", async () => {
     renderButton();
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() => expect(screen.getByText("已生成 5 个分镜")).toBeInTheDocument());
-    await waitFor(() =>
-      expect(API.fillAssetFields).toHaveBeenCalledWith("proj", "character", "林辰"),
-    );
-    expect(API.fillAssetFields).toHaveBeenCalledWith("proj", "prop", "铁门");
-    expect(API.fillAssetFields).toHaveBeenCalledTimes(2);
-    await waitFor(() =>
-      expect(screen.getByText("已用 AI 补齐 2 个资产描述")).toBeInTheDocument(),
-    );
-    expect(screen.queryByText(/个资产缺描述/)).not.toBeInTheDocument();
-  });
-
-  it("取消勾选时不动资产，只给出缺描述黄条与补描述入口", async () => {
-    renderButton();
-    const dialog = await openDialog();
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: "同时用 AI 补齐缺描述资产" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
-
-    await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 2, false, false),
-    );
-    expect(API.fillAssetFields).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getByText(/2 个资产缺描述：林辰（角色）、铁门（道具）/)).toBeInTheDocument(),
-    );
-    expect(screen.getByRole("link", { name: "去补描述" })).toHaveAttribute(
-      "href",
-      "/characters?focus=%E6%9E%97%E8%BE%B0",
+    expect(API.reimportShortDramaSource).toHaveBeenCalledWith(
+      "proj",
+      3,
+      "rev-3",
+      false,
+      2,
+      false,
+      undefined,
     );
   });
 
-  it("补全失败的资产留在黄条里，不吞掉分镜结果", async () => {
-    vi.mocked(API.fillAssetFields).mockImplementation(async (_project, assetType) => {
-      if (assetType === "prop") throw new Error("model unavailable");
-      return { success: true };
-    });
-    renderButton();
-    const dialog = await openDialog();
-    fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
-
-    await waitFor(() =>
-      expect(screen.getByText("已用 AI 补齐 1 个资产描述")).toBeInTheDocument(),
-    );
-    expect(screen.getByText(/1 个资产缺描述：铁门（道具）/)).toBeInTheDocument();
-    expect(screen.getByText("已生成 5 个分镜")).toBeInTheDocument();
-  });
-
-  it("已有分镜时叫「AI 重新分镜」，未勾选覆盖不能提交", async () => {
-    renderButton(4);
+  it("已有分镜时默认全选，提交走整体重新分镜", async () => {
+    renderButton(4, ["E3S1", "E3S2", "E3S3", "E3S4"]);
     fireEvent.click(screen.getByRole("button", { name: "AI 重新分镜" }));
     const dialog = await screen.findByRole("dialog");
 
     expect(within(dialog).getByText("AI 重新分镜 · 第 3 集")).toBeInTheDocument();
-    const submit = within(dialog).getByRole("button", { name: "重新分镜" });
-    expect(submit).toBeDisabled();
+    for (const id of ["S1", "S2", "S3", "S4"]) {
+      expect(within(dialog).getByRole("checkbox", { name: id })).toBeChecked();
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "重新分镜" }));
 
-    fireEvent.click(within(dialog).getByRole("checkbox", { name: "我确认整体替换本集分镜" }));
-    expect(submit).toBeEnabled();
-    fireEvent.click(submit);
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 2, false, false),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith(
+        "proj",
+        3,
+        "rev-3",
+        true,
+        2,
+        false,
+        undefined,
+      ),
     );
+  });
+
+  it("只勾选部分分镜时按分镜重写，其余分镜保持不变", async () => {
+    vi.mocked(API.reimportShortDramaSource).mockResolvedValue({
+      episode: 3,
+      scenes: 4,
+      regenerated_scenes: 2,
+      source_path: SOURCE.path,
+      source_revision: SOURCE.revision,
+      planning_strength: 2,
+      planning_cached: false,
+      ai_authoring: true,
+    });
+    renderButton(4, ["E3S1", "E3S2", "E3S3", "E3S4"]);
+    fireEvent.click(screen.getByRole("button", { name: "AI 重新分镜" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "S2" }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "S3" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "重新分镜" }));
+
+    await waitFor(() =>
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 2, false, [
+        "E3S1",
+        "E3S4",
+      ]),
+    );
+    await waitFor(() => expect(screen.getByText("已重写 2 个分镜")).toBeInTheDocument());
   });
 
   it("内容优化强度默认「标准」，点「增强」后按 3 提交", async () => {
@@ -144,28 +145,46 @@ describe("AI 分镜弹窗", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, false),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, undefined),
     );
   });
 
-  it("AI 规划不合格回落机械切分时，把原因写进弹窗而不是报错", async () => {
+  it("缺描述资产时分镜入口置灰并提示先补齐，弹窗打不开", async () => {
+    vi.mocked(API.getShortDramaSource).mockResolvedValue({
+      ...SOURCE,
+      assets_missing_description: MISSING,
+    });
+    renderButton();
+    await screen.findByTitle(/2 个资产缺外观描述/);
+
+    const button = screen.getByRole("button", { name: "AI 分镜" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("回执带缺描述资产时仍给出黄条与补描述入口（不再自动补全）", async () => {
     vi.mocked(API.reimportShortDramaSource).mockResolvedValue({
       episode: 3,
-      scenes: 4,
+      scenes: 5,
       source_path: SOURCE.path,
       source_revision: SOURCE.revision,
       planning_strength: 2,
       planning_cached: false,
-      ai_authoring: false,
-      planning_fallback: "scene 1 镜头1 镜头首行缺景别或运镜",
+      assets_without_description: MISSING,
     });
+    const fillSpy = vi.spyOn(API, "fillAssetFields");
     renderButton();
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() =>
-      expect(screen.getByText(/AI 校验未通过，已回落机械切分：scene 1 镜头1/)).toBeInTheDocument(),
+      expect(screen.getByText(/2 个资产缺描述：林辰（角色）、铁门（道具）/)).toBeInTheDocument(),
     );
-    expect(screen.getByText("已生成 4 个分镜")).toBeInTheDocument();
+    expect(fillSpy).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "去补描述" })).toHaveAttribute(
+      "href",
+      "/characters?focus=%E6%9E%97%E8%BE%B0",
+    );
   });
 });

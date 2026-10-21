@@ -58,6 +58,8 @@ export interface ShortDramaSource {
   markdown: string;
   revision: string | null;
   exists: boolean;
+  /** 本集源稿引用的资产里缺外观描述的清单；非空时分镜入口置灰，先去补齐。 */
+  assets_missing_description?: Array<{ type: string; name: string; reason: string }>;
 }
 
 export interface ShortDramaImportOneResult {
@@ -150,15 +152,15 @@ export async function importShortDramaSeries(
   }
 }
 
-/** 从已保存的 Markdown 源稿重建正式脚本；视觉提示词与媒体仍由用户后续显式生成。 */
+/** 从已保存的 Markdown 源稿重建正式脚本；整体 AI 分镜，或只重生成所选分镜。 */
 export async function reimportShortDramaSource(
   projectName: string,
   episode: number,
   sourceRevision: string,
   confirmArtifacts: boolean,
   planningStrength = 2,
-  fastSplit = false,
   forceRegenerate = false,
+  regenerateSceneIds?: string[],
 ): Promise<{
   episode: number;
   scenes: number;
@@ -167,7 +169,7 @@ export async function reimportShortDramaSource(
   planning_strength: number;
   planning_cached: boolean;
   ai_authoring?: boolean;
-  planning_fallback?: string;
+  regenerated_scenes?: number;
   assets_without_description?: Array<{ type: string; name: string; reason: string }>;
 }> {
   try {
@@ -177,8 +179,8 @@ export async function reimportShortDramaSource(
       sourceRevision,
       confirmArtifacts,
       planningStrength,
-      fastSplit,
       forceRegenerate,
+      regenerateSceneIds,
     );
     useAppStore
       .getState()

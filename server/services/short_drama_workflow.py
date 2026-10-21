@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from lib.script.short_drama_import import (
     parse_short_drama_episode,
     referenced_asset_descriptions,
     referenced_asset_names,
+    scene_beat_groups,
 )
 from lib.script.short_drama_source import (
     ShortDramaSourceConflict,
@@ -63,6 +65,21 @@ class ScenePlan(BaseModel):
 class ScenePlanResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenes: list[ScenePlan] = Field(min_length=1)
+
+
+class SceneRewrite(BaseModel):
+    """模型返回的单个已有分镜的重写稿：scene_id 是对齐锚，只重写内容、不重切 beat。"""
+
+    model_config = ConfigDict(extra="ignore")
+    scene_id: str = Field(min_length=1)
+    duration_seconds: int = Field(ge=1, le=600)
+    scene_description: str = Field(min_length=1)
+    image_prompt: str = Field(min_length=1)
+
+
+class SceneRewriteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenes: list[SceneRewrite] = Field(min_length=1)
 
 
 #: 规划缓存的格式版本：校验口径变了就换版本，避免复用旧口径产出的规划。
@@ -99,7 +116,24 @@ _CAMERA_WORDS = (
     "变焦",
     "晃动",
 )
-_ACTION_WORDS = re.compile(r"推|拉|转|抬|落|抓|握|奔|停|望|看|举|敲|砸|开|合|走|冲|递|抽|攥|跌|挥|点头|摇头")
+#: 具体动作判定词表：覆盖短剧里常见的肢体 / 表情 / 手部 / 移动动作。校验只要求镜头块
+#: 里出现其中任意一个，词表过窄会把合法提示词误判成「没有动作」，逼出无谓返修甚至
+#: 让整次规划失败——所以宁可宽，不可窄。
+_ACTION_WORDS = re.compile(
+    "推|拉|拽|拎|抬|举|落|放|递|接|抛|扔|丢|掷|挥|挥动|摆|摇|晃|"
+    "抓|握|攥|捏|掐|拧|撕|扯|拔|抽|插|按|压|掰|挑|解|系|扣|摘|戴|"
+    "敲|砸|摔|拍|推门|掀|踢|踩|踏|跺|踹|撞|抵|顶|撑|挡|拦|护|"
+    "走|跑|奔|冲|退|撤|追|逃|跟|随|跃|跳|爬|翻|滚|潜|游|飞|"
+    "站|坐|跪|蹲|躺|卧|靠|倚|俯身|弯腰|起身|起立|站起|坐下|跪下|转身|回头|侧身|"
+    "抬头|低头|转头|回首|逼近|靠近|凑近|后退|贴近|顿住|停住|僵住|定住|"
+    "看|望|盯|瞥|瞪|瞧|瞄|扫视|打量|凝视|注视|仰望|俯瞰|环顾|"
+    "睁|闭|眨|眯|皱眉|挑眉|蹙眉|咧嘴|抿|咬|嚼|吞|咽|喘|吸|呼|屏息|叹|吐|"
+    "笑|哭|泣|哽咽|颤抖|发抖|哆嗦|瑟缩|缩|蜷|瘫|软|"
+    "点头|摇头|颔首|鞠躬|挥手|招手|握手|拥抱|搂|抱|揽|挽|扶|搀|牵|拉住|拽住|"
+    "打开|合上|关上|翻开|合拢|点亮|熄灭|点|燃|吹|"
+    "说话|开口|喊|叫|吼|吼道|低声|轻声|念|读|问|答|应|"
+    "想|忆|想起|记起|思索|沉思|"
+)
 _ASSET_ANCHOR = re.compile(r"(?:角色|场景|道具|风格锚)@\[")
 #: 镜头块起点：``【镜头1】`` 是规范写法，模型的 ``【镜头 1】`` / ``[镜头1]`` 变体同样认。
 _SHOT_MARK = r"【?\s*镜头\s*\d+\s*】?"
@@ -137,6 +171,29 @@ def _lint_shot_block(block: str) -> str | None:
     return None
 
 
+def _normalize_image_prompt(text: str) -> str:
+    """提示词标准化：统一镜头标记写法与行尾空白，让校验、存储与展示同一口径。
+
+    模型常把 ``【镜头1】`` 写成 ``【镜头 1】`` / ``[镜头1]`` / ``[镜头 1]``；这些变体
+    语义相同，直接在入库前统一成规范形，而不是让下游各消费方各自兼容。
+    """
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"[\[【]\s*镜头\s*(\d+)\s*[\]】]", lambda match: f"【镜头{match.group(1)}】", text)
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def _normalize_plan(plan: ScenePlanResult) -> ScenePlanResult:
+    """对整份规划做确定性标准化（不改语义），标准化后再进校验。"""
+    return plan.model_copy(
+        update={
+            "scenes": [
+                scene.model_copy(update={"image_prompt": _normalize_image_prompt(scene.image_prompt)})
+                for scene in plan.scenes
+            ]
+        }
+    )
+
+
 def _validate_plan_quality(plan: ScenePlanResult) -> None:
     """丰满度校验（硬性质量闸）：不合格抛 :class:`_PlanRejected`，由调用方重跑或回落。"""
     for scene_index, scene in enumerate(plan.scenes, 1):
@@ -161,6 +218,130 @@ def _validate_plan_coverage(plan: ScenePlanResult, beats: list[dict[str, Any]]) 
         low, high = STORY_SCENE_WINDOW_SECONDS
         if not low <= scene.duration_seconds <= high:
             raise _PlanRejected(f"scene {scene_index} 时长 {scene.duration_seconds} 秒不在 {low}–{high} 秒窗口内")
+
+
+def _validate_rewrite(rewrite: SceneRewriteResult, requested: list[tuple[str, list[dict[str, Any]]]]) -> None:
+    """按分镜重写稿的护栏：scene_id 一一对应、时长落窗口、镜头块过丰满度校验。"""
+    requested_ids = [scene_id for scene_id, _beats in requested]
+    returned_ids = [scene.scene_id for scene in rewrite.scenes]
+    if returned_ids != requested_ids:
+        raise _PlanRejected(f"scene_id 必须与待重写的分镜一一对应（期望 {requested_ids}，实际 {returned_ids}）")
+    for (scene_id, _beats), scene in zip(requested, rewrite.scenes, strict=True):
+        low, high = STORY_SCENE_WINDOW_SECONDS
+        if not low <= scene.duration_seconds <= high:
+            raise _PlanRejected(f"分镜 {scene_id} 时长 {scene.duration_seconds} 秒不在 {low}–{high} 秒窗口内")
+        blocks = _SHOT_BLOCK.findall(_normalize_image_prompt(scene.image_prompt))
+        if not blocks:
+            raise _PlanRejected(f"分镜 {scene_id} 的 image_prompt 里没有【镜头N】分镜块")
+        for shot_index, block in enumerate(blocks, 1):
+            problem = _lint_shot_block(block)
+            if problem:
+                raise _PlanRejected(f"分镜 {scene_id} 镜头{shot_index} {problem}")
+        for left, right in itertools.pairwise(blocks):
+            if left.strip() == right.strip():
+                raise _PlanRejected(f"分镜 {scene_id} 有完全重复的凑数镜头")
+
+
+def _rewrite_prompt(
+    *,
+    requested: list[tuple[str, list[dict[str, Any]]]],
+    assets: dict[str, dict[str, str]],
+    planning_strength: int,
+    previous_prompts: dict[str, str],
+    rejection: str | None,
+) -> str:
+    """按分镜重写的提示词：beat 分组固定不变，只重写画面描述与分镜提示词。"""
+    plan_rules = "\n".join(
+        [
+            "你是专业短剧摄影分镜师。用户选定了若干已有分镜要求重写；beat 分组保持不变，"
+            "只重写每个分镜的 scene_description 与 image_prompt。",
+            "硬约束：",
+            "1. 逐条输出 scenes，scene_id 逐字等于输入分镜的 id，不增不减不改名。",
+            "2. duration_seconds：取 12–15 的整数。",
+            "3. scene_description：改写成镜头可读的画面（具体动作 + 神态 + 环境），只写画面看得见的内容，不写台词。",
+            "4. utterances 里的台词不归你管，不要输出；image_prompt 覆盖的画面必须仍承载输入 beats 的剧情。",
+            "5. image_prompt：单段多行文本，每个镜头 4 行，镜头之间空一行，格式固定：",
+            "【镜头1】中景，平视机位，缓推。",
+            "画面主体：沈昭@[沈昭/将断头金簪从掌心缓缓抽出，血珠滚落]，沈婉@[沈婉/跪坐一侧，眼底伪怯转冷]。",
+            "环境道具：暗殿@[暗殿/残并蒂莲屏风]，朱红漆案、铜醮香炉，喜烛暖橙光斑落在鎏金雕面。",
+            "视觉参考：风格锚@[短剧/暗殿对峙质感]",
+            "  - 首行必须是「<景别>，<机位>，<运镜>。」：景别只能取 大远景/远景/全景/中景/近景/特写/大特写；"
+            "机位只能取 平视/俯拍/仰拍/过肩/主观/侧拍；运镜只能取 固定/推/拉/摇/移/跟/升/降/环绕/手持。"
+            "不要照抄“景别、机位、运镜”这几个字。",
+            "  - 画面主体必须写具体动作 + 神态，且至少引用一个已登记资产锚点"
+            "（角色@[名字/锚点]、场景@[名字/锚点]、道具@[名字/锚点]）；禁止“一位人物”“气氛紧张”这类空泛占位。",
+            "  - 镜头数由内容决定：12–15 秒一幕常见 3–5 个，平静对话幕 2 个也够，"
+            "动作/对峙密集幕 4–6 个；禁止把同一个动作拆成雷同镜头凑数。",
+            "  - 视觉参考行只写文本引用（风格锚或已登记资产），不要描述像素级参考图。",
+            f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
+            f"assets={json.dumps(assets, ensure_ascii=False)}",
+            "待重写的分镜（old_image_prompt 只作参考，可整体重写）：",
+        ]
+    )
+    scene_blocks = []
+    for scene_id, beats in requested:
+        scene_blocks.append(
+            json.dumps(
+                {
+                    "scene_id": scene_id,
+                    "beats": beats,
+                    "old_image_prompt": previous_prompts.get(scene_id, ""),
+                },
+                ensure_ascii=False,
+            )
+        )
+    prompt = "\n".join([plan_rules, *scene_blocks])
+    if rejection:
+        prompt += f"\n上一轮输出未通过校验：{rejection}。请修正后重新输出完整 scenes。"
+    return prompt
+
+
+async def _request_rewrite(
+    *,
+    project_name: str,
+    requested: list[tuple[str, list[dict[str, Any]]]],
+    assets: dict[str, dict[str, str]],
+    planning_strength: int,
+    previous_prompts: dict[str, str],
+) -> SceneRewriteResult:
+    """按分镜重写：校验不合格带原因返修，重跑穷尽仍不合格抛 :class:`_PlanRejected`。"""
+    generator = await TextGenerator.create(
+        TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
+    )
+    rejection: str | None = None
+    for _attempt in range(_PLAN_ATTEMPTS):
+        generated = await generator.generate(
+            BackendTextGenerationRequest(
+                prompt=_rewrite_prompt(
+                    requested=requested,
+                    assets=assets,
+                    planning_strength=planning_strength,
+                    previous_prompts=previous_prompts,
+                    rejection=rejection,
+                ),
+                response_schema=SceneRewriteResult,
+                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+            ),
+            project_name=project_name,
+            require_complete=True,
+        )
+        try:
+            payload = json.loads(strip_json_code_fences(generated.text))
+            rewrite = SceneRewriteResult.model_validate(payload)
+            rewrite = rewrite.model_copy(
+                update={
+                    "scenes": [
+                        scene.model_copy(update={"image_prompt": _normalize_image_prompt(scene.image_prompt)})
+                        for scene in rewrite.scenes
+                    ]
+                }
+            )
+            _validate_rewrite(rewrite, requested)
+        except (json.JSONDecodeError, ValidationError, _PlanRejected) as exc:
+            rejection = str(exc)
+            continue
+        return rewrite
+    raise _PlanRejected(rejection or "AI 返回的分镜重写不可用")
 
 
 def _asset_context(project: dict[str, Any], parsed: ParsedEpisode) -> dict[str, dict[str, str]]:
@@ -257,7 +438,7 @@ async def _request_plan(
         )
         try:
             payload = json.loads(strip_json_code_fences(generated.text))
-            plan = ScenePlanResult.model_validate(payload)
+            plan = _normalize_plan(ScenePlanResult.model_validate(payload))
             _validate_plan_coverage(plan, beats)
             _validate_plan_quality(plan)
         except (json.JSONDecodeError, ValidationError, _PlanRejected) as exc:
@@ -306,8 +487,8 @@ class ShortDramaImportResult:
     planning_strength: int = 2
     planning_cached: bool = False
     ai_authoring: bool = False
-    #: AI 规划被护栏拒绝后回落机械切分的原因；未回落为 None。
-    planning_fallback: str | None = None
+    #: 本次按分镜重写（部分重生成）的分镜数；整体分镜为 None。
+    regenerated_scenes: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         result = {
@@ -319,8 +500,8 @@ class ShortDramaImportResult:
             "planning_cached": self.planning_cached,
             "ai_authoring": self.ai_authoring,
         }
-        if self.planning_fallback:
-            result["planning_fallback"] = self.planning_fallback
+        if self.regenerated_scenes is not None:
+            result["regenerated_scenes"] = self.regenerated_scenes
         if self.registered_assets:
             result["registered_assets"] = self.registered_assets
         if self.asset_conflicts:
@@ -356,6 +537,128 @@ def script_has_media_artifacts(script: dict[str, Any]) -> bool:
     return False
 
 
+def _load_current_script(projects: ProjectManager, project_name: str, episode: int) -> dict[str, Any] | None:
+    """读本集当前正式脚本；没有脚本文件时返回 None。"""
+    project = projects.load_project(project_name)
+    entry = next(
+        (item for item in project.get("episodes") or [] if isinstance(item, dict) and item.get("episode") == episode),
+        None,
+    )
+    script_file = entry.get("script_file") if isinstance(entry, dict) else None
+    if not isinstance(script_file, str) or not script_file:
+        return None
+    try:
+        return projects.load_script(project_name, script_file)
+    except FileNotFoundError:
+        return None
+
+
+def assets_missing_description(project: Mapping[str, Any], markdown: str) -> list[dict[str, str]]:
+    """分镜前置检查：本集源稿引用的资产里，缺外观描述的清单。
+
+    分镜提示词要求每个镜头至少引用一个资产锚点，缺描述的资产会让 AI 只能空泛占位，
+    所以入口在分镜前置灰拦截：登记后描述为空、或未登记且源稿也没写外观的，都算缺。
+    未登记但源稿写明了外观的不拦——分镜时会经 ``register_missing_assets`` 连描述一起登记。
+    """
+    parsed = parse_short_drama_episode(markdown)
+    mentioned = {
+        "character": sorted({name for block in parsed.blocks for name in block.characters}),
+        "scene": sorted({block.location for block in parsed.blocks if block.location}),
+        "prop": sorted({name for block in parsed.blocks for name in block.props}),
+    }
+    from_source = referenced_asset_descriptions(parsed)
+    missing: list[dict[str, str]] = []
+    for asset_type, bucket_name in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+        bucket = project.get(bucket_name) or {}
+        for name in mentioned[asset_type]:
+            entry = bucket.get(name) if isinstance(bucket, Mapping) else None
+            if not isinstance(entry, Mapping):
+                if not from_source.get(asset_type, {}).get(name):
+                    missing.append({"type": asset_type, "name": name, "reason": "unregistered"})
+                continue
+            if not str(entry.get("description") or "").strip():
+                missing.append({"type": asset_type, "name": name, "reason": "existing_blank"})
+    return missing
+
+
+def _scene_prompt_text(scene: Mapping[str, Any]) -> str:
+    """分镜条目当前的分镜提示词正文；结构化与纯文本两种形态同一出口。"""
+    image_prompt = scene.get("image_prompt")
+    if isinstance(image_prompt, Mapping):
+        return str(image_prompt.get("scene") or "")
+    return image_prompt if isinstance(image_prompt, str) else ""
+
+
+async def _rewrite_selected_scenes(
+    *,
+    projects: ProjectManager,
+    project_name: str,
+    episode: int,
+    project: Mapping[str, Any],
+    parsed: ParsedEpisode,
+    beats: list[dict[str, Any]],
+    planning_strength: int,
+    regenerate_scene_ids: Sequence[str],
+) -> tuple[dict[str, Any], int]:
+    """按分镜重写：只让 AI 重写选中分镜的描述与提示词，其余分镜原样保留。
+
+    beat 分组从现有脚本的 ``source_text`` 锚定，映射不上即报错要求整体重新分镜；
+    未选中分镜连字典引用都不共享，已生成的媒体、视频提示词与手动编辑不会被动到。
+    """
+    current = await asyncio.to_thread(_load_current_script, projects, project_name, episode)
+    if not isinstance(current, dict) or not current.get("scenes"):
+        raise ShortDramaWorkflowError(
+            "short_drama_ai_planning_failed",
+            "本集还没有分镜，无法按分镜重生成；请先执行完整的 AI 分镜",
+        )
+    try:
+        groups = scene_beat_groups(parsed, current["scenes"])
+    except ValueError as exc:
+        raise ShortDramaWorkflowError("short_drama_ai_planning_failed", str(exc)) from exc
+    indexed: dict[str, int] = {}
+    for index, (scene, _group) in enumerate(zip(current["scenes"], groups, strict=True)):
+        scene_id = str(scene.get("scene_id") or "") if isinstance(scene, Mapping) else ""
+        if scene_id:
+            indexed[scene_id] = index
+    unknown = [scene_id for scene_id in regenerate_scene_ids if scene_id not in indexed]
+    if unknown or not regenerate_scene_ids:
+        raise ShortDramaWorkflowError(
+            "invalid_request",
+            f"要重生成的分镜不存在或为空: {', '.join(unknown) if unknown else '<空>'}",
+        )
+    requested = [
+        (scene_id, [beats[beat_id - 1] for beat_id in groups[indexed[scene_id]]]) for scene_id in regenerate_scene_ids
+    ]
+    previous_prompts = {
+        scene_id: _scene_prompt_text(current["scenes"][indexed[scene_id]]) for scene_id, _beats in requested
+    }
+    try:
+        rewrites = await _request_rewrite(
+            project_name=project_name,
+            requested=requested,
+            assets=_asset_context(dict(project), parsed),
+            planning_strength=planning_strength,
+            previous_prompts=previous_prompts,
+        )
+    except _PlanRejected as exc:
+        # 无机械回落：重写稿不合格就报错，绝不拿旧稿或骨架冒充重写结果。
+        raise ShortDramaWorkflowError("short_drama_ai_planning_failed", str(exc)) from exc
+    except Exception as exc:
+        raise ShortDramaWorkflowError("short_drama_ai_planning_failed", f"AI 分镜重写失败: {exc}") from exc
+    script = {
+        **current,
+        "scenes": [dict(scene) if isinstance(scene, Mapping) else scene for scene in current["scenes"]],
+    }
+    for rewrite in rewrites.scenes:
+        index = indexed[rewrite.scene_id]
+        scene = dict(script["scenes"][index])
+        scene["duration_seconds"] = rewrite.duration_seconds
+        scene["scene_description"] = rewrite.scene_description
+        scene["image_prompt"] = rewrite.image_prompt
+        script["scenes"][index] = scene
+    return script, len(rewrites.scenes)
+
+
 async def import_short_drama_episode(
     *,
     project_name: str,
@@ -368,11 +671,17 @@ async def import_short_drama_episode(
     planning_strength: int = 2,
     ai_planning: bool = False,
     force_regenerate: bool = False,
+    regenerate_scene_ids: Sequence[str] = (),
 ) -> ShortDramaImportResult:
     """解析源稿并提交正式剧本；Web 与 Agent 入口共用此命令。
 
-    ``ai_planning`` 是显式的选择加入开关：只有分镜页「智能切分」才置 True 走文本模型，
+    ``ai_planning`` 是显式的选择加入开关：只有分镜页「AI 分镜」才置 True 走文本模型，
     其余入口（工厂/Agent 导入）保持机械切分、不调用任何模型。
+
+    ``regenerate_scene_ids`` 非空时走「按分镜重写」：beat 分组与未选中分镜一律不动，
+    只让 AI 重写选中分镜的画面描述与提示词——已生成的媒体与手动编辑因此不会丢。
+    智能分镜没有机械回落：校验不通过就带原因持续返修，重跑穷尽仍不合格才报错
+    （报错即「模型/流程无法运作」，不产出次品）。
     """
     try:
         project = await asyncio.to_thread(projects.load_project, project_name)
@@ -396,52 +705,66 @@ async def import_short_drama_episode(
                     )
 
     cached = False
-    fallback_reason: str | None = None
+    regenerated: int | None = None
     plan: ScenePlanResult | None = None
     try:
         if isinstance(planning_strength, bool) or planning_strength not in _PLANNING_STRENGTH_HINTS:
             raise ShortDramaWorkflowError("invalid_request", "planning_strength 必须是 1 到 3 的整数")
         parsed = parse_short_drama_episode(markdown)
         beats = beat_catalog(parsed)
-        if ai_planning and beats:
-            source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
-            revision_key = (
-                source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        if regenerate_scene_ids:
+            script, regenerated = await _rewrite_selected_scenes(
+                projects=projects,
+                project_name=project_name,
+                episode=episode,
+                project=project,
+                parsed=parsed,
+                beats=beats,
+                planning_strength=planning_strength,
+                regenerate_scene_ids=regenerate_scene_ids,
             )
-            cache_path = (
-                projects.get_project_path(project_name)
-                / "drafts"
-                / f"short_drama_plan_{_PLAN_CACHE_VERSION}_e{episode}_{revision_key}_s{planning_strength}.json"
-            )
-            if not force_regenerate:
-                plan = await asyncio.to_thread(_read_cached_plan, cache_path, beats)
-                cached = plan is not None
-            if plan is None:
-                try:
-                    plan = await _request_plan(
-                        project_name=project_name,
-                        beats=beats,
-                        assets=_asset_context(project, parsed),
-                        planning_strength=planning_strength,
-                    )
-                except _PlanRejected as exc:
-                    # 护栏（D-5）：重跑仍不合格就回落机械切分，绝不把用户卡在一个失败弹窗上。
-                    fallback_reason = str(exc)
-                except Exception as exc:
-                    raise ShortDramaWorkflowError("short_drama_ai_planning_failed", f"AI 分镜规划失败: {exc}") from exc
-                else:
-                    await asyncio.to_thread(_write_cached_plan, cache_path, plan)
-        if plan is None:
-            script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
         else:
-            script = convert_planned_scenes(
-                parsed,
-                episode,
-                [scene.beat_ids for scene in plan.scenes],
-                [scene.duration_seconds for scene in plan.scenes],
-                [scene.scene_description for scene in plan.scenes],
-                [scene.image_prompt for scene in plan.scenes],
-            )
+            if ai_planning and beats:
+                source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
+                revision_key = (
+                    source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+                )
+                cache_path = (
+                    projects.get_project_path(project_name)
+                    / "drafts"
+                    / f"short_drama_plan_{_PLAN_CACHE_VERSION}_e{episode}_{revision_key}_s{planning_strength}.json"
+                )
+                if not force_regenerate:
+                    plan = await asyncio.to_thread(_read_cached_plan, cache_path, beats)
+                    cached = plan is not None
+                if plan is None:
+                    try:
+                        plan = await _request_plan(
+                            project_name=project_name,
+                            beats=beats,
+                            assets=_asset_context(project, parsed),
+                            planning_strength=planning_strength,
+                        )
+                    except _PlanRejected as exc:
+                        # 无机械回落：返修穷尽仍不合格就报错，绝不把骨架提示词当 AI 分镜交付。
+                        raise ShortDramaWorkflowError("short_drama_ai_planning_failed", str(exc)) from exc
+                    except Exception as exc:
+                        raise ShortDramaWorkflowError(
+                            "short_drama_ai_planning_failed", f"AI 分镜规划失败: {exc}"
+                        ) from exc
+                    else:
+                        await asyncio.to_thread(_write_cached_plan, cache_path, plan)
+            if plan is None:
+                script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
+            else:
+                script = convert_planned_scenes(
+                    parsed,
+                    episode,
+                    [scene.beat_ids for scene in plan.scenes],
+                    [scene.duration_seconds for scene in plan.scenes],
+                    [scene.scene_description for scene in plan.scenes],
+                    [scene.image_prompt for scene in plan.scenes],
+                )
         core = {key: value for key, value in script.items() if key != "short_drama_meta"}
         DramaEpisodeScript.model_validate(core)
     except ShortDramaWorkflowError:
@@ -476,14 +799,13 @@ async def import_short_drama_episode(
     meta["source_path"] = source.path
     meta["source_revision"] = source.revision
     meta["ai_storyboard_options"] = {
-        # 三态可分辨：AI 成功 / AI 试过但被护栏拒绝回落 / 用户明确要的快速切分。
-        "mode": "fast" if not ai_planning else ("smart" if plan is not None else "smart_fallback"),
+        # 两态可分辨：AI 分镜成功（smart，含按分镜重写）/ 工厂导入的机械骨架（fast，非用户可选）。
+        "mode": "fast" if not ai_planning else "smart",
         "strength": planning_strength,
         "force_regenerate": force_regenerate,
     }
-    if fallback_reason:
-        # 回落必须留痕：只在 HTTP 回执里说一次，用户关掉弹窗就再也查不到为什么没有提示词。
-        meta["ai_storyboard_options"]["fallback"] = fallback_reason
+    if regenerate_scene_ids:
+        meta["ai_storyboard_options"]["regenerated_scene_ids"] = list(regenerate_scene_ids)
     names = referenced_asset_names(script)
     descriptions = referenced_asset_descriptions(parsed)
     registered: dict[str, list[str]] = {}
@@ -548,14 +870,15 @@ async def import_short_drama_episode(
         duration_shortfall=actual < declared if declared and actual != declared else None,
         planning_strength=planning_strength,
         planning_cached=cached,
-        ai_authoring=ai_planning and plan is not None,
-        planning_fallback=fallback_reason,
+        ai_authoring=ai_planning and (plan is not None or regenerated is not None),
+        regenerated_scenes=regenerated,
     )
 
 
 __all__ = [
     "ShortDramaImportResult",
     "ShortDramaWorkflowError",
+    "assets_missing_description",
     "import_short_drama_episode",
     "script_has_media_artifacts",
 ]

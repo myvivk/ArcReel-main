@@ -518,6 +518,32 @@ def convert_planned_scenes(
     return result
 
 
+def scene_beat_groups(parsed: ParsedEpisode, script_scenes: list[Mapping[str, Any]]) -> list[list[int]]:
+    """把现有正式脚本各幕的 ``source_text`` 映射回 1-based beat id 分组。
+
+    正式脚本的 ``source_text`` 逐字来自同一份源稿的 beat 原行（见 :func:`_build_scene`），
+    因此映射是确定性的：按序消费 beat 原行即可。映射不上说明现有分镜不是由这份源稿
+    生成（源稿改过未重导、或被手工拼过），调用方应要求整体重新分镜而不是局部重写。
+    """
+    raws = [beat.raw.strip() for block in parsed.blocks for beat in block.beats]
+    groups: list[list[int]] = []
+    cursor = 0
+    for index, scene in enumerate(script_scenes):
+        lines = [line for line in str(scene.get("source_text") or "").splitlines() if line.strip()]
+        if not lines:
+            raise ValueError(f"第 {index + 1} 个分镜缺少内容锚（source_text），请整体重新分镜")
+        group: list[int] = []
+        for line in lines:
+            if cursor >= len(raws) or raws[cursor] != line:
+                raise ValueError("现有分镜与当前源稿不对应，请整体重新分镜")
+            cursor += 1
+            group.append(cursor)
+        groups.append(group)
+    if cursor != len(raws):
+        raise ValueError("现有分镜未覆盖源稿全部内容，请整体重新分镜")
+    return groups
+
+
 def _split_by_story_window(
     parsed: ParsedEpisode, episode: int, min_seconds: int, max_seconds: int
 ) -> list[dict[str, Any]]:

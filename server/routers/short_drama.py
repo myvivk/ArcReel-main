@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import asdict
-from typing import Annotated, Never
+from typing import Annotated, Any, Never
 
 from fastapi import APIRouter
 from fastapi import Path as PathParam
@@ -27,7 +27,11 @@ from lib.short_drama_ingest import (
 from server.agent_toolset.envelope import json_value
 from server.auth import CurrentUser
 from server.i18n import Translator
-from server.services.short_drama_workflow import ShortDramaWorkflowError, import_short_drama_episode
+from server.services.short_drama_workflow import (
+    ShortDramaWorkflowError,
+    assets_missing_description,
+    import_short_drama_episode,
+)
 from server.tool_runtime import (
     CallerContext,
     ImportShortDramaEpisodeItem,
@@ -77,8 +81,9 @@ class ShortDramaReimportRequest(BaseModel):
     source_revision: str = Field(min_length=1)
     confirm_artifacts: bool = False
     planning_strength: int = Field(default=2, ge=1, le=3)
-    fast_split: bool = False
     force_regenerate: bool = False
+    #: 非空时只重生成这些分镜（scene_id），其余分镜原样保留；空/缺省 = 整体 AI 分镜。
+    regenerate_scene_ids: list[str] = Field(default_factory=list)
 
 
 class ShortDramaArtifactItem(BaseModel):
@@ -122,7 +127,7 @@ def _raise_workflow_error(exc: ShortDramaWorkflowError, project_name: str, episo
     raise UnprocessableError("short_drama_import_refused", reason=exc.detail).with_diagnostic(exc.detail) from exc
 
 
-def _require_source_episode(project_name: str, episode: int) -> None:
+def _require_source_episode(project_name: str, episode: int) -> dict[str, Any]:
     manager = get_project_manager()
     try:
         project = manager.load_project(project_name)
@@ -132,12 +137,17 @@ def _require_source_episode(project_name: str, episode: int) -> None:
         raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
     if not any(isinstance(entry, dict) and entry.get("episode") == episode for entry in project.get("episodes") or []):
         raise NotFoundError("episode_not_found", episode=episode)
+    return project
 
 
 @router.get("/projects/{project_name}/episodes/{episode}/short-drama-source")
 async def get_source(project_name: str, episode: Annotated[int, PathParam(ge=1)]):
-    """读取本集短剧工厂 Markdown 源稿；存量导入未保留源稿时返回 exists=false。"""
-    await asyncio.to_thread(_require_source_episode, project_name, episode)
+    """读取本集短剧工厂 Markdown 源稿；存量导入未保留源稿时返回 exists=false。
+
+    同时回带 ``assets_missing_description``：本集源稿引用的资产里缺外观描述的清单，
+    分镜页据此在缺描述时置灰「AI 分镜」入口并提示先补齐。
+    """
+    project = await asyncio.to_thread(_require_source_episode, project_name, episode)
     source = await asyncio.to_thread(load_short_drama_source, get_project_manager(), project_name, episode)
     if source is None:
         return {
@@ -146,8 +156,10 @@ async def get_source(project_name: str, episode: Annotated[int, PathParam(ge=1)]
             "markdown": "",
             "revision": None,
             "exists": False,
+            "assets_missing_description": [],
         }
-    return {**asdict(source), "exists": True}
+    missing = await asyncio.to_thread(assets_missing_description, project, source.markdown)
+    return {**asdict(source), "exists": True, "assets_missing_description": missing}
 
 
 @router.put("/projects/{project_name}/episodes/{episode}/short-drama-source")
@@ -196,8 +208,9 @@ async def reimport_source(
             expected_source_revision=req.source_revision,
             confirm_artifacts=req.confirm_artifacts,
             planning_strength=req.planning_strength,
-            ai_planning=not req.fast_split,
+            ai_planning=True,
             force_regenerate=req.force_regenerate,
+            regenerate_scene_ids=req.regenerate_scene_ids,
         )
     except ShortDramaWorkflowError as exc:
         _raise_workflow_error(exc, project_name, episode)

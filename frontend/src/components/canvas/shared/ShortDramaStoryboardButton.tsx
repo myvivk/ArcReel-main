@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "wouter";
 import { AlertTriangle, Check, Loader2, Sparkles } from "lucide-react";
@@ -31,6 +31,8 @@ interface Props {
   episode: number;
   /** 本集现有分镜数：0 时叫「AI 分镜」，≥1 时叫「AI 重新分镜」。 */
   storyboardCount: number;
+  /** 本集现有分镜 ID（scene_id）：重新分镜时可只勾选部分分镜重写，其余原样保留。 */
+  sceneIds: string[];
   /** 页头动作用描边小按钮；空态里的主操作用实心按钮。 */
   prominent?: boolean;
 }
@@ -41,15 +43,23 @@ const ASSET_ROUTE: Record<string, string> = {
   prop: WORKSPACE_ROUTE_PROPS,
 };
 
+/** ``E1S3`` → ``S3``：给分镜选择列表一个短标签。 */
+function sceneLabel(sceneId: string): string {
+  const match = /S(\d+)$/i.exec(sceneId);
+  return match ? `S${match[1]}` : sceneId;
+}
+
 /**
  * 分镜页的「AI 分镜 / AI 重新分镜」入口：读本集已保存的 Markdown 源稿重建分镜。
- * 产出分镜提示词（`image_prompt`）并引用已登记资产；不新增资产、不生成图片或视频，
+ * AI 分镜是唯一生成方式（没有快速切分/机械回落），校验不过就带原因返修。
+ * 本集引用的资产缺外观描述时入口置灰，提示先去资产页补齐；不新增资产、不生成图片或视频，
  * 视频提示词留待宫格确认后编写。
  */
 export function ShortDramaStoryboardButton({
   projectName,
   episode,
   storyboardCount,
+  sceneIds,
   prominent = false,
 }: Props) {
   const { t } = useTranslation("dashboard");
@@ -57,23 +67,20 @@ export function ShortDramaStoryboardButton({
   const [source, setSource] = useState<ShortDramaSource | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
   const [planningStrength, setPlanningStrength] = useState(2);
-  const [fastSplit, setFastSplit] = useState(false);
   const [forceRegenerate, setForceRegenerate] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
     scenes: number;
+    partial: boolean;
     missing: MissingAsset[];
     cached: boolean;
-    fallback?: string;
   } | null>(null);
-  /** 分镜成功后顺手补齐缺描述资产：默认勾上，用户可取消。 */
-  const [autoFill, setAutoFill] = useState(true);
-  const [filling, setFilling] = useState<{ done: number; total: number; name: string } | null>(null);
-  const [filledCount, setFilledCount] = useState(0);
 
   const hasStoryboards = storyboardCount > 0;
+  const missing = source?.assets_missing_description ?? [];
+  const blocked = missing.length > 0;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,15 +94,35 @@ export function ShortDramaStoryboardButton({
     }
   }, [projectName, episode]);
 
+  // 缺描述资产的置灰判定要在入口渲染时就可用，因此挂载即拉取源稿（弹窗复用同一份）。
+  useEffect(() => {
+    let cancelled = false;
+    // setState 不能同步发生在 effect 体里（react-hooks/set-state-in-effect），放进微任务。
+    queueMicrotask(() => {
+      if (!cancelled) void load();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
+
   const openDialog = () => {
-    setConfirmed(false);
     setResult(null);
     setError(null);
-    setFilling(null);
-    setFilledCount(0);
+    setSelected(sceneIds);
     setOpen(true);
     void load();
   };
+
+  const toggleScene = (sceneId: string, checked: boolean) => {
+    setSelected((current) =>
+      checked ? [...new Set([...current, sceneId])] : current.filter((id) => id !== sceneId),
+    );
+  };
+
+  const allSelected = hasStoryboards && sceneIds.length > 0 && selected.length === sceneIds.length;
+  /** 部分=勾选了既有分镜的真子集：按分镜重写，其余分镜原样保留。 */
+  const partial = hasStoryboards && sceneIds.length > 0 && !allSelected;
 
   const submit = async () => {
     if (submitting) return;
@@ -113,51 +140,28 @@ export function ShortDramaStoryboardButton({
         revision,
         hasStoryboards,
         planningStrength,
-        fastSplit,
         forceRegenerate,
+        partial ? selected : undefined,
       );
-      const missing = res.assets_without_description ?? [];
-      // 先落结果再刷新：刷新带来的重渲染不该把「已生成」和缺描述黄条抹掉。
-      setResult({ scenes: res.scenes, missing, cached: res.planning_cached, fallback: res.planning_fallback });
-      if (autoFill && missing.length > 0) {
-        const failed: MissingAsset[] = [];
-        let filled = 0;
-        for (const [index, asset] of missing.entries()) {
-          setFilling({ done: index, total: missing.length, name: asset.name });
-          try {
-            await API.fillAssetFields(projectName, asset.type, asset.name);
-            filled += 1;
-          } catch {
-            // 单个资产补全失败不动整次分镜结果，留在黄条里让用户手动补。
-            failed.push(asset);
-          }
-          setFilling({ done: index + 1, total: missing.length, name: asset.name });
-        }
-        setFilledCount(filled);
-        setResult({ scenes: res.scenes, missing: failed, cached: res.planning_cached, fallback: res.planning_fallback });
-        if (failed.length > 0) {
-          useAppStore.getState().pushToast(
-            t("short_drama_ai_storyboard_missing", {
-              count: failed.length,
-              assets: failed.map((asset) => asset.name).join("、"),
-            }),
-            "warning",
-          );
-        }
-      } else if (missing.length > 0) {
+      const resMissing = res.assets_without_description ?? [];
+      setResult({
+        scenes: partial ? res.regenerated_scenes ?? res.scenes : res.scenes,
+        partial,
+        missing: resMissing,
+        cached: res.planning_cached,
+      });
+      if (resMissing.length > 0) {
         useAppStore.getState().pushToast(
           t("short_drama_ai_storyboard_missing", {
-            count: missing.length,
-            assets: missing.map((asset) => asset.name).join("、"),
+            count: resMissing.length,
+            assets: resMissing.map((asset) => asset.name).join("、"),
           }),
           "warning",
         );
       }
-      setFilling(null);
       await refreshAfterWrite(projectName, t);
     } catch (err) {
       setError(errMsg(err));
-      setFilling(null);
     } finally {
       setSubmitting(false);
     }
@@ -169,18 +173,34 @@ export function ShortDramaStoryboardButton({
   };
 
   const canSubmit =
-    !loading && !submitting && Boolean(source?.revision) && (!hasStoryboards || confirmed);
+    !loading && !submitting && Boolean(source?.revision) && (!hasStoryboards || selected.length > 0);
+
+  const trigger = (
+    <Button
+      variant={prominent ? "default" : "outline"}
+      size={prominent ? "default" : "sm"}
+      onClick={openDialog}
+      disabled={blocked}
+    >
+      <Sparkles aria-hidden data-icon="inline-start" />
+      {t(hasStoryboards ? "short_drama_ai_restoryboard" : "short_drama_ai_storyboard")}
+    </Button>
+  );
 
   return (
     <>
-      <Button
-        variant={prominent ? "default" : "outline"}
-        size={prominent ? "default" : "sm"}
-        onClick={openDialog}
-      >
-        <Sparkles aria-hidden data-icon="inline-start" />
-        {t(hasStoryboards ? "short_drama_ai_restoryboard" : "short_drama_ai_storyboard")}
-      </Button>
+      {blocked ? (
+        <span
+          title={t("short_drama_storyboard_blocked_missing", {
+            count: missing.length,
+            assets: missing.map(missingLabel).join("、"),
+          })}
+        >
+          {trigger}
+        </span>
+      ) : (
+        trigger
+      )}
       <Dialog
         open={open}
         onOpenChange={(next) => {
@@ -217,123 +237,108 @@ export function ShortDramaStoryboardButton({
                 </p>
               )}
 
-              {hasStoryboards ? (
-                <div className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
-                  <p className="flex items-start gap-2">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-                    <span>{t("short_drama_ai_storyboard_overwrite", { count: storyboardCount })}</span>
-                  </p>
-                  <label className="mt-2 flex items-center gap-2 text-foreground">
-                    <Checkbox
-                      checked={confirmed}
-                      onCheckedChange={(value) => setConfirmed(value === true)}
-                      disabled={submitting}
-                    />
-                    <span>{t("short_drama_ai_storyboard_overwrite_confirm")}</span>
-                  </label>
+              {blocked ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
+                  <AlertTriangle aria-hidden className="size-4 shrink-0" />
+                  <span>
+                    {t("short_drama_storyboard_blocked_missing", {
+                      count: missing.length,
+                      assets: missing.map(missingLabel).join("、"),
+                    })}
+                  </span>
+                  <Link
+                    href={`/${ASSET_ROUTE[missing[0].type] ?? WORKSPACE_ROUTE_CHARACTERS}?focus=${encodeURIComponent(missing[0].name)}`}
+                    className="focus-ring rounded-sm underline underline-offset-2 hover:text-foreground"
+                  >
+                    {t("short_drama_ai_storyboard_fix_missing")}
+                  </Link>
                 </div>
               ) : null}
 
-              <div className="flex flex-col gap-2">
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant={fastSplit ? "outline" : "default"}
-                    size="sm"
-                    disabled={submitting}
-                    onClick={() => setFastSplit(false)}
-                  >
-                    {t("short_drama_ai_storyboard_smart_split")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={fastSplit ? "default" : "outline"}
-                    size="sm"
-                    disabled={submitting}
-                    onClick={() => setFastSplit(true)}
-                  >
-                    {t("short_drama_ai_storyboard_fast_split")}
-                  </Button>
-                </div>
-                {!fastSplit && (
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={forceRegenerate}
-                      onCheckedChange={(value) => setForceRegenerate(value === true)}
-                      disabled={submitting}
-                    />
-                    <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
-                  </label>
-                )}
-              </div>
-
-              {!fastSplit && (
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground">{t("short_drama_ai_storyboard_strength")}</span>
-                  <div
-                    className="flex flex-wrap gap-2"
-                    role="group"
-                    aria-label={t("short_drama_ai_storyboard_strength")}
-                  >
-                    {[1, 2, 3].map((level) => (
-                      <Button
-                        key={level}
-                        type="button"
-                        size="sm"
-                        variant={planningStrength === level ? "default" : "outline"}
+              {hasStoryboards && sceneIds.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span>{t("short_drama_ai_storyboard_scenes_label")}</span>
+                    <label className="flex items-center gap-2 text-muted-foreground">
+                      <Checkbox
+                        checked={allSelected}
+                        onCheckedChange={(value) => setSelected(value === true ? sceneIds : [])}
                         disabled={submitting}
-                        aria-pressed={planningStrength === level}
-                        onClick={() => setPlanningStrength(level)}
+                      />
+                      <span>{t("short_drama_ai_storyboard_select_all")}</span>
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {sceneIds.map((sceneId) => (
+                      <label
+                        key={sceneId}
+                        className="flex items-center gap-1.5 rounded-sm border border-border px-2 py-1"
                       >
-                        {t(`short_drama_ai_storyboard_strength_${level}`)}
-                      </Button>
+                        <Checkbox
+                          checked={selected.includes(sceneId)}
+                          onCheckedChange={(value) => toggleScene(sceneId, value === true)}
+                          disabled={submitting}
+                        />
+                        <span>{sceneLabel(sceneId)}</span>
+                      </label>
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {t("short_drama_ai_storyboard_strength_hint")}
+                    {allSelected
+                      ? t("short_drama_ai_storyboard_overwrite", { count: storyboardCount })
+                      : t("short_drama_ai_storyboard_scenes_hint")}
                   </p>
                 </div>
-              )}
+              ) : hasStoryboards ? (
+                <p className="text-warn">{t("short_drama_ai_storyboard_overwrite", { count: storyboardCount })}</p>
+              ) : null}
 
-              <div>
+              {!allSelected && (
                 <label className="flex items-center gap-2">
                   <Checkbox
-                    checked={autoFill}
-                    onCheckedChange={(value) => setAutoFill(value === true)}
+                    checked={forceRegenerate}
+                    onCheckedChange={(value) => setForceRegenerate(value === true)}
                     disabled={submitting}
                   />
-                  <span>{t("short_drama_ai_storyboard_autofill")}</span>
+                  <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
                 </label>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t("short_drama_ai_storyboard_autofill_hint")}
+              )}
+
+              <div className="flex flex-col gap-1">
+                <span className="text-muted-foreground">{t("short_drama_ai_storyboard_strength")}</span>
+                <div
+                  className="flex flex-wrap gap-2"
+                  role="group"
+                  aria-label={t("short_drama_ai_storyboard_strength")}
+                >
+                  {[1, 2, 3].map((level) => (
+                    <Button
+                      key={level}
+                      type="button"
+                      size="sm"
+                      variant={planningStrength === level ? "default" : "outline"}
+                      disabled={submitting}
+                      aria-pressed={planningStrength === level}
+                      onClick={() => setPlanningStrength(level)}
+                    >
+                      {t(`short_drama_ai_storyboard_strength_${level}`)}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t("short_drama_ai_storyboard_strength_hint")}
                 </p>
               </div>
-
-              {filling ? (
-                <p className="flex items-center gap-2 text-muted-foreground">
-                  <Loader2 aria-hidden className="size-4 animate-spin" />
-                  {t("short_drama_ai_storyboard_filling", filling)}
-                </p>
-              ) : null}
 
               {result ? (
                 <div className="flex flex-col gap-2 border-t border-border pt-3">
                   <p className="flex items-center gap-2 text-good">
                     <Check aria-hidden className="size-4" />
-                    {t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
+                    {result.partial
+                      ? t("short_drama_ai_storyboard_partial_result", { scenes: result.scenes })
+                      : t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
                     {result.cached ? ` · ${t("short_drama_ai_storyboard_cache_hit")}` : ""}
                   </p>
-                  {result.fallback ? (
-                    <p className="flex items-start gap-2 text-warn">
-                      <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-                      <span>{t("short_drama_ai_storyboard_fallback", { reason: result.fallback })}</span>
-                    </p>
-                  ) : null}
-                  {filledCount > 0 ? (
-                    <p className="text-good">
-                      {t("short_drama_ai_storyboard_filled", { count: filledCount })}
-                    </p>
-                  ) : null}
                   {result.missing.length > 0 ? (
                     <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
                       <AlertTriangle aria-hidden className="size-4 shrink-0" />

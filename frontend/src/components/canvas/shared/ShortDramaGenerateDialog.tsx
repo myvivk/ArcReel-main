@@ -54,61 +54,37 @@ const FORMAT_LENGTH: Record<ShortDramaFormat, string> = {
   manju: "漫剧档 60~90 秒",
 };
 
-/** 把集号列表压缩成连写范围标签：连续则「起-止」，否则逐集列举。 */
-function episodeRangeLabel(episodes: number[]): string {
-  if (episodes.length === 1) return String(episodes[0]);
-  const sorted = [...episodes].sort((a, b) => a - b);
-  if (sorted.every((value, index) => value === sorted[0] + index)) {
-    return `${sorted[0]}-${sorted[sorted.length - 1]}`;
-  }
-  return sorted.join("、");
-}
-
-/** 按档位与集号给出短剧工厂的撰写指令：长档用 /写长档、/连写 长档，并带连写范围。 */
-function formatWriteCommand(format: ShortDramaFormat, single: boolean, episodes: number[]): string {
-  if (single) return format === "long" ? `/写长档 第${episodes[0]}集` : `/写剧本 第${episodes[0]}集`;
-  const range = episodeRangeLabel(episodes);
-  return format === "long" ? `/连写 长档 第${range}集` : `/连写 第${range}集`;
-}
-
 /**
- * 把创意简报固化成一段交给 Agent 的指令：让内嵌 Agent 用 short-drama-factory 技能原创剧本，
- * 再调用已注册的 import_short_drama_* 工具落盘。纯函数，便于测试。
- * 注意：import_short_drama_script 要求目标集已存在；创建模式下由前端在提交时透明建好集，用户无感。
+ * 把创意简报固化成一段交给 Agent 的指令：让内嵌 Agent 用 short-drama-factory 技能走工厂独立链路
+ * 原创剧本——所有正文经 `generate_short_drama_factory` 交给文本模型写作与优化，通过
+ * `ingest_short_drama_artifacts` 原样落盘为七类工厂工件。纯函数，便于测试。
+ * 不把旧脚本生产入口（`import_short_drama_script` / `import_short_drama_series` /
+ * `generate_episode_script`）作为交付手段。目标集由前端在提交时透明建好，用户无感。
  */
 export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   const episodes = b.episodes;
   const single = episodes.length === 1;
-  const command = formatWriteCommand(b.format, single, episodes);
-  const tool = single ? "import_short_drama_script" : "import_short_drama_series";
+  const sortedEpisodes = [...episodes].sort((a, c) => a - c);
   const toneLine = b.tone.trim() ? b.tone.trim() : "（按题材默认基调）";
+  const rangeLabel = single
+    ? `第 ${episodes[0]} 集`
+    : `第 ${sortedEpisodes.join("、")} 集（共 ${episodes.length} 集）`;
   const lines = [
-    "请使用 short-drama-factory 技能，根据以下创意简报原创短剧剧本，并导入当前项目（剧情演绎 drama 模式）。",
+    "请使用 short-drama-factory 技能，按工厂独立链路原创短剧剧本并落盘到当前项目（剧情演绎 drama 模式）。严禁绕回旧脚本生产入口。",
     "",
     "【创意简报】",
     `- 题材 / 类型：${b.genre.trim()}`,
     `- 核心梗概：${b.brief.trim()}`,
     `- 风格基调：${toneLine}`,
     `- 篇幅：${FORMAT_LENGTH[b.format]}`,
-    "",
-    "【要求】",
-    `1. 先按 short-drama-factory 的 ${command} 流程产出符合规范的剧本 Markdown：前 3 秒钩子 + 往返回合 + 断章，动作/神态与台词分明。`,
+    `- 本次目标集：${rangeLabel}`,
   ];
-  if (single) {
-    lines.push(
-      `2. 生成后调用 ${tool} 工具，把 Markdown 导入当前项目第 ${episodes[0]} 集（episode_id=${episodes[0]}）。`,
-      "3. 视觉层（image_prompt / video_prompt）保持为空，留给后续 generate_episode_script 补出；不要臆造画面提示词。",
-      `4. 第 ${episodes[0]} 集已存在，直接导入即可。`,
-    );
-  } else {
+  if (!single) {
     const total = b.totalEpisodes;
     const first = Math.min(...episodes);
     const last = Math.max(...episodes);
     const reachesEnd = last >= total;
     lines.push(
-      `2. 生成后逐集调用 ${tool} 工具，把各集 Markdown 分别导入本项目的第 ${episodes.join("、")} 集（episode_id 对应）。`,
-      "3. 视觉层（image_prompt / video_prompt）保持为空，留给后续 generate_episode_script 补出；不要臆造画面提示词。",
-      `4. 第 ${episodes.join("、")} 集均已存在，逐集导入即可。`,
       "",
       "【全剧规划】",
       `- 全剧规划总集数为 ${total} 集：据此重新规划四幕与付费墙位置，不要套用默认的 60/80/100 长档结构。`,
@@ -118,6 +94,15 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
         : "- 本批次未达全剧结尾：每集保持断章钩子、留续写空间，不要在本批次内提前收尾或闭环主线。",
     );
   }
+  lines.push(
+    "",
+    "【工厂链路要求（必须遵守，不得阉割）】",
+    "1. 所有工厂正文（人物圣经 / 全剧大纲 / 连续性台账 / 分集规划 / 集正文 / 机检报告 / 合规报告）一律由文本模型产出：按工件类型把 references / 模板 / 本集上下文 / 指令组装成 prompt，调用 generate_short_drama_factory 生成 Markdown 原文；Agent 本人不写正文、不解析、不转写为 ArcReel JSON。",
+    "2. 每集必须走完整质量闭环：初稿 → AI 医生精修（dialogue-doctor-anti-ai）→ 规则机检（validate_episode.py，长档 / 漫剧按对应档位）→ 失败项回喂文本模型返修 → 更新 ledger.md → 阶段性 validate_series.py → 合规检查（screenplay-compliance-rules.md，红线问题返修）。机检 / 合规通过的报告随工件保存，不得裸交失败件。",
+    "3. 全部通过后，用唯一交稿入口 ingest_short_drama_artifacts 把七类 Markdown 工件原样写入 source/short_drama/：系列级工件（character-bible.md / series-outline.md / ledger.md）随首批提交并可跨批复用；每集至少包含分集规划、集正文、机检报告与合规报告。传参为各工件的相对路径与 UTF-8 原文 Base64，不改写内容、不抽取到 story_plan、不登记资产、不调用 generate_episode_script。",
+    "4. 禁止把 import_short_drama_script / import_short_drama_series（旧导入会把工厂 Markdown 重写为原生剧本 JSON）或 generate_episode_script（旧视觉提示词生成）作为交付手段；视觉层留待后续独立制作步骤处理。",
+    `5. 目标集 ${rangeLabel} 已由前端建好；工件路径用零填充集号（如 episodes/episode_${String(episodes[0]).padStart(2, "0")}.md）。`,
+  );
   return lines.join("\n");
 }
 

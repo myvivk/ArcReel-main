@@ -165,6 +165,7 @@ def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: P
 
 def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: Path) -> None:
     client, manager = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
         saved = client.put(
@@ -173,7 +174,7 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
         ).json()
         imported = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": saved["revision"], "confirm_artifacts": False, "fast_split": True},
+            json={"source_revision": saved["revision"], "confirm_artifacts": False},
         )
 
     assert imported.status_code == 200
@@ -181,8 +182,8 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
     script = manager.load_script("demo", "episode_1.json")
     assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
     assert script["short_drama_meta"]["source_revision"] == saved["revision"]
-    # 快速切分也留痕：分镜页据此提示「提示词为骨架，可用 AI 重新分镜重写」。
-    assert script["short_drama_meta"]["ai_storyboard_options"]["mode"] == "fast"
+    # AI 分镜是唯一路径：reimport 恒走文本模型并留痕 smart。
+    assert script["short_drama_meta"]["ai_storyboard_options"]["mode"] == "smart"
     assert all(12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]), [
         scene["duration_seconds"] for scene in script["scenes"]
     ]
@@ -204,6 +205,7 @@ def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path
     markdown = MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）").replace(
         "（前夫｜寸头，深灰西装，领口松开）", "（前夫）"
     )
+    monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(markdown)).create)
 
     with client:
         saved = client.put(
@@ -212,7 +214,7 @@ def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path
         ).json()
         imported = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": saved["revision"], "confirm_artifacts": False, "fast_split": True},
+            json={"source_revision": saved["revision"], "confirm_artifacts": False},
         ).json()
 
     missing = {(item["name"], item["reason"]) for item in imported["assets_without_description"]}
@@ -242,6 +244,7 @@ def test_initial_import_persists_markdown_source(monkeypatch, tmp_path: Path) ->
 
 def test_reimport_requires_confirmation_when_media_exists(monkeypatch, tmp_path: Path) -> None:
     client, manager = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
         imported = client.post(
@@ -253,11 +256,11 @@ def test_reimport_requires_confirmation_when_media_exists(monkeypatch, tmp_path:
         manager.save_script("demo", script, "episode_1.json")
         refused = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": imported["source_revision"], "confirm_artifacts": False, "fast_split": True},
+            json={"source_revision": imported["source_revision"], "confirm_artifacts": False},
         )
         confirmed = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": imported["source_revision"], "confirm_artifacts": True, "fast_split": True},
+            json={"source_revision": imported["source_revision"], "confirm_artifacts": True},
         )
 
     assert refused.status_code == 409
@@ -336,11 +339,11 @@ def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> N
         assert scene["pending_authoring"] is True
 
 
-def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch, tmp_path: Path) -> None:
-    """镜头首行没有真实景别/运镜：带原因反复返修，所有轮次仍不合格才回落机械切分。"""
+def test_smart_reimport_never_falls_back_after_exhausted_retries(monkeypatch, tmp_path: Path) -> None:
+    """无机械回落：校验不合格就带原因持续返修，穷尽后报错，绝不交付骨架提示词。"""
     client, manager = _client(monkeypatch, tmp_path)
     broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
-    # 返修轮数由 _PLAN_ATTEMPTS 决定，这里给足同样失败的回复，逼它走到回落。
+    # 返修轮数由 _PLAN_ATTEMPTS 决定，这里给足同样失败的回复，逼它走到报错。
     model = FakeTextGenerator(*([broken] * 5))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
@@ -351,22 +354,12 @@ def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch,
             json={"source_revision": revision, "confirm_artifacts": False},
         )
 
-    assert imported.status_code == 200, imported.text
-    body = imported.json()
-    assert body["ai_authoring"] is False
-    assert "镜头首行缺景别或运镜" in body["planning_fallback"]
+    assert imported.status_code == 422, imported.text
+    assert "镜头首行缺景别或运镜" in imported.json()["detail"]
     assert len(model.requests) == 5
     assert "上一轮输出未通过校验" in model.requests[1].prompt
-    script = manager.load_script("demo", "episode_1.json")
-    assert script["scenes"], "回落机械切分后仍须产出分镜"
-    # 回落不留白：机械路径给骨架提示词，且回落原因随剧本留痕，用户事后查得到。
-    options = script["short_drama_meta"]["ai_storyboard_options"]
-    assert options["mode"] == "smart_fallback"
-    assert "镜头首行缺景别或运镜" in options["fallback"]
-    for scene in script["scenes"]:
-        assert scene["image_prompt"].startswith("【镜头1】中景，平视机位，固定。")
-        assert "视觉参考：" in scene["image_prompt"]
-        assert scene["pending_authoring"] is True
+    # 报错即回滚：正式脚本里没有半成品，也没有「回落骨架」的 mode 留痕。
+    assert not (manager.get_project_path("demo") / "scripts" / "episode_1.json").exists()
 
 
 def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: Path) -> None:
@@ -414,3 +407,114 @@ def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:
 
     assert (first["planning_cached"], second["planning_cached"]) == (False, True)
     assert len(model.requests) == 1
+
+
+def _rewrite_payload(scene_ids: list[str]) -> str:
+    """按分镜重写的合规回复：scene_id 一一对应、时长落窗口、镜头块过丰满度校验。"""
+    return json.dumps(
+        {
+            "scenes": [
+                {
+                    "scene_id": scene_id,
+                    "duration_seconds": 13,
+                    "scene_description": "林夏攥紧门把手，侧耳贴门，屏息听门外动静。",
+                    "image_prompt": _shot_prompt(header="【镜头1】特写，仰拍，缓拉。"),
+                }
+                for scene_id in scene_ids
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_reimport_regenerates_selected_scenes_only(monkeypatch, tmp_path: Path) -> None:
+    """按分镜重写：只重写所选分镜的描述与提示词，其余分镜原样保留。"""
+    client, manager = _client(monkeypatch, tmp_path)
+    model = FakeTextGenerator(_plan_payload(MARKDOWN), _rewrite_payload(["E1S2"]))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+
+    with client:
+        revision = _save_source(client)
+        first = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision, "confirm_artifacts": False},
+        ).json()
+        second = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={
+                "source_revision": revision,
+                "confirm_artifacts": False,
+                "regenerate_scene_ids": ["E1S2"],
+            },
+        )
+
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["ai_authoring"] is True
+    assert body["regenerated_scenes"] == 1
+    assert body["scenes"] == first["scenes"]
+    script = manager.load_script("demo", "episode_1.json")
+    assert len(script["scenes"]) == first["scenes"]
+    rewritten = next(scene for scene in script["scenes"] if scene["scene_id"] == "E1S2")
+    untouched = next(scene for scene in script["scenes"] if scene["scene_id"] == "E1S1")
+    assert rewritten["image_prompt"].startswith("【镜头1】特写，仰拍，缓拉。")
+    assert rewritten["duration_seconds"] == 13
+    assert untouched["image_prompt"].startswith("【镜头1】中景，平视机位，缓推。")
+    assert untouched["duration_seconds"] == 12
+    # 未选中的分镜连 source_text 都不动：已生成的媒体与手动编辑因此不会丢。
+    assert bool(rewritten["source_text"])
+    assert bool(untouched["source_text"])
+    options = script["short_drama_meta"]["ai_storyboard_options"]
+    assert options["mode"] == "smart"
+    assert options["regenerated_scene_ids"] == ["E1S2"]
+    # 重写请求里只带了所选分镜的 beats 与旧提示词。
+    assert "待重写的分镜" in model.requests[1].prompt
+    assert "E1S2" in model.requests[1].prompt
+    assert "E1S1" not in model.requests[1].prompt
+
+
+def test_reimport_regenerate_rejects_unknown_scene_ids(monkeypatch, tmp_path: Path) -> None:
+    """要重生成的分镜不存在时报 422，不静默扩大范围。"""
+    client, _manager = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
+
+    with client:
+        revision = _save_source(client)
+        client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision, "confirm_artifacts": False},
+        )
+        refused = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={
+                "source_revision": revision,
+                "confirm_artifacts": False,
+                "regenerate_scene_ids": ["E1S99"],
+            },
+        )
+
+    assert refused.status_code == 422
+    # detail 会把分镜 ID 渲染成「未命名集 · S99」，所以只断言集内 ID。
+    assert "S99" in refused.json()["detail"]
+
+
+def test_get_source_reports_assets_missing_description(monkeypatch, tmp_path: Path) -> None:
+    """GET 源稿回带缺描述资产清单：分镜入口据此置灰并提示先补齐。"""
+    client, manager = _client(monkeypatch, tmp_path)
+    manager.update_project(
+        "demo",
+        lambda project: project.setdefault("characters", {}).update({"林夏": {"description": ""}}),
+    )
+
+    with client:
+        client.put(
+            "/api/v1/projects/demo/episodes/1/short-drama-source",
+            json={"markdown": MARKDOWN, "expected_revision": None},
+        )
+        body = client.get("/api/v1/projects/demo/episodes/1/short-drama-source").json()
+
+    assert body["exists"] is True
+    missing = {(item["type"], item["name"]) for item in body["assets_missing_description"]}
+    assert ("character", "林夏") in missing
+    # 源稿里写明外观、尚未登记的资产不拦：分镜时会随登记一起落描述。
+    assert ("character", "周明") not in missing

@@ -469,7 +469,10 @@ def convert_planned_scenes(
         if scene_descriptions is not None:
             scene["scene_description"] = scene_descriptions[index]
         if image_prompts is not None:
-            scene["image_prompt"] = {"scene": image_prompts[index]}
+            # 单段标准分镜提示词就存文本形态本身：`image_prompt` 允许 `str`（PromptText），
+            # 下游 `generate_grid` / 前端单输入框都按「文本或 {scene, composition}」两形态读同一出口，
+            # 因此这里不需要拆 composition 结构，也不改任何消费方。
+            scene["image_prompt"] = image_prompts[index]
         scenes.append(scene)
     if used != list(range(1, len(flat) + 1)):
         raise ValueError("scene groups must cover every source beat exactly once")

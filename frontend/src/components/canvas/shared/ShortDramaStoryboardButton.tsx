@@ -43,7 +43,8 @@ const ASSET_ROUTE: Record<string, string> = {
 
 /**
  * 分镜页的「AI 分镜 / AI 重新分镜」入口：读本集已保存的 Markdown 源稿重建分镜。
- * 只做内容切分与资产登记，不写提示词、不生成图片或视频。
+ * 产出分镜提示词（`image_prompt`）并引用已登记资产；不新增资产、不生成图片或视频，
+ * 视频提示词留待宫格确认后编写。
  */
 export function ShortDramaStoryboardButton({
   projectName,
@@ -57,11 +58,16 @@ export function ShortDramaStoryboardButton({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
-  const [planningStrength, setPlanningStrength] = useState(3);
+  const [planningStrength, setPlanningStrength] = useState(2);
   const [fastSplit, setFastSplit] = useState(false);
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ scenes: number; missing: MissingAsset[]; cached: boolean } | null>(null);
+  const [result, setResult] = useState<{
+    scenes: number;
+    missing: MissingAsset[];
+    cached: boolean;
+    fallback?: string;
+  } | null>(null);
   /** 分镜成功后顺手补齐缺描述资产：默认勾上，用户可取消。 */
   const [autoFill, setAutoFill] = useState(true);
   const [filling, setFilling] = useState<{ done: number; total: number; name: string } | null>(null);
@@ -112,7 +118,7 @@ export function ShortDramaStoryboardButton({
       );
       const missing = res.assets_without_description ?? [];
       // 先落结果再刷新：刷新带来的重渲染不该把「已生成」和缺描述黄条抹掉。
-      setResult({ scenes: res.scenes, missing, cached: res.planning_cached });
+      setResult({ scenes: res.scenes, missing, cached: res.planning_cached, fallback: res.planning_fallback });
       if (autoFill && missing.length > 0) {
         const failed: MissingAsset[] = [];
         let filled = 0;
@@ -128,7 +134,7 @@ export function ShortDramaStoryboardButton({
           setFilling({ done: index + 1, total: missing.length, name: asset.name });
         }
         setFilledCount(filled);
-        setResult({ scenes: res.scenes, missing: failed, cached: res.planning_cached });
+        setResult({ scenes: res.scenes, missing: failed, cached: res.planning_cached, fallback: res.planning_fallback });
         if (failed.length > 0) {
           useAppStore.getState().pushToast(
             t("short_drama_ai_storyboard_missing", {
@@ -261,26 +267,33 @@ export function ShortDramaStoryboardButton({
                 )}
               </div>
 
-              {!fastSplit && <div>
-                <label htmlFor="short-drama-planning-strength" className="mb-1 block">
-                  {t("short_drama_ai_storyboard_strength", { strength: planningStrength })}
-                </label>
-                <input
-                  id="short-drama-planning-strength"
-                  type="range"
-                  min={1}
-                  max={5}
-                  step={1}
-                  value={planningStrength}
-                  disabled={submitting}
-                  onChange={(event) => setPlanningStrength(Number(event.target.value))}
-                  className="w-full accent-primary"
-                />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{t("short_drama_ai_storyboard_strength_long")}</span>
-                  <span>{t("short_drama_ai_storyboard_strength_short")}</span>
+              {!fastSplit && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">{t("short_drama_ai_storyboard_strength")}</span>
+                  <div
+                    className="flex flex-wrap gap-2"
+                    role="group"
+                    aria-label={t("short_drama_ai_storyboard_strength")}
+                  >
+                    {[1, 2, 3].map((level) => (
+                      <Button
+                        key={level}
+                        type="button"
+                        size="sm"
+                        variant={planningStrength === level ? "default" : "outline"}
+                        disabled={submitting}
+                        aria-pressed={planningStrength === level}
+                        onClick={() => setPlanningStrength(level)}
+                      >
+                        {t(`short_drama_ai_storyboard_strength_${level}`)}
+                      </Button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {t("short_drama_ai_storyboard_strength_hint")}
+                  </p>
                 </div>
-              </div>}
+              )}
 
               <div>
                 <label className="flex items-center gap-2">
@@ -310,6 +323,12 @@ export function ShortDramaStoryboardButton({
                     {t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
                     {result.cached ? ` · ${t("short_drama_ai_storyboard_cache_hit")}` : ""}
                   </p>
+                  {result.fallback ? (
+                    <p className="flex items-start gap-2 text-warn">
+                      <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                      <span>{t("short_drama_ai_storyboard_fallback", { reason: result.fallback })}</span>
+                    </p>
+                  ) : null}
                   {filledCount > 0 ? (
                     <p className="text-good">
                       {t("short_drama_ai_storyboard_filled", { count: filledCount })}

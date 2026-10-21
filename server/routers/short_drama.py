@@ -196,7 +196,7 @@ async def reimport_source(
             expected_source_revision=req.source_revision,
             confirm_artifacts=req.confirm_artifacts,
             planning_strength=req.planning_strength,
-            fast_split=req.fast_split,
+            ai_planning=not req.fast_split,
             force_regenerate=req.force_regenerate,
         )
     except ShortDramaWorkflowError as exc:

@@ -1607,6 +1607,8 @@ class API {
     source_revision: string;
     planning_strength: number;
     planning_cached: boolean;
+    ai_authoring?: boolean;
+    planning_fallback?: string;
     assets_without_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(

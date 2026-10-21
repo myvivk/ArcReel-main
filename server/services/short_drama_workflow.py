@@ -8,6 +8,7 @@ import itertools
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -24,6 +25,7 @@ from lib.project.project_manager import ProjectManager
 from lib.script.script_models import DramaEpisodeScript
 from lib.script.short_drama_import import (
     STORY_SCENE_WINDOW_SECONDS,
+    ParsedEpisode,
     beat_catalog,
     convert_planned_scenes,
     convert_to_drama_script,
@@ -56,27 +58,220 @@ class ScenePlanResult(BaseModel):
     scenes: list[ScenePlan] = Field(min_length=1)
 
 
+#: 规划缓存的格式版本：校验口径变了就换版本，避免复用旧口径产出的规划。
+_PLAN_CACHE_VERSION = "v2"
+#: 一次规划最多调用几次文本模型：首轮 + 带拒绝原因的返修轮；仍不合格则回落机械切分。
+_PLAN_ATTEMPTS = 2
+
+#: 镜头首行必须是真实镜头语言，不是「景别 / 机位 / 运镜」这类占位字面量。
+_SHOT_SIZE_WORDS = ("大远景", "远景", "全景", "中远景", "中景", "中近景", "近景", "大特写", "特写")
+_CAMERA_WORDS = (
+    "平视",
+    "俯拍",
+    "仰拍",
+    "俯视",
+    "仰视",
+    "过肩",
+    "主观",
+    "侧拍",
+    "正拍",
+    "斜侧",
+    "顶拍",
+    "机位",
+    "固定",
+    "推",
+    "拉",
+    "摇",
+    "移",
+    "跟",
+    "升",
+    "降",
+    "环绕",
+    "手持",
+    "变焦",
+    "晃动",
+)
+_ACTION_WORDS = re.compile(r"推|拉|转|抬|落|抓|握|奔|停|望|看|举|敲|砸|开|合|走|冲|递|抽|攥|跌|挥|点头|摇头")
+_ASSET_ANCHOR = re.compile(r"(?:角色|场景|道具|风格锚)@\[")
+_SHOT_BLOCK = re.compile(r"【镜头\d+】.*?(?=【镜头\d+】|$)", flags=re.S)
+
+_PLANNING_STRENGTH_HINTS = {
+    1: "保守：只做视觉化与格式落地，不改动作顺序、不碰台词。",
+    2: "标准：可理顺神态与动作的镜头归属，台词仍逐字照抄。",
+    3: "增强：可调整动作分配与台词节奏，但 utterances 仍逐字照抄原稿。",
+}
+
+
+class _PlanRejected(ValueError):
+    """AI 规划未通过结构 / 丰满度校验：可带原因重跑，重跑仍不合格则回落机械切分。"""
+
+
+def _shot_header(block: str) -> str:
+    """镜头块首行：景别 / 机位 / 运镜按模板写在行首。"""
+    return next((line.strip() for line in block.splitlines() if line.strip()), "")
+
+
+def _lint_shot_block(block: str) -> str | None:
+    """镜头块不合格的原因；合格返回 ``None``。"""
+    if len(block.strip()) < 70:
+        return "镜头块过短，内容不够丰满"
+    if not _ACTION_WORDS.search(block):
+        return "镜头块没有具体动作"
+    if not _ASSET_ANCHOR.search(block):
+        return "镜头块没有引用任何已登记资产锚点"
+    header = _shot_header(block)
+    if not any(word in header for word in _SHOT_SIZE_WORDS) or not any(word in header for word in _CAMERA_WORDS):
+        return "镜头首行缺景别或运镜（须写成「中景，平视机位，缓推。」）"
+    if "视觉参考：" not in block:
+        return "镜头块缺视觉参考行"
+    return None
+
+
 def _validate_plan_quality(plan: ScenePlanResult) -> None:
-    action = re.compile(r"推|拉|转|抬|落|抓|握|奔|停|望|看|举|敲|砸|开|合|走|冲|递|抽|攥|跌|挥|点头|摇头")
+    """丰满度校验（硬性质量闸）：不合格抛 :class:`_PlanRejected`，由调用方重跑或回落。"""
     for scene_index, scene in enumerate(plan.scenes, 1):
-        prompt = scene.image_prompt
-        blocks = re.findall(r"【镜头\d+】.*?(?=【镜头\d+】|$)", prompt, flags=re.S)
+        blocks = _SHOT_BLOCK.findall(scene.image_prompt)
         if not blocks:
-            raise ValueError(f"scene {scene_index} has no formatted shot blocks")
-        for block in blocks:
-            if (
-                len(block.strip()) < 70
-                or not action.search(block)
-                or not re.search(r"(?:角色|场景|道具|风格锚)@\[", block)
-            ):
-                raise ValueError(f"scene {scene_index} contains an underdeveloped shot block")
-            if not re.search(r"景别.{0,16}机位.{0,16}(?:运镜|固定|缓推|缓拉)", block):
-                raise ValueError(f"scene {scene_index} is missing camera grammar")
-            if not re.search(r"视觉参考：", block):
-                raise ValueError(f"scene {scene_index} is missing visual reference")
+            raise _PlanRejected(f"scene {scene_index} 的 image_prompt 里没有【镜头N】分镜块")
+        for shot_index, block in enumerate(blocks, 1):
+            problem = _lint_shot_block(block)
+            if problem:
+                raise _PlanRejected(f"scene {scene_index} 镜头{shot_index} {problem}")
         for left, right in itertools.pairwise(blocks):
             if left.strip() == right.strip():
-                raise ValueError(f"scene {scene_index} contains duplicate filler shots")
+                raise _PlanRejected(f"scene {scene_index} 有完全重复的凑数镜头")
+
+
+def _validate_plan_coverage(plan: ScenePlanResult, beats: list[dict[str, Any]]) -> None:
+    """结构护栏（D-5）：beat 一一覆盖、不劈断、时长落窗口。"""
+    flat_ids = [beat_id for scene in plan.scenes for beat_id in scene.beat_ids]
+    if flat_ids != list(range(1, len(beats) + 1)):
+        raise _PlanRejected("beat_ids 必须从 1 开始、连续覆盖全部 beats，不重不漏也不劈断")
+    for scene_index, scene in enumerate(plan.scenes, 1):
+        low, high = STORY_SCENE_WINDOW_SECONDS
+        if not low <= scene.duration_seconds <= high:
+            raise _PlanRejected(f"scene {scene_index} 时长 {scene.duration_seconds} 秒不在 {low}–{high} 秒窗口内")
+
+
+def _asset_context(project: dict[str, Any], parsed: ParsedEpisode) -> dict[str, dict[str, str]]:
+    """喂给模型的名字与外观：已登记资产的外观优先，源稿写明的外观兜底。"""
+    mentioned = {
+        "character": {name for block in parsed.blocks for name in block.characters},
+        "scene": {block.location for block in parsed.blocks if block.location},
+        "prop": {name for block in parsed.blocks for name in block.props},
+    }
+    from_source = referenced_asset_descriptions(parsed)
+    context: dict[str, dict[str, str]] = {"character": {}, "scene": {}, "prop": {}}
+    for asset_type, bucket_name in (
+        ("character", "characters"),
+        ("scene", "scenes"),
+        ("prop", "props"),
+    ):
+        registered = project.get(bucket_name) or {}
+        for name in sorted(mentioned[asset_type]):
+            entry = registered.get(name)
+            description = str(entry.get("description") or "").strip() if isinstance(entry, dict) else ""
+            context[asset_type][name] = description or from_source.get(asset_type, {}).get(name, "")
+    return context
+
+
+def _plan_prompt(
+    *,
+    beats: list[dict[str, Any]],
+    assets: dict[str, dict[str, str]],
+    planning_strength: int,
+    rejection: str | None,
+) -> str:
+    """一次规划请求的提示词；返修轮把上一轮被拒原因一起喂回去。"""
+    prompt = "\n".join(
+        [
+            "你是专业短剧摄影分镜师。对下面给出的全部 beats 一次性输出 scenes 数组。",
+            "硬约束：",
+            "1. scene.beat_ids：从 1 开始、按顺序连续覆盖每一个 beat，不重不漏；"
+            "绝不劈开一个动作行或一句台词；优先在【场景】块边界切分，其次在拍边界；"
+            "按叙事语义（说话人更替、地点切换、情绪转折）决定切点，不要按字数均分。",
+            "2. scene.duration_seconds：每幕取 12–15 的整数。",
+            "3. scene.scene_description：把这些拍改写成镜头可读的画面（具体动作 + 神态 + 环境），"
+            "只写画面看得见的内容，不写台词。",
+            "4. scene.utterances：逐字照抄输入拍里的台词（dialogue 带 speaker，画外音 voiceover），不得改字、不得增删。",
+            "5. scene.image_prompt：单段多行文本，每个镜头 4 行，镜头之间空一行，格式固定：",
+            "【镜头1】中景，平视机位，缓推。",
+            "画面主体：沈昭@[沈昭/将断头金簪从掌心缓缓抽出，血珠滚落]，沈婉@[沈婉/跪坐一侧，眼底伪怯转冷]。",
+            "环境道具：暗殿@[暗殿/残并蒂莲屏风]，朱红漆案、铜醮香炉，喜烛暖橙光斑落在鎏金雕面。",
+            "视觉参考：风格锚@[短剧/暗殿对峙质感]",
+            "  - 首行必须是「<景别>，<机位>，<运镜>。」：景别只能取 大远景/远景/全景/中景/近景/特写/大特写；"
+            "机位只能取 平视/俯拍/仰拍/过肩/主观/侧拍；运镜只能取 固定/推/拉/摇/移/跟/升/降/环绕/手持。"
+            "不要照抄“景别、机位、运镜”这几个字。",
+            "  - 画面主体必须写具体动作 + 神态，且至少引用一个已登记资产锚点"
+            "（角色@[名字/锚点]、场景@[名字/锚点]、道具@[名字/锚点]）；禁止“一位人物”“气氛紧张”这类空泛占位。",
+            "  - 镜头数由内容决定：12–15 秒一幕常见 3–5 个，平静对话幕 2 个也够，"
+            "动作/对峙密集幕 4–6 个；禁止把同一个动作拆成雷同镜头凑数。",
+            "  - 视觉参考行只写文本引用（风格锚或已登记资产），不要描述像素级参考图。",
+            "6. characters_in_scene / scenes / props：只填资产清单或 beats 里出现过的原名，不翻译、不新造；video_prompt 一律不输出。",
+            f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
+            f"assets={json.dumps(assets, ensure_ascii=False)}",
+            f"beats={json.dumps(beats, ensure_ascii=False)}",
+        ]
+    )
+    if rejection:
+        prompt += f"\n上一轮输出未通过校验：{rejection}。请修正后重新输出完整 scenes。"
+    return prompt
+
+
+async def _request_plan(
+    *,
+    project_name: str,
+    beats: list[dict[str, Any]],
+    assets: dict[str, dict[str, str]],
+    planning_strength: int,
+) -> ScenePlanResult:
+    """调用文本模型产出规划；结构 / 丰满度不合格时带原因返修一轮，仍不合格抛 :class:`_PlanRejected`。"""
+    generator = await TextGenerator.create(
+        TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
+    )
+    rejection: str | None = None
+    for _attempt in range(_PLAN_ATTEMPTS):
+        generated = await generator.generate(
+            BackendTextGenerationRequest(
+                prompt=_plan_prompt(
+                    beats=beats,
+                    assets=assets,
+                    planning_strength=planning_strength,
+                    rejection=rejection,
+                ),
+                response_schema=ScenePlanResult,
+                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+            ),
+            project_name=project_name,
+            require_complete=True,
+        )
+        try:
+            payload = json.loads(strip_json_code_fences(generated.text))
+            plan = ScenePlanResult.model_validate(payload)
+            _validate_plan_coverage(plan, beats)
+            _validate_plan_quality(plan)
+        except (json.JSONDecodeError, ValidationError, _PlanRejected) as exc:
+            rejection = str(exc)
+            continue
+        return plan
+    raise _PlanRejected(rejection or "AI 返回的分镜不可用")
+
+
+def _read_cached_plan(cache_path: Path, beats: list[dict[str, Any]]) -> ScenePlanResult | None:
+    """读规划缓存；读不出或已不合当前校验口径就当没缓存。"""
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        plan = ScenePlanResult.model_validate(data)
+        _validate_plan_coverage(plan, beats)
+        _validate_plan_quality(plan)
+    except (OSError, json.JSONDecodeError, ValidationError, _PlanRejected):
+        return None
+    return plan
+
+
+def _write_cached_plan(cache_path: Path, plan: ScenePlanResult) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(plan.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class ShortDramaWorkflowError(ValueError):
@@ -101,6 +296,8 @@ class ShortDramaImportResult:
     planning_strength: int = 2
     planning_cached: bool = False
     ai_authoring: bool = False
+    #: AI 规划被护栏拒绝后回落机械切分的原因；未回落为 None。
+    planning_fallback: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         result = {
@@ -112,6 +309,8 @@ class ShortDramaImportResult:
             "planning_cached": self.planning_cached,
             "ai_authoring": self.ai_authoring,
         }
+        if self.planning_fallback:
+            result["planning_fallback"] = self.planning_fallback
         if self.registered_assets:
             result["registered_assets"] = self.registered_assets
         if self.asset_conflicts:
@@ -157,10 +356,14 @@ async def import_short_drama_episode(
     expected_source_revision: str | None = None,
     confirm_artifacts: bool = True,
     planning_strength: int = 2,
-    fast_split: bool = False,
+    ai_planning: bool = False,
     force_regenerate: bool = False,
 ) -> ShortDramaImportResult:
-    """解析源稿并提交正式剧本；Web 与 Agent 入口共用此命令。"""
+    """解析源稿并提交正式剧本；Web 与 Agent 入口共用此命令。
+
+    ``ai_planning`` 是显式的选择加入开关：只有分镜页「智能切分」才置 True 走文本模型，
+    其余入口（工厂/Agent 导入）保持机械切分、不调用任何模型。
+    """
     try:
         project = await asyncio.to_thread(projects.load_project, project_name)
     except FileNotFoundError as exc:
@@ -183,14 +386,14 @@ async def import_short_drama_episode(
                     )
 
     cached = False
+    fallback_reason: str | None = None
+    plan: ScenePlanResult | None = None
     try:
-        if isinstance(planning_strength, bool) or not 1 <= planning_strength <= 3:
+        if isinstance(planning_strength, bool) or planning_strength not in _PLANNING_STRENGTH_HINTS:
             raise ShortDramaWorkflowError("invalid_request", "planning_strength 必须是 1 到 3 的整数")
         parsed = parse_short_drama_episode(markdown)
         beats = beat_catalog(parsed)
-        if fast_split or not beats:
-            script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
-        else:
+        if ai_planning and beats:
             source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
             revision_key = (
                 source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -198,63 +401,29 @@ async def import_short_drama_episode(
             cache_path = (
                 projects.get_project_path(project_name)
                 / "drafts"
-                / f"short_drama_plan_e{episode}_{revision_key}_s{planning_strength}.json"
+                / f"short_drama_plan_{_PLAN_CACHE_VERSION}_e{episode}_{revision_key}_s{planning_strength}.json"
             )
-            try:
-                plan_data = await asyncio.to_thread(lambda: json.loads(cache_path.read_text(encoding="utf-8")))
-                plan = ScenePlanResult.model_validate(plan_data)
-                cached = True
-            except FileNotFoundError:
-                plan = None
-            except (OSError, json.JSONDecodeError, ValidationError):
-                plan = None
-            if force_regenerate:
-                plan = None
+            if not force_regenerate:
+                plan = await asyncio.to_thread(_read_cached_plan, cache_path, beats)
+                cached = plan is not None
             if plan is None:
-                prompt = (
-                    "你是专业短剧摄影分镜师。对输入的全部 beats 一次性输出 scenes。"
-                    "scene.beat_ids 必须连续且完整覆盖，绝不劈开动作/台词；语义转折优先切分，场景块边界优先。"
-                    "逐幕输出经 show-don't-tell 优化的 scene_description 和标准 image_prompt 单段文本。"
-                    "每个镜头块须有具体动作及神态、可拍的环境光影细节、至少一个已登记资产引用；禁止空泛模板和重复凑数。"
-                    "image_prompt 使用多行固定格式：每镜头独立行‘【镜头N】景别，机位，运镜。’，下一行‘画面主体：角色@[角色/动作锚点]’，"
-                    "下一行‘环境道具：场景@[场景/锚点]，道具@[道具/锚点]，光影细节’，下一行‘视觉参考：风格锚@[短剧/质感]’。"
-                    "scene.utterances 必须从输入原文逐字复制，不得修改台词；source_text 会由程序从 beat 原文回填。"
-                    "duration_seconds 必须为 12-15 整数；video_prompt 不输出。"
-                    f"\\n优化强度={planning_strength}（1保守：只视觉化不碰台词；2标准；3增强：可调整动作分配与台词节奏但 utterances 仍原样）。"
-                    f"\\nassets={json.dumps(referenced_asset_descriptions(parsed), ensure_ascii=False)}"
-                    f"\\nbeats={json.dumps(beats, ensure_ascii=False)}"
-                )
                 try:
-                    generator = await TextGenerator.create(
-                        TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
-                    )
-                    generated = await generator.generate(
-                        BackendTextGenerationRequest(
-                            prompt=prompt,
-                            response_schema=ScenePlanResult,
-                            max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
-                        ),
+                    plan = await _request_plan(
                         project_name=project_name,
+                        beats=beats,
+                        assets=_asset_context(project, parsed),
+                        planning_strength=planning_strength,
                     )
-                    payload = json.loads(strip_json_code_fences(generated.text))
-                    plan = ScenePlanResult.model_validate(payload)
-                    flat_ids = [beat_id for scene in plan.scenes for beat_id in scene.beat_ids]
-                    if flat_ids != list(range(1, len(beats) + 1)):
-                        raise ValueError("scene plan must cover source beats exactly once in order")
-                    if any(
-                        not STORY_SCENE_WINDOW_SECONDS[0] <= scene.duration_seconds <= STORY_SCENE_WINDOW_SECONDS[1]
-                        for scene in plan.scenes
-                    ):
-                        raise ValueError("scene duration is outside the configured window")
-                    _validate_plan_quality(plan)
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    await asyncio.to_thread(
-                        cache_path.write_text,
-                        json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
+                except _PlanRejected as exc:
+                    # 护栏（D-5）：重跑仍不合格就回落机械切分，绝不把用户卡在一个失败弹窗上。
+                    fallback_reason = str(exc)
                 except Exception as exc:
                     raise ShortDramaWorkflowError("short_drama_ai_planning_failed", f"AI 分镜规划失败: {exc}") from exc
+                else:
+                    await asyncio.to_thread(_write_cached_plan, cache_path, plan)
+        if plan is None:
+            script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
+        else:
             script = convert_planned_scenes(
                 parsed,
                 episode,
@@ -297,7 +466,7 @@ async def import_short_drama_episode(
     meta["source_path"] = source.path
     meta["source_revision"] = source.revision
     meta["ai_storyboard_options"] = {
-        "mode": "fast" if fast_split else "smart",
+        "mode": "smart" if ai_planning else "fast",
         "strength": planning_strength,
         "force_regenerate": force_regenerate,
     }
@@ -365,7 +534,8 @@ async def import_short_drama_episode(
         duration_shortfall=actual < declared if declared and actual != declared else None,
         planning_strength=planning_strength,
         planning_cached=cached,
-        ai_authoring=not fast_split,
+        ai_authoring=ai_planning and plan is not None,
+        planning_fallback=fallback_reason,
     )
 
 

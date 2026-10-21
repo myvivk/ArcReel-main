@@ -44,7 +44,7 @@ beforeEach(() => {
     source_path: SOURCE.path,
     source_revision: SOURCE.revision,
     assets_without_description: MISSING,
-    planning_strength: 3,
+    planning_strength: 2,
     planning_cached: false,
   });
   vi.spyOn(API, "fillAssetFields").mockResolvedValue({ success: true });
@@ -90,7 +90,7 @@ describe("AI 分镜弹窗", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, false),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 2, false, false),
     );
     expect(API.fillAssetFields).not.toHaveBeenCalled();
     await waitFor(() =>
@@ -131,7 +131,41 @@ describe("AI 分镜弹窗", () => {
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 3, false, false),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 2, false, false),
     );
+  });
+
+  it("内容优化强度默认「标准」，点「增强」后按 3 提交", async () => {
+    renderButton();
+    const dialog = await openDialog();
+
+    expect(within(dialog).getByRole("button", { name: "标准" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(dialog).getByRole("button", { name: "增强" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
+
+    await waitFor(() =>
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, false),
+    );
+  });
+
+  it("AI 规划不合格回落机械切分时，把原因写进弹窗而不是报错", async () => {
+    vi.mocked(API.reimportShortDramaSource).mockResolvedValue({
+      episode: 3,
+      scenes: 4,
+      source_path: SOURCE.path,
+      source_revision: SOURCE.revision,
+      planning_strength: 2,
+      planning_cached: false,
+      ai_authoring: false,
+      planning_fallback: "scene 1 镜头1 镜头首行缺景别或运镜",
+    });
+    renderButton();
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/AI 校验未通过，已回落机械切分：scene 1 镜头1/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("已生成 4 个分镜")).toBeInTheDocument();
   });
 });

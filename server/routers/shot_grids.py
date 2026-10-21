@@ -206,7 +206,6 @@ async def author_shot_grid_prompt(
                 ),
                 system_prompt=_AUTHORED_SYSTEM_PROMPT,
                 response_schema=_AuthoredGridPrompt,
-                max_output_tokens=4000,
             ),
             project_name=project_name,
         )

@@ -337,10 +337,11 @@ def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> N
 
 
 def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch, tmp_path: Path) -> None:
-    """镜头首行没有真实景别/运镜：带原因返修一轮，仍不合格就回落机械切分而不是报错。"""
+    """镜头首行没有真实景别/运镜：带原因反复返修，所有轮次仍不合格才回落机械切分。"""
     client, manager = _client(monkeypatch, tmp_path)
     broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
-    model = FakeTextGenerator(broken, broken)
+    # 返修轮数由 _PLAN_ATTEMPTS 决定，这里给足同样失败的回复，逼它走到回落。
+    model = FakeTextGenerator(*([broken] * 5))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
     with client:
@@ -354,7 +355,7 @@ def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch,
     body = imported.json()
     assert body["ai_authoring"] is False
     assert "镜头首行缺景别或运镜" in body["planning_fallback"]
-    assert len(model.requests) == 2
+    assert len(model.requests) == 5
     assert "上一轮输出未通过校验" in model.requests[1].prompt
     script = manager.load_script("demo", "episode_1.json")
     assert script["scenes"], "回落机械切分后仍须产出分镜"
@@ -366,6 +367,32 @@ def test_smart_reimport_retries_then_falls_back_to_mechanical_split(monkeypatch,
         assert scene["image_prompt"].startswith("【镜头1】中景，平视机位，固定。")
         assert "视觉参考：" in scene["image_prompt"]
         assert scene["pending_authoring"] is True
+
+
+def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: Path) -> None:
+    """校验不通过就带原因返修、让 AI 继续优化，而非放宽闸门；多轮后通过即落盘 AI 提示词。"""
+    client, manager = _client(monkeypatch, tmp_path)
+    broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
+    good = _plan_payload(MARKDOWN, header="【镜头1】中景，平视机位，缓推。")
+    model = FakeTextGenerator(broken, good)
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+
+    with client:
+        revision = _save_source(client)
+        imported = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision, "confirm_artifacts": False},
+        )
+
+    assert imported.status_code == 200, imported.text
+    body = imported.json()
+    assert body["ai_authoring"] is True
+    assert "planning_fallback" not in body
+    # 首轮被拒、第二轮优化通过：多轮优化机制确实生效，不是一次失败就回落或放宽。
+    assert len(model.requests) == 2
+    assert "上一轮输出未通过校验" in model.requests[1].prompt
+    script = manager.load_script("demo", "episode_1.json")
+    assert script["scenes"][0]["image_prompt"].startswith("【镜头1】中景，平视机位，缓推。")
 
 
 def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:

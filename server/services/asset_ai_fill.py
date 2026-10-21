@@ -347,7 +347,7 @@ async def generate_asset_fill(
         TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
     )
     raw = await generator.generate(
-        BackendTextGenerationRequest(prompt=prompt, response_schema=AssetFillResponse, max_output_tokens=4000),
+        BackendTextGenerationRequest(prompt=prompt, response_schema=AssetFillResponse),
         project_name=project_name,
     )
     return AssetFillResponse.model_validate(extract_json(raw.text))

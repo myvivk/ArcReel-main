@@ -5,6 +5,7 @@
  * | --- | --- | --- |
  * | `setting` | 故事设定（广告项目的梗概、类型、主题与世界观） | 只在广告项目出现，排第一 |
  * | `plan` | 脚本规划（内容确认页；剧本未生成时是集原文确认） | 非广告、非工厂/短剧导入项目，有脚本规划中间稿、集原文待确认，或参考生视频项目 |
+ * | `assets` | 资产（本集引用的角色 / 场景 / 道具） | 非广告、非演示；有剧本（正式脚本或工厂源稿）时可点，两者都没有时置灰 |
  * | `grid` | 多宫格分镜图 | 分镜图生视频且开启宫格；集原文待确认时不可选 |
  * | `board` | 分镜（参考生视频项目称「视频单元」） | 恒有；有脚本规划却还没有正式剧本时不可选 |
  * | `edit` | 剪辑 | 有正式剧本的非演示项目 |
@@ -56,6 +57,11 @@ function planAvailable(facts: EpisodeViewFacts): boolean {
   return facts.sourceReview || facts.hasDraft || (facts.route === "reference_video" && facts.hasScript);
 }
 
+/** 资产视图要有剧本可抽：正式脚本或工厂源稿，二者都没有时置灰（提示脚本生成后可用）。 */
+function assetsAvailable(facts: EpisodeViewFacts): boolean {
+  return facts.hasScript || Boolean(facts.hasShortDramaSource);
+}
+
 /** 集页页头的视图 tab，按显示顺序排列：内容在前、产物在后（原文/剧本 → 分镜 → 剪辑）。 */
 export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
   const tabs: EpisodeViewTab[] = [];
@@ -74,9 +80,10 @@ export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
   const factory = facts.shortDrama || facts.hasShortDramaSource;
 
   // 普通集：脚本规划/剧本/分镜/剪辑常驻显示且可点；工厂集只给剧本/分镜/剪辑（不藏、不置灰）。
+  // 资产夹在剧本与分镜之间：有剧本原文（正式脚本或工厂源稿）才可点，否则置灰。
   if (!factory) tabs.push({ view: "plan", disabled: false });
   tabs.push({ view: EPISODE_VIEW_SOURCE, disabled: false });
-  tabs.push({ view: "assets", disabled: false });
+  tabs.push({ view: "assets", disabled: !assetsAvailable(facts) });
   if (facts.grid) tabs.push({ view: "grid", disabled: false });
   tabs.push({ view: "board", disabled: false });
   tabs.push({ view: EPISODE_VIEW_EDIT, disabled: false });

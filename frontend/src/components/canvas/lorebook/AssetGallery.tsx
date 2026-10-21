@@ -46,7 +46,11 @@ export interface AssetGalleryProps<T extends GalleryAssetSource> {
   libraryPreview?: (asset: T) => LibraryImportPreview;
   /** 仅提供本集引用资产时限定批量生成范围；省略时维持类型全局范围。 */
   batchScope?: { episode_id: number };
-  /** 集内视图隐藏创建、导入与单张生成，防止展示范围/操作范围不一致。 */
+  /**
+   * 集内视图隐藏新增与从资产库导入：本集视图只展示被本集引用的资产，创建 / 导入入口放这里会与
+   * 展示范围不一致（新建的资产不在本集引用里，进了库也看不见）。单张生成与详情编辑不在此列——
+   * 操作的资产本就来自本集引用，与全局资产页保持同一套入口。
+   */
   hideAddActions?: boolean;
   /** 已经按引用过滤后的状态行，避免画廊再载入全集状态用于集内批量计数。 */
   statusRows?: import("@/types").AssetSheetStatusRow[];
@@ -137,7 +141,8 @@ export function AssetGallery<T extends GalleryAssetSource>({
     return () => window.clearTimeout(timer);
   }, [search, assets]);
   const onAdd = readOnly || hideAddActions ? undefined : () => setEditorTarget({ mode: "create" });
-  const generateAsset = hideAddActions ? () => undefined : onGenerate;
+  // 单张生成只随只读收起：集内视图（hideAddActions）与全局页一样能生成 / 重生成单张资产图
+  const generateAsset = readOnly ? () => undefined : onGenerate;
   const viewAsset = useCallback((name: string) => setViewName(name), []);
   // 查看器只在有资产图的资产之间切换，顺序与筛选后的网格一致；判据与卡片的「查看大图」相同
   const viewable = shown

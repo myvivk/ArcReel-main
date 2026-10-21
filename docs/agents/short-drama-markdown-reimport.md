@@ -15,13 +15,13 @@
 3. 用户在集页「剧本」页签编辑 Markdown。
 4. 「保存源稿」只保存 Markdown，不修改正式脚本，解析失败的草稿也允许保存。
 5. 「重新导入」从已保存 Markdown 重建正式脚本。
-6. 用户进入「分镜」页签，短剧工厂源稿通过「智能切分」在导入期生成 `image_prompt`；「编写提示词」用于微调分镜提示词并编写 `video_prompt`。
+6. 用户进入「分镜」页签，短剧工厂源稿通过「AI 分镜」在导入期生成 `image_prompt`；「编写提示词」用于微调分镜提示词并编写 `video_prompt`。AI 分镜是唯一的分镜生成方式：没有「快速切分」入口，校验失败也没有机械回落。
 7. 用户显式触发分镜图和视频生成。
 
 重新导入不执行以下动作：
 
-- 不调用图像或视频生成供应商；文本模型仅用于智能切分、内容优化与分镜提示词编写，不产出任何媒体文件。
-- 不生成分镜图或视频；分镜提示词（`image_prompt`，含景别/机位/运镜/视觉参考）在导入期由文本模型产出，`video_prompt` 仍留待宫格确认后生成。快速切分不调模型，只按标准语序落一版**骨架**提示词（中性景别/机位/运镜 + 画面主体 + 资产锚点 + 视觉参考），AI 校验不合格回落机械切分时同样给骨架——导入永不产出空提示词。
+- 不调用图像或视频生成供应商；文本模型仅用于智能分镜、内容优化与分镜提示词编写，不产出任何媒体文件。
+- 不生成分镜图或视频；分镜提示词（`image_prompt`，含景别/机位/运镜/视觉参考）由文本模型产出，`video_prompt` 仍留待宫格确认后生成。AI 校验不合格时**带原因持续返修**，返修穷尽仍不合格就直接报错（不产出骨架冒充 AI 结果）；工厂首次导入的机械骨架只是导入步骤的初始态，不是 AI 失败的回落。
 - 不把结构化正式脚本反向伪装成历史项目的原始 Markdown。
 
 ## 核心不变量
@@ -46,7 +46,7 @@
 16. `PATCH /script-scenes/{scene_id}` 必须允许保存 `scene_description`。
 17. 已导入短剧的分镜页隐藏「AI 原创剧本」「导入短剧工厂剧本」「AI 生成剧本」，只保留「编写提示词」和媒体生成入口。
 18. 在线程中写源稿或正式脚本必须使用 `run_sync_transaction`，请求取消也要等磁盘事务结算后再传播。
-20. 智能分镜仅调用文本模型，不调用图像/视频供应商；按源稿 revision 与强度缓存 AI scenes，快速切分保留机械分桶，AI 结构或丰满度校验失败时回落机械切分。切分路径必须写进 `short_drama_meta.ai_storyboard_options.mode`（`smart` / `smart_fallback` / `fast`），回落时把原因写进同处 `fallback`，分镜页据此常驻提示；机械路径的 `image_prompt` 是骨架而非空值，`pending_authoring` 仍为 True。
+20. 智能分镜仅调用文本模型，不调用图像/视频供应商；按源稿 revision 与强度缓存 AI scenes。**没有机械回落**：结构或丰满度校验失败时带原因返修（`_PLAN_ATTEMPTS` 轮），穷尽后抛 `short_drama_ai_planning_failed`，正式脚本不做半成品提交。`short_drama_meta.ai_storyboard_options.mode` 只有 `smart`（AI 分镜成功，含按分镜重写）/ `fast`（工厂首次导入的机械骨架，非用户可选）两态；按分镜重写时把所选 `scene_id` 写进同处 `regenerated_scene_ids`。动作动词判定词表（`_ACTION_WORDS`）宁宽勿窄——过窄会把合法提示词误判成「没有动作」，逼出无谓返修。
 19. 必须保留主线 `patch_episode_script` 的可选 `base_revision` 与 `update.fields` 工具说明，短剧工作流不得回退通用 Agent 编辑能力。
 
 ## 数据模型
@@ -112,9 +112,14 @@ GET /projects/{project_name}/episodes/{episode}/short-drama-source
   "path": "source/short_drama/episode_1.md",
   "markdown": "第【1】集：标题\n...",
   "revision": "<sha256>",
-  "exists": true
+  "exists": true,
+  "assets_missing_description": [
+    {"type": "character", "name": "林辰", "reason": "existing_blank"}
+  ]
 }
 ```
+
+`assets_missing_description` 是分镜前置检查：本集源稿引用的资产里缺外观描述的清单。未登记且源稿也没写外观的记 `unregistered`，已登记但描述为空的记 `existing_blank`；未登记但源稿写明了外观的不拦（分镜时会随 `register_missing_assets` 连描述一起登记）。分镜入口据此在缺描述时置灰并提示先补齐。
 
 历史项目没有源稿：
 
@@ -160,9 +165,14 @@ Content-Type: application/json
 
 {
   "source_revision": "<sha256>",
-  "confirm_artifacts": false
+  "confirm_artifacts": false,
+  "planning_strength": 2,
+  "force_regenerate": false,
+  "regenerate_scene_ids": []
 }
 ```
+
+`regenerate_scene_ids` 非空时走「按分镜重写」：beat 分组从现有脚本 `source_text` 锚定（映射不上即 422），只让 AI 重写所选分镜的 `scene_description` / `image_prompt` / 时长，其余分镜原样保留（已生成的媒体、`video_prompt` 与手动编辑不会丢）；空/缺省 = 整体 AI 分镜。请求不再有 `fast_split`：AI 分镜是唯一路径。
 
 成功响应：
 
@@ -191,6 +201,8 @@ Content-Type: application/json
 - revision 不一致：409，`short_drama_source_conflict`。
 - 已有分镜图或视频且 `confirm_artifacts=false`：409，`short_drama_reimport_confirmation_required`。
 - Markdown 解析失败：422，`short_drama_import_refused`，诊断包含解析原因。
+- AI 分镜返修穷尽仍不合格：422，`short_drama_import_refused`，诊断含最后一次校验原因；没有机械回落。
+- `regenerate_scene_ids` 含不存在的分镜、或本集还没有分镜：422，`short_drama_import_refused`。
 
 ### 原有首次导入接口
 
@@ -246,8 +258,14 @@ async def import_short_drama_episode(
     save_source: bool = True,
     expected_source_revision: str | None = None,
     confirm_artifacts: bool = True,
+    planning_strength: int = 2,
+    ai_planning: bool = False,
+    force_regenerate: bool = False,
+    regenerate_scene_ids: Sequence[str] = (),
 ) -> ShortDramaImportResult:
 ```
+
+`ai_planning=True` 时走文本模型规划：无机械回落，校验不合格带原因返修，穷尽后抛 `ShortDramaWorkflowError("short_drama_ai_planning_failed", ...)`。`regenerate_scene_ids` 非空时走 `_rewrite_selected_scenes`（按分镜重写，依赖 `lib.script.short_drama_import.scene_beat_groups` 把现有脚本 `source_text` 映射回 beat 分组）。模块另导出 `assets_missing_description(project, markdown)` 供 GET 源稿回带分镜前置检查结果。
 
 执行顺序不可改变：
 
@@ -659,9 +677,10 @@ adc2d7bf827f713453d4ad5662bb0f11e21b660a766f9132bb05beebd18b285d  tests/integrat
 
 ### 分镜页入口
 
-- `ShortDramaStoryboardButton`（`components/canvas/shared/`）：已导入短剧集在分镜页页头显示「AI 分镜」/「AI 重新分镜」，弹窗展示源稿行数/字数、已有分镜时要求勾选覆盖确认，提交即 `reimportShortDramaSource`，成功后弹窗内显示分镜数、缺描述黄条与「去补描述」。
-
-**与方案 §8.2 的差异（用户确认后追加）**：弹窗多一个默认勾选的「同时用 AI 补齐缺描述资产」。分镜成功后对回执里每个缺描述资产顺序调用 `POST /projects/{p}/{type}s/{name}/ai-fill`，弹窗内显示「正在补全 n / m：名字」进度；单个资产失败不中断，剩余项留在黄条里可手动补。取消勾选则完全不动资产，行为与方案原设计一致。选默认勾选而非静默补齐，是因为补齐会产生 N 次模型调用并改写 `project.json`，需要用户可见可取消。
+- `ShortDramaStoryboardButton`（`components/canvas/shared/`）：已导入短剧集在分镜页页头显示「AI 分镜」/「AI 重新分镜」，提交即 `reimportShortDramaSource`，成功后弹窗内显示分镜数、缺描述黄条与「去补描述」。交互约定（2026-10-21 用户拍板）：
+  - **缺描述置灰**：挂载即拉取源稿，`assets_missing_description` 非空时按钮 disabled，tooltip 提示缺哪些资产、先补齐再分镜；不再有「AI 补齐缺描述资产」勾选。
+  - **按分镜重生成**：已有分镜时弹窗列出分镜复选框（默认全选）。全选 = 整体 AI 分镜；只勾选部分 = 按分镜重写（`regenerate_scene_ids`），未勾选分镜原样保留。
+  - **AI 唯一路径**：没有「智能切分 / 快速切分」二选一，没有机械回落；校验失败由后端返修，穷尽后报错展示给用户。
 - `FactoryStoryboardStart`：工厂集还没转写时，分镜页空态从「请在左侧选择剧集」换成生成入口 + 「先看剧本」。
 - `EpisodePage` 把 `hasShortDramaSource` 注入 `EpisodeCanvasContext`，`StudioCanvasRouter` 再传给 `TimelineCanvas` / `GridImageToVideoCanvas`。
 - 剧本页移除「重新导入」按钮，只留「保存源稿」，并在已有媒体时提示入口已移到分镜页。
@@ -677,14 +696,14 @@ short_drama_ai_storyboard_desc
 short_drama_ai_storyboard_source
 short_drama_ai_storyboard_source_missing
 short_drama_ai_storyboard_overwrite
-short_drama_ai_storyboard_overwrite_confirm
-short_drama_ai_storyboard_autofill
-short_drama_ai_storyboard_autofill_hint
-short_drama_ai_storyboard_filling
-short_drama_ai_storyboard_filled
+short_drama_ai_storyboard_scenes_label
+short_drama_ai_storyboard_select_all
+short_drama_ai_storyboard_scenes_hint
+short_drama_storyboard_blocked_missing
 short_drama_ai_storyboard_submit
 short_drama_ai_restoryboard_submit
 short_drama_ai_storyboard_result
+short_drama_ai_storyboard_partial_result
 short_drama_ai_storyboard_missing
 short_drama_ai_storyboard_fix_missing
 short_drama_ai_storyboard_close
@@ -698,6 +717,8 @@ short_drama_reimport_moved_hint
 short_drama_imported_one_missing_descriptions
 short_drama_imported_batch_missing_descriptions
 ```
+
+已删除的 key（不得再引用）：`short_drama_ai_storyboard_overwrite_confirm`、`short_drama_ai_storyboard_autofill`、`short_drama_ai_storyboard_autofill_hint`、`short_drama_ai_storyboard_filling`、`short_drama_ai_storyboard_filled`、`short_drama_ai_storyboard_smart_split`、`short_drama_ai_storyboard_fast_split`、`short_drama_ai_storyboard_fallback`。
 
 ### 追加测试
 

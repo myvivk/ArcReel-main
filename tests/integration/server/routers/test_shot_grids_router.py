@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
+from PIL import Image
 
 from lib.project.project_manager import ProjectManager
 from lib.script.grid.shot_grid_manager import ShotGridManager
@@ -226,3 +227,56 @@ async def test_generate_enqueues_the_saved_grid(grid_client: httpx.AsyncClient, 
     ]
     refreshed = await grid_client.get(BASE, params={"script_file": SCRIPT, "shot_id": SHOT})
     assert refreshed.json()["status"] == "generating"
+
+
+def _write_composite(project_path: Path, grid_id: str, width: int, height: int) -> str:
+    """把一张真实尺寸的宫格联合图落到记录所指路径，供 confirm 切分。"""
+
+    rel = f"shot_grids/{grid_id}.png"
+    path = project_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (width, height), (12, 24, 36)).save(path, format="PNG")
+    return rel
+
+
+@pytest.mark.parametrize(
+    ("aspect", "size"),
+    [("16:9", (1280, 720)), ("9:16", (720, 1280))],
+)
+async def test_confirm_splits_cells_at_the_frozen_orientation(
+    grid_client: httpx.AsyncClient,
+    grid_projects: ProjectManager,
+    aspect: str,
+    size: tuple[int, int],
+) -> None:
+    """确认切分按冻结的画布比例落格：16:9 与 9:16 都要切出来，单格比例与之一致。
+
+    单格比例对齐后才好当分镜图 / 视频首尾帧用；逐格描述是本次出图的留证，
+    确认切分不改变它。
+    """
+
+    saved = (await grid_client.put(BASE, json=_payload())).json()
+    project_path = grid_projects.get_project_path(PROJECT)
+    composite = _write_composite(project_path, saved["id"], *size)
+    manager = ShotGridManager(project_path)
+
+    def set_ready(grid: ShotGrid) -> None:
+        grid.status = "completed"
+        grid.composite_path = composite
+        grid.video_aspect_ratio = aspect
+
+    manager.update_formal(saved["id"], set_ready)
+
+    response = await grid_client.post(f"{BASE}/{saved['id']}/confirm")
+
+    assert response.status_code == 200
+    cells = response.json()["grid"]["cells"]
+    assert [cell["image_path"] for cell in cells] == [f"storyboards/{saved['id']}/{index}.png" for index in range(4)]
+    # 逐格描述（本次出图的逐格留证）在确认切分后仍在
+    assert [cell["prompt"] for cell in cells] == CELL_TEXTS
+
+    expected = 16 / 9 if aspect == "16:9" else 9 / 16
+    for cell in cells:
+        with Image.open(project_path / cell["image_path"]) as image:
+            width, height = image.size
+        assert abs(width / height - expected) < 0.02

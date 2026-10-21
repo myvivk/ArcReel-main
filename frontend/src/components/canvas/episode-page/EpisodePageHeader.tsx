@@ -12,8 +12,9 @@ export function episodeViewTabId(view: EpisodeView): string {
 }
 
 /**
- * 置灰的视图 tab：目前只在还没有正式脚本时出现（分镜、多宫格分镜图），悬停与读屏都说明「脚本生成后可用」。
- * 置灰的 tab 不接收指针事件，提示挂在外层；方向键仍能聚焦到它，焦点进入时同样显示提示。
+ * 置灰的视图 tab：目前只在资产——该集既没有正式脚本也没有工厂源稿、无资产可抽时出现，
+ * 悬停与读屏都说明「脚本生成后可用」。置灰的 tab 不接收指针事件，提示挂在外层；
+ * 方向键仍能聚焦到它，焦点进入时同样显示提示。
  */
 function DisabledViewTab({ view, label }: { view: EpisodeView; label: string }) {
   const { t } = useTranslation("dashboard");

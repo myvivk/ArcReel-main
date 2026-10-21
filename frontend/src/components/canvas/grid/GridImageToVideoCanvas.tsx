@@ -246,6 +246,7 @@ export function GridImageToVideoCanvas({
               projectName={projectName}
               episode={episode}
               storyboardCount={segments.length}
+              sceneIds={segments.map((segment) => getScriptItemId(segment, "drama"))}
             />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />

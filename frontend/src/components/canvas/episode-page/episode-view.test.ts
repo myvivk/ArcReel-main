@@ -37,10 +37,23 @@ describe("episodeViewTabs", () => {
     expect(tabs).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
-      { view: "assets", disabled: false },
+      // 只有脚本规划中间稿、没有剧本原文：资产无资产可抽，置灰
+      { view: "assets", disabled: true },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
     ]);
+  });
+
+  it("greys out the assets tab until the episode has a script source", () => {
+    const noScript: EpisodeViewFacts = { ...SCRIPTED, hasScript: false, hasDraft: false };
+    expect(episodeViewTabs(noScript)).toContainEqual({ view: "assets", disabled: true });
+    // 工厂源稿就是剧本：没有正式脚本也可点
+    expect(episodeViewTabs({ ...noScript, hasShortDramaSource: true })).toContainEqual({
+      view: "assets",
+      disabled: false,
+    });
+    // 置灰时地址上的 view=assets 落回缺省视图
+    expect(resolveEpisodeView("assets", noScript)).toBe(defaultEpisodeView(noScript));
   });
 
   it("shows the source tab for factory artifacts even without a native script", () => {
@@ -91,7 +104,8 @@ describe("episodeViewTabs", () => {
     expect(episodeViewTabs(facts)).toEqual([
       { view: "plan", disabled: false },
       { view: "source", disabled: false },
-      { view: "assets", disabled: false },
+      // 集原文确认阶段还没有剧本（正式脚本与工厂源稿都没有）：资产置灰
+      { view: "assets", disabled: true },
       { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },

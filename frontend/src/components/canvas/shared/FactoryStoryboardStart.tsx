@@ -29,6 +29,7 @@ export function FactoryStoryboardStart({ projectName, episode, className }: Prop
           projectName={projectName}
           episode={episode}
           storyboardCount={0}
+          sceneIds={[]}
           prominent
         />
         <Link

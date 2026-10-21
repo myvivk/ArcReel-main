@@ -253,6 +253,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
               projectName={projectName}
               episode={episode}
               storyboardCount={segments.length}
+              sceneIds={segments.map((segment) => getScriptItemId(segment, editorContentMode))}
             />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />

@@ -6,6 +6,10 @@ import { AssetGallery } from "@/components/canvas/lorebook/AssetGallery";
 import { EpisodeAssetGenerateDialog } from "@/components/canvas/episode-page/EpisodeAssetGenerateDialog";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAssetSheetStatus } from "@/components/canvas/lorebook/useAssetSheetStatus";
+import { useActiveResourceIds } from "@/stores/tasks-store";
+import { enqueueCharacter, enqueueProp, enqueueScene } from "@/actions/generation";
+import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
+import { useAppStore } from "@/stores/app-store";
 import { API } from "@/api";
 import type { AssetSheetType, EpisodeReferencedAssets, ProjectData } from "@/types";
 import { errMsg } from "@/utils/async";
@@ -51,6 +55,21 @@ export function EpisodeAssetsView({
   }, [projectName, episode, snapshotRevision, retry]);
 
   const statuses = useAssetSheetStatus(projectName);
+  // 与全局资产页同一接线：按当前 tab 取该类资产在途生成名，卡片与详情据此显示占用态
+  const generatingNames = useActiveResourceIds(activeType, projectName);
+
+  // 单张生成 / 重生成：本集引用到的资产与全局页同一入口（一键之外的补救路径——缺描述补描述、
+  // 缺图或过期补图，都在卡片「更多」与详情页里，和侧栏全局资产页完全一致）
+  const handleGenerateAsset = (name: string) => {
+    const enqueue = activeType === "character" ? enqueueCharacter : activeType === "scene" ? enqueueScene : enqueueProp;
+    void enqueue(projectName, name).catch((err: unknown) => {
+      useAppStore.getState().pushToast(errMsg(err), "error");
+    });
+  };
+  // 大图查看器里还原历史版本后刷新项目数据（查看器自己的版本列表由它自己重载）
+  const handleRestoreVersion = async () => {
+    await refreshAfterWrite(projectName, t);
+  };
 
   const byType = useMemo(() => {
     const grouped: Record<AssetSheetType, Record<string, Record<string, unknown>>> = {
@@ -156,8 +175,10 @@ export function EpisodeAssetsView({
           assetType={activeType}
           title={title}
           assets={assets as never}
-          readOnly
-          onGenerate={() => undefined}
+          generatingNames={generatingNames}
+          readOnly={false}
+          onGenerate={handleGenerateAsset}
+          onRestoreVersion={handleRestoreVersion}
           statusRows={statuses.filter((row) => row.asset_type === activeType && Object.hasOwn(assets, row.name))}
           batchScope={{ episode_id: episode }}
           hideAddActions

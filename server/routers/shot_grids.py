@@ -35,9 +35,11 @@ from lib.script.grid.keyframe_parser import (
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from lib.script.grid.shot_prompt_builder import shot_grid_cells
+from lib.script.grid.splitter import split_grid_image
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.auth import CurrentUser
 from server.i18n import Translator
+from server.services.tasks.formal_image_commit import get_aspect_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +429,10 @@ def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Tran
     count = grid.rows * grid.cols
     if len(grid.cells) != count or [cell.index for cell in grid.cells] != list(range(count)):
         raise HTTPException(status_code=422, detail=t("shot_grid_cells_invalid", count=count))
+    # 单格对齐的比例：优先用生图时冻结的画布比例（16:9 / 9:16），存量记录回退到项目当前比例。
+    video_aspect_ratio = grid.video_aspect_ratio or get_aspect_ratio(
+        project_manager.load_project(project_name), "storyboards"
+    )
     try:
         with Image.open(composite) as image:
             image.load()
@@ -435,15 +441,13 @@ def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Tran
                 raise ValueError("contact sheet dimensions are smaller than its layout")
             cells_dir = safe_join(project_path, f"storyboards/{grid.id}")
             cells_dir.mkdir(parents=True, exist_ok=True)
+            # 等分后再按画布比例 center-crop：16:9 与 9:16 共用同一套切分，单格不变形。
+            # 方形档单格已等于画布比例，center-crop 为 no-op，与原等分切分逐像素一致。
+            split_cells = split_grid_image(image, grid.rows, grid.cols, video_aspect_ratio, edge_margin=0.0)
             paths = []
             for cell in grid.cells:
-                row, col = divmod(cell.index, grid.cols)
-                left = round(col * width / grid.cols)
-                top = round(row * height / grid.rows)
-                right = round((col + 1) * width / grid.cols)
-                bottom = round((row + 1) * height / grid.rows)
                 output = cells_dir / f"{cell.index}.png"
-                image.crop((left, top, right, bottom)).save(output, format="PNG")
+                split_cells[cell.index].save(output, format="PNG")
                 paths.append(output.relative_to(project_path).as_posix())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=t("shot_grid_split_failed")) from exc

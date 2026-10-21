@@ -1562,6 +1562,8 @@ class API {
     markdown: string;
     revision: string | null;
     exists: boolean;
+    /** 本集源稿引用的资产里缺外观描述的清单；分镜入口据此置灰。 */
+    assets_missing_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source`,
@@ -1591,15 +1593,15 @@ class API {
     );
   }
 
-  /** 从已保存的 Markdown 源稿重建正式剧本，不自动生成视觉提示词、分镜图或视频。 */
+  /** 从已保存的 Markdown 源稿重建正式剧本：整体 AI 分镜，或只重生成所选分镜。 */
   static async reimportShortDramaSource(
     projectName: string,
     episode: number,
     sourceRevision: string,
     confirmArtifacts: boolean,
     planningStrength = 2,
-    fastSplit = false,
     forceRegenerate = false,
+    regenerateSceneIds?: string[],
   ): Promise<{
     episode: number;
     scenes: number;
@@ -1608,7 +1610,7 @@ class API {
     planning_strength: number;
     planning_cached: boolean;
     ai_authoring?: boolean;
-    planning_fallback?: string;
+    regenerated_scenes?: number;
     assets_without_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(
@@ -1619,8 +1621,8 @@ class API {
           source_revision: sourceRevision,
           confirm_artifacts: confirmArtifacts,
           planning_strength: planningStrength,
-          fast_split: fastSplit,
           force_regenerate: forceRegenerate,
+          ...(regenerateSceneIds?.length ? { regenerate_scene_ids: regenerateSceneIds } : {}),
         }),
       },
     );

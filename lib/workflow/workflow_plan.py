@@ -234,6 +234,8 @@ _ACTION_STEP: dict[WorkflowActionType, str] = {
     WorkflowActionType.GENERATE_SCRIPT: "final_script",
     WorkflowActionType.ADD_SCRIPT_ITEMS: "final_script",
     WorkflowActionType.AUTHOR_PROMPTS: "final_script",
+    WorkflowActionType.PREPARE_EPISODE_ASSETS: "asset_sheets",
+    WorkflowActionType.PLAN_SHORT_DRAMA_STORYBOARDS: "final_script",
     WorkflowActionType.GENERATE_ASSET_SHEETS: "asset_sheets",
     WorkflowActionType.REPAIR_VIDEO_UNITS: "script_structure",
     WorkflowActionType.GENERATE_STORYBOARDS: "storyboard",
@@ -296,7 +298,12 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
     if step_id == "final_script":
         return has_items and not content.pending_authoring_ids
     if step_id == "asset_sheets":
-        return has_items and not content.referenced_assets_without_sheet
+        return (
+            (has_items or content.script_from_short_drama)
+            and not content.referenced_assets_without_sheet
+            and not content.referenced_assets_without_description
+            and not content.unregistered_references
+        )
     if step_id == "script_structure":
         return has_items and not content.needs_replan_ids
     if step_id == "storyboard":
@@ -306,7 +313,12 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
     if step_id == "video_prompt":
         # 过期不算完成：宫格重出之后提示词要按新 K 帧重写（D-18）。
         prompts = artifacts.get("video_prompts", {})
-        return has_items and not prompts.get("missing_ids") and not prompts.get("stale_ids")
+        return (
+            has_items
+            and not prompts.get("missing_ids")
+            and not prompts.get("stale_ids")
+            and not prompts.get("awaiting_grid_ids")
+        )
     if step_id == "video":
         return has_items and not artifacts.get("videos", {}).get("missing_ids")
     if step_id == "edit":
@@ -424,6 +436,12 @@ def build_workflow_plan(
     steps: list[WorkflowPlanStep] = []
 
     for step_rule in rules:
+        if (
+            status.content is not None
+            and status.content.script_from_short_drama
+            and step_rule.id in {"episode_plan", "script_plan_content", "script_plan_review", "storyboard"}
+        ):
+            step_rule = WorkflowStepRule(id=step_rule.id, applicable=False)
         artifact_key = _ARTIFACT_BY_STEP.get(step_rule.id)
         # 走完的工作流没有下一步可挂：完成的「剪辑」一步不带动作。
         owns = step_rule.id == owner and not complete

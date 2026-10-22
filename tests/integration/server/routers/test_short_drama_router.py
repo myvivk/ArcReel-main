@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -15,6 +15,9 @@ from server.error_handlers import register_error_handlers
 from server.routers import short_drama
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.fakes import FakeTextGenerator
+from tests.short_drama_support import artifact_request, factory_package
+
+pytestmark = pytest.mark.usefixtures("factory_profile")
 
 
 def _episode_markdown(newline: str = "\n") -> str:
@@ -41,7 +44,7 @@ def _episode_markdown(newline: str = "\n") -> str:
 MARKDOWN = _episode_markdown()
 
 
-def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
+def _client(monkeypatch, tmp_path: Path, *, assets_ready: bool = False) -> tuple[TestClient, ProjectManager]:
     manager = ProjectManager(tmp_path / "projects")
     manager.create_project("demo", content_mode="drama")
     manager.create_project_metadata("demo", "Demo", "Anime", "drama")
@@ -52,6 +55,8 @@ def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
             episode_id_high_water=1,
         ),
     )
+    if assets_ready:
+        _register_storyboard_assets(manager)
     monkeypatch.setattr(short_drama, "get_project_manager", lambda: manager)
     app = FastAPI()
     register_error_handlers(app)
@@ -64,21 +69,22 @@ def _client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager]:
     return TestClient(app), manager
 
 
+def _register_storyboard_assets(manager: ProjectManager) -> None:
+    from lib.script.short_drama_import import referenced_asset_descriptions
+
+    for asset_type, descriptions in referenced_asset_descriptions(parse_short_drama_episode(MARKDOWN)).items():
+        manager.upsert_assets(
+            "demo",
+            {"character": "characters", "scene": "scenes", "prop": "props"}[asset_type],
+            {name: {"description": description} for name, description in descriptions.items()},
+        )
+
+
 def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatch, tmp_path: Path) -> None:
     client, manager = _client(monkeypatch, tmp_path)
     original = _episode_markdown("\r\n").encode("utf-8")
-    payload = {
-        "artifacts": [
-            {
-                "path": "episodes/episode_01.md",
-                "content_base64": base64.b64encode(original).decode("ascii"),
-            },
-            {
-                "path": "reports/episode_01.machine.md",
-                "content_base64": base64.b64encode(b"FAIL\r\n").decode("ascii"),
-            },
-        ]
-    }
+    package = factory_package(original.decode("utf-8"))
+    payload = artifact_request(package)
     with client:
         response = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
         listed = client.get("/api/v1/projects/demo/short-drama/artifacts")
@@ -88,10 +94,13 @@ def test_artifact_package_import_preserves_bytes_and_does_not_project(monkeypatc
     project_path = manager.get_project_path("demo")
     assert (project_path / "source/short_drama/episodes/episode_01.md").read_bytes() == original
     assert not (project_path / "characters.json").exists()
-    assert {item["path"] for item in listed.json()["artifacts"]} == {
-        "episodes/episode_01.md",
-        "reports/episode_01.machine.md",
-    }
+    assert {item["path"] for item in listed.json()["artifacts"]} == {path for path, _ in package}
+    assert (project_path / "source/episode_1.txt").read_bytes() == original
+    project = manager.load_project("demo")
+    assert not project.get("story_plan")
+    assert not project.get("characters")
+    assert not project.get("scenes")
+    assert not project.get("props")
     assert not (project_path / "scripts/episode_1.json").exists()
 
 
@@ -99,14 +108,7 @@ def test_ingested_episode_artifact_visible_as_short_drama_source(monkeypatch, tm
     """复现：工厂工件包导入后，分集页经 getShortDramaSource 应能读到本集正文。"""
     client, _manager = _client(monkeypatch, tmp_path)
     original = MARKDOWN.encode("utf-8")
-    payload = {
-        "artifacts": [
-            {
-                "path": "episodes/episode_01.md",
-                "content_base64": base64.b64encode(original).decode("ascii"),
-            }
-        ]
-    }
+    payload = artifact_request(factory_package(original.decode("utf-8")))
     with client:
         import_resp = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
         source_resp = client.get("/api/v1/projects/demo/episodes/1/short-drama-source")
@@ -122,14 +124,7 @@ def test_ingest_registers_episode_as_own_source(monkeypatch, tmp_path: Path) -> 
     """复现断点：导入后每集工厂 Markdown 须登记为该集 OWN 源文本，分集页本集正文才有内容、下游才建得上。"""
     client, manager = _client(monkeypatch, tmp_path)
     original = MARKDOWN.encode("utf-8")
-    payload = {
-        "artifacts": [
-            {
-                "path": "episodes/episode_01.md",
-                "content_base64": base64.b64encode(original).decode("ascii"),
-            }
-        ]
-    }
+    payload = artifact_request(factory_package(original.decode("utf-8")))
     with client:
         resp = client.post("/api/v1/projects/demo/short-drama/import-artifacts", json=payload)
     assert resp.status_code == 200
@@ -138,6 +133,41 @@ def test_ingest_registers_episode_as_own_source(monkeypatch, tmp_path: Path) -> 
     assert entry.get("source_origin") == "own", entry
     source_file = manager.get_project_path("demo") / "source" / "episode_1.txt"
     assert source_file.read_text(encoding="utf-8") == original.decode("utf-8")
+
+
+def test_project_registration_failure_rolls_back_entire_artifact_batch(monkeypatch, tmp_path: Path) -> None:
+    from lib.infra.json_io import atomic_write_json
+    from lib.short_drama_ingest import ingest_short_drama_artifacts
+
+    _http, manager = _client(monkeypatch, tmp_path)
+    project_path = manager.get_project_path("demo")
+    before = manager.load_project("demo")
+
+    def fail_metadata(path, data, **kwargs):
+        if path.name == "project.json":
+            raise OSError("metadata disk full")
+        atomic_write_json(path, data, **kwargs)
+
+    monkeypatch.setattr("lib.project.project_manager.atomic_write_json", fail_metadata)
+    with pytest.raises(OSError, match="metadata disk full"):
+        ingest_short_drama_artifacts(manager, "demo", factory_package())
+
+    assert manager.load_project("demo") == before
+    assert not list((project_path / "source/short_drama").rglob("*.md"))
+    assert not (project_path / "source/episode_1.txt").exists()
+
+
+def test_missing_episode_keeps_artifacts_without_creating_ledger_entry(monkeypatch, tmp_path: Path) -> None:
+    client, manager = _client(monkeypatch, tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/projects/demo/short-drama/import-artifacts",
+            json=artifact_request(factory_package(episode=2)),
+        )
+    assert response.status_code == 200
+    assert (manager.get_project_path("demo") / "source/short_drama/episodes/episode_02.md").exists()
+    assert [entry["episode"] for entry in manager.load_project("demo")["episodes"]] == [1]
+    assert not (manager.get_project_path("demo") / "source/episode_2.txt").exists()
 
 
 def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: Path) -> None:
@@ -163,8 +193,9 @@ def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: P
     assert conflict.status_code == 409
 
 
-def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: Path) -> None:
-    client, manager = _client(monkeypatch, tmp_path)
+def test_reimport_uses_saved_source_without_registering_assets(monkeypatch, tmp_path: Path) -> None:
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
+    before = manager.load_project("demo")
     monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
@@ -194,9 +225,12 @@ def test_reimport_uses_saved_source_and_registers_assets(monkeypatch, tmp_path: 
     assert "铁门" in project["props"]
     assert project["characters"]["林夏"]["description"] == "齐肩短发，米色风衣，右腕有旧疤"
     assert "assets_without_description" not in imported.json()
+    for bucket in ("characters", "scenes", "props"):
+        assert project[bucket] == before[bucket]
+    assert "registered_assets" not in imported.json()
 
 
-def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path) -> None:
+def test_reimport_refuses_missing_assets_before_calling_model(monkeypatch, tmp_path: Path) -> None:
     client, manager = _client(monkeypatch, tmp_path)
     manager.update_project(
         "demo",
@@ -205,7 +239,8 @@ def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path
     markdown = MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）").replace(
         "（前夫｜寸头，深灰西装，领口松开）", "（前夫）"
     )
-    monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(markdown)).create)
+    model = FakeTextGenerator(_plan_payload(markdown))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
 
     with client:
         saved = client.put(
@@ -215,12 +250,12 @@ def test_reimport_reports_assets_without_description(monkeypatch, tmp_path: Path
         imported = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
             json={"source_revision": saved["revision"], "confirm_artifacts": False},
-        ).json()
+        )
 
-    missing = {(item["name"], item["reason"]) for item in imported["assets_without_description"]}
-    assert ("林夏", "source_missing") in missing
-    assert ("周明", "existing_blank") in missing
-    assert all(item["type"] == "character" for item in imported["assets_without_description"])
+    assert imported.status_code == 422
+    assert "资产步骤" in imported.json()["detail"]
+    assert model.requests == []
+    assert not (manager.get_project_path("demo") / "scripts/episode_1.json").exists()
 
 
 def test_initial_import_persists_markdown_source(monkeypatch, tmp_path: Path) -> None:
@@ -314,7 +349,7 @@ def _save_source(client: TestClient) -> str:
 
 def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> None:
     """智能切分走文本模型：每幕落单段 image_prompt，video_prompt 仍留空。"""
-    client, manager = _client(monkeypatch, tmp_path)
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     model = FakeTextGenerator(_plan_payload(MARKDOWN))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
@@ -341,7 +376,7 @@ def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> N
 
 def test_smart_reimport_never_falls_back_after_exhausted_retries(monkeypatch, tmp_path: Path) -> None:
     """无机械回落：校验不合格就带原因持续返修，穷尽后报错，绝不交付骨架提示词。"""
-    client, manager = _client(monkeypatch, tmp_path)
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
     # 返修轮数由 _PLAN_ATTEMPTS 决定，这里给足同样失败的回复，逼它走到报错。
     model = FakeTextGenerator(*([broken] * 5))
@@ -355,16 +390,67 @@ def test_smart_reimport_never_falls_back_after_exhausted_retries(monkeypatch, tm
         )
 
     assert imported.status_code == 422, imported.text
-    assert "镜头首行缺景别或运镜" in imported.json()["detail"]
+    assert "镜头首行缺景别、机位或运镜" in imported.json()["detail"]
     assert len(model.requests) == 5
     assert "上一轮输出未通过校验" in model.requests[1].prompt
     # 报错即回滚：正式脚本里没有半成品，也没有「回落骨架」的 mode 留痕。
     assert not (manager.get_project_path("demo") / "scripts" / "episode_1.json").exists()
 
 
+@pytest.mark.parametrize("header", ["【镜头1】中景，缓推。", "【镜头1】中景，平视机位。"])
+def test_smart_reimport_requires_both_camera_position_and_motion(monkeypatch, tmp_path, header):
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
+    model = FakeTextGenerator(*([_plan_payload(MARKDOWN, header=header)] * 5))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+    with client:
+        revision = _save_source(client)
+        response = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision},
+        )
+    assert response.status_code == 422
+    assert "机位或运镜" in response.json()["detail"]
+    assert len(model.requests) == 5
+    assert not (manager.get_project_path("demo") / "scripts/episode_1.json").exists()
+
+
+def test_reimport_refuses_to_overwrite_visual_edits_made_during_model_call(monkeypatch, tmp_path):
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
+
+    class EditingModel(FakeTextGenerator):
+        edit = False
+
+        async def generate(self, request, project_name=None, *, require_complete=False):
+            if self.edit:
+                with manager.locked_script("demo", "episode_1.json") as current:
+                    current["scenes"][0]["scene_description"] = "用户刚保存的分镜描述"
+            return await super().generate(request, project_name, require_complete=require_complete)
+
+    model = EditingModel(_plan_payload(MARKDOWN), _plan_payload(MARKDOWN))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+    with client:
+        revision = _save_source(client)
+        assert (
+            client.post(
+                "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+                json={"source_revision": revision},
+            ).status_code
+            == 200
+        )
+        before = (manager.get_project_path("demo") / "source/short_drama/episodes/episode_01.md").read_bytes()
+        model.edit = True
+        response = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision, "force_regenerate": True, "confirm_artifacts": True},
+        )
+    assert response.status_code == 409
+    assert manager.load_script("demo", "episode_1.json")["scenes"][0]["scene_description"] == "用户刚保存的分镜描述"
+    assert (manager.get_project_path("demo") / "source/short_drama/episodes/episode_01.md").read_bytes() == before
+
+
 def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: Path) -> None:
     """校验不通过就带原因返修、让 AI 继续优化，而非放宽闸门；多轮后通过即落盘 AI 提示词。"""
-    client, manager = _client(monkeypatch, tmp_path)
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
     good = _plan_payload(MARKDOWN, header="【镜头1】中景，平视机位，缓推。")
     model = FakeTextGenerator(broken, good)
@@ -390,7 +476,7 @@ def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: 
 
 def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:
     """同源稿同强度再切一次：直接复用缓存，不再调模型。"""
-    client, _manager = _client(monkeypatch, tmp_path)
+    client, _manager = _client(monkeypatch, tmp_path, assets_ready=True)
     model = FakeTextGenerator(_plan_payload(MARKDOWN))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
@@ -407,6 +493,62 @@ def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:
 
     assert (first["planning_cached"], second["planning_cached"]) == (False, True)
     assert len(model.requests) == 1
+
+
+def test_same_source_preserves_manual_prompt_and_media(monkeypatch, tmp_path: Path) -> None:
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
+    model = FakeTextGenerator(_plan_payload(MARKDOWN))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+    with client:
+        revision = _save_source(client)
+        client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision},
+        )
+        current = manager.load_script("demo", "episode_1.json")
+        current["scenes"][0]["image_prompt"] = "用户自己微调的分镜"
+        current["scenes"][0]["generated_assets"]["video_clip"] = "videos/first.mp4"
+        manager.save_script("demo", current, "episode_1.json")
+        response = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision, "confirm_artifacts": True},
+        )
+    assert response.status_code == 200
+    assert response.json()["planning_cached"] is True
+    saved = manager.load_script("demo", "episode_1.json")
+    assert saved["scenes"] == current["scenes"]
+    assert len(model.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "broken_prompt",
+    [
+        _shot_prompt() + "\n\n" + _shot_prompt().replace("【镜头1】", "【镜头2】"),
+        _shot_prompt().replace("林夏@[林夏/抓住门把手，压声屏息]", "风格锚@[短剧/气氛]"),
+        _shot_prompt().replace("林夏@[林夏/抓住门把手，压声屏息]", "路人@[路人/抓住门把手，压声屏息]"),
+    ],
+)
+def test_bad_shot_content_is_repaired_before_any_visual_state_is_written(
+    monkeypatch,
+    tmp_path: Path,
+    broken_prompt: str,
+) -> None:
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
+    broken = json.loads(_plan_payload(MARKDOWN))
+    for scene in broken["scenes"]:
+        scene["image_prompt"] = broken_prompt
+    model = FakeTextGenerator(json.dumps(broken, ensure_ascii=False), _plan_payload(MARKDOWN))
+    monkeypatch.setattr(TextGenerator, "create", model.create)
+    with client:
+        revision = _save_source(client)
+        response = client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision},
+        )
+    assert response.status_code == 200
+    assert len(model.requests) == 2
+    assert "上一轮输出未通过校验" in model.requests[1].prompt
+    assert manager.load_script("demo", "episode_1.json")["scenes"][0]["image_prompt"] == _shot_prompt()
 
 
 def _rewrite_payload(scene_ids: list[str]) -> str:
@@ -429,7 +571,7 @@ def _rewrite_payload(scene_ids: list[str]) -> str:
 
 def test_reimport_regenerates_selected_scenes_only(monkeypatch, tmp_path: Path) -> None:
     """按分镜重写：只重写所选分镜的描述与提示词，其余分镜原样保留。"""
-    client, manager = _client(monkeypatch, tmp_path)
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     model = FakeTextGenerator(_plan_payload(MARKDOWN), _rewrite_payload(["E1S2"]))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
@@ -475,7 +617,7 @@ def test_reimport_regenerates_selected_scenes_only(monkeypatch, tmp_path: Path) 
 
 def test_reimport_regenerate_rejects_unknown_scene_ids(monkeypatch, tmp_path: Path) -> None:
     """要重生成的分镜不存在时报 422，不静默扩大范围。"""
-    client, _manager = _client(monkeypatch, tmp_path)
+    client, _manager = _client(monkeypatch, tmp_path, assets_ready=True)
     monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
@@ -516,5 +658,4 @@ def test_get_source_reports_assets_missing_description(monkeypatch, tmp_path: Pa
     assert body["exists"] is True
     missing = {(item["type"], item["name"]) for item in body["assets_missing_description"]}
     assert ("character", "林夏") in missing
-    # 源稿里写明外观、尚未登记的资产不拦：分镜时会随登记一起落描述。
-    assert ("character", "周明") not in missing
+    assert ("character", "周明") in missing

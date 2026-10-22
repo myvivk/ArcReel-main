@@ -7,6 +7,7 @@ from lib.script.storyboard_sequence import (
     get_storyboard_items,
     resolve_previous_storyboard_path,
     resolve_storyboard_video_inputs,
+    resolve_storyboard_video_slots,
 )
 
 
@@ -40,25 +41,27 @@ class TestStoryboardSequence:
         assert start == storyboard_dir / "grid-0.png"
         assert end == storyboard_dir / "grid-8.png"
 
-    def test_resolve_previous_storyboard_path_respects_first_item_and_segment_break(self, tmp_path: Path):
+    def test_resolve_previous_storyboard_path_continues_across_segment_break(self, tmp_path: Path):
         project_path = tmp_path / "demo"
-        (project_path / "storyboards").mkdir(parents=True)
-        previous_path = project_path / "storyboards" / "scene_E1S01.png"
+        (project_path / "end_frames").mkdir(parents=True)
+        previous_path = project_path / "end_frames" / "scene_E1S01.png"
         previous_path.write_bytes(b"png")
+        second_path = project_path / "end_frames" / "scene_E1S02.png"
+        second_path.write_bytes(b"second")
 
         items = [
             {
                 "segment_id": "E1S01",
                 "segment_break": False,
-                "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
+                "end_frame_image": "end_frames/scene_E1S01.png",
             },
-            {"segment_id": "E1S02", "segment_break": False},
+            {"segment_id": "E1S02", "segment_break": False, "end_frame_image": "end_frames/scene_E1S02.png"},
             {"segment_id": "E1S03", "segment_break": True},
         ]
 
         assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S01") is None
         assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S02") == previous_path
-        assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S03") is None
+        assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S03") == second_path
 
     def test_resolve_previous_storyboard_path_does_not_backtrack(self, tmp_path: Path):
         project_path = tmp_path / "demo"
@@ -96,7 +99,70 @@ class TestStoryboardSequence:
         assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S02") is None
 
         items[0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
+        assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S02") is None
+        items[0]["generated_assets"]["shot_grid"] = {"cell_paths": ["storyboards/scene_E1S01.png"]}
         assert resolve_previous_storyboard_path(project_path, items, "segment_id", "E1S02") == previous_path
+
+    @pytest.mark.parametrize("count", [0, 1, 4, 9])
+    @pytest.mark.parametrize("previous", [False, True])
+    def test_slots_assign_every_grid_cell_once(self, tmp_path, count, previous):
+        storyboards = tmp_path / "storyboards"
+        storyboards.mkdir()
+        paths = [f"storyboards/K{index}.png" for index in range(count)]
+        for path in paths or ["storyboards/opening.png"]:
+            (tmp_path / path).write_bytes(path.encode())
+        item = {"scene_id": "current", "generated_assets": {"storyboard_image": "storyboards/opening.png"}}
+        if paths:
+            item["generated_assets"]["shot_grid"] = {"cell_paths": paths}
+        items = [item]
+        if previous:
+            (tmp_path / "videos").mkdir()
+            (tmp_path / "videos/prior.mp4").write_bytes(b"video-source")
+            items.insert(0, {"scene_id": "prior", "generated_assets": {"video_clip": "videos/prior.mp4"}})
+        slots = resolve_storyboard_video_slots(
+            project_path=tmp_path,
+            items=items,
+            id_field="scene_id",
+            resource_id="current",
+        )
+        assert slots.cell_count == count
+        assert slots.continues_previous == previous
+        assert len({frame.path for _, frame in slots.frames}) == len(slots.frames)
+        assert [
+            frame.keyframe_index
+            for _, frame in slots.frames
+            if frame.resource_id == "current" and frame.keyframe_index is not None
+        ] == list(range(count))
+        assert len(slots.references) == max(0, count - (1 if previous else 2))
+        assert (slots.end is not None) == (count > (0 if previous else 1))
+        if previous:
+            assert slots.start.kind == "video_last_frame"
+
+    def test_continuation_priority_does_not_write_user_snapshot(self, tmp_path):
+        (tmp_path / "videos").mkdir()
+        (tmp_path / "end_frames").mkdir()
+        (tmp_path / "storyboards").mkdir()
+        video = tmp_path / "videos/prior.mp4"
+        snapshot = tmp_path / "end_frames/scene_prior.png"
+        cell = tmp_path / "storyboards/last.png"
+        video.write_bytes(b"video")
+        snapshot.write_bytes(b"chosen-snapshot")
+        cell.write_bytes(b"cell")
+        prior = {
+            "scene_id": "prior",
+            "end_frame_image": "end_frames/scene_prior.png",
+            "generated_assets": {
+                "video_clip": "videos/prior.mp4",
+                "shot_grid": {"cell_paths": ["storyboards/last.png"]},
+            },
+        }
+        items = [prior, {"scene_id": "current"}]
+        assert resolve_previous_storyboard_path(tmp_path, items, "scene_id", "current") == video
+        video.unlink()
+        assert resolve_previous_storyboard_path(tmp_path, items, "scene_id", "current") == snapshot
+        assert snapshot.read_bytes() == b"chosen-snapshot"
+        snapshot.unlink()
+        assert resolve_previous_storyboard_path(tmp_path, items, "scene_id", "current") == cell
 
     def test_build_storyboard_dependency_plan_groups_contiguous_ranges(self):
         items = [

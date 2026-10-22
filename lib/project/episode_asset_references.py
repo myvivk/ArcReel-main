@@ -56,21 +56,24 @@ def episode_referenced_assets(
     经 :class:`ReferenceCatalog` 决议——只算已登记的，未登记的名字不算引用。
     """
 
-    names: list[str] = list(payload_reference_names(script)) if script is not None else []
+    # 工厂源稿存在时不从可能已过期的视觉制作状态补入剧情资产。
+    names: list[tuple[str | None, str]] = (
+        [(None, name) for name in payload_reference_names(script)] if script is not None and not source_markdown else []
+    )
     if source_markdown:
         markers = marker_asset_names(source_markdown)
         for asset_type in _STORY_PLAN_TYPES:
-            names.extend(markers.get(asset_type, ()))
+            names.extend((asset_type, name) for name in markers.get(asset_type, ()))
     if story_plan_names:
         for asset_type in _STORY_PLAN_TYPES:
-            names.extend(story_plan_names.get(asset_type, ()))
+            names.extend((asset_type, name) for name in story_plan_names.get(asset_type, ()))
     if not names:
         return frozenset()
     catalog = build_reference_catalog(project)
     referenced: set[ReferencedAsset] = set()
-    for name in names:
+    for declared_type, name in names:
         entry = catalog.resolve(name)
-        if entry is None:
+        if entry is None or (declared_type is not None and entry.asset_type != declared_type):
             continue
         bucket = project.get(entry.spec.bucket_key)
         owner_key = resolve_asset_key(bucket, entry.asset_name)

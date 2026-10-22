@@ -432,7 +432,7 @@ def _build_scene(
     需要硬切的场景由创作者在界面上显式标记。
     """
 
-    source_text = "\n".join(beat.raw.strip() for beat in sub_beats)
+    source_text = "\n".join(beat.raw for beat in sub_beats)
     prop_names = props if props is not None else block.props
     scene_description = _build_scene_description(sub_beats)
     return {
@@ -503,12 +503,11 @@ def convert_planned_scenes(
         characters = sorted({name for block, _ in entries for name in block.characters})
         props = sorted({name for block, _ in entries for name in block.props})
         scene = _build_scene(episode, index, first_block, beats, duration, characters, props)
+        scene["scenes"] = list(dict.fromkeys(block.location for block, _beat in entries if block.location))
         if scene_descriptions is not None:
             scene["scene_description"] = scene_descriptions[index]
         if image_prompts is not None:
-            # 单段标准分镜提示词就存文本形态本身：`image_prompt` 允许 `str`（PromptText），
-            # 下游 `generate_grid` / 前端单输入框都按「文本或 {scene, composition}」两形态读同一出口，
-            # 因此这里不需要拆 composition 结构，也不改任何消费方。
+            # 提示词保持单段文本，不额外伪造模型没有产出的 composition 字段。
             scene["image_prompt"] = image_prompts[index]
         scenes.append(scene)
     if used != list(range(1, len(flat) + 1)):

@@ -28,6 +28,7 @@ from lib.script.script_document import SCRIPT_PLAN_CONVERSION_GENERATOR
 from lib.script.script_generator import PromptAuthoringTargetError, ScriptGenerator
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from tests.fakes import FakeConfigResolver
+from tests.integration.lib.script.storyboard_support import confirmed_grid
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("video_request_facts")]
 
@@ -400,6 +401,8 @@ async def _converted_and_authored(
             ],
         )
         await generator.generate(1)
+        for entry_id in variant.entry_ids:
+            confirmed_grid(project_dir, entry_id)
         await generator.generate(1, fields=("video_prompt",))
     return project_dir, plan_path
 
@@ -632,7 +635,7 @@ class TestFillAndRewrite:
         self._set_entry(project_dir, variant, first, image_prompt="手写的分镜图提示词")
 
         rewritten: list[str] = []
-        await variant.generator(project_dir, [variant.visual_factory(first, second, mark="补缺")]).generate(
+        await variant.generator(project_dir, [variant.visual_factory(second, mark="补缺")]).generate(
             1, rewritten_entry_ids=rewritten
         )
 
@@ -653,6 +656,8 @@ class TestFillAndRewrite:
             project_dir, [variant.visual_factory(first, second, mark="分镜", fields=("image_prompt",))]
         ).generate(1)
 
+        for entry_id in variant.entry_ids:
+            confirmed_grid(project_dir, entry_id)
         rewritten: list[str] = []
         await variant.generator(
             project_dir, [variant.visual_factory(first, second, mark="视频", fields=("video_prompt",))]
@@ -742,6 +747,7 @@ class TestFillAndRewrite:
         project_dir = await self._materialized(tmp_path, variant)
         self._set_entry(project_dir, variant, first, image_prompt="手写的分镜图提示词")
 
+        confirmed_grid(project_dir, first)
         rewritten: list[str] = []
         await variant.generator(
             project_dir, [variant.visual_factory(first, mark="视频", fields=("video_prompt",))]

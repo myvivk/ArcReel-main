@@ -32,5 +32,20 @@ async def get_story_planning(project_name: str, pm: Manager) -> dict[str, object
 
 @router.get("/projects/{project_name}/story-planning/context/{episode}")
 async def get_story_context(project_name: str, episode: int, pm: Manager) -> dict[str, str]:
+    project = await asyncio.to_thread(pm.load_project, project_name)
+    if project.get("content_mode") == "drama":
+        artifacts = await asyncio.to_thread(load_short_drama_artifacts, pm, project_name)
+        selected = [
+            artifact
+            for artifact in artifacts
+            if artifact.episode is None
+            or (artifact.kind == "episode-plan" and artifact.episode <= episode)
+            or (artifact.kind == "episode" and artifact.episode < episode)
+        ]
+        context = "\n\n".join(
+            f"【工厂已有工件：source/short_drama/{artifact.path}】\n{artifact.content.decode('utf-8')}"
+            for artifact in selected
+        )
+        return {"context": context}
     context = await asyncio.to_thread(legacy_authoring_context, pm, project_name, episode)
     return {"context": context}

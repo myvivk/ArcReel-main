@@ -438,6 +438,10 @@ async def _admit_storyboard_specs(
         queue=call.services.queue,
         config_resolver=call.services.capabilities,
         video_request_facts=video_request_facts,
+        project_dir=call.projects.get_project_path(call.project_name),
+        storyboard_items=get_storyboard_items(script)[0],
+        episode=ProjectManager.resolve_episode_from_script(script, script_filename),
+        content_mode=resolve_content_mode(script, project),
     )
 
 
@@ -983,6 +987,7 @@ class _StoryboardBatch:
             resolver=self.resolver,
             skip_ids=skip_ids,
             voice_characters=voice_characters,
+            storyboard_items=self.screening.items,
         )
 
     def _record(self, successes: list[BatchTaskResult], failures: list[BatchTaskResult]) -> None:

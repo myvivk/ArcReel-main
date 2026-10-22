@@ -13,6 +13,8 @@ import type {
 } from "@/types/workflow";
 import {
   ROUTE_APP_SETTINGS,
+  WORKSPACE_ROUTE_EPISODES,
+  EPISODE_VIEW_PARAM,
   WORKSPACE_ROUTE_PRODUCTS,
   episodeAssetsViewPath,
   episodeEditViewPath,
@@ -379,7 +381,7 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
       ];
     }
     // 短剧工厂导入的集没有脚本规划时整行不出现；真跑了原生规划（current/stale）行会回来。
-    if (!(content.script_from_short_drama && planState !== "current" && planState !== "stale" && !planDraft)) {
+    if (!content.script_from_short_drama) {
       rows.push({
         key: "plan",
         title: t("workflow:row_plan"),
@@ -490,15 +492,17 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
 
   if (status.project.generation_mode === "storyboard") {
     const media = mediaStatus(t, status.artifacts.storyboards);
-    rows.push({
-      key: "boards",
-      title: status.project.grid_storyboard ? t("workflow:row_boards_grid") : t("workflow:row_boards"),
-      tone: formal === "present" ? media.tone : "todo",
-      status: formal === "present" ? media.status : t("workflow:status_none"),
-      notes: [],
-      acts: [],
-      steps: stepsFor(facts, ["storyboard"]),
-    });
+    if (!content.script_from_short_drama) {
+      rows.push({
+        key: "boards",
+        title: status.project.grid_storyboard ? t("workflow:row_boards_grid") : t("workflow:row_boards"),
+        tone: formal === "present" ? media.tone : "todo",
+        status: formal === "present" ? media.status : t("workflow:status_none"),
+        notes: [],
+        acts: [],
+        steps: stepsFor(facts, ["storyboard"]),
+      });
+    }
     // 参考素材（单分镜宫格）紧随分镜图：视频提示词从这里取连续关键帧（ADR 0099）。
     const materials = mediaStatus(t, status.artifacts.shot_grids);
     rows.push({
@@ -640,7 +644,8 @@ function editRow(facts: Facts, ctx: StepListContext): StepRowView {
 function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
   const { t } = ctx;
   const { content } = facts;
-  const formal = content.formal_script === "present" && (content.script_item_count ?? 0) > 0;
+  const formal = content.script_from_short_drama
+    || (content.formal_script === "present" && (content.script_item_count ?? 0) > 0);
   const withoutDescription = new Set(content.referenced_assets_without_description);
   const toGenerate = content.referenced_assets_without_sheet.filter((name) => !withoutDescription.has(name));
   const stale = content.referenced_asset_sheets_stale;
@@ -732,10 +737,13 @@ function ownerRow(facts: Facts, rows: StepRowView[], action: WorkflowNextAction)
     case "author_prompts":
     case "repair_video_units":
       return "prompts";
+    case "plan_short_drama_storyboards":
+      return "script";
     case "author_video_prompts":
       // 视频提示词自成一行（D-13）；没有这一行（广告 / 参考生视频）时不下发这个动作。
       return rows.some((row) => row.key === "video_prompt") ? "video_prompt" : null;
     case "generate_asset_sheets":
+    case "prepare_episode_assets":
       return "assets";
     case "generate_storyboards":
     case "generate_grid":
@@ -810,6 +818,31 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
   });
 
   switch (action.type) {
+    case "prepare_episode_assets":
+      return {
+        ...base,
+        detail: t("workflow:next_detail_prepare_episode_assets"),
+        primary: [{
+          key: "open-assets",
+          label: t("workflow:act_open_assets_view"),
+          kind: "nav",
+          intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) },
+        }],
+      };
+    case "plan_short_drama_storyboards":
+      return {
+        ...base,
+        detail: t("workflow:next_detail_plan_short_drama_storyboards"),
+        primary: [{
+          key: "open-storyboard",
+          label: t("dashboard:short_drama_ai_storyboard"),
+          kind: "nav",
+          intent: {
+            type: "route",
+            path: `/${WORKSPACE_ROUTE_EPISODES}/${ctx.episodeId}?${EPISODE_VIEW_PARAM}=board`,
+          },
+        }],
+      };
     case "resolve_draft": {
       const draft = content.drafts.find((d) => d.kind === action.args.draft_kind) ?? content.drafts[0];
       const docType = draft ? draftDocType(draft) : null;

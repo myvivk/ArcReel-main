@@ -48,7 +48,7 @@ from lib.project.project_migration_failure import (
 )
 from lib.project.project_migration_report import MigrationReport, load_migration_report
 from lib.project.source_revision import SourceRevisionResult, SourceScope, compute_source_revision
-from lib.project.story_plan_docs import episode_plan_asset_names
+from lib.project.story_plan_docs import episode_plan_asset_names, marker_asset_names
 from lib.references.reference_admission import admit_references, admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script import script_review
@@ -58,8 +58,7 @@ from lib.script.draft_quarantine import (
     quarantine_path,
     read_quarantine,
 )
-from lib.script.grid.shot_grid_manager import ShotGridManager
-from lib.script.grid.shot_models import ShotGrid
+from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
 from lib.script.grid.video_prompt_targets import plan_video_prompt_targets
 from lib.script.reference_video.text_parser import derive_references_from_text
 from lib.script.script_models import get_generated_assets, script_duration_total
@@ -145,6 +144,8 @@ class WorkflowActionType(StrEnum):
     GENERATE_SCRIPT = "generate_script"
     ADD_SCRIPT_ITEMS = "add_script_items"
     AUTHOR_PROMPTS = "author_prompts"
+    PREPARE_EPISODE_ASSETS = "prepare_episode_assets"
+    PLAN_SHORT_DRAMA_STORYBOARDS = "plan_short_drama_storyboards"
     GENERATE_ASSET_SHEETS = "generate_asset_sheets"
     GENERATE_STORYBOARDS = "generate_storyboards"
     GENERATE_SHOT_GRIDS = "generate_shot_grids"
@@ -225,9 +226,7 @@ class WorkflowContent(BaseModel):
     drafts: list[WorkflowDraft] = Field(default_factory=list)
     formal_script: Literal["present", "absent", "invalid"] | None = None
     script_item_count: int | None = None
-    #: 本集正式脚本是不是短剧工厂导入产出的：顶层带 ``short_drama_meta`` 即为真。
-    # 这类集不走「集原文 → 脚本规划」，那两行按"不适用"陈述而不是"还没有"，但它们仍是
-    # 可用的备选路线（随时能补原文、重跑规划），故只改陈述、不改准入。
+    #: 本集有非空工厂 Markdown 源稿，或视觉状态带工厂来源标记；源稿优先于视觉状态。
     script_from_short_drama: bool = False
     pending_authoring_ids: list[str] = Field(default_factory=list)
     needs_replan_ids: list[str] = Field(default_factory=list)
@@ -839,18 +838,11 @@ class WorkflowStateService:
         if kind is None:
             return collection
         id_field = SKELETONS[kind].id_field
-        grids: dict[str, ShotGrid] = {}
-        for grid in ShotGridManager(project_path).list_all():
-            if grid.episode != episode:
-                continue
-            current = grids.get(grid.shot_id)
-            # 同一分镜只认一条：已完成/已确认的优先，同状态取更新更晚的一条。
-            if (
-                current is None
-                or (current.status not in {"completed", "confirmed"} and grid.status in {"completed", "confirmed"})
-                or (current.status == grid.status and grid.updated_at > current.updated_at)
-            ):
-                grids[grid.shot_id] = grid
+        grids = select_shot_grids(
+            (grid for grid in ShotGridManager(project_path).list_all() if grid.episode == episode),
+            items=items,
+            id_field=id_field,
+        )
         for item in items:
             resource_id = item.get(id_field)
             if not isinstance(resource_id, str) or not resource_id:
@@ -858,7 +850,7 @@ class WorkflowStateService:
             grid = grids.get(resource_id)
             if (
                 grid is None
-                or grid.status not in {"completed", "confirmed"}
+                or grid.status != "confirmed"
                 or not grid.composite_path
                 or grid.image_basis is None
                 or resolver is None
@@ -894,27 +886,23 @@ class WorkflowStateService:
         if kind is None:
             return collection
         id_field = SKELETONS[kind].id_field
-        grids: dict[str, ShotGrid] = {}
-        for grid in ShotGridManager(project_path).list_all():
-            if grid.episode != episode:
-                continue
-            current = grids.get(grid.shot_id)
-            # 同一分镜只认一条：已完成/已确认的优先，同状态取更新更晚的一条。
-            if (
-                current is None
-                or (current.status not in {"completed", "confirmed"} and grid.status in {"completed", "confirmed"})
-                or (current.status == grid.status and grid.updated_at > current.updated_at)
-            ):
-                grids[grid.shot_id] = grid
+        grids = select_shot_grids(
+            (grid for grid in ShotGridManager(project_path).list_all() if grid.episode == episode),
+            items=items,
+            id_field=id_field,
+        )
         plan = plan_video_prompt_targets(items, id_field=id_field, grids=grids)
         missing = set(plan.targets)
         stale = set(plan.stale)
+        awaiting = set(plan.awaiting_grid)
         collection["missing_ids"] = list(plan.targets)
         collection["stale_ids"] = list(plan.stale)
         # 宫格尚未生成完成的分镜：不进本批，行上只按它报数（D-20）。
         collection["awaiting_grid_ids"] = list(plan.awaiting_grid)
         collection["current_ids"] = [
-            unit_id for unit_id in plan.unit_ids if unit_id not in missing and unit_id not in stale
+            unit_id
+            for unit_id in plan.unit_ids
+            if unit_id not in missing and unit_id not in stale and unit_id not in awaiting
         ]
         return collection
 
@@ -1716,18 +1704,26 @@ class WorkflowStateService:
         if target is None:
             return respond(None, _action(WorkflowActionType.NONE, "episode script binding is invalid"))
 
+        factory_markdown = read_short_drama_source_markdown(project_path, number) if mode == "drama" else ""
+        factory_source = bool(factory_markdown.strip())
+        content.script_from_short_drama = factory_source
         episode_source = not is_ad and episode_source_present(project_path, number, entry)
-        content.episode_source = "not_applicable" if is_ad else ("present" if episode_source else "absent")
-        content.drafts = self._episode_drafts(project_path, project, number)
+        content.episode_source = (
+            "not_applicable" if is_ad or factory_source else ("present" if episode_source else "absent")
+        )
+        content.drafts = [] if factory_source else self._episode_drafts(project_path, project, number)
         stale, stale_revision = (
-            (False, None) if is_ad else self._stale_episode_plan(project_path, project, number, entry)
+            (False, None) if is_ad or factory_source else self._stale_episode_plan(project_path, project, number, entry)
         )
         content.episode_plan_stale = stale
         content.expected_stale_script_plan_revision = stale_revision
 
         script_plan_state: str | None = None
         review_pending = False
-        if not is_ad:
+        if factory_source:
+            artifacts["script_plan"] = {"state": "not_applicable"}
+            gates["script_plan_review"] = {"state": "not_applicable", "revision": None}
+        elif not is_ad:
             artifacts["script_plan"] = self._script_plan_artifact(
                 project_path, project, number, shared.currency, issues
             )
@@ -1752,12 +1748,10 @@ class WorkflowStateService:
                 and not formal_in_use
             )
 
-        script_artifact, items, kind, script_data = self._load_script_artifacts(
+        script_artifact, items, kind, _script_data = self._load_script_artifacts(
             project_path, project_name, project, target, issues, shared.currency
         )
         artifacts["script"] = script_artifact
-        if isinstance(script_data, dict) and isinstance(script_data.get("short_drama_meta"), dict):
-            content.script_from_short_drama = True
         formal_present = script_artifact["state"] in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}
         content.formal_script = (
             "present" if formal_present else "invalid" if script_artifact["state"] == "blocked" else "absent"
@@ -1768,7 +1762,16 @@ class WorkflowStateService:
         missing_sheets: list[str] = []
         if formal_present:
             content.script_item_count = len(items)
-            pending_ids = pending_authoring_entry_ids(items, kind)
+            pending_ids = (
+                [
+                    str(item[SKELETONS[kind].id_field])
+                    for item in items
+                    if not item.get("image_prompt")
+                    or (isinstance(item.get("image_prompt"), Mapping) and not item["image_prompt"].get("scene"))
+                ]
+                if factory_source and kind in SKELETONS
+                else pending_authoring_entry_ids(items, kind)
+            )
             id_field = SKELETONS[kind].id_field if kind in SKELETONS else None
             replan_ids = [
                 str(item.get(id_field))
@@ -1779,17 +1782,6 @@ class WorkflowStateService:
             without_sheet = [name for _asset_type, name in admission.without_sheet]
             content.referenced_assets_without_sheet = without_sheet
             content.unregistered_references = list(admission.unregistered)
-            missing_sheets, content.referenced_asset_sheets_stale, content.referenced_assets_without_description = (
-                self._referenced_sheet_facts(
-                    project,
-                    items,
-                    kind,
-                    shared,
-                    issues,
-                    source_markdown=read_short_drama_source_markdown(project_path, number),
-                    story_plan_names=episode_plan_asset_names(project_path, episode=number),
-                )
-            )
             artifacts["storyboards"] = (
                 self._media_collection(
                     project_path,
@@ -1857,6 +1849,34 @@ class WorkflowStateService:
             artifacts["video_prompts"] = (
                 _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
             )
+        if formal_present or factory_source:
+            missing_sheets, content.referenced_asset_sheets_stale, content.referenced_assets_without_description = (
+                self._referenced_sheet_facts(
+                    project,
+                    items,
+                    kind,
+                    shared,
+                    issues,
+                    source_markdown=factory_markdown if factory_source else None,
+                    story_plan_names=episode_plan_asset_names(project_path, episode=number),
+                )
+            )
+        if factory_source:
+            names = episode_plan_asset_names(project_path, episode=number)
+            markers = marker_asset_names(factory_markdown)
+            unregistered: list[str] = []
+            for asset_type, spec in ASSET_SPECS.items():
+                bucket = project.get(spec.bucket_key) or {}
+                keys = {asset_name_comparison_key(name) for name in bucket}
+                unregistered.extend(
+                    name
+                    for name in dict.fromkeys([*markers.get(asset_type, []), *names.get(asset_type, [])])
+                    if asset_name_comparison_key(name) not in keys
+                )
+            content.unregistered_references = unregistered
+            content.referenced_assets_without_sheet = list(
+                dict.fromkeys([*missing_sheets, *content.referenced_assets_without_description])
+            )
         content.pending_authoring_ids = pending_ids
         content.needs_replan_ids = replan_ids
         # 剪辑时间线只陈述这一类内容：视频是否齐全不影响列出已有的几条。
@@ -1872,7 +1892,7 @@ class WorkflowStateService:
         )
 
         operations[WorkflowActionType.PREPARE_SCRIPT_PLAN] = admit_script_plan(
-            mode, episode_source=episode_source, formal_script=formal_present
+            mode, episode_source=episode_source, formal_script=formal_present, factory_source=factory_source
         )
         operations[WorkflowActionType.GENERATE_SCRIPT] = admit_ad_script(
             mode,
@@ -1899,6 +1919,34 @@ class WorkflowStateService:
 
         episode_args = {"episode_id": number}
         blank = _action(WorkflowActionType.START_BLANK_SCRIPT, "write the formal script by hand", args=episode_args)
+        if factory_source:
+            if content.unregistered_references or content.referenced_assets_without_description or missing_sheets:
+                return respond(
+                    target,
+                    _action(
+                        WorkflowActionType.PREPARE_EPISODE_ASSETS,
+                        "factory source assets need registration, descriptions or sheets",
+                        args=episode_args,
+                        ids=list(
+                            dict.fromkeys(
+                                [
+                                    *content.unregistered_references,
+                                    *content.referenced_assets_without_description,
+                                    *missing_sheets,
+                                ]
+                            )
+                        ),
+                    ),
+                )
+            if not formal_present or not items or pending_ids:
+                return respond(
+                    target,
+                    _action(
+                        WorkflowActionType.PLAN_SHORT_DRAMA_STORYBOARDS,
+                        "factory source needs AI storyboard planning",
+                        args=episode_args,
+                    ),
+                )
         if stale:
             return respond(
                 target,
@@ -2016,7 +2064,7 @@ class WorkflowStateService:
             )
         if artifacts["storyboards"].get("state") == "blocked" or artifacts["videos"].get("state") == "blocked":
             return respond(target, _action(WorkflowActionType.NONE, "media artifact currency is blocked"))
-        if generation_mode == "storyboard" and artifacts["storyboards"]["missing_ids"]:
+        if generation_mode == "storyboard" and not factory_source and artifacts["storyboards"]["missing_ids"]:
             return respond(
                 target,
                 _action(

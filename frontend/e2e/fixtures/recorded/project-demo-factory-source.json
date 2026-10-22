@@ -1,0 +1,8 @@
+{
+  "method": "GET",
+  "path": "/api/v1/projects/demo/episodes/1/short-drama-source",
+  "status": 422,
+  "body": {
+    "detail": "短剧工厂剧本导入失败：not a drama project"
+  }
+}

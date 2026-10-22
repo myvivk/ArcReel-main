@@ -1,5 +1,6 @@
 """Tests for execute_video_task."""
 
+import asyncio
 import json
 import re
 from collections.abc import Mapping
@@ -43,7 +44,210 @@ from tests.integration.server.services.tasks.generation_tasks_support import (
 )
 
 
+def seed_continuation_target(fake_pm: _FakePM) -> None:
+    (fake_pm.project_path / "storyboards/scene_E1S02.png").write_bytes(b"next-storyboard")
+    seed_current_storyboard(fake_pm, "E1S02")
+
+
 class TestGenerationTasks:
+    @pytest.mark.parametrize("changed_frame", ["previous_snapshot", "middle_keyframe", "contact_sheet"])
+    async def test_frame_changes_are_rejected_before_paid_submission(self, monkeypatch, tmp_path, changed_frame):
+        from tests.integration.lib.script.storyboard_support import confirmed_grid
+
+        project_path = prepare_files(tmp_path)
+        fake_pm = _FakePM(project_path)
+        seed_current_storyboard(fake_pm)
+        grid = confirmed_grid(project_path, "E1S02")
+        target = fake_pm.script["segments"][1]
+        target["video_prompt"] = {"action": "K0 起身，K1 行走，K2 转身，K3 停下"}
+        target["generated_assets"] = {
+            "storyboard_image": grid.composite_path,
+            "shot_grid": {
+                "grid_id": grid.id,
+                "rows": grid.rows,
+                "cols": grid.cols,
+                "composite_path": grid.composite_path,
+                "cell_paths": list(grid.cell_paths),
+            },
+        }
+        snapshot = project_path / "end_frames/scene_E1S01.png"
+        snapshot.parent.mkdir()
+        snapshot.write_bytes(b"prior-snapshot")
+        fake_pm.script["segments"][0]["end_frame_image"] = snapshot.relative_to(project_path).as_posix()
+        register_stale_visual_claim(project_path, ArtifactKey.episode_storyboard(1, "E1S02"), grid.composite_path)
+        persist_active_fake_project(fake_pm)
+        changed = {
+            "previous_snapshot": snapshot,
+            "middle_keyframe": project_path / grid.cell_paths[1],
+            "contact_sheet": project_path / grid.composite_path,
+        }[changed_frame]
+        submitted: list[str] = []
+
+        class ConcurrentGenerator(FakeGenerator):
+            async def generate_video_async(self, **kwargs):
+                changed.write_bytes(b"concurrent-frame-replacement")
+                await kwargs["before_submit"]()
+                submitted.append("paid")
+                raise AssertionError("changed inputs must never reach the provider")
+
+        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
+        monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(ConcurrentGenerator()))
+        with pytest.raises(ValueError, match="changed"):
+            await generation_tasks.execute_video_task("demo", "E1S02", {"script_file": "episode_1.json"})
+        assert submitted == []
+
+    async def test_actual_previous_video_tail_precedes_user_snapshot(self, monkeypatch, tmp_path):
+        from PIL import Image
+
+        from lib.infra.ffmpeg import ffmpeg_executable
+
+        project_path = prepare_files(tmp_path)
+        fake_pm = _FakePM(project_path)
+        seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
+        video = project_path / "videos/prior.mp4"
+        video.parent.mkdir()
+        process = await asyncio.create_subprocess_exec(
+            ffmpeg_executable(),
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=32x32:r=2:d=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(video),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        snapshot = project_path / "end_frames/scene_E1S01.png"
+        snapshot.parent.mkdir()
+        snapshot.write_bytes(b"user-selected-snapshot")
+        prior = fake_pm.script["segments"][0]
+        prior["end_frame_image"] = snapshot.relative_to(project_path).as_posix()
+        prior["generated_assets"]["video_clip"] = video.relative_to(project_path).as_posix()
+        register_stale_visual_claim(project_path, ArtifactKey.episode_video(1, "E1S01"), "videos/prior.mp4")
+        generator = FakeGenerator()
+        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
+        monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(generator))
+        monkeypatch.setattr(generation_tasks, "extract_video_thumbnail", async_return(None))
+        await generation_tasks.execute_video_task(
+            "demo",
+            "E1S02",
+            {"script_file": "episode_1.json", "prompt": {"action": "continue"}},
+        )
+        start = generator.video_calls[0]["start_image"]
+        with Image.open(start) as image:
+            pixel = image.convert("RGB").getpixel((16, 16))
+            assert isinstance(pixel, tuple)
+            red, green, blue = pixel
+        assert red > 200
+        assert green < 20
+        assert blue < 20
+        assert snapshot.read_bytes() == b"user-selected-snapshot"
+        assert prior["end_frame_image"] == "end_frames/scene_E1S01.png"
+        assert generator.video_calls[0]["reference_images"] == []
+        assert generator.video_calls[0]["end_image"] is None
+
+    @pytest.mark.parametrize("task_id", [None, "task-audio"])
+    async def test_reference_audio_order_is_preserved_in_submission_and_checkpoint(
+        self, monkeypatch, tmp_path, task_id
+    ):
+        from lib.artifacts.version_manager import PaidVersionCommit
+        from lib.script.reference_video.execution_checkpoint import StoryboardSubmissionCheckpoint
+
+        project_path = prepare_files(tmp_path)
+        fake_pm = _FakePM(project_path)
+        fake_pm.project["content_mode"] = "drama"
+        fake_pm.project["character_voice_binding"] = "reference_audio"
+        fake_pm.project["characters"]["Bob"] = {"description": "Bob"}
+        audio_dir = project_path / "characters/refs_audio"
+        audio_dir.mkdir()
+        for speaker in ("Bob", "Alice"):
+            fake_pm.project["characters"][speaker]["reference_audio"] = f"characters/refs_audio/{speaker}.wav"
+            (audio_dir / f"{speaker}.wav").write_bytes(wav_bytes(2, tone_hz=220 if speaker == "Bob" else 440))
+        fake_pm.script = {
+            "episode": 1,
+            "content_mode": "drama",
+            "scenes": [
+                {
+                    "scene_id": "E1S01",
+                    "duration_seconds": 8,
+                    "video_prompt": {"action": "talk"},
+                    "characters_in_scene": ["Bob", "Alice"],
+                    "scenes": [],
+                    "props": [],
+                    "utterances": [
+                        {"kind": "dialogue", "speaker": speaker, "text": f"{speaker} speaks"}
+                        for speaker in ("Bob", "Alice", "Bob")
+                    ],
+                    "generated_assets": {},
+                }
+            ],
+        }
+        seed_current_storyboard(fake_pm)
+
+        class AudioGenerator(FakeGenerator):
+            async def generate_video_async(self, **kwargs):
+                self.video_calls.append(kwargs)
+                assert [path.read_bytes() for path in kwargs["reference_audio_files"]] == [
+                    wav_bytes(2, tone_hz=220),
+                    wav_bytes(2, tone_hz=440),
+                ]
+                await kwargs["before_submit"]()
+                if kwargs["commit_formal_output"] is not None:
+                    kwargs["commit_formal_output"].outcome = PaidVersionCommit(version=2, selected=True)
+                return project_path / "videos/scene_E1S01.mp4", 2, "ref", "uri"
+
+        generator = AudioGenerator()
+        queue = type("Queue", (), {})()
+        queue.persist_execution_checkpoint = AsyncMock()
+        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
+        monkeypatch.setattr(generation_tasks, "get_generation_queue", lambda: queue)
+        monkeypatch.setattr(
+            generation_tasks,
+            "resolve_generation_context",
+            fake_resolve_ctx(
+                generator,
+                video_request_facts=make_video_request_facts(
+                    voice_consistency="native",
+                    max_reference_audio_count=2,
+                ),
+            ),
+        )
+        monkeypatch.setattr(generation_tasks, "extract_video_thumbnail", async_return(None))
+        await generation_tasks.execute_video_task(
+            "demo",
+            "E1S01",
+            {"script_file": "episode_1.json"},
+            task_id=task_id,
+        )
+        call = generator.video_calls[0]
+        assert len(call["reference_audio_files"]) == 2
+        assert "Bob: use the voice in reference audio 1" in call["prompt"]
+        assert "Alice: use the voice in reference audio 2" in call["prompt"]
+        assert call["reference_audio_targets"] is None
+        if task_id is not None:
+            checkpoint = StoryboardSubmissionCheckpoint.from_json(queue.persist_execution_checkpoint.await_args.args[1])
+            assert [media.logical_name for media in checkpoint.media if media.role == "reference_audio"] == [
+                "Bob",
+                "Alice",
+            ]
+            assert checkpoint.prompt == call["prompt"]
+            assert checkpoint.artifact_currency is not None
+            inputs = checkpoint.artifact_currency.speech_basis.to_evidence_dict()["inputs"]
+            assert isinstance(inputs, dict)
+            voices = inputs["voices"]
+            assert isinstance(voices, list)
+            assert all(isinstance(voice, dict) and voice["reference_audio_digest"] for voice in voices)
+
     async def test_execute_video_task_rechecks_audio_switch_from_request_facts(self, monkeypatch, tmp_path):
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
@@ -214,14 +418,18 @@ class TestGenerationTasks:
         assert "stale enqueue prompt" not in checkpoint.prompt
         assert checkpoint.duration_seconds == 8
         assert checkpoint.provider_id == "ark"
-        expected_roles = ["start_image"] + (["reference_image"] * grid_cells + ["end_image"] if grid_cells else [])
+        expected_roles = ["start_image"] + (
+            ["reference_image"] * max(0, grid_cells - 2) + ["end_image"] if grid_cells > 1 else []
+        )
         assert [media.role for media in checkpoint.media] == expected_roles
         if grid_cells:
-            assert len(call["reference_images"]) == grid_cells
+            assert len(call["reference_images"]) == max(0, grid_cells - 2)
             assert [media.logical_name for media in checkpoint.media if media.role == "reference_image"] == [
-                f"E1S01:K{index}" for index in range(grid_cells)
+                f"E1S01:K{index}" for index in range(1, grid_cells - 1)
             ]
-            assert f"K0–K{grid_cells - 1}" in call["prompt"]
+            if grid_cells > 2:
+                assert f"K1–K{grid_cells - 2}" in call["prompt"]
+            assert f"K{grid_cells - 1}" in call["prompt"]
         assert checkpoint.artifact_visual_basis is not None
         assert checkpoint.artifact_visual_basis.kind == "artifact-visual/video-storyboard"
         assert checkpoint.artifact_currency is not None
@@ -514,7 +722,7 @@ class TestGenerationTasks:
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
 
-        with pytest.raises(ValueError, match="storyboard is not registered"):
+        with pytest.raises(ValueError, match="storyboard reference is not registered"):
             await generation_tasks.execute_video_task(
                 "demo",
                 "E1S01",
@@ -797,11 +1005,11 @@ class TestGenerationTasks:
         assert fake_generator.video_calls == []
 
     async def test_execute_video_task_end_frame_image_passed_to_generator(self, monkeypatch, tmp_path):
-        """镜头设置了 end_frame_image 时，生成视频请求携带 end_image；快照路径取自
-        镜头持久字段拼接的项目内固定相对路径。"""
+        """用户选定的本镜尾帧快照作为下一镜首帧，生成结束仍保留原快照。"""
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
 
         end_frame_dir = project_path / "end_frames"
@@ -816,11 +1024,14 @@ class TestGenerationTasks:
 
         await generation_tasks.execute_video_task(
             "demo",
-            "E1S01",
+            "E1S02",
             {"script_file": "episode_1.json", "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []}},
         )
 
-        assert fake_generator.video_calls[0]["end_image"] == end_frame_dir / "scene_E1S01.png"
+        assert fake_generator.video_calls[0]["start_image"] == end_frame_dir / "scene_E1S01.png"
+        assert fake_generator.video_calls[0]["end_image"] is None
+        assert (end_frame_dir / "scene_E1S01.png").read_bytes() == b"png"
+        assert fake_pm.script["segments"][0]["end_frame_image"] == "end_frames/scene_E1S01.png"
 
     async def test_execute_video_task_end_frame_image_bare_filename_resolves_via_default_dir(
         self, monkeypatch, tmp_path
@@ -831,6 +1042,7 @@ class TestGenerationTasks:
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
 
         end_frame_dir = project_path / "end_frames"
@@ -845,11 +1057,12 @@ class TestGenerationTasks:
 
         await generation_tasks.execute_video_task(
             "demo",
-            "E1S01",
+            "E1S02",
             {"script_file": "episode_1.json", "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []}},
         )
 
-        assert fake_generator.video_calls[0]["end_image"] == end_frame_dir / "scene_E1S01.png"
+        assert fake_generator.video_calls[0]["start_image"] == end_frame_dir / "scene_E1S01.png"
+        assert fake_generator.video_calls[0]["end_image"] is None
 
     @pytest.mark.parametrize("missing", [True, False], ids=["field-absent", "empty-string"])
     async def test_execute_video_task_without_end_frame_image_passes_none(self, monkeypatch, tmp_path, missing):
@@ -874,27 +1087,25 @@ class TestGenerationTasks:
 
         assert fake_generator.video_calls[0]["end_image"] is None
 
-    async def test_execute_video_task_missing_end_frame_snapshot_fails_hard(self, monkeypatch, tmp_path):
-        """尾帧字段指向的快照文件缺失时硬失败，不调用后端生成。"""
+    async def test_execute_video_task_missing_end_frame_snapshot_falls_back_to_current(self, monkeypatch, tmp_path):
+        """上一镜快照缺失且无宫格或成片时，使用本镜分镜图。"""
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
         fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
 
-        with pytest.raises(ValueError, match="end frame snapshot not found"):
-            await generation_tasks.execute_video_task(
-                "demo",
-                "E1S01",
-                {
-                    "script_file": "episode_1.json",
-                    "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
-                },
-            )
-        assert fake_generator.video_calls == []
+        await generation_tasks.execute_video_task(
+            "demo",
+            "E1S02",
+            {"script_file": "episode_1.json", "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []}},
+        )
+        assert fake_generator.video_calls[0]["start_image"] == project_path / "storyboards/scene_E1S02.png"
+        assert not (project_path / "end_frames/scene_E1S01.png").exists()
 
     @pytest.mark.parametrize(
         "end_frame_value",
@@ -923,6 +1134,7 @@ class TestGenerationTasks:
         (end_frame_dir / "scene_E1S02.png").write_bytes(b"png")  # 别的镜头的快照，供跨镜头误引用例检查
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
         fake_pm.script["segments"][0]["end_frame_image"] = end_frame_value
 
@@ -932,7 +1144,7 @@ class TestGenerationTasks:
         with pytest.raises(ValueError, match="invalid end frame snapshot path"):
             await generation_tasks.execute_video_task(
                 "demo",
-                "E1S01",
+                "E1S02",
                 {
                     "script_file": "episode_1.json",
                     "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
@@ -951,6 +1163,7 @@ class TestGenerationTasks:
         (end_frame_dir / "scene_E1S01.png").symlink_to(end_frame_dir / "scene_E1S02.png")
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
         fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
@@ -960,7 +1173,7 @@ class TestGenerationTasks:
         with pytest.raises(ValueError, match="invalid end frame snapshot path"):
             await generation_tasks.execute_video_task(
                 "demo",
-                "E1S01",
+                "E1S02",
                 {
                     "script_file": "episode_1.json",
                     "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
@@ -979,6 +1192,7 @@ class TestGenerationTasks:
         (project_path / "end_frames").symlink_to(real_dir)
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
         fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
@@ -988,7 +1202,7 @@ class TestGenerationTasks:
         with pytest.raises(ValueError, match="invalid end frame snapshot path"):
             await generation_tasks.execute_video_task(
                 "demo",
-                "E1S01",
+                "E1S02",
                 {
                     "script_file": "episode_1.json",
                     "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
@@ -1010,6 +1224,7 @@ class TestGenerationTasks:
         (end_frames_dir / "scene_E1S01.png").write_bytes(b"png")
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
         fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
@@ -1020,7 +1235,7 @@ class TestGenerationTasks:
         with pytest.raises(ValueError, match="invalid end frame snapshot path"):
             await generation_tasks.execute_video_task(
                 "demo",
-                "E1S01",
+                "E1S02",
                 {
                     "script_file": "episode_1.json",
                     "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
@@ -1039,10 +1254,11 @@ class TestGenerationTasks:
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
-        end_frame_dir = project_path / "end_frames"
-        end_frame_dir.mkdir(parents=True, exist_ok=True)
-        (end_frame_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        (project_path / "storyboards/scene_E1S02.png").write_bytes(b"last-cell")
+        fake_pm.script["segments"][0]["generated_assets"]["shot_grid"] = {
+            "cell_paths": ["storyboards/scene_E1S01.png", "storyboards/scene_E1S02.png"],
+            "composite_path": "storyboards/scene_E1S01.png",
+        }
 
         async def _plan_with_real_gating(**kwargs):
             fake_generator.video_calls.append(kwargs)
@@ -1075,6 +1291,7 @@ class TestGenerationTasks:
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
         seed_current_storyboard(fake_pm)
+        seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
 
         end_frame_dir = project_path / "end_frames"
@@ -1090,7 +1307,7 @@ class TestGenerationTasks:
         for _ in range(2):
             await generation_tasks.execute_video_task(
                 "demo",
-                "E1S01",
+                "E1S02",
                 {
                     "script_file": "episode_1.json",
                     "prompt": {"action": "跑", "camera_motion": "Static", "dialogue": []},
@@ -1099,7 +1316,8 @@ class TestGenerationTasks:
 
         assert len(fake_generator.video_calls) == 2
         for call in fake_generator.video_calls:
-            assert call["end_image"] == end_frame_dir / "scene_E1S01.png"
+            assert call["start_image"] == end_frame_dir / "scene_E1S01.png"
+            assert call["end_image"] is None
 
     async def test_execute_video_task_drama_dialogue_from_utterances(self, monkeypatch, tmp_path):
         """drama 口型台词从分镜级 dialogue-kind utterances 取（覆盖 payload 已不带的

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLocation } from "wouter";
-import { Button } from "@/components/ui/button";
+import { Link } from "wouter";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AssetGallery } from "@/components/canvas/lorebook/AssetGallery";
 import { EpisodeAssetGenerateDialog } from "@/components/canvas/episode-page/EpisodeAssetGenerateDialog";
 import { useProjectsStore } from "@/stores/projects-store";
@@ -13,6 +14,7 @@ import { useAppStore } from "@/stores/app-store";
 import { API } from "@/api";
 import type { AssetSheetType, EpisodeReferencedAssets, ProjectData } from "@/types";
 import { errMsg } from "@/utils/async";
+import { episodeDisplayName } from "@/utils/episode-display";
 
 const TYPES: AssetSheetType[] = ["character", "scene", "prop"];
 
@@ -31,7 +33,6 @@ export function EpisodeAssetsView({
   projectData: ProjectData | null;
 }) {
   const { t } = useTranslation(["assets", "dashboard"]);
-  const [, setLocation] = useLocation();
   const snapshotRevision = useProjectsStore((state) => state.projectSnapshotRevisions[projectName] ?? 0);
   const [result, setResult] = useState<EpisodeReferencedAssets | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -82,10 +83,9 @@ export function EpisodeAssetsView({
     return grouped;
   }, [result]);
 
-  const goToAll = () => setLocation(`/${activeType === "character" ? "characters" : activeType === "scene" ? "scenes" : "props"}`);
+  const allPath = `/${bucketKeyOf(activeType)}`;
   const scriptPath = `/episodes/${episode}`;
-  const episodeTitle =
-    projectData?.episodes?.find((item) => item.episode === episode)?.title ?? `第 ${episode} 集`;
+  const episodeTitle = episodeDisplayName(projectData?.episodes ?? [], episode, t);
 
   if (error) {
     return (
@@ -119,18 +119,25 @@ export function EpisodeAssetsView({
 
   /** 页内唯一的「生成本集资产」入口：点开确认框，确认后才真正生成。 */
   const generateButton = (
-    <Button variant="default" size="sm" onClick={() => setDialogOpen(true)}>
+    <Button variant="default" size="sm" disabled={!result.has_script} onClick={() => setDialogOpen(true)}>
       {t("episode_assets_generate", { ns: "dashboard" })}
     </Button>
   );
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <nav aria-label={t("episode_assets_types", { ns: "dashboard" })} className="flex shrink-0 items-center gap-1 border-b px-4 py-2">
-        {TYPES.map((type) => {
+    <Tabs value={activeType} onValueChange={(value) => setActiveType(value as AssetSheetType)} className="min-h-0 min-w-0 flex-1">
+      <header className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-4 py-2">
+        {generateButton}
+        <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={allPath}>
+          {t("episode_assets_all", { ns: "dashboard", type: title, count: total })}
+        </Link>
+      </header>
+      <div className="relative shrink-0 overflow-x-auto scroll-fade-x px-4">
+        <TabsList variant="line" aria-label={t("episode_assets_types", { ns: "dashboard" })}>
+          {TYPES.map((type) => {
           const count = Object.keys(byType[type]).length;
           return (
-            <Button key={type} variant={activeType === type ? "secondary" : "ghost"} size="sm" onClick={() => setActiveType(type)} aria-pressed={activeType === type}>
+            <TabsTrigger key={type} value={type}>
               {t(`type.${type}`)}{" "}
               <span className="ml-1 text-xs text-muted-foreground">
                 {t("episode_assets_scope_badge", {
@@ -139,33 +146,29 @@ export function EpisodeAssetsView({
                   total: Object.keys(projectData?.[bucketKeyOf(type)] ?? {}).length,
                 })}
               </span>
-            </Button>
+            </TabsTrigger>
           );
         })}
-        <div className="ml-auto flex items-center gap-2">
-          {generateButton}
-          <Button variant="outline" size="sm" onClick={goToAll}>
-            {t("episode_assets_all", { ns: "dashboard", type: title, count: total })}
-          </Button>
-        </div>
-      </nav>
+        </TabsList>
+      </div>
+      <TabsContent value={activeType} className="flex min-h-0 min-w-0 flex-1 flex-col">
       {Object.keys(assets).length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           {result.has_script ? (
             <>
               <p className="text-sm font-medium">{t("episode_assets_empty", { ns: "dashboard", type: title })}</p>
               <p className="text-sm text-muted-foreground">{t("episode_assets_empty_hint", { ns: "dashboard" })}</p>
-              <Button variant="outline" size="sm" onClick={goToAll}>
+              <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={allPath}>
                 {t("episode_assets_all", { ns: "dashboard", type: title, count: total })}
-              </Button>
+              </Link>
             </>
           ) : (
             <>
               <p className="text-sm font-medium">{t("episode_assets_no_script", { ns: "dashboard" })}</p>
               <p className="text-sm text-muted-foreground">{t("episode_assets_no_script_hint", { ns: "dashboard" })}</p>
-              <Button variant="default" size="sm" onClick={() => setLocation(scriptPath)}>
+              <Link className={buttonVariants({ size: "sm" })} href={scriptPath}>
                 {t("episode_assets_go_script", { ns: "dashboard" })}
-              </Button>
+              </Link>
             </>
           )}
         </div>
@@ -184,6 +187,7 @@ export function EpisodeAssetsView({
           hideAddActions
         />
       )}
+      </TabsContent>
       {dialogOpen && (
         <EpisodeAssetGenerateDialog
           projectName={projectName}
@@ -194,6 +198,6 @@ export function EpisodeAssetsView({
           onSubmitted={() => setRetry((value) => value + 1)}
         />
       )}
-    </section>
+    </Tabs>
   );
 }

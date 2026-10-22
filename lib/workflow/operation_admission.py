@@ -142,14 +142,16 @@ def admit_plan_episodes(
     return _refused(AdmissionReason.REPLAN_CANDIDATE_PENDING) if replan_pending else ADMITTED
 
 
-def admit_script_plan(content_mode: object, *, episode_source: bool, formal_script: bool = False) -> OperationAdmission:
+def admit_script_plan(
+    content_mode: object, *, episode_source: bool, formal_script: bool = False, factory_source: bool = False
+) -> OperationAdmission:
     """AI 规划脚本：本集有集原文。
 
     短剧工厂导入的集无集原文，但已有正式脚本：AI 规划脚本不适用，应走
     ``patch_episode_script`` / ``generate_episode_script``，故返回专门的拒绝理由，
     避免回执误导成「补充集原文」（旧文案会引导去补源文，而这类集本就不该有源文）。
     """
-    if content_mode == "ad":
+    if content_mode == "ad" or factory_source:
         return NOT_APPLICABLE
     if episode_source:
         return ADMITTED

@@ -383,6 +383,7 @@ class WorkflowPlanner:
             project=facts.project,
             episode=status.target.episode if status.target is not None else 1,
             voice_characters=voice_characters,
+            storyboard_items=facts.items,
         )
         admission = await admit_storyboard_video_request(
             project_name=project_name,
@@ -397,6 +398,10 @@ class WorkflowPlanner:
             user_id=user_id,
             queue=queue,
             config_resolver=config_resolver,
+            project_dir=facts.project_path,
+            storyboard_items=facts.items,
+            episode=status.target.episode if status.target is not None else 1,
+            content_mode=status.project.content_mode,
         )
         return admission.to_payload()
 

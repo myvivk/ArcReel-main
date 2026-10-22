@@ -129,8 +129,15 @@ class ImagePrompt(BaseModel):
 
     model_config = _STRICT_CONFIG
 
-    scene: str = Field(description="画面静态描述；动态内容由 video_prompt.action 承载")
+    scene: str = Field(description="12-15 秒分镜段的画面提示词；动态承接由 video_prompt.action 承载")
     composition: Composition = Field(description="构图信息")
+
+
+def _require_non_blank_prompt(value: str) -> str:
+    """文本形态提示词不得为空白：空串等价于「没有提示词」，渲染层同样以 ValueError 拒绝。"""
+    if not value.strip():
+        raise ValueError("prompt text must not be empty")
+    return value
 
 
 class _VideoPromptCore(BaseModel):
@@ -138,7 +145,9 @@ class _VideoPromptCore(BaseModel):
 
     model_config = _STRICT_CONFIG
 
-    action: str = Field(description="该分镜时长内的动作描述；镜头运动由 camera_motion 承载")
+    action: Annotated[str, AfterValidator(_require_non_blank_prompt)] = Field(
+        min_length=1, description="该分镜时长内的动作描述；镜头运动由 camera_motion 承载"
+    )
     camera_motion: Annotated[CameraMotion, BeforeValidator(_normalize_camera_motion)] = Field(description="镜头运动")
     ambiance_audio: str = Field(description="环境音效（画内音）")
 
@@ -160,13 +169,6 @@ class DramaVideoPrompt(_VideoPromptCore):
 
     ``extra="forbid"`` 下任何残留的 ``dialogue`` 键会被 ``DramaScene`` 读时迁移先行剥离。
     """
-
-
-def _require_non_blank_prompt(value: str) -> str:
-    """文本形态提示词不得为空白：空串等价于「没有提示词」，渲染层同样以 ValueError 拒绝。"""
-    if not value.strip():
-        raise ValueError("prompt text must not be empty")
-    return value
 
 
 #: 提示词的文本形态：该字段本身就是送给模型的提示词主体，渲染层只做必要的注入、不套结构模板。

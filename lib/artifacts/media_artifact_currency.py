@@ -10,7 +10,7 @@ and reproject narration audio through the version's execution-frozen settings.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,8 @@ from lib.script.reference_video.request_projection import (
     unit_reference_declarations,
 )
 from lib.script.script_editor import resolve_items
-from lib.script.storyboard_sequence import resolve_storyboard_video_inputs
+from lib.script.storyboard_sequence import resolve_storyboard_video_inputs, resolve_storyboard_video_slots
+from lib.script.storyboard_video_request import storyboard_asset_links, storyboard_frame_evidence
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.narration_config import PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION, project_tts_settings
 from lib.speech.narration_delivery import build_narration_audio_basis
@@ -95,6 +96,7 @@ class VideoExecutionShape:
     reference_audio_speakers: tuple[str, ...]
     reference_image_limit: int | None
     duration_tiers: tuple[int, ...]
+    storyboard_input_version: int = 1
 
     @classmethod
     def from_version_record(
@@ -110,6 +112,7 @@ class VideoExecutionShape:
             reference_audio_speakers=audio_speakers,
             reference_image_limit=artifact_currency.reference_image_limit,
             duration_tiers=artifact_currency.duration_tiers,
+            storyboard_input_version=artifact_currency.visual_basis.kind_version,
         )
 
 
@@ -132,6 +135,8 @@ def project_video_basis_components(
     resource_type: str,
     resource_id: str,
     shape: VideoExecutionShape,
+    storyboard_items: Sequence[Any] | None = None,
+    id_field: str | None = None,
 ) -> VideoBasisComponents:
     """Project the current script item through ``shape`` into the three video basis components.
 
@@ -164,12 +169,31 @@ def project_video_basis_components(
 
     if resource_type == "videos":
         prompt = item.get("video_prompt")
+        frame_evidence = None
         try:
-            storyboard, end_frame = resolve_storyboard_video_inputs(
-                project_path=project_path,
-                resource_id=resource_id,
-                item=item,
-            )
+            if shape.storyboard_input_version == 2:
+                slots = resolve_storyboard_video_slots(
+                    project_path=project_path,
+                    items=storyboard_items if storyboard_items is not None else [item],
+                    id_field=id_field
+                    or ("shot_id" if "shot_id" in item else "segment_id" if "segment_id" in item else "scene_id"),
+                    resource_id=resource_id,
+                )
+                storyboard = slots.start.path
+                end_frame = slots.end.path if slots.end is not None else None
+                frame_evidence = storyboard_frame_evidence(
+                    slots,
+                    project_path=project_path,
+                    items=storyboard_items if storyboard_items is not None else [item],
+                    id_field=id_field
+                    or ("shot_id" if "shot_id" in item else "segment_id" if "segment_id" in item else "scene_id"),
+                )
+            else:
+                storyboard, end_frame = resolve_storyboard_video_inputs(
+                    project_path=project_path,
+                    resource_id=resource_id,
+                    item=item,
+                )
         except (OSError, TypeError, ValueError) as exc:
             raise ValueError(f"storyboard inputs are unavailable: {exc}") from exc
         visual = build_storyboard_video_artifact_visual_basis(
@@ -178,6 +202,10 @@ def project_video_basis_components(
             storyboard_image=storyboard,
             end_frame_image=end_frame,
             aspect_ratio=resolve_video_aspect_ratio(project),
+            frame_evidence=frame_evidence,
+            asset_links=storyboard_asset_links(project, item, project_path.name)
+            if shape.storyboard_input_version == 2
+            else "",
         )
     elif resource_type == "reference_videos":
         declared = unit_reference_declarations(project, item)
@@ -251,6 +279,8 @@ def build_current_video_artifact_basis(
             resource_type=resource_type,
             resource_id=resource_id,
             shape=shape,
+            storyboard_items=items,
+            id_field=id_field,
         )
         if parse_project_schema_version(project) < 16:
             legacy_duration = _legacy_narrated_duration(

@@ -420,15 +420,17 @@ describe("OverviewCanvas", () => {
   });
 
   describe("empty project", () => {
-    it("welcomes with the project title and opens the upload dialog with dropped files", () => {
+    it("welcomes with the project title and opens the upload dialog", async () => {
+      const user = userEvent.setup();
       renderOverview({ projectData: makeProjectData({ ...EMPTY_PROJECT, title: "哈喽项目" }) });
 
       expect(screen.getByRole("heading", { name: "开始制作《哈喽项目》" })).toBeInTheDocument();
-      fireEvent.drop(screen.getByRole("button", { name: /拖入原文/ }), {
-        dataTransfer: { files: [new File(["x"], "novel.txt", { type: "text/plain" })] },
+      await user.click(screen.getByRole("button", { name: "已有小说？上传原文" }));
+      const dialog = await screen.findByRole("dialog", { name: "上传原文" });
+      fireEvent.change(within(dialog).getByLabelText("选择文件"), {
+        target: { files: [new File(["x"], "novel.txt", { type: "text/plain" })] },
       });
 
-      expect(screen.getByRole("dialog", { name: "上传原文" })).toBeInTheDocument();
       expect(screen.getByText("novel.txt")).toBeInTheDocument();
     });
 
@@ -454,8 +456,10 @@ describe("OverviewCanvas", () => {
         });
       render(withRouter(<StoreOverview />));
 
-      fireEvent.drop(screen.getByRole("button", { name: /拖入原文/ }), {
-        dataTransfer: { files: [new File(["x"], "novel.txt", { type: "text/plain" })] },
+      await user.click(screen.getByRole("button", { name: "已有小说？上传原文" }));
+      const dialog = await screen.findByRole("dialog", { name: "上传原文" });
+      fireEvent.change(within(dialog).getByLabelText("选择文件"), {
+        target: { files: [new File(["x"], "novel.txt", { type: "text/plain" })] },
       });
       await user.click(screen.getByRole("button", { name: "上传 1 个文件" }));
 
@@ -476,7 +480,7 @@ describe("OverviewCanvas", () => {
       const generate = vi.spyOn(API, "generateOverview");
       renderOverview({ projectData: makeProjectData(EMPTY_PROJECT) });
 
-      await user.click(screen.getByRole("button", { name: /拖入原文/ }));
+      await user.click(screen.getByRole("button", { name: "已有小说？上传原文" }));
       const dialog = await screen.findByRole("dialog", { name: "上传原文" });
       await user.click(within(dialog).getByRole("radio", { name: /逐集/ }));
       fireEvent.change(within(dialog).getByLabelText("选择文件"), {

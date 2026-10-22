@@ -9,12 +9,17 @@ const recorded = (JSON.parse(readFileSync(join(RECORDED_DIR, "project-demo.json"
 
 defineRegionScenarios("故事规划", [
   {
-    name: "大纲与上下文设置",
+    name: "工厂原文四项阅读器",
     path: "/app/projects/demo/story",
     api: {
       "GET /api/v1/projects/demo": { status: 200, body: { ...recorded, project: { ...recorded.project, content_mode: "drama" } } },
       "GET /api/v1/projects/demo/events/stream": { status: 404, body: {} },
     },
-    ready: async (page) => { await page.getByRole("textbox", { name: "故事走向" }).waitFor(); },
+    ready: async (page) => { await page.getByRole("tab", { name: "人物圣经" }).waitFor(); },
+    act: async (page) => {
+      await page.getByRole("tab", { name: "全剧大纲" }).click();
+      await page.getByRole("tab", { name: "连续性台账" }).click();
+      await page.getByRole("tab", { name: "分集规划" }).click();
+    },
   },
 ]);

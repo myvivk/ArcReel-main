@@ -754,6 +754,7 @@ async def test_running_task_is_progress_not_a_problem_and_exposes_no_provider_ha
         "batch_id": None,
         "task_type": "video",
         "status": "running",
+        "fields": None,
         "provider_checkpoint": {"submitted": True},
     }
     dumped = plan.model_dump_json()

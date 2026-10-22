@@ -118,7 +118,7 @@ import type {
   EpisodeItemRef,
 } from "@/types";
 import type { GridCapability, GridGeneration } from "@/types/grid";
-import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
+import type { SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
 import type {
   PresentationReadModel,
   PresentationRequestOptions,
@@ -528,7 +528,8 @@ class API {
 
   static async updateProject(
     name: string,
-    updates: Partial<ProjectData> & { clear_style_image?: boolean }
+    updates: Partial<ProjectData> & { clear_style_image?: boolean },
+    options: { signal?: AbortSignal } = {},
   ): Promise<{ success: boolean; project: ProjectData }> {
     if ("content_mode" in updates) {
       throw new Error(i18n.t("errors:content_mode_immutable"));
@@ -536,6 +537,7 @@ class API {
     return this.request(`/projects/${encodeURIComponent(name)}`, {
       method: "PATCH",
       body: JSON.stringify(updates),
+      signal: options.signal,
     });
   }
 
@@ -1602,6 +1604,7 @@ class API {
     planningStrength = 2,
     forceRegenerate = false,
     regenerateSceneIds?: string[],
+    options: { signal?: AbortSignal } = {},
   ): Promise<{
     episode: number;
     scenes: number;
@@ -1617,6 +1620,7 @@ class API {
       `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/short-drama-source/reimport`,
       {
         method: "POST",
+        signal: options.signal,
         body: JSON.stringify({
           source_revision: sourceRevision,
           confirm_artifacts: confirmArtifacts,
@@ -2238,10 +2242,11 @@ class API {
   }
 
   /** 新建一集：插在 `after` 之后，缺省放在播出顺序末尾；带原文时是自带原文的集。返回新集 ID。 */
-  static async createEpisode(projectName: string, body: CreateEpisodeBody): Promise<{ episode: number }> {
+  static async createEpisode(projectName: string, body: CreateEpisodeBody, options: { signal?: AbortSignal } = {}): Promise<{ episode: number }> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/episodes`, {
       method: "POST",
       body: JSON.stringify(body),
+      signal: options.signal,
     });
   }
 
@@ -3908,22 +3913,16 @@ class API {
     });
   }
 
-  /** 关弹窗或 AI 生成返回时留下输入框里的文本；只存草稿，不动生成状态（D-5）。 */
-  static async saveShotGridDraft(projectName: string, payload: SaveShotGridDraftPayload): Promise<ShotGridPlan> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/draft`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
-  }
-
-  /** 同步生成逐格镜头文本：不入队，返回后立刻存成草稿，由用户在弹窗里改完再「确定」（ADR 0099 D-5）。 */
+  /** 仅返回可编辑的逐格文本；确定前不写盘、不入队。 */
   static async authorShotGridPrompt(
     projectName: string,
     payload: { script_file: string; episode: number; shot_id: string; rows: number; cols: number },
+    options: { signal?: AbortSignal } = {},
   ): Promise<{ prompt: string }> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/author-prompt`, {
       method: "POST",
       body: JSON.stringify(payload),
+      signal: options.signal,
     });
   }
 
@@ -3946,6 +3945,13 @@ class API {
   static async confirmShotGrid(projectName: string, gridId: string) {
     return this.request<{ success: boolean; grid: ShotGridPlan }>(
       `/projects/${encodeURIComponent(projectName)}/shot-grids/${encodeURIComponent(gridId)}/confirm`,
+      { method: "POST" },
+    );
+  }
+
+  static async unconfirmShotGrid(projectName: string, gridId: string) {
+    return this.request<{ success: boolean; grid: ShotGridPlan }>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/${encodeURIComponent(gridId)}/unconfirm`,
       { method: "POST" },
     );
   }

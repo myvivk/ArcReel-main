@@ -23,6 +23,7 @@ const ENQUEUE_METHODS = [
   "generateCharacter",
   "generateCharacterDerivative",
   "generateCharacterVoiceSample",
+  "generateEpisodeAssets",
   "generateEpisodeNarrationAudio",
   "generateGrid",
   "generateNarrationAudio",

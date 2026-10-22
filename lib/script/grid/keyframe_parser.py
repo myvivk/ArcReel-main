@@ -184,8 +184,6 @@ def keyframe_reference_problems(text: str, cell_count: int) -> list[str]:
     写进正文只会变成"声明了不存在的参考图"（D-17）。越界即拒，不给\"忽略这一条\"的降级。
     """
 
-    if cell_count <= 0:
-        return []
     seen: set[str] = set()
     problems: list[str] = []
     for match in _KEYFRAME_REF.finditer(text):

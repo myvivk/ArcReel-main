@@ -35,8 +35,11 @@ from lib.artifacts.visual_artifact_provenance import (
 )
 from lib.script.storyboard_sequence import (
     StoryboardImageUnavailable,
+    StoryboardVideoSlots,
+    find_storyboard_item,
     resolve_storyboard_video_inputs,
     resolve_storyboard_video_reference_images,
+    resolve_storyboard_video_slots,
 )
 
 
@@ -357,3 +360,60 @@ def resolve_usable_storyboard_video_reference_images(
         ):
             raise StoryboardImageUnavailable(f"storyboard reference is not registered: {relative}")
     return images
+
+
+def resolve_usable_storyboard_video_slots(
+    *,
+    project_path: Path,
+    project: Mapping[str, object],
+    episode: int,
+    items: Sequence[Any],
+    id_field: str,
+    resource_id: str,
+    resolver: ArtifactCurrencyResolver | None = None,
+    claims: list[ArtifactInputClaim] | None = None,
+) -> StoryboardVideoSlots:
+    """Claim the current grid and the preceding artifact selected for continuity."""
+    if type(episode) is not int or episode < 1:
+        raise ValueError("script episode must be a positive integer")
+    if resolver is None:
+        resolver = active_artifact_currency_resolver(project_path, project)
+    slots = resolve_storyboard_video_slots(
+        project_path=project_path, items=items, id_field=id_field, resource_id=resource_id
+    )
+    resolved = find_storyboard_item(items, id_field, resource_id)
+    assert resolved is not None
+    if slots.cell_count or not slots.continues_previous:
+        resolve_usable_storyboard_video_reference_images(
+            project_path=project_path,
+            project=project,
+            episode=episode,
+            resource_id=resource_id,
+            item=resolved[0],
+            resolver=resolver,
+            claims=claims,
+        )
+    if slots.continues_previous:
+        previous_id = slots.start.resource_id
+        if slots.start.kind == "video_last_frame":
+            relative = slots.start.path.relative_to(project_path).as_posix()
+            if not artifact_input_is_usable(
+                resolver=resolver,
+                key=ArtifactKey.episode_video(episode, previous_id),
+                artifact_path=relative,
+                claims=claims,
+            ):
+                raise StoryboardImageUnavailable(f"continuation video is not registered: {relative}")
+        elif slots.start.kind == "grid_cell":
+            previous = find_storyboard_item(items, id_field, previous_id)
+            assert previous is not None
+            resolve_usable_storyboard_video_reference_images(
+                project_path=project_path,
+                project=project,
+                episode=episode,
+                resource_id=previous_id,
+                item=previous[0],
+                resolver=resolver,
+                claims=claims,
+            )
+    return slots

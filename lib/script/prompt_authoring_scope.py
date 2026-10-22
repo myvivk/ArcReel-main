@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from lib.script.grid.video_prompt_targets import video_prompt_text
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 
 #: 各条目形态的视觉层字段。参考生视频单元的正文即其视觉层。
@@ -40,7 +41,11 @@ def visual_field_filled(value: Any) -> bool:
 
 def visual_layer_complete(kind: str, item: Mapping[str, Any]) -> bool:
     """条目的视觉层字段都已写入内容。"""
-    return all(visual_field_filled(item.get(field)) for field in VISUAL_LAYER_FIELDS[kind])
+    return all(_field_filled(item, field) for field in VISUAL_LAYER_FIELDS[kind])
+
+
+def _field_filled(item: Mapping[str, Any], field: str) -> bool:
+    return bool(video_prompt_text(item)) if field == "video_prompt" else visual_field_filled(item.get(field))
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +72,7 @@ class PromptAuthoringSelection:
 def _fill_fields(kind: str, item: Mapping[str, Any]) -> tuple[str, ...]:
     if kind == "video_units":
         return VISUAL_LAYER_FIELDS[kind] if item.get(PENDING_AUTHORING_FIELD) is True else ()
-    return tuple(field for field in VISUAL_LAYER_FIELDS[kind] if not visual_field_filled(item.get(field)))
+    return tuple(field for field in VISUAL_LAYER_FIELDS[kind] if not _field_filled(item, field))
 
 
 def _limited_fields(kind: str, fields: Iterable[str] = ()) -> tuple[str, ...]:
@@ -109,9 +114,7 @@ def select_prompt_authoring(
             continue
         fill = tuple(field for field in _fill_fields(kind, item) if field in target_fields)
         if rewrite:
-            overwritten = tuple(
-                field for field in target_fields if field not in fill and visual_field_filled(item.get(field))
-            )
+            overwritten = tuple(field for field in target_fields if field not in fill and _field_filled(item, field))
             entries.append(AuthoringEntry(entry_id, target_fields, overwritten))
         elif fill:
             entries.append(AuthoringEntry(entry_id, fill))

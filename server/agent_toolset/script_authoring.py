@@ -108,9 +108,11 @@ INGEST_SHORT_DRAMA_ARTIFACTS = ToolDeclaration(
     name="ingest_short_drama_artifacts",
     description=(
         "短剧工厂唯一新交稿入口：将七类 Markdown 工件按传入相对路径原样写入 source/short_drama。"
-        "content_base64 必须是工件 UTF-8 原文的 Base64 编码；不解析、不重写、不生成原生剧本 JSON。"
+        "content_base64 必须是工件 UTF-8 原文的 Base64 编码；安全与质量校验后零改写保存，不生成原生剧本 JSON。"
+        "系列工件缺失时须随首批提交；每集同批必须提交分集规划、正文、机检报告与合规报告。"
+        "两类报告须有明确最终结论（结果: PASSED）；入库复跑完整单集与系列机检，失败整包拒绝。"
         "每集 episodes/episode_NN.md 会同时登记为该集 OWN 源文本（类型记作剧本），使分集页本集正文"
-        "与下游脚本规划建立在工厂正文上，而不是空起稿。允许路径：character-bible.md、series-outline.md、"
+        "与后续独立制作步骤读取工厂正文。集号至少补齐两位。允许路径：character-bible.md、series-outline.md、"
         "ledger.md、episode-plan/episode_NN.plan.md、episodes/episode_NN.md、reports/episode_NN.machine.md、"
         "compliance/episode_NN.compliance.md。"
     ),

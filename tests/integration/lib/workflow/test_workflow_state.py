@@ -35,6 +35,7 @@ from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
 from lib.project.resource_paths import resource_relative_path
 from lib.project.source_revision import SourceScope, compute_source_revision
 from lib.script.script_models import get_generated_assets
+from lib.script.short_drama_source import replace_short_drama_source
 from lib.script.storyboard_sequence import get_storyboard_items
 from lib.speech.narration_delivery import (
     TtsSynthesisSettings,
@@ -45,6 +46,90 @@ from lib.speech.speech_composition import admit_script_unit
 from lib.workflow.workflow_state import WorkflowStateService, planning_docs, workflow_finished
 from server.services.admission.asset_sheet_batch import AssetSheetScope, plan_asset_sheet_batch
 from tests.factories import register_project_sources
+
+
+def test_factory_source_without_visual_json_reports_assets_and_skips_native_planning(tmp_path: Path):
+    pm, project_path = _make_project(tmp_path, "drama")
+    pm.add_episode("demo", 1, "第一集", "scripts/episode_1.json")
+    replace_short_drama_source(pm, "demo", 1, "[人物]：张三（外观）\n[场景]：客厅｜白墙\n")
+    source_path = project_path / "source/short_drama/episodes/episode_01.md"
+    before = source_path.read_bytes()
+    status = WorkflowStateService(pm).get_status("demo", 1)
+    assert status.content.script_from_short_drama
+    assert status.content.formal_script == "absent"
+    assert status.content.unregistered_references == ["张三", "客厅"]
+    assert status.operations["prepare_script_plan"].state == "not_applicable"
+    assert status.artifacts["script_plan"]["state"] == "not_applicable"
+    assert status.gates["script_plan_review"]["state"] == "not_applicable"
+    assert status.next_action.type == "prepare_episode_assets"
+    assert status.next_action.args == {"episode_id": 1}
+    assert status.next_alternatives == []
+    assert source_path.read_bytes() == before
+    assert not (project_path / "scripts/episode_1.json").exists()
+
+
+def test_factory_source_without_assets_enters_ai_storyboard_planning(tmp_path: Path):
+    pm, _project_path = _make_project(tmp_path, "drama")
+    pm.add_episode("demo", 1, "第一集", "scripts/episode_1.json")
+    replace_short_drama_source(pm, "demo", 1, "无人物的黑屏开场。\n")
+    status = WorkflowStateService(pm).get_status("demo", 1)
+    assert status.next_action.type == "plan_short_drama_storyboards"
+    assert status.next_alternatives == []
+
+
+def test_factory_registered_asset_description_is_observed_without_visual_json(tmp_path: Path):
+    pm, _project_path = _make_project(tmp_path, "drama")
+    pm.add_episode("demo", 1, "第一集", "scripts/episode_1.json")
+    pm.add_character("demo", "张三", "")
+    replace_short_drama_source(pm, "demo", 1, "[人物]：张三（外观）\n")
+    status = WorkflowStateService(pm).get_status("demo", 1)
+    assert status.content.unregistered_references == []
+    assert status.content.referenced_assets_without_description == ["张三"]
+    assert status.content.referenced_assets_without_sheet == ["张三"]
+    assert status.next_action.type == "prepare_episode_assets"
+
+
+def test_factory_missing_video_prompt_ignores_native_drafts_and_keeps_confirmed_materials(tmp_path: Path):
+    from lib.script.grid.shot_grid_manager import ShotGridManager
+    from lib.script.grid.shot_models import ShotGrid
+
+    pm, project_path = _make_project(tmp_path, "drama")
+    pm.add_episode("demo", 1, "第一集", "scripts/episode_1.json")
+    source = replace_short_drama_source(pm, "demo", 1, "无人物的空镜。\n")
+    script = {
+        "episode": 1,
+        "title": "第一集",
+        "content_mode": "drama",
+        "short_drama_meta": {"source_path": source.path, "source_revision": source.revision},
+        "scenes": [_valid_drama_scene(video_prompt=None, pending_authoring=True)],
+    }
+    storyboard = resource_relative_path("storyboards", "E1S01")
+    script["scenes"][0]["generated_assets"]["storyboard_image"] = storyboard
+    _write_artifact(project_path, storyboard)
+    _write_registered_script(project_path, script)
+    _confirm_shot_grid(pm, project_path)
+    newer_grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id="E1S01", rows=3, cols=3)
+    newer_grid.status = "completed"
+    ShotGridManager(project_path).save(newer_grid)
+    draft = project_path / "drafts/episode_1/script_plan_scenes.json"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(draft, {"episode": 1, "scenes": []})
+    quarantine = script_review.script_plan_quarantine_path(project_path, pm.load_project("demo"), 1)
+    assert quarantine is not None
+    atomic_write_json(quarantine, {})
+
+    status = WorkflowStateService(pm).get_status("demo", 1)
+    assert status.content.script_from_short_drama
+    assert status.content.pending_authoring_ids == []
+    assert status.content.drafts == []
+    assert status.artifacts["script_plan"]["state"] == "not_applicable"
+    assert status.gates["script_plan_review"]["state"] == "not_applicable"
+    assert status.artifacts["shot_grids"]["current_ids"] == ["E1S01"]
+    assert status.artifacts["shot_grids"]["missing_ids"] == []
+    assert status.next_action.type == "author_video_prompts"
+    assert status.next_action.requested_ids == ["E1S01"]
+    assert (project_path / source.path).read_text(encoding="utf-8") == source.markdown
+    assert draft.exists()
 
 
 def _make_project(

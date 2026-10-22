@@ -44,6 +44,8 @@ from lib.project.asset_types import (
 )
 from lib.project.story_plan_docs import collect_story_plan
 from lib.references.reference_catalog import split_derivative_reference
+from lib.script.short_drama_import import parse_short_drama_episode
+from lib.script.short_drama_source import short_drama_source_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +124,16 @@ def scene_mentions(scene: dict[str, Any], asset_type: str, name: str) -> bool:
     return False
 
 
-def _short_drama_sources(project_dir: Path) -> list[Path]:
-    """``source/short_drama/`` 下的工厂 Markdown（系列级参考稿 + 单集原文）。"""
+def _short_drama_sources(project_dir: Path, episode: int | str | None = None) -> list[Path]:
+    """只读取工厂集正文，当前集优先；报告与系列设定不混入正文依据。"""
     root = project_dir / "source" / "short_drama"
-    return sorted(root.rglob("*.md")) if root.is_dir() else []
+    paths = sorted((root / "episodes").glob("episode_*.md"))
+    if not paths:
+        paths = sorted(root.glob("episode_*.md"))
+    if episode is not None:
+        wanted = project_dir / short_drama_source_relative_path(int(episode))
+        paths.sort(key=lambda path: (path != wanted, path.name))
+    return paths
 
 
 def _read_text(path: Path) -> str:
@@ -150,14 +158,16 @@ def _marker_lines(sources: list[Path], marker: str, name: str, limit: int = 8) -
     return hits
 
 
-def collect_script_source(project_dir: Path, asset_type: str, name: str) -> list[str]:
+def collect_script_source(
+    project_dir: Path, asset_type: str, name: str, *, episode: int | str | None = None
+) -> list[str]:
     """剧本（工厂源稿）里对该资产的记载：各集 ``[人物]/[场景]/[道具]`` 标记行原文。
 
     标记行形如 ``名称｜外观描述``——名字后面跟的就是外观，是生成描述的主素材：AI 据此**强化 /
     规范**，而不是凭空编外观。人物圣经、全剧大纲这类规划文档不算剧本，归
     :func:`server.services.story_plan_docs.collect_story_plan` 作第二优先级来源。
     """
-    sources = _short_drama_sources(project_dir)
+    sources = _short_drama_sources(project_dir, episode)
     marker = {"character": "人物", "scene": "场景", "prop": "道具"}.get(asset_type)
     if marker is None:
         return []
@@ -173,7 +183,31 @@ def _append_excerpts(
     limit: int,
     max_chars: int,
 ) -> None:
-    """把某集正式脚本里提到该资产的场景追加进 ``sink``，受条数与字符数双重上限约束。"""
+    """工厂集从原稿提取动作和台词；其他集读取既有脚本，均受预算限制。"""
+    number = episode_entry.get("episode")
+    source_path = project_dir / short_drama_source_relative_path(number) if type(number) is int and number > 0 else None
+    if source_path is not None and source_path.is_file():
+        parsed = parse_short_drama_episode(_read_text(source_path))
+        for block in parsed.blocks:
+            names = (
+                block.characters
+                if asset_type == "character"
+                else block.props
+                if asset_type == "prop"
+                else [block.location]
+            )
+            if name not in names:
+                continue
+            excerpt = {
+                "scene": block.location,
+                "scene_description": block.scene_appearance,
+                "dialogue": [beat.raw for beat in block.beats if beat.kind == "dialogue"],
+                "source_text": "\n".join(beat.raw for beat in block.beats),
+            }
+            if len(sink) >= limit or sum(len(str(item)) for item in sink) + len(str(excerpt)) > max_chars:
+                return
+            sink.append(excerpt)
+        return
     script_file = episode_entry.get("script_file")
     if not isinstance(script_file, str) or not script_file:
         return
@@ -244,7 +278,7 @@ def collect_asset_context(
         "existing": {k: entry.get(k) for k in ("description", "voice_style", ALIASES_FIELD, DERIVATIVES_FIELD)},
         "episode_excerpts": episode_excerpts,
         "other_excerpts": other_excerpts,
-        "script_source": collect_script_source(project_dir, asset_type, name),
+        "script_source": collect_script_source(project_dir, asset_type, name, episode=episode),
         "story_plan": collect_story_plan(project_dir, asset_type, name, episode=episode),
         "focus_episode": episode_key,
     }
@@ -253,6 +287,7 @@ def collect_asset_context(
 def _excerpt_block(excerpts: Sequence[Mapping[str, Any]]) -> str:
     return "\n\n".join(
         f"【场景】{ex.get('scene', '')}\n场景描写：{ex.get('scene_description', '')}\n"
+        + (f"原稿动作与台词：\n{ex['source_text']}\n" if ex.get("source_text") else "")
         + "\n".join(ex.get("dialogue") or [])
         for ex in excerpts
     )
@@ -359,8 +394,8 @@ def apply_asset_fill(entry: dict[str, Any], asset_type: str, name: str, fill: As
     supports_derivatives = bool(spec.supports_derivatives) if spec else False
     sheet_field = spec.sheet_field if spec else ""
     filled: list[str] = []
-    if not entry.get("description") and fill.description:
-        entry["description"] = fill.description
+    if not str(entry.get("description") or "").strip() and fill.description.strip():
+        entry["description"] = fill.description.strip()
         filled.append("description")
     if asset_type == "character" and not entry.get("voice_style") and fill.voice_style:
         entry["voice_style"] = fill.voice_style
@@ -422,7 +457,9 @@ async def fill_assets(
     async def _one(asset_type: str, name: str) -> tuple[tuple[str, str], AssetFillResponse]:
         spec = ASSET_SPECS[asset_type]
         bucket = (project.get(spec.bucket_key) or {}).get(name) or {}
-        context = collect_asset_context(project_dir, project, asset_type, name, bucket, episode=episode)
+        context = await asyncio.to_thread(
+            collect_asset_context, project_dir, project, asset_type, name, bucket, episode=episode
+        )
         async with semaphore:
             fill = await generate_asset_fill(project_name, asset_type, name, context)
         return (asset_type, name), fill
@@ -435,6 +472,9 @@ async def fill_assets(
             reason = "truncated" if isinstance(result, TextOutputTruncatedError) else "generation_failed"
             logger.warning("Asset fill failed: project=%s %s/%s reason=%s", project_name, target[0], target[1], reason)
             failed.append({"asset_type": target[0], "name": target[1], "reason": reason})
+            continue
+        if not result[1].description.strip():
+            failed.append({"asset_type": target[0], "name": target[1], "reason": "empty_description"})
             continue
         filled[result[0]] = result[1]
     return filled, failed

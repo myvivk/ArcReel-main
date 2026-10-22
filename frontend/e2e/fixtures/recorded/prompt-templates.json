@@ -105,6 +105,32 @@
         "output_schema": null
       },
       {
+        "id": "storyboard/shot_grid",
+        "category": "storyboard",
+        "title": "分镜参考素材宫格",
+        "description": "单个分镜的逐镜头关键帧宫格图。布局、风格锚点与纯净性约束由系统拼装，逐格文本来自弹窗编辑的宫格镜头提示词或 scene 现解析。",
+        "stage": "shot_grid",
+        "invoked_by": {
+          "kind": "generation_task",
+          "name": "shot_grid"
+        },
+        "applies_to": {},
+        "slots": {
+          "reference_images": "参考图类型声明，按随请求发出的参考图序位编号为「图N」；无参考图为空",
+          "rows": "宫格行数",
+          "cols": "宫格列数",
+          "cell_count": "画格总数",
+          "grid_aspect_ratio": "整张宫格图的比例",
+          "panel_aspect_ratio": "单个画格的比例，由整图比例与行列数算出",
+          "scene_opening": "分镜提示词 scene 的导语段，跨镜头的环境 / 光线 / 氛围基线；无导语为空",
+          "cells": "逐格内容（number、shot_size、text）",
+          "style": "项目画风",
+          "style_description": "项目风格描述"
+        },
+        "protected": false,
+        "output_schema": null
+      },
+      {
         "id": "storyboard/video",
         "category": "video",
         "title": "分镜视频",
@@ -753,7 +779,7 @@
         "id": "text/ad_storyboard_prompt_authoring",
         "category": "text",
         "title": "广告 / 短片 · 分镜提示词编写",
-        "description": "为广告分镜脚本里待编写的分镜补全画面与视频提示词（image_prompt / video_prompt）。",
+        "description": "为广告分镜脚本里待编写的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。",
         "stage": "prompt_authoring",
         "invoked_by": {
           "kind": "agent_tool",
@@ -863,7 +889,7 @@
         "id": "text/drama_prompt_authoring",
         "category": "text",
         "title": "剧情演绎 · 提示词编写",
-        "description": "为剧情演绎已定稿的分镜补全画面与视频提示词（image_prompt / video_prompt）。",
+        "description": "为剧情演绎已定稿的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。",
         "stage": "prompt_authoring",
         "invoked_by": {
           "kind": "agent_tool",
@@ -981,7 +1007,7 @@
         "id": "text/narration_prompt_authoring",
         "category": "text",
         "title": "旁白解说 · 提示词编写",
-        "description": "为旁白解说已定稿的分镜补全画面与视频提示词（image_prompt / video_prompt）。",
+        "description": "为旁白解说已定稿的分镜补全本次请求的视觉提示词字段（image_prompt 或 video_prompt）。",
         "stage": "prompt_authoring",
         "invoked_by": {
           "kind": "agent_tool",

@@ -35,6 +35,7 @@ from lib.artifacts.artifact_activation import active_artifact_currency_resolver
 from lib.artifacts.artifact_manifest import ArtifactManifestError
 from lib.generation.generation_queue import get_generation_queue
 from lib.infra.api_errors import ApiError, ConflictError, NotFoundError
+from lib.infra.async_thread import run_sync_transaction
 from lib.project.asset_types import (
     ASSET_SPECS,
     asset_name_comparison_key,
@@ -192,11 +193,14 @@ def episode_asset_names(
     的资产。
     """
 
-    script_names = script_asset_names(script) if script is not None else {}
+    source = load_short_drama_source(manager, project_name, episode)
+    if script is None and source is None:
+        return {asset_type: [] for asset_type in EPISODE_ASSET_TYPES}
+    script_names = script_asset_names(script) if script is not None and source is None else {}
     project_path = manager.get_project_path(project_name)
     groups: list[Mapping[str, Sequence[str]]] = [
         script_names,
-        source_markdown_asset_names(manager, project_name, episode),
+        marker_asset_names(source.markdown) if source is not None else {},
         episode_plan_asset_names(project_path, episode=episode),
     ]
     if include_project_story_plan:
@@ -217,7 +221,7 @@ def episode_assets_plan(manager: ProjectManager, project_name: str, episode: int
     project = manager.load_project(project_name)
     script = load_episode_script(manager, project_name, episode)
     names = episode_asset_names(manager, project_name, episode, script)
-    by_type = {asset_type: len(names.get(asset_type, [])) for asset_type in EPISODE_ASSET_TYPES}
+    by_type = dict.fromkeys(EPISODE_ASSET_TYPES, 0)
     try:
         resolver = active_artifact_currency_resolver(manager.get_project_path(project_name), project)
     except ArtifactManifestError:
@@ -235,9 +239,12 @@ def episode_assets_plan(manager: ProjectManager, project_name: str, episode: int
             key = resolve_asset_key(bucket, name) if isinstance(bucket, dict) else None
             entry = bucket.get(key) if isinstance(bucket, dict) and key is not None else None
             has_description = isinstance(entry, dict) and bool(str(entry.get("description") or "").strip())
+            missing_image = status_by_unit.get((asset_type, key or name), "missing") != "current"
+            if not has_description or missing_image:
+                by_type[asset_type] += 1
             if not has_description:
                 text_calls += 1
-            if status_by_unit.get((asset_type, key or name), "missing") != "current":
+            if missing_image:
                 image_calls += 1
     return {
         "total": sum(by_type.values()),
@@ -294,9 +301,13 @@ async def fill_episode_asset_descriptions(
 
     manager = get_project_manager()
     project = await asyncio.to_thread(manager.load_project, project_name)
-    script = load_episode_script(manager, project_name, episode)
-    names = episode_asset_names(manager, project_name, episode, script)
-    if script is None and not any(names.values()):
+
+    def _read_names():
+        script = load_episode_script(manager, project_name, episode)
+        return episode_asset_names(manager, project_name, episode, script)
+
+    names = await asyncio.to_thread(_read_names)
+    if not any(names.values()):
         return [], []
     targets = assets_without_description(project, names)
     if not targets:
@@ -323,7 +334,7 @@ async def fill_episode_asset_descriptions(
                 filled.append({"asset_type": asset_type, "name": asset_name})
 
     with project_change_source("webui"):
-        await asyncio.to_thread(manager.update_project, project_name, _mutate)
+        await run_sync_transaction(manager.update_project, project_name, _mutate)
     return filled, failed
 
 
@@ -340,7 +351,7 @@ async def generate_episode_assets(name: str, episode: int, user: CurrentUser, _t
     """
 
     try:
-        registered, conflicts = await asyncio.to_thread(register_episode_assets, name, episode)
+        registered, conflicts = await run_sync_transaction(register_episode_assets, name, episode)
         filled, fill_failed = await fill_episode_asset_descriptions(name, episode)
         _project, plan = await load_asset_sheet_batch_plan(
             get_project_manager(),

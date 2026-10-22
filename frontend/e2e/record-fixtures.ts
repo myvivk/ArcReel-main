@@ -52,6 +52,8 @@ const RECORDINGS: Recording[] = [
   { file: "projects", method: "GET", path: "/api/v1/projects" },
   { file: "project-demo", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}` },
   { file: "project-demo-story", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/story-planning` },
+  // 录制项目为 narration，工厂源稿接口按实际模式拒绝；drama 场景按需覆写。
+  { file: "project-demo-factory-source", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/episodes/1/short-drama-source`, status: 422 },
   // 工作区与集页的启动请求（项目事件流是 SSE，不录制，场景里按需替换）。
   { file: "tasks", method: "GET", path: "/api/v1/tasks?page_size=200" },
   { file: "project-demo-tasks", method: "GET", path: `/api/v1/tasks?page_size=200&project_name=${DEMO_PROJECT}` },

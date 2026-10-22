@@ -1,163 +1,65 @@
-# 短剧 Markdown 源稿与重新导入实现规格
+# 短剧工厂源稿与视觉制作
 
-本文记录短剧工厂 Markdown 从首次导入、持久化编辑、重新导入到后续视觉提示词编写的完整实现。修改短剧导入、剧本页、分镜页动作、正式脚本写入、资产登记或分集删除前，先阅读本文。
+修改短剧工件入库、源稿读取、资产准备、AI 分镜、参考素材、视频提示词或视频请求前，先阅读本文。功能要求以 `方案设计/` 中的六份方案为准；本文记录工程接口和跨步骤不变量。
 
-本文对应基线提交 `adce16372f7a0c5a5fbc950d0083de2fc1ca5187` 上的未提交实现。当前工作区源码是最终事实源；本文用于在相同基线上完整复建实现、审查行为是否缺失，以及在后续重构时保持契约。
+## 六步职责
 
-## 目标行为
+| 步骤 | 输入 | 输出 | 写入边界 |
+| --- | --- | --- | --- |
+| 工厂生成 | 创意简报、篇幅档位、全剧总集数、已有系列工件 | 七类 Markdown 工件 | 原样写入工件，并登记 OWN 集源文 |
+| 资产准备 | 本集源稿、人物圣经、大纲、连续性台账、分集规划 | 本集角色、场景、道具的登记、描述和资产图 | 项目资产表及资产文件 |
+| AI 分镜 | 已保存的本集源稿、已登记且有描述的资产 | 12–15 秒分镜段、分镜提示词、原稿锚点、动作与台词 | `scripts/episode_N.json` 视觉制作状态 |
+| 参考素材 | 分镜提示词、引用资产、宫格规格 | 宫格图、按时序编号的 K 帧、确认绑定 | 宫格记录、图片及视觉制作状态的素材绑定 |
+| 视频提示词 | 本集源稿、分镜提示词、已确认 K 帧的文本上下文 | `video_prompt` 与 `video_prompt_basis` | 对应分镜的视频提示词字段 |
+| 视频生成 | 已保存的视频提示词、已确认 K 帧、前镜接续来源、角色声音配置 | 视频及完整输入证据 | 视频文件、版本、清单与分镜视频产物字段 |
 
-短剧工厂生成的单集 Markdown 是该集的可编辑内容源稿。正式脚本是 Markdown 解析后的生产结构，不是源稿的替代品。
+工厂源稿是剧情与对白的唯一真相源。后五步只读源稿，不改写、不迁移源稿路径。`scripts/episode_N.json` 是派生的视觉制作状态，不称为工厂「正式脚本」。原生小说规划、事件提取、脚本内容确认不参与工厂生产。
 
-用户流程固定为：
+## 工件路径与入库
 
-1. 首次导入短剧 Markdown，或由短剧工厂生成后自动导入。
-2. 系统保存 Markdown 到项目目录，并生成正式剧情演绎脚本。
-3. 用户在集页「剧本」页签编辑 Markdown。
-4. 「保存源稿」只保存 Markdown，不修改正式脚本，解析失败的草稿也允许保存。
-5. 「重新导入」从已保存 Markdown 重建正式脚本。
-6. 用户进入「分镜」页签，短剧工厂源稿通过「AI 分镜」在导入期生成 `image_prompt`；「编写提示词」用于微调分镜提示词并编写 `video_prompt`。AI 分镜是唯一的分镜生成方式：没有「快速切分」入口，校验失败也没有机械回落。
-7. 用户显式触发分镜图和视频生成。
+工件相对 `source/short_drama/` 保存：
 
-重新导入不执行以下动作：
+| 类型 | 路径 |
+| --- | --- |
+| 人物圣经 | `character-bible.md` |
+| 全剧大纲 | `series-outline.md` |
+| 连续性台账 | `ledger.md` |
+| 分集规划 | `episode-plan/episode_NN.plan.md` |
+| 集正文 | `episodes/episode_NN.md` |
+| 机检报告 | `reports/episode_NN.machine.md` |
+| 合规报告 | `compliance/episode_NN.compliance.md` |
 
-- 不调用图像或视频生成供应商；文本模型仅用于智能分镜、内容优化与分镜提示词编写，不产出任何媒体文件。
-- 不生成分镜图或视频；分镜提示词（`image_prompt`，含景别/机位/运镜/视觉参考）由文本模型产出，`video_prompt` 仍留待宫格确认后生成。AI 校验不合格时**带原因持续返修**，返修穷尽仍不合格就直接报错（不产出骨架冒充 AI 结果）；工厂首次导入的机械骨架只是导入步骤的初始态，不是 AI 失败的回落。
-- 不把结构化正式脚本反向伪装成历史项目的原始 Markdown。
+`NN` 为至少两位的正整数集号。源稿路径由 `lib/script/short_drama_source.py` 统一提供；revision 为文件原始 UTF-8 字节的 SHA-256。
 
-## 核心不变量
+新工厂入口为 `generate_short_drama_factory` 和 `ingest_short_drama_artifacts`。生成调用用户配置的 FACTORY 文本任务，映射到 COMPLEX 强模型；Agent 负责初稿、医生精修、机检、返修、台账更新、系列机检和合规检查。
 
-实现和重构必须同时满足以下条件：
+`lib/short_drama_ingest.py` 在项目锁内校验完整批次。系列工件可复用已有版本；每个交付集必须同批包含规划、正文和两类报告。服务端复用工厂的 E1–E14 / S1–S7 机检，报告还须明确写出最终结论 `结果: PASSED`。空正文、不完整工件、机检失败或报告未通过均整批拒绝。
 
-1. Markdown 固定存储在 `source/short_drama/episode_{N}.md`。
-2. 源稿 revision 是文件原始 UTF-8 字节的 SHA-256 十六进制摘要。
-3. 正式脚本的 `short_drama_meta.source_path` 和 `short_drama_meta.source_revision` 必须指向本次解析使用的源稿。
-4. 单独保存源稿采用乐观并发控制；revision 不匹配返回 HTTP 409。
-5. 重新导入只接受当前已保存源稿的 revision，不接受请求体携带另一份 Markdown。
-6. 正式脚本、项目集索引和缺失资产登记在 `ProjectManager.save_script(..., project_update=...)` 的同一项目事务内提交。
-7. 正式脚本提交前，在项目锁内再次读取源稿并核对 revision；源稿在解析与提交之间变化时回滚脚本提交。
-8. 首次导入和批量导入必须登记脚本引用的角色、场景和道具。
-9. 已登记资产不覆盖；跨类型重名记录为 `asset_conflicts`，不破坏已有资产。
-10. 重新导入前检测现有分镜图和视频；存在媒体时必须由用户显式确认。
-11. 重新导入保留旧媒体文件，由 Artifact Manifest 将其判为 stale；不自动删除或重新生成媒体。
-12. 导入阶段不读取视频供应商能力。拆幕使用剧情窗口 `STORY_SCENE_WINDOW_SECONDS`（12–15 秒），不吸附视频档位；档位对齐交给生成期预检。
-13. 视频模型时长档位只在后续视频生成准入阶段校验。
-14. 历史导入没有 Markdown 时，接口返回 `exists=false`，页面明确提示用户重新粘贴；不得从 `source_text` 或正式脚本拼接伪造原稿。
-15. 删除分集时必须同时删除对应短剧 Markdown，并纳入正式文件回滚范围。
-16. `PATCH /script-scenes/{scene_id}` 必须允许保存 `scene_description`。
-17. 已导入短剧的分镜页隐藏「AI 原创剧本」「导入短剧工厂剧本」「AI 生成剧本」，只保留「编写提示词」和媒体生成入口。
-18. 在线程中写源稿或正式脚本必须使用 `run_sync_transaction`，请求取消也要等磁盘事务结算后再传播。
-20. 智能分镜仅调用文本模型，不调用图像/视频供应商；按源稿 revision 与强度缓存 AI scenes。**没有机械回落**：结构或丰满度校验失败时带原因返修（`_PLAN_ATTEMPTS` 轮），穷尽后抛 `short_drama_ai_planning_failed`，正式脚本不做半成品提交。`short_drama_meta.ai_storyboard_options.mode` 只有 `smart`（AI 分镜成功，含按分镜重写）/ `fast`（工厂首次导入的机械骨架，非用户可选）两态；按分镜重写时把所选 `scene_id` 写进同处 `regenerated_scene_ids`。动作动词判定词表（`_ACTION_WORDS`）宁宽勿窄——过窄会把合法提示词误判成「没有动作」，逼出无谓返修。
-19. 必须保留主线 `patch_episode_script` 的可选 `base_revision` 与 `update.fields` 工具说明，短剧工作流不得回退通用 Agent 编辑能力。
+工件原始字节与 OWN 源文登记在同一事务提交，失败回滚。入库不转制原生 JSON、不登记资产、不调用图像或视频生成。系列工件变化会发出项目更新事件，阅读器随后补拉。
 
-## 数据模型
+目标集须先由前端或 Agent 创建；没有集账本时工件仍可保存，但跳过该集的源文登记。
 
-### 源稿
+HTTP 前缀为 `/api/v1`：
 
-后端领域对象位于 `lib/script/short_drama_source.py`：
+- `GET /projects/{project_name}/short-drama/artifacts`：读取工件。
+- `POST /projects/{project_name}/short-drama/import-artifacts`：提交工件列表，每项为 `path` 和 `content_base64`。
+- `GET /projects/{project_name}/episodes/{episode}/short-drama-source`：读取本集源稿及分镜前置检查。
 
-```python
-@dataclass(frozen=True, slots=True)
-class ShortDramaSource:
-    episode: int
-    path: str
-    markdown: str
-    revision: str
-```
+源稿 GET 返回 `episode`、`path`、`markdown`、`revision`、`exists` 和 `assets_missing_description`。不存在时返回空文本、空检查列表与 `revision=null`，不得从 JSON 的 `source_text` 拼接原稿。
 
-路径函数：
+## 资产准备
 
-```python
-short_drama_source_relative_path(episode)
-# source/short_drama/episode_{episode}.md
-```
+资产集合从本集源稿与分集规划读取，不从派生 JSON 反推，也不把全系列资产混入本集。上下文包括 `character-bible.md`、`series-outline.md`、`ledger.md` 和当前集规划。
 
-`episode` 必须是正整数。源稿使用 UTF-8 编解码。`load_short_drama_source` 在文件不存在时返回 `None`。
+未登记或已登记但缺描述的本集资产阻断 AI 分镜。即使源稿已写外观，未登记资产也须先经过资产步骤；AI 分镜不会代为登记。跨类型同名按各自类型处理。
 
-### 正式脚本来源信息
+AI 补描述以源稿动作、台词和系列设定为依据。已有描述不覆盖，空白模型结果记单项失败。生成资产图前跳过已就绪资产，并展示本集实际预估。
 
-转换结果保留原有 `short_drama_meta` 字段，并增加：
+前端 `EpisodeAssetsView` 展示角色、场景、道具页签。唯一顶部生成入口经 `EpisodeAssetGenerateDialog` 确认后执行既有分步接口；动作通过 `frontend/src/actions/` 标记占用，成功后刷新项目。
 
-```json
-{
-  "short_drama_meta": {
-    "stage": "...",
-    "opening_hook": "...",
-    "emotion_flow": "...",
-    "structure": "...",
-    "mid_hook": "...",
-    "duration_seconds": 120,
-    "source_path": "source/short_drama/episode_1.md",
-    "source_revision": "<sha256>"
-  }
-}
-```
+## AI 分镜与重新分镜
 
-只要正式脚本存在字典型 `short_drama_meta`，前端和工作流就将其识别为短剧工厂导入集。
-
-## HTTP API
-
-路由统一位于 `server/routers/short_drama.py`，生产前缀为 `/api/v1`。
-
-### 读取源稿
-
-```http
-GET /projects/{project_name}/episodes/{episode}/short-drama-source
-```
-
-已有源稿：
-
-```json
-{
-  "episode": 1,
-  "path": "source/short_drama/episode_1.md",
-  "markdown": "第【1】集：标题\n...",
-  "revision": "<sha256>",
-  "exists": true,
-  "assets_missing_description": [
-    {"type": "character", "name": "林辰", "reason": "existing_blank"}
-  ]
-}
-```
-
-`assets_missing_description` 是分镜前置检查：本集源稿引用的资产里缺外观描述的清单。未登记且源稿也没写外观的记 `unregistered`，已登记但描述为空的记 `existing_blank`；未登记但源稿写明了外观的不拦（分镜时会随 `register_missing_assets` 连描述一起登记）。分镜入口据此在缺描述时置灰并提示先补齐。
-
-历史项目没有源稿：
-
-```json
-{
-  "episode": 1,
-  "path": "source/short_drama/episode_1.md",
-  "markdown": "",
-  "revision": null,
-  "exists": false
-}
-```
-
-项目必须存在、`content_mode` 必须是 `drama`、集 ID 必须存在。
-
-### 保存源稿
-
-```http
-PUT /projects/{project_name}/episodes/{episode}/short-drama-source
-Content-Type: application/json
-
-{
-  "markdown": "...",
-  "expected_revision": "<sha256-or-null>"
-}
-```
-
-语义：
-
-- `expected_revision=null` 只允许创建不存在的源稿。
-- 已有源稿时必须提交当前 revision。
-- revision 不匹配抛 `ShortDramaSourceConflict`，路由映射为 `ConflictError("short_drama_source_conflict")`。
-- 保存不解析 Markdown，不修改正式脚本。
-- 写入在 `ProjectManager.locked_source_mutation` 下执行，并通过 `atomic_write_bytes` 原子替换。
-
-成功响应与 GET 已有源稿响应相同。
-
-### 重新导入
+生产入口保留以下 URL 名称：
 
 ```http
 POST /projects/{project_name}/episodes/{episode}/short-drama-source/reimport
@@ -172,563 +74,94 @@ Content-Type: application/json
 }
 ```
 
-`regenerate_scene_ids` 非空时走「按分镜重写」：beat 分组从现有脚本 `source_text` 锚定（映射不上即 422），只让 AI 重写所选分镜的 `scene_description` / `image_prompt` / 时长，其余分镜原样保留（已生成的媒体、`video_prompt` 与手动编辑不会丢）；空/缺省 = 整体 AI 分镜。请求不再有 `fast_split`：AI 分镜是唯一路径。
+路由调用 `server/services/short_drama_workflow.py:import_short_drama_episode`，必须传 `save_source=False`、`ai_planning=True`。该路径仅调用文本模型，既不读取视频模型档位，也不生成媒体。
 
-成功响应：
+- 空 `regenerate_scene_ids` 表示整体分镜；非空表示只重写所选分镜。
+- `planning_strength` 为 1–3；强制重生成在全选与部分选择时均可用。
+- 同源、同强度且不强制重生成时可复用已有结果，并保留人工修改和媒体状态。
+- 部分重写保留未选分镜的全部状态，清空所选分镜旧的 `video_prompt`。
+- 有已有媒体且未确认影响时返回 409。
+- AI 结果必须覆盖所有 beat，保留动作、神态、台词与原始 `source_text`，每段按 12–15 秒组织。
+- 景别、机位、运镜、主体动作与神态分别校验；拒绝泛写、缺环境、未登记锚点、编号变化和高重复段落。
+- 校验失败带原因返修，最多 `_PLAN_ATTEMPTS` 轮；耗尽后失败，不用机械骨架回落。
 
-```json
-{
-  "episode": 1,
-  "scenes": 6,
-  "source_path": "source/short_drama/episode_1.md",
-  "source_revision": "<sha256>",
-  "registered_assets": {
-    "character": ["角色名"],
-    "scene": ["场景名"]
-  },
-  "asset_conflicts": [],
-  "declared_seconds": 48,
-  "actual_seconds": 40,
-  "duration_shortfall": true
-}
-```
+模型调用前冻结当前视觉状态的 canonical fingerprint。提交时在项目事务内复核源稿 revision、资产前提及视觉状态 fingerprint；任一变化都拒绝覆盖。正式文件写入使用 `run_sync_transaction`，请求取消也要等待事务结算。
 
-可选字段为空时不返回。声明时长与实际时长相等时，不返回三个时长诊断字段。
+成功响应由 `ShortDramaImportResult.as_dict()` 提供，包括集号、分镜数、源稿路径/revision、缓存与 AI 编写状态，以及适用的重写和时长诊断。
 
-拒绝条件：
+主要拒绝：
 
-- 源稿不存在：404，`short_drama_source_missing`。
-- revision 不一致：409，`short_drama_source_conflict`。
-- 已有分镜图或视频且 `confirm_artifacts=false`：409，`short_drama_reimport_confirmation_required`。
-- Markdown 解析失败：422，`short_drama_import_refused`，诊断包含解析原因。
-- AI 分镜返修穷尽仍不合格：422，`short_drama_import_refused`，诊断含最后一次校验原因；没有机械回落。
-- `regenerate_scene_ids` 含不存在的分镜、或本集还没有分镜：422，`short_drama_import_refused`。
-
-### 原有首次导入接口
-
-以下接口继续存在，并改为调用同一工作流：
-
-```http
-POST /projects/{project_name}/short-drama/import
-POST /projects/{project_name}/short-drama/import-batch
-```
-
-首次导入使用 `replace_short_drama_source` 无条件替换该集源稿，然后提交正式脚本。批量导入并发处理各集，但每集源稿写入和项目元数据更新由项目锁串行保护。
-
-## 后端实现
-
-### `lib/script/short_drama_source.py`
-
-该模块是源稿路径、revision 和文件写入的单一事实源，包含：
-
-- `ShortDramaSourceConflict`
-- `ShortDramaSource`
-- `short_drama_source_relative_path`
-- `load_short_drama_source`
-- `save_short_drama_source`
-- `replace_short_drama_source`
-
-`save_short_drama_source` 的 `expected_revision` 有三种语义：
-
-- 字符串：当前文件必须匹配该 revision。
-- `None`：当前文件必须不存在。
-- 私有 `_UNCONDITIONAL` 哨兵：兼容首次导入，允许替换。
-
-### `server/services/short_drama_workflow.py`
-
-该模块是 Web 和 Agent 共用的统一命令层，包含：
-
-- `ShortDramaWorkflowError(code, detail)`
-- `ShortDramaImportResult`
-- `_DEFAULT_SCENE_DURATION_SECONDS = 8`
-- `_import_scene_duration(project)`
-- `_require_episode(project, episode)`
-- `script_has_media_artifacts(script)`
-- `import_short_drama_episode(...)`
-
-`import_short_drama_episode` 的参数：
-
-```python
-async def import_short_drama_episode(
-    *,
-    project_name: str,
-    episode: int,
-    markdown: str,
-    projects: ProjectManager,
-    save_source: bool = True,
-    expected_source_revision: str | None = None,
-    confirm_artifacts: bool = True,
-    planning_strength: int = 2,
-    ai_planning: bool = False,
-    force_regenerate: bool = False,
-    regenerate_scene_ids: Sequence[str] = (),
-) -> ShortDramaImportResult:
-```
-
-`ai_planning=True` 时走文本模型规划：无机械回落，校验不合格带原因返修，穷尽后抛 `ShortDramaWorkflowError("short_drama_ai_planning_failed", ...)`。`regenerate_scene_ids` 非空时走 `_rewrite_selected_scenes`（按分镜重写，依赖 `lib.script.short_drama_import.scene_beat_groups` 把现有脚本 `source_text` 映射回 beat 分组）。模块另导出 `assets_missing_description(project, markdown)` 供 GET 源稿回带分镜前置检查结果。
-
-执行顺序不可改变：
-
-1. 在线程池加载项目。
-2. 校验项目模式和集 ID。
-3. 当 `confirm_artifacts=false` 时加载当前正式脚本，检测 `generated_assets.storyboard_image` 或 `generated_assets.video_clip`。
-4. 解析 Markdown。
-5. 用 `scene_window=STORY_SCENE_WINDOW_SECONDS`（12–15 秒）调用 `convert_to_drama_script`，不传 `supported_durations`，不吸附视频档位。
-6. 去掉 `short_drama_meta` 后用 `DramaEpisodeScript.model_validate` 做结构自检。
-7. 首次导入通过 `run_sync_transaction` 保存源稿；重新导入则重新读取已保存源稿，核对 revision 和 Markdown 内容。
-8. 把 `source_path/source_revision` 写入 `short_drama_meta`。
-9. 用 `referenced_asset_names` 收集资产引用。
-10. 通过 `run_sync_transaction` 调用 `ProjectManager.save_script`，传入 `project_update`。
-11. `project_update` 在项目锁内重新读取源稿并核对 revision，然后调用 `register_missing_assets`。
-12. 返回场景数、来源信息、资产登记结果和时长偏差。
-
-此函数不接收 capabilities/config resolver，也不得调用 `video_capabilities_for_project`。
-
-### `server/tool_runtime.py`
-
-`import_short_drama_script` 和 `import_short_drama_series` 只做 Tool Envelope 映射：
-
-- 调用 `import_short_drama_episode`。
-- 把 `ShortDramaWorkflowError` 转为 `ToolProblem`。
-- 批量导入对每集调用统一命令，并按 `continue_on_error` 汇总。
-
-删除旧的 `_register_short_drama_assets`、`_duration_shortfall`、`ShortDramaTierUnavailable` 和 `_short_drama_split_durations`，避免 Web 与 Agent 出现两套行为。
-
-`ImportShortDramaScriptRequest.markdown` 的工具说明必须明确：导入按剧情窗口 12–15 秒切幕，导入阶段不读取视频供应商能力。
-
-同样更新 `server/agent_toolset/script_authoring.py` 中 `IMPORT_SHORT_DRAMA_SCRIPT` 的说明。
-
-### `lib/script/short_drama_import.py`
-
-保留纯转换职责：
-
-- Markdown 解析为 `ParsedEpisode`。
-- 动作和神态写入 `scene_description`。
-- 台词写入 `utterances`。
-- 原始拍文本写入每幕 `source_text`。
-- 根据调用方传入的规划时长切幕。
-- `image_prompt` 和 `video_prompt` 置为 `None`。
-- `pending_authoring` 置为 `True`。
-
-`referenced_asset_names(script)` 返回：
-
-```python
-{
-    "character": [...],
-    "scene": [...],
-    "prop": [...],
-}
-```
-
-去重保序。实现使用 `Mapping`，循环变量不得命名为 `field`，避免遮蔽 `dataclasses.field`。
-
-### `server/routers/projects.py`
-
-`update_scene` 的 `allowed` 集合必须包含：
-
-```python
-"scene_description"
-```
-
-缺少该字段时，前端画面描述保存请求会返回成功但静默丢弃内容。
-
-### `lib/episode/episode_deletion.py`
-
-单集和批量删除的 `formal_paths` 都必须加入：
-
-```python
-project_dir / short_drama_source_relative_path(episode)
-```
-
-单集删除把该路径加入 `source_files`，提交钩子中删除。批量删除通过 `formal_paths` 去重后统一删除。这样源稿删除受 `formal_write_transaction` 回滚保护。
-
-## 前端实现
-
-### API 与动作层
-
-`frontend/src/api.ts` 增加：
-
-- `API.getShortDramaSource(projectName, episode)`
-- `API.updateShortDramaSource(projectName, episode, markdown, expectedRevision)`
-- `API.reimportShortDramaSource(projectName, episode, sourceRevision, confirmArtifacts)`
-
-`frontend/src/actions/shortDrama.ts` 增加：
-
-- `ShortDramaSource` 接口。
-- `reimportShortDramaSource(...)` 动作。
-
-动作成功后显示 `short_drama_source_reimported`，失败时使用 `errMsg` 显示服务端错误。
-
-### `DramaScriptContentView`
-
-`frontend/src/components/canvas/episode-page/DramaScriptContentView.tsx` 完全替换旧的逐场景正式脚本编辑器。
-
-组件职责：
-
-1. 按项目和集加载源稿。
-2. 默认显示「Markdown 源稿」。
-3. 提供「解析结果」只读页签。
-4. 使用 `useEditUnit<SourceValue>` 管理脏态、保存状态和离开保护。
-5. 保存时把 `saved.revision` 作为 `expected_revision`。
-6. 用 `revisionRef` 保存 PUT 返回的新 revision，保证紧接着重新导入使用最新 revision。
-7. 「重新导入」先执行 `unit.save()`；保存失败时不继续。
-8. 已有媒体时打开 `AlertDialog`，确认后传 `confirm_artifacts=true`。
-9. 重新导入成功后调用 `refreshAfterWrite(projectName, t)`。
-10. 只读解析结果展示场景 ID、时长、地点、角色、`scene_description` 和台词。
-
-关键状态：
-
-```ts
-interface SourceValue {
-  markdown: string;
-  revision: string | null;
-}
-```
-
-加载状态携带 `${projectName}:${episode}` key，异步响应只更新对应请求。`ShortDramaSourceWorkspace` 的 React key 只能使用项目和集，不能包含 revision；把 revision 放进 key 会在保存成功后重挂载组件，导致「源稿已保存」反馈立即消失。
-
-历史项目 `source.exists=false` 时显示说明，编辑器为空；「解析结果」仍展示现有正式脚本。
-
-### `EpisodePage`
-
-当：
-
-```ts
-script?.content_mode === "drama" && script.short_drama_meta != null
-```
-
-「剧本」页签渲染 `DramaScriptContentView`。传入：
-
-- `script`
-- `projectName`
-- `episode`
-- `readOnly`
-- `hasArtifacts`
-
-不再传 `scriptFile` 和集账本。短剧集的 source 页签显示名仍为「剧本」。
-
-### 分镜页动作
-
-`frontend/src/components/canvas/timeline/TimelineCanvas.tsx` 派生：
-
-```ts
-const importedShortDrama =
-  editorContentMode === "drama" &&
-  (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null;
-```
-
-只有 `!importedShortDrama` 时才显示：
-
-- `ShortDramaGenerateButton`，文案「AI 原创剧本」。
-- `ShortDramaImportButton`，文案「导入短剧工厂剧本」。
-- `ShortDramaVisualButton`，文案「AI 生成剧本」。
-
-已导入短剧保留通用 `PromptAuthoringButton`。页头的「编写提示词」作用于待编写范围；场景内同名按钮作用于当前场景，两者不是重复状态。
-
-### 批量导入标题
-
-`frontend/src/components/canvas/shared/ShortDramaImportDialog.tsx` 导出：
-
-```ts
-export function parseShortDramaBatch(...)
-```
-
-标题正则必须同时匹配短剧工厂原生格式和旧的普通格式：
-
-```ts
-const HEADER_RE = /^(?:#\s*)?第\s*[【[]?\s*(\d+)\s*[】\]]?\s*集(?:[：:\s]|$)/;
-```
-
-至少支持：
-
-- `第【1】集：标题`
-- `# 第 1 集 标题`
-
-导入和批量建集后的项目刷新统一使用 `refreshAfterWrite`，不得直接丢弃 `refreshProject` 的结算值。
-
-### 多语言
-
-以下 key 必须同时存在于 `frontend/src/i18n/en/dashboard.ts`、`vi/dashboard.ts` 和 `zh/dashboard.ts`：
-
-```text
-short_drama_source_loading
-short_drama_source_blank
-short_drama_source_save_first
-short_drama_source_leave_title
-short_drama_source_save
-short_drama_source_reimport
-short_drama_source_tabs_aria
-short_drama_source_tab
-short_drama_parsed_tab
-short_drama_source_legacy
-short_drama_source_artifacts_hint
-short_drama_source_placeholder
-short_drama_source_editor_aria
-short_drama_source_saved
-short_drama_reimport_confirm_title
-short_drama_reimport_confirm_description
-short_drama_reimport_confirm
-short_drama_source_reimported
-```
-
-批量导入 placeholder 必须示例 `第【N】集：标题`，不能只写无法被工厂原文匹配的英文 Episode 格式。
-
-以下后端错误 key 必须同时存在于 `lib/i18n/en/errors.py`、`vi/errors.py` 和 `zh/errors.py`：
-
-```text
-short_drama_source_missing
-short_drama_source_conflict
-short_drama_reimport_confirmation_required
-```
-
-## 文件清单
-
-### 新增
-
-- `lib/script/short_drama_source.py`
-- `server/services/short_drama_workflow.py`
-- `tests/integration/server/routers/test_short_drama_router.py`
-- `frontend/src/components/canvas/shared/ShortDramaImportDialog.test.ts`
-- `docs/agents/short-drama-markdown-reimport.md`
-
-### 修改
-
-- `AGENTS.md`
-- `lib/script/short_drama_import.py`
-- `lib/episode/episode_deletion.py`
-- `lib/i18n/{en,vi,zh}/errors.py`
-- `server/routers/short_drama.py`
-- `server/routers/projects.py`
-- `server/tool_runtime.py`
-- `server/agent_toolset/script_authoring.py`
-- `tests/integration/server/test_tool_runtime_short_drama.py`
-- `tests/integration/server/agent_toolset/test_host_consistency.py`
-- `frontend/src/api.ts`
-- `frontend/src/actions/shortDrama.ts`
-- `frontend/src/components/canvas/episode-page/DramaScriptContentView.tsx`
-- `frontend/src/components/canvas/episode-page/EpisodePage.tsx`
-- `frontend/src/components/canvas/shared/ShortDramaImportDialog.tsx`
-- `frontend/src/components/canvas/timeline/TimelineCanvas.tsx`
-- `frontend/src/i18n/{en,vi,zh}/dashboard.ts`
-- `tests/integration/lib/episode/test_episode_management.py`
-- `tests/integration/server/routers/test_projects_script_edit_endpoints.py`
-- `frontend/src/components/canvas/timeline/TimelineCanvas.test.tsx`
-
-## 复建顺序
-
-按以下顺序实施；每一步满足完成条件后再继续。
-
-1. 实现 `short_drama_source.py`。
-   完成条件：固定路径、SHA-256 revision、原子写入和 revision 冲突测试可独立成立。
-2. 实现 `short_drama_workflow.py`。
-   完成条件：单集导入能同时生成正式脚本、写来源元信息并登记资产；能力解析器即使配置为调用即抛错，导入仍成功。
-3. 接入 Tool Runtime 和 Web Router。
-   完成条件：首次导入、批量导入、GET、PUT、reimport 五条路径共用同一转换提交逻辑。
-4. 补正式脚本编辑和分集删除边界。
-   完成条件：`scene_description` 可保存；删除集后短剧源稿不存在。
-5. 实现 API、动作层和源稿工作区。
-   完成条件：源稿可保存、刷新后仍存在、revision 冲突可见、解析结果只读。
-6. 收敛分镜页动作。
-   完成条件：已导入短剧不存在三个内容创建按钮，存在「编写提示词」。
-7. 修复批量标题解析和多语言。
-   完成条件：原生 `第【N】集：标题` 和旧格式都能拆分。
-8. 执行测试和浏览器验收。
-   完成条件：下节全部通过。
-
-## 测试与验收
-
-后端定向测试：
-
-```bash
-uv run python -m pytest -q \
-  tests/integration/server/routers/test_short_drama_router.py \
-  tests/integration/server/routers/test_projects_script_edit_endpoints.py::TestProjectsRouter::test_scene_segment_and_overview_endpoints \
-  tests/integration/lib/episode/test_episode_management.py::TestDelete::test_delete_removes_short_drama_markdown_source
-```
-
-必须覆盖：
-
-- 历史项目 GET 返回 `exists=false`。
-- 首次 PUT 成功，旧 revision PUT 返回 409。
-- reimport 使用已保存源稿。
-- 正式脚本包含 `source_path/source_revision`。
-- 角色和场景完成资产登记。
-- 初次导入持久化 Markdown。
-- 已有媒体时未确认返回 409，确认后成功。
-- 视频能力替身设置为调用即抛错，所有导入测试仍通过。
-- `scene_description` PATCH 后真实落盘。
-- 删除集时源稿删除。
-
-前端定向测试：
-
-```bash
-cd frontend
-pnpm exec vitest run \
-  src/components/canvas/shared/ShortDramaImportDialog.test.ts \
-  src/components/canvas/timeline/TimelineCanvas.test.tsx
-pnpm typecheck
-pnpm lint
-```
-
-浏览器验收：
-
-1. 打开短剧导入集的 `?view=source`。
-2. 默认页签为「Markdown 源稿」，编辑器显示项目源稿。
-3. 初始「保存源稿」禁用；修改后启用。
-4. 保存后显示「源稿已保存」，刷新后内容保持。
-5. 「解析结果」显示正式脚本场景。
-6. 无视频供应商时点击「重新导入」成功，不出现视频模型档位错误。
-7. 有媒体时出现覆盖影响确认。
-8. 进入 `?view=board`，确认「AI 原创剧本」「导入短剧工厂剧本」「AI 生成剧本」均不存在。
-9. 页头保留「编写提示词」，随后可显式补齐分镜图和视频。
-
-## 当前实现文件指纹
-
-以下 SHA-256 对应基线 `adce16372f7a0c5a5fbc950d0083de2fc1ca5187` 上完成冲突整合后的整文件。共享文件可能包含同一工作区的故事规划改动，复建时以行为契约和测试为主，以指纹做当前快照的字节级验收。
-
-```text
-e0eb846f1fab8add9c66ad98ec06afeb9badbe3972d07b34d1ba74a4ea7b418e  lib/script/short_drama_source.py
-0a006f0f348892b1943ce8c2b030903c86e56b523e4c70591b59ce445166e6e5  server/services/short_drama_workflow.py
-c83625e4940917ea778025b0221771b0e95dd799b0a02f4460f1148363890999  server/routers/short_drama.py
-2d32c13ea6611c989356f100343f221a69c55d0ed2cdc477c209eb7e7b7db307  server/tool_runtime.py
-7997111b87dffbd809553410aa774b125b8f82757cdb1abadf521e819cfbb41d  lib/script/short_drama_import.py
-2699feddfb658f7421c0f381baee128dc6aa2c1061f8670e48bf81d178544458  frontend/src/actions/shortDrama.ts
-7f91f92bf91bdbda6f0601b567af5007d1157b86970fbddf2d58d01ac33fcc1e  frontend/src/api.ts
-5a59885b0fd341a336a0b43e40584476fa1c496fbbdceab0ece19f9ec206274d  frontend/src/components/canvas/episode-page/DramaScriptContentView.tsx
-e6aab9ce1b0a008af59760f37e9a08bdfa7f879bdc1818eb382003b232b1c6a3  frontend/src/components/canvas/shared/ShortDramaGenerateDialog.tsx
-bcc8f0b05cbbb5eea82a99c208fe3a6bb2cd0c5ec59ead9da8a1fb2658d76814  frontend/src/components/canvas/shared/ShortDramaImportDialog.tsx
-b602faf9430ba0a283c216dd9a500765e10fafb6aedfcd7de82b1974b5a09e66  frontend/src/components/canvas/timeline/TimelineCanvas.tsx
-adc2d7bf827f713453d4ad5662bb0f11e21b660a766f9132bb05beebd18b285d  tests/integration/server/routers/test_short_drama_router.py
-08fbff7db0c2c213698ffd9f5e4111e2237b9e5984105eb1a4a85bfc8fa11e66  tests/integration/server/test_tool_runtime_short_drama.py
-85bcbd7c8bf7b9109eaf75bc2056b5a2f903236ce512b6b5378e2265a450acb2  tests/integration/server/agent_toolset/test_host_consistency.py
-76a61a39d320b563a3e1f79e9366ebf95a7b02455bec631128cdd58cc28466d3  frontend/src/components/canvas/shared/ShortDramaImportDialog.test.ts
-91ad8440547c581f8d18d92223cab917fc963854954f8bfec8bc20c2eadadc0d  frontend/src/components/canvas/timeline/TimelineCanvas.test.tsx
-```
-
-## 常见错误实现
-
-- 在重新导入时调用 `video_capabilities_for_project`：会让纯文本转换错误依赖供应商配置。
-- 保存 Markdown 时立即解析：会导致用户无法保留暂时不合法的草稿。
-- 把 PUT 与 reimport 合并成一个动作：用户无法区分保存草稿和应用到正式脚本。
-- 从正式脚本的 `source_text` 拼接历史 Markdown：会伪造已丢失的标题、元信息、空行和原始格式。
-- 只更新脚本，不登记资产：后续资产图和生成入口会因引用未登记而失败。
-- 先写脚本、再独立更新项目资产：第二步失败会留下半提交状态。
-- 解析后不在项目锁内复核源稿 revision：并发保存可能让正式脚本对应旧源稿。
-- 用 revision 作为 React key：保存成功后组件重挂载，保存反馈消失。
-- 已导入短剧仍展示三个内容创建按钮：会把已经完成的内容导入误导为待执行步骤。
-- 删除集时遗漏嵌套源稿：项目目录会积累孤儿文件。
-
-## 工厂转写方案追加（道具 / 密度 / 外观 / AI 分镜入口）
-
-对应 `方案设计/2. 工厂转写方案.md`，在上一节契约之上追加以下行为：
-
-### 标记行格式
-
-```text
-[场景]：内景·仓库·夜｜水泥地，铁门单侧顶光     ← 「｜」后是场景外观
-[人物]：林辰（隐忍龙王｜三十岁上下，寸头，旧夹克磨白）  ← 「｜」后是角色外观，且须与人物圣经【外形】逐字一致
-[道具]：铁门｜锈迹斑斑，门轴下垂                ← 一个道具一行，「｜」后是外观
-```
-
-`｜` 同时接受半角 `|`。角色括号内没有 `｜` 时只算状态标签，外观为空；导入器据此不写 `description`。
-`[道具]` 只登记本幕动作或台词里真正出现的道具，避免"建了资产但画面里没有"。
-
-### 机检 E12–E14
-
-判定在两处实现且必须同源：
-
-- 工厂脚本 `agent_runtime_profile/.claude/skills/short-drama-factory/scripts/validate_episode.py`
-  （独立 `python3` 运行，`--bible references/character-bible.md` 启用 E14 逐字比对）。
-- 服务端 `lib/short_drama_quality.py`，由 `lib/short_drama_ingest.py` 在工件落盘前调用。
-
-| 规则 | 判定 | 级别 |
+| HTTP | 错误 | 含义 |
 | --- | --- | --- |
-| E12 | `△` 动作行 + 台词行 ≥ `ceil(本集秒数 ÷ 2)` | fail |
-| E13 | `[道具]` 行缺 `｜`/名称/外观、同集重复登记 | fail |
-| E13 | 道具与角色或场景重名、已登记但未进戏 | warn |
-| E14 | `[人物]` 行「｜」后外观 < 8 字、与人物圣经不一致、圣经里没有该角色 | fail |
+| 404 | `short_drama_source_missing` | 源稿不存在 |
+| 409 | `short_drama_source_conflict` | 源稿在执行期间变化 |
+| 409 | `short_drama_script_conflict` | 视觉制作状态在执行期间变化 |
+| 409 | `short_drama_reimport_confirmation_required` | 需确认已有媒体影响 |
+| 422 | `short_drama_import_refused` | 缺资产前提、解析失败或 AI 返修耗尽，详情附原因 |
 
-一致性由 `tests/unit/lib/test_short_drama_quality_parity.py` 守：同一批 fixture 分别跑 CLI 与 `check_episode`，逐条比对 `E12/E13/E14` 输出。
-工件包内任一集 FAIL 时整包拒绝（`ShortDramaArtifactError`），一个字节都不写入。
+## 参考素材与视频提示词
 
-### 导入回执 `assets_without_description`
+参考素材编辑器保存才落盘；取消、Esc、关闭和 AI 回填都不保存。手写格数必须与规格一致，不截尾、不自动补成另一规格。生成与确认分别执行，确认前不得编写视频提示词。
 
-导入与重新导入在成功响应里追加：
+确认按宫格、切图、复制、绑定与清单登记的同一事务提交。`cell_paths` 从 `cells` 派生，顺序即 K0…Kn；解除确认解绑但保留图片。规格变化才重置出图，未变化的保存保留实际切图。
 
-```json
-"assets_without_description": [
-  {"type": "character", "name": "林辰", "reason": "source_missing"},
-  {"type": "prop", "name": "铁门", "reason": "existing_blank"}
-]
-```
+同分镜存在多个宫格记录时，`select_shot_grids` 统一按脚本显式绑定、confirmed、completed、最新的顺序选择；绑定缺失时不冒用其他记录。工作流、提示词生成和路由共用这个选择器。可消费的参考素材仅认 confirmed。
 
-`source_missing` 指源稿没给外观，`existing_blank` 指资产已在项目里但描述为空。列表为空时不返回该字段。
-前端单集/批量导入在拿到回执后追加一条 warning toast。
+视频提示词独立生成，输入包括源稿、当前分镜提示词和同一冻结宫格的 K 帧文本上下文。正文 K 引用与包装字段均校验。提交前复核完整宫格、图片 SHA、源稿身份和视觉状态 fingerprint；只写视频字段，不重写上游。
 
-### AI 补全上下文（`ai-fill`）
+`video_prompt_basis` 记录源稿、分镜与素材依据。素材变化后提示建议重写；视频请求仍按当前实际图片组织，不静默裁剪。
 
-`server/routers/_asset_router_factory.py` 的 `_collect_asset_context` 增加 `canon`：
+## 视频输入与连续性
 
-- 角色：人物圣经里该角色的整段（`【角色】：名字` 到下一个角色前）。
-- 场景：全剧大纲里提到该场景的一行 + 各集 `[场景]` 标记行。
-- 道具：各集 `[道具]` 标记行（带文件名）。
+`lib/script/storyboard_sequence.py` 纯解析完整单集顺序，`lib/script/storyboard_video_request.py` 统一输出声明、资产链接、声音顺序与图片证据。
 
-提示词里 canon 以「【项目设定｜优先依据】」出现，优先级：项目设定 > 剧本摘录 > 题材补全。
+| 槽位 | 有前镜接续来源 | 首镜或接续来源缺失 |
+| --- | --- | --- |
+| `start_image` | 前镜成片实际尾帧 → 前镜用户快照 → 前镜宫格末格 | 本镜 K0，无宫格则分镜图 |
+| `reference_images` | 本镜 K0…K(n-1) | 本镜 K1…K(n-1) |
+| `end_image` | 本镜 Kn | 本镜 Kn；仅一格时省略 |
 
-### 分镜页入口
+无宫格仅发送首帧。每格只占一个槽，不重复下发首末格。worker 才抽取前镜成片的实际尾帧，预览不抽帧、不写盘。抽帧缓存不覆盖用户快照。
 
-- `ShortDramaStoryboardButton`（`components/canvas/shared/`）：已导入短剧集在分镜页页头显示「AI 分镜」/「AI 重新分镜」，提交即 `reimportShortDramaSource`，成功后弹窗内显示分镜数、缺描述黄条与「去补描述」。交互约定（2026-10-21 用户拍板）：
-  - **缺描述置灰**：挂载即拉取源稿，`assets_missing_description` 非空时按钮 disabled，tooltip 提示缺哪些资产、先补齐再分镜；不再有「AI 补齐缺描述资产」勾选。
-  - **按分镜重生成**：已有分镜时弹窗列出分镜复选框（默认全选）。全选 = 整体 AI 分镜；只勾选部分 = 按分镜重写（`regenerate_scene_ids`），未勾选分镜原样保留。
-  - **AI 唯一路径**：没有「智能切分 / 快速切分」二选一，没有机械回落；校验失败由后端返修，穷尽后报错展示给用户。
-- `FactoryStoryboardStart`：工厂集还没转写时，分镜页空态从「请在左侧选择剧集」换成生成入口 + 「先看剧本」。
-- `EpisodePage` 把 `hasShortDramaSource` 注入 `EpisodeCanvasContext`，`StudioCanvasRouter` 再传给 `TimelineCanvas` / `GridImageToVideoCanvas`。
-- 剧本页移除「重新导入」按钮，只留「保存源稿」，并在已有媒体时提示入口已移到分镜页。
+`EndFrameRow` 的 upload/select/clear 三个端点、`end_frames/scene_{id}.png` 路径和本镜的 `end_frame_image` 字段保留。快照供下一镜的 `start_image` 消费，本镜 `end_image` 来自宫格末格，因此快照入口不按模型尾帧能力告警。
 
-### 追加多语言 key
+准入使用重新投影后的实际参考数组长度；超限整批零入队，付费前再次校验。选中子集也必须传完整单集顺序，不能把子集第一镜误判为首镜。K 引用必须属于实际下发编号，无宫格时任何 K 引用都非法。
 
-```text
-short_drama_ai_storyboard
-short_drama_ai_restoryboard
-short_drama_ai_storyboard_title
-short_drama_ai_restoryboard_title
-short_drama_ai_storyboard_desc
-short_drama_ai_storyboard_source
-short_drama_ai_storyboard_source_missing
-short_drama_ai_storyboard_overwrite
-short_drama_ai_storyboard_scenes_label
-short_drama_ai_storyboard_select_all
-short_drama_ai_storyboard_scenes_hint
-short_drama_storyboard_blocked_missing
-short_drama_ai_storyboard_submit
-short_drama_ai_restoryboard_submit
-short_drama_ai_storyboard_result
-short_drama_ai_storyboard_partial_result
-short_drama_ai_storyboard_missing
-short_drama_ai_storyboard_fix_missing
-short_drama_ai_storyboard_close
-short_drama_storyboard_empty
-short_drama_storyboard_empty_hint
-short_drama_storyboard_view_script
-short_drama_asset_character
-short_drama_asset_scene
-short_drama_asset_prop
-short_drama_reimport_moved_hint
-short_drama_imported_one_missing_descriptions
-short_drama_imported_batch_missing_descriptions
-```
+音色复刻按角色台词 speaker 首现顺序去重，正文「音频 N」与真实文件同序。per-image 绑定只使用宫格格文本中显式的角色提及；映射到实际参考数组下标，缺证据拒绝。音频段数和总时长沿用能力硬闸。
 
-已删除的 key（不得再引用）：`short_drama_ai_storyboard_overwrite_confirm`、`short_drama_ai_storyboard_autofill`、`short_drama_ai_storyboard_autofill_hint`、`short_drama_ai_storyboard_filling`、`short_drama_ai_storyboard_filled`、`short_drama_ai_storyboard_smart_split`、`short_drama_ai_storyboard_fast_split`、`short_drama_ai_storyboard_fallback`。
+视频版本、checkpoint 与 currency 保留全量图片来源、每格 K 编号、宫格 ID/规格/整图 SHA、资产身份链接及声音依据。付费前复核前镜和本镜依赖、源文件 SHA 和最终文本，禁止并发替换后仍按旧输入计费。
 
-### 追加测试
+方案 6 的 R19 下发措辞及资产链接格式仍属草案，需要实际供应商验证；R20 存量 `reference_video` 处置尚未定，不能自行选择迁移或删除。
 
-```bash
-uv run python -m pytest -q -p no:timeout \
-  tests/unit/lib/test_short_drama_quality.py \
-  tests/unit/lib/test_short_drama_quality_parity.py \
-  tests/unit/lib/test_short_drama_ingest.py \
-  tests/unit/lib/script/test_short_drama_import.py \
-  tests/unit/server/routers/test_asset_router_factory.py \
-  tests/integration/server/routers/test_short_drama_router.py
-python agent_runtime_profile/.claude/skills/short-drama-factory/scripts/validate_episode.py --self-test
-```
+## 页面与工作流
+
+- 工厂身份按实际非空 Markdown 判断，不能只看 `short_drama_meta` 或 JSON 是否存在。
+- 「故事规划」和单集「剧本」只读展示工件原文；项目更新、集切换后重新读取，网络请求用 AbortSignal 取消。
+- 无 JSON 时也计算本集资产缺口，下一步为 `prepare_episode_assets` 或 `plan_short_drama_storyboards`。
+- 这两个动作导航至现有资产/分镜视图，不增加另一套 MCP 生产工具。
+- 工厂不受原生 episode plan、script plan、内容确认或旧待修复草稿影响。
+- 分镜提示词已齐、仅缺视频提示词时进入 `author_video_prompts`，不回到 AI 分镜。
+- 工厂时间线与工作流隐藏重复的独立分镜图生成步骤，参考素材是对应媒体入口。
+- AI 分镜开窗和提交均校验只读、占用与资产前提；写入成功后才刷新，刷新失败只重试刷新，不重复提交。
+
+## 兼容接口
+
+旧 `short-drama/import`、`short-drama/import-batch` 和源稿 PUT 保留给历史入口，其显式兼容契约不得成为新工厂生产入口。旧导入可以生成机械结构并登记资产，新工厂交稿只能走完整工件入库。
+
+读取源稿优先现行路径，不存在时兼容 `source/short_drama/episode_N.md`。不得因旧路径存在而迁移或覆盖工厂源稿。没有源稿的历史集仍用已有兼容界面，不伪造 Markdown。
+
+主线 `patch_episode_script` 的 `base_revision` 与 `update.fields` 能力保留。删除集须将对应源稿纳入正式文件回滚范围；相关改动另读项目迁移与删除契约。
+
+## 校验
+
+按 `docs/agents/testing.md` 运行改动对应的真实测试，最后运行 `AGENTS.md` 的完整闸门。重点覆盖：
+
+- 工件完整批次、机检同源、报告结论、原样字节和事务回滚。
+- 无 JSON 的工厂源稿阅读、资产集合、描述前提与原生规划隔离。
+- AI 全量/部分重写、缓存、无机械回落及源稿/视觉状态并发冲突。
+- 宫格取消不保存、规格与格数硬匹配、确认/解除确认与任务失败恢复。
+- confirmed 唯一消费前提、同镜多记录选择、K 引用与视频提示词提交复核。
+- 全单集前镜上下文、槽位去重、实际尾帧抽取、音频顺序与整批超限零入队。
+- 付费前依赖变更拒绝，以及前镜、全部 K 帧和整图变化的 currency 判断。
+
+响应形状变化后运行 `pnpm e2e:record`，页面及滚动变更运行 `pnpm e2e`。浏览器核对六步入口、只读源稿、弹窗取消与关闭、占用状态、成功后的刷新和失败后的恢复。

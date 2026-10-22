@@ -27,6 +27,7 @@ STORY_PLAN_FILES: dict[str, tuple[str, ...]] = {
     "character_bible": ("character-bible.md", "character_bible.md", "人物圣经.md"),
     "series_outline": ("series-outline.md", "series_outline.md", "outline.md", "全剧大纲.md"),
     "continuity_ledger": (
+        "ledger.md",
         "continuity-ledger.md",
         "continuity_ledger.md",
         "continuity.md",
@@ -54,7 +55,8 @@ _MARKER_LIMIT = 8
 _HIT_LINE_LIMIT = 6
 
 _CHARACTER_ROLE_RE = re.compile(r"^\s*【角色】[：:]\s*(.+)$")
-_EPISODE_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?第\s*([0-9]+)\s*集")
+_EPISODE_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?第\s*[【\[]?\s*([0-9]+)\s*[】\]]?\s*集")
+_EPISODE_PLAN_FILE_RE = re.compile(r"episode_(\d+)\.plan\.md")
 
 
 def _read_text(path: Path) -> str:
@@ -72,11 +74,27 @@ def story_plan_documents(project_dir: Path) -> dict[str, list[Path]]:
     if not root.is_dir():
         return found
     for path in sorted(root.rglob("*.md")):
+        if path.is_symlink():
+            continue
         lowered = path.name.lower()
+        if path.parent == root / "short_drama" / "episode-plan" and _EPISODE_PLAN_FILE_RE.fullmatch(lowered):
+            found.setdefault("episode_plan", []).append(path)
+            continue
         for kind, names in STORY_PLAN_FILES.items():
             if lowered in names:
                 found.setdefault(kind, []).append(path)
                 break
+    for kind, filename in (
+        ("character_bible", "character-bible.md"),
+        ("series_outline", "series-outline.md"),
+        ("continuity_ledger", "ledger.md"),
+    ):
+        canonical = root / "short_drama" / filename
+        if canonical in found.get(kind, []):
+            found[kind] = [canonical]
+    individual_plans = [path for path in found.get("episode_plan", []) if _EPISODE_PLAN_FILE_RE.fullmatch(path.name)]
+    if individual_plans:
+        found["episode_plan"] = individual_plans
     return found
 
 
@@ -122,6 +140,9 @@ def story_plan_sections(project_dir: Path, kind: str, *, episode: int | str | No
 
     sections: list[tuple[Path, str]] = []
     for path in story_plan_documents(project_dir).get(kind, []):
+        file_episode = _EPISODE_PLAN_FILE_RE.fullmatch(path.name) if kind == "episode_plan" else None
+        if file_episode and episode is not None and int(file_episode.group(1)) != int(episode):
+            continue
         text = _read_text(path)
         body = plan_episode_section(text, episode) if kind == "episode_plan" else text
         if body.strip():
@@ -228,8 +249,12 @@ def episode_plan_asset_names(project_dir: Path, *, episode: int | str | None = N
             collected[asset_type].append(key)
 
     for path in story_plan_documents(project_dir).get("episode_plan", []):
+        file_episode = _EPISODE_PLAN_FILE_RE.fullmatch(path.name)
+        if file_episode and episode is not None and int(file_episode.group(1)) != int(episode):
+            continue
         text = _read_text(path)
-        body = plan_episode_section(text, episode, require_episode_header=True)
+        # 独立分集文件已由路径限定本集；兼容合并文档必须有集标题，不能整篇计入每集。
+        body = plan_episode_section(text, episode, require_episode_header=file_episode is None)
         if not body.strip():
             continue
         for line in body.splitlines():

@@ -1089,7 +1089,6 @@ async def ingest_short_drama_artifacts_tool(
         ShortDramaArtifactError,
         decode_artifact_content,
         ingest_short_drama_artifacts,
-        register_factory_episode_sources,
     )
 
     try:
@@ -1101,8 +1100,6 @@ async def ingest_short_drama_artifacts_tool(
             scope.project_name,
             payload,
         )
-        # 每集工厂 Markdown 登记为该集 OWN 源文本：分集页本集正文与下游建立在工厂正文上。
-        await asyncio.to_thread(register_factory_episode_sources, services.projects, scope.project_name, payload)
     except FileNotFoundError as exc:
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     except ShortDramaArtifactError as exc:

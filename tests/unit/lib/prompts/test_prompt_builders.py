@@ -32,7 +32,7 @@ class TestCharacterPrompt:
             "vignette, low-key lighting, volumetric lighting, dramatic spotlight, strong rim light, broad cast shadows, "
             "cinematic color tint, shallow depth of field, blurred panels, overexposed pale clothing, body blending into "
             "background, dark outline around the body, inconsistent face, inconsistent hairstyle, inconsistent clothing, "
-            "inconsistent accessories, extra characters, extra limbs, cropped body, dynamic pose, text, labels, watermark, logo, "
+            "inconsistent accessories, extra characters, extra limbs, cropped body, dynamic pose, text, labels, watermark, logo,"
             "水印、多余文字、Logo"
         )
         assert (

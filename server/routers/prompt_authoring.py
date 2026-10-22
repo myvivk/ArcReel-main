@@ -15,8 +15,8 @@ from lib.episode.episode_paths import episode_script_filename
 from lib.infra.api_errors import ConflictError, UnprocessableError
 from lib.project.project_manager import get_project_manager
 from lib.script.grid.keyframe_parser import keyframe_reference_problems
-from lib.script.grid.shot_grid_manager import ShotGridManager
-from lib.script.grid.video_prompt_targets import video_prompt_text
+from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
+from lib.script.grid.video_prompt_targets import video_prompt_body_text
 from lib.script.prompt_authoring_scope import prompt_overwrite_with_text
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.agent_toolset.envelope import json_value
@@ -63,7 +63,7 @@ class AuthorPromptsRequest(PromptAuthoringInstructions):
         description="仅编写指定提示词字段；省略时默认写分镜提示词，视频提示词须在参考素材确认后单独请求",
     )
     overwrite_revision: str | None = Field(
-        default=None, description="认可覆盖的正式脚本版本，取自 prompt_overwrite.revision"
+        default=None, description="认可覆盖的视觉制作状态版本，取自 prompt_overwrite.revision"
     )
 
     @model_validator(mode="after")
@@ -103,21 +103,25 @@ def _reject_out_of_range_keyframes(project_name: str, episode: int, req: "Author
     try:
         script = pm.load_script(project_name, episode_script_filename(episode))
     except (FileNotFoundError, ValueError):
-        # 没有正式脚本时由常规准入拒绝，不在这里抢答。
+        # 缺少视觉制作状态时由常规准入拒绝。
         return
     items, id_field, _, _, _ = get_storyboard_items(script)
     wanted = set(req.entry_ids or [])
-    grids = {
-        grid.shot_id: grid
-        for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
-        if grid.episode == episode and grid.status in {"completed", "confirmed"}
-    }
+    grids = select_shot_grids(
+        (
+            grid
+            for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
+            if grid.episode == episode and grid.status == "confirmed"
+        ),
+        items=items,
+        id_field=id_field,
+    )
     for item in items:
         unit_id = str(item.get(id_field, ""))
         if wanted and unit_id not in wanted:
             continue
         grid = grids.get(unit_id)
-        text = video_prompt_text(item)
+        text = video_prompt_body_text(item)
         if grid is None or not text:
             continue
         problems = keyframe_reference_problems(text, len(grid.cells))

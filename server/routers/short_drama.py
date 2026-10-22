@@ -1,4 +1,4 @@
-"""短剧工厂 Markdown 工件的零处理导入与兼容源稿路由。"""
+"""短剧工厂 Markdown 工件的原样导入与兼容源稿路由。"""
 
 import asyncio
 from dataclasses import asdict
@@ -22,7 +22,6 @@ from lib.short_drama_ingest import (
     decode_artifact_content,
     ingest_short_drama_artifacts,
     load_short_drama_artifacts,
-    register_factory_episode_sources,
 )
 from server.agent_toolset.envelope import json_value
 from server.auth import CurrentUser
@@ -122,6 +121,8 @@ def _raise_workflow_error(exc: ShortDramaWorkflowError, project_name: str, episo
         raise NotFoundError("short_drama_source_missing") from exc
     if exc.code == "short_drama_source_conflict":
         raise ConflictError("short_drama_source_conflict") from exc
+    if exc.code == "short_drama_script_conflict":
+        raise ConflictError("short_drama_script_conflict") from exc
     if exc.code == "short_drama_reimport_confirmation_required":
         raise ConflictError("short_drama_reimport_confirmation_required") from exc
     raise UnprocessableError("short_drama_import_refused", reason=exc.detail).with_diagnostic(exc.detail) from exc
@@ -191,7 +192,7 @@ async def reimport_source(
     req: ShortDramaReimportRequest,
     user: CurrentUser,
 ):
-    """从已保存源稿重建正式脚本；revision 防止并发覆盖，下游产物需显式确认。"""
+    """从已保存工厂源稿生成视觉制作状态；revision 防止并发覆盖，下游产物需显式确认。"""
     source = await asyncio.to_thread(load_short_drama_source, get_project_manager(), project_name, episode)
     if source is None:
         raise NotFoundError("short_drama_source_missing")
@@ -239,12 +240,6 @@ async def import_artifacts(project_name: str, req: ShortDramaArtifactImportReque
             raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
         artifacts = await run_sync_transaction(
             ingest_short_drama_artifacts,
-            manager,
-            project_name,
-            [(item.path, decode_artifact_content(None, item.content_base64)) for item in req.artifacts],
-        )
-        # 每集工厂 Markdown 登记为该集 OWN 源文本：分集页本集正文与下游建立在工厂正文上。
-        register_factory_episode_sources(
             manager,
             project_name,
             [(item.path, decode_artifact_content(None, item.content_base64)) for item in req.artifacts],

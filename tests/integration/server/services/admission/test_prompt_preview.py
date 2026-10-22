@@ -241,6 +241,8 @@ class TestPreviewMatchesExecution:
         """视频侧同理：drama 的 Voice_Profiles / Dialogue 声明段已在正文里时不再追加第二份。"""
         project_path = prepare_files(tmp_path)
         pm = _pm_for(content_mode, project_path)
+        (project_path / "storyboards" / f"scene_{ITEM_ID}.png").write_bytes(b"png")
+        seed_current_storyboard(pm, ITEM_ID)
         _patch_execution(monkeypatch, pm, FakeGenerator())
 
         structured = await prompt_preview.preview_item_prompts("demo", "episode_1.json", ITEM_ID)
@@ -388,11 +390,13 @@ class TestPreviewUnavailableSides:
         assert preview.storyboard_image.unavailable == prompt_preview.UNAVAILABLE_INVALID
 
     async def test_refused_generation_input_reports_its_gaps_and_matches_execution(self, tmp_path, monkeypatch):
-        """生成会被拒时预览显示不可用与缺口码，与执行期同一份拒绝；视频侧照常渲染。"""
+        """分镜图输入缺口不影响已有视频输入的预览。"""
         project_path = prepare_files(tmp_path)
         pm = _pm_for("narration", project_path)
         (project_path / "props" / "玉佩.png").unlink()
         _item_of(pm)["characters_in_segment"] = ["Alice", "Bob"]
+        (project_path / "storyboards" / f"scene_{ITEM_ID}.png").write_bytes(b"png")
+        seed_current_storyboard(pm, ITEM_ID)
         generator = FakeGenerator()
         _patch_execution(monkeypatch, pm, generator)
 

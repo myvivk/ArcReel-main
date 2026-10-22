@@ -25,6 +25,7 @@ export type ResourceKind =
   | "tts"
   | "reference_video"
   | "grid"
+  | "shot_grid"
   | "text_episode_script"
   | "text_episode_plan"
   | "text_script_plan"

@@ -69,7 +69,8 @@ class VideoArtifactCurrencyFacts:
             ("duration_basis", self.duration_basis),
             ("video_basis", self.video_basis),
         ):
-            if value.kind_version != 1:
+            supported = {1, 2} if field == "visual_basis" and value.kind == _STORYBOARD_VISUAL_KIND else {1}
+            if value.kind_version not in supported:
                 raise ValueError(f"{field} must use the supported kind version")
         if self.visual_basis.kind not in {_STORYBOARD_VISUAL_KIND, _REFERENCE_VISUAL_KIND}:
             raise ValueError("visual_basis does not describe a supported video route")
@@ -202,7 +203,10 @@ def _canvas_is_valid(value: object) -> bool:
 def _validate_visual_inputs(basis: ArtifactBasis) -> None:
     inputs = _basis_inputs(basis)
     if basis.kind == _STORYBOARD_VISUAL_KIND:
-        if set(inputs) != {"resource_id", "visual_prompt", "canvas", "frames"}:
+        expected = {"resource_id", "visual_prompt", "canvas", "frames"}
+        if basis.kind_version == 2:
+            expected.add("asset_links")
+        if set(inputs) != expected:
             raise ValueError("storyboard visual basis has invalid canonical inputs")
         prompt = inputs["visual_prompt"]
         prompt_valid = (_nonempty(prompt)) or (
@@ -213,22 +217,28 @@ def _validate_visual_inputs(basis: ArtifactBasis) -> None:
         )
         frames = inputs["frames"]
         frames_valid = (
-            isinstance(frames, list)
-            and len(frames) in {1, 2}
-            and [frame.get("role") for frame in frames if isinstance(frame, Mapping)]
-            == (["storyboard"] if len(frames) == 1 else ["storyboard", "end_frame"])
-            and all(
-                isinstance(frame, Mapping)
-                and set(frame) == {"role", "sha256"}
-                and isinstance(frame["sha256"], str)
-                and CONTENT_DIGEST_RE.fullmatch(frame["sha256"]) is not None
-                for frame in frames
+            _storyboard_slots_valid(frames, inputs["resource_id"])
+            if basis.kind_version == 2
+            else (
+                isinstance(frames, list)
+                and len(frames) in {1, 2}
+                and [frame.get("role") for frame in frames if isinstance(frame, Mapping)]
+                == (["storyboard"] if len(frames) == 1 else ["storyboard", "end_frame"])
+                and all(
+                    isinstance(frame, Mapping)
+                    and set(frame) == {"role", "sha256"}
+                    and isinstance(frame["sha256"], str)
+                    and CONTENT_DIGEST_RE.fullmatch(frame["sha256"]) is not None
+                    for frame in frames
+                )
             )
         )
         if not _nonempty(inputs["resource_id"]) or not prompt_valid or not _canvas_is_valid(inputs["canvas"]):
             raise ValueError("storyboard visual basis has invalid canonical inputs")
         if not frames_valid:
             raise ValueError("storyboard visual basis has invalid frame evidence")
+        if basis.kind_version == 2 and not isinstance(inputs["asset_links"], str):
+            raise ValueError("storyboard asset links must be text")
         return
 
     required = {"unit_id", "visual_lines", "style", "canvas", "request_references"}
@@ -267,6 +277,57 @@ def _reference_evidence_is_valid(value: object) -> bool:
         and _nonempty(identity["type"])
         and _nonempty(identity["id"])
         and ("kind" not in value or _nonempty(value["kind"]))
+    )
+
+
+def _storyboard_slots_valid(value: object, resource_id: object) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    roles: list[str] = []
+    keys: list[int] = []
+    for frame in value:
+        if (
+            not isinstance(frame, Mapping)
+            or set(frame) - {"grid"} != {"role", "sha256", "resource_id", "kind", "keyframe_index"}
+            or not _nonempty(frame["resource_id"])
+            or not isinstance(frame["sha256"], str)
+            or CONTENT_DIGEST_RE.fullmatch(frame["sha256"]) is None
+            or frame["kind"] not in {"grid_cell", "storyboard", "end_frame_snapshot", "video_last_frame"}
+            or frame["role"] not in {"start_image", "reference_image", "end_image"}
+        ):
+            return False
+        roles.append(frame["role"])
+        key = frame["keyframe_index"]
+        if frame["kind"] == "grid_cell":
+            if type(key) is not int or key < 0:
+                return False
+            if "grid" in frame:
+                grid = frame["grid"]
+                if (
+                    not isinstance(grid, Mapping)
+                    or set(grid) != {"id", "rows", "cols", "composite_sha256"}
+                    or not _nonempty(grid["id"])
+                    or type(grid["rows"]) is not int
+                    or type(grid["cols"]) is not int
+                    or grid["rows"] < 1
+                    or grid["cols"] < 1
+                    or key >= grid["rows"] * grid["cols"]
+                    or not isinstance(grid["composite_sha256"], str)
+                    or CONTENT_DIGEST_RE.fullmatch(grid["composite_sha256"]) is None
+                ):
+                    return False
+            if frame["resource_id"] == resource_id:
+                keys.append(key)
+        elif key is not None or frame["role"] != "start_image" or "grid" in frame:
+            return False
+        if frame["role"] != "start_image" and frame["resource_id"] != resource_id:
+            return False
+    return (
+        roles[0] == "start_image"
+        and roles[1:]
+        == ["reference_image"] * (len(roles) - 1 - (roles[-1] == "end_image"))
+        + (["end_image"] if len(roles) > 1 and roles[-1] == "end_image" else [])
+        and (not keys or keys == list(range(len(keys))))
     )
 
 

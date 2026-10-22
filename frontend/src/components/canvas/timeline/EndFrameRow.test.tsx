@@ -1,8 +1,7 @@
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API } from "@/api";
 import { useAppStore } from "@/stores/app-store";
-import { useCapabilitiesStore } from "@/stores/capabilities-store";
 import { type RefreshProjectResult, useProjectsStore } from "@/stores/projects-store";
 import { useTasksStore } from "@/stores/tasks-store";
 import type { TaskItem, VideoCapabilities } from "@/types";
@@ -129,45 +128,20 @@ describe("EndFrameRow 摘要", () => {
   it("模型不支持不改写摘要：已设尾帧仍报「已设置」", async () => {
     vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
     const { findByText } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    // 摘要只说尾帧设没设，能力维度交给警告条，否则「已设置」被盖掉、用户看不出有东西要清。
     expect(await findByText("已设置")).toBeInTheDocument();
   });
 });
 
-describe("EndFrameRow 能力警告", () => {
-  it("模型不支持 + 已设尾帧：警告可见，清除可用且调用 clear 端点", async () => {
-    const capabilitiesSpy = vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    const clear = vi.spyOn(API, "clearEndFrame").mockResolvedValue({ success: true });
-    const { findByRole, getByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-
-    // 收起状态即可见：不必展开就知道这条尾帧会让生成被拒。
-    const alert = await findByRole("alert");
-    expect(alert).toHaveTextContent(/当前模型不支持尾帧/);
-    // 由项目端点按 generation_mode 解析实际 i2v/r2v 桶，不用默认层覆盖。
-    expect(capabilitiesSpy.mock.calls[0]?.[1]?.videoBackend).toBeUndefined();
-    expect(getByRole("button", { name: /^尾帧/ })).toHaveAttribute("aria-expanded", "false");
-
-    const clearBtn = within(alert).getByRole("button", { name: "清除尾帧" });
-    expect(clearBtn).toBeEnabled();
-    fireEvent.click(clearBtn);
-    await waitFor(() => {
-      expect(clear).toHaveBeenCalledWith(PROJECT, SHOT, SCRIPT);
-    });
-    await waitFor(() => {
-      expect(refreshProject).toHaveBeenCalledWith(PROJECT);
-    });
-    // 清除尾帧是即时动作，成功不弹提示
-    expect(useAppStore.getState().toast).toBeNull();
-  });
-
-  it("模型不支持不禁用写入控件", async () => {
+describe("EndFrameRow 下一镜接续快照", () => {
+  it("说明快照用于下一镜接续，模型尾帧能力不触发拒绝警告", async () => {
     vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    const { getByRole, findByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    await findByRole("alert");
+    const { getByRole, getByText, queryByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
 
     fireEvent.click(getByRole("button", { name: /^尾帧/ }));
-    // 能力不足靠警告表达，不靠灰化控件：后端硬失败仍在兜底。
+    expect(getByText(/下一镜的首帧接续点/)).toBeInTheDocument();
+    expect(queryByRole("alert")).not.toBeInTheDocument();
     expect(getByRole("button", { name: "更换图片" })).toBeEnabled();
+    expect(getByRole("button", { name: "清除" })).toBeEnabled();
   });
 
   it("模型不支持时新设尾帧全程可走通，无半禁用残留", async () => {
@@ -192,89 +166,21 @@ describe("EndFrameRow 能力警告", () => {
     expect(confirmBtn).toBeEnabled();
     fireEvent.click(confirmBtn);
 
-    // 提交时刻的复核只看占用态，不再因能力不支持而拦截。
     await waitFor(() => {
       expect(select).toHaveBeenCalledWith(PROJECT, SHOT, SCRIPT, "storyboards/E1S01_v1.png");
     });
   });
 
-  it("能力查询尚未落地时也不禁用写入控件", async () => {
-    // 能力维度整体不参与门控：「不支持」不拦，「还不知道支不支持」更没有可拦的理由，
-    // 否则换模型后凭能力管线又会短暂灰掉写入控件——这正是要清掉的半禁用残留。
+  it("能力尚未可用时仍展示快照状态并允许设置", async () => {
     vi.spyOn(API, "getVideoCapabilities").mockReturnValue(new Promise(() => {}));
     const { getByRole, findByText } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    await findByText("检查中…");
+    await findByText("已设置");
 
     fireEvent.click(getByRole("button", { name: /^尾帧/ }));
     expect(getByRole("button", { name: "更换图片" })).toBeEnabled();
     expect(getByRole("button", { name: "清除" })).toBeEnabled();
   });
 
-  it("模型支持尾帧时无警告", async () => {
-    const { findByText, queryByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    await findByText("已设置");
-    expect(queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("未设尾帧的分镜即使模型不支持也不出警告", async () => {
-    vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    const { findByText, queryByRole } = renderRow({ endFramePath: null });
-    await findByText("未设置");
-    // 没有会被拒绝的东西，不打扰。
-    expect(queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("改能力覆盖后收起态警告自动出现，无需展开面板", async () => {
-    const spy = vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(true));
-    const { findByText, findByRole, queryByRole } = renderRow({
-      endFramePath: "end_frames/scene_E1S01.png",
-    });
-    await findByText("已设置");
-    expect(queryByRole("alert")).not.toBeInTheDocument();
-
-    // 能力覆盖写在供应商配置上、不落任何项目字段：没有 props 会变，靠失效信号驱动重取。
-    spy.mockResolvedValue(caps(false));
-    act(() => useCapabilitiesStore.getState().invalidate());
-    expect(await findByRole("alert")).toHaveTextContent(/当前模型不支持尾帧/);
-  });
-
-  it("改能力覆盖把尾帧放开后，收起态警告自动消失", async () => {
-    const spy = vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    const { findByRole, queryByRole } = renderRow({
-      endFramePath: "end_frames/scene_E1S01.png",
-    });
-    await findByRole("alert");
-
-    spy.mockResolvedValue(caps(true));
-    act(() => useCapabilitiesStore.getState().invalidate());
-    await waitFor(() => expect(queryByRole("alert")).not.toBeInTheDocument());
-  });
-
-  it("能力查询失败时不谎报不支持", async () => {
-    vi.spyOn(API, "getVideoCapabilities").mockRejectedValue(new Error("boom"));
-    const { findByText, queryByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    await findByText("已设置");
-    expect(queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("警告里的清除按占用态同步禁用", async () => {
-    vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    useTasksStore.setState({ tasks: [videoTask("running")] });
-    const { findByRole } = renderRow({ endFramePath: "end_frames/scene_E1S01.png" });
-    const alert = await findByRole("alert");
-    expect(within(alert).getByRole("button", { name: "清除尾帧" })).toBeDisabled();
-  });
-
-  it("只读上下文只给警告文本，不给清除入口", async () => {
-    vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(false));
-    const { findByRole } = renderRow({
-      endFramePath: "end_frames/scene_E1S01.png",
-      readOnly: true,
-    });
-    const alert = await findByRole("alert");
-    expect(alert).toHaveTextContent(/当前模型不支持尾帧/);
-    expect(within(alert).queryByRole("button")).not.toBeInTheDocument();
-  });
 });
 
 describe("EndFrameRow 占用态", () => {

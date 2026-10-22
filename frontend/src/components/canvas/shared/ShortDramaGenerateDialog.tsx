@@ -32,6 +32,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { useShortDramaGenerateStore, type ShortDramaGenerateOpenRequest } from "@/stores/short-drama-generate-store";
 import { episodeDisplayName } from "@/utils/episode-display";
 import { trailingBlankEpisodes } from "@/utils/episode-blank";
+import { refreshAfterWrite } from "./refreshAfterWrite";
 
 export type ShortDramaFormat = "standard" | "long" | "manju";
 
@@ -79,16 +80,15 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
     `- 篇幅：${FORMAT_LENGTH[b.format]}`,
     `- 本次目标集：${rangeLabel}`,
   ];
-  if (!single) {
+  {
     const total = b.totalEpisodes;
-    const first = Math.min(...episodes);
     const last = Math.max(...episodes);
     const reachesEnd = last >= total;
     lines.push(
       "",
       "【全剧规划】",
       `- 全剧规划总集数为 ${total} 集：据此重新规划四幕与付费墙位置，不要套用默认的 60/80/100 长档结构。`,
-      `- 本次连写覆盖第 ${first}~${last} 集（共 ${episodes.length} 集）。`,
+      `- 本次写作范围：${rangeLabel}。`,
       reachesEnd
         ? "- 本批次写到全剧结尾：最后一集必须收尾闭环、兑现情绪契约，主线不留未收束的悬钩。"
         : "- 本批次未达全剧结尾：每集保持断章钩子、留续写空间，不要在本批次内提前收尾或闭环主线。",
@@ -97,9 +97,9 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   lines.push(
     "",
     "【工厂链路要求（必须遵守，不得阉割）】",
-    "1. 所有工厂正文（人物圣经 / 全剧大纲 / 连续性台账 / 分集规划 / 集正文 / 机检报告 / 合规报告）一律由文本模型产出：按工件类型把 references / 模板 / 本集上下文 / 指令组装成 prompt，调用 generate_short_drama_factory 生成 Markdown 原文；Agent 本人不写正文、不解析、不转写为 ArcReel JSON。",
+    "1. 先读取工厂 references / templates / examples 和 source/short_drama/ 已有的人物圣经、全剧大纲、台账、分集规划及此前集正文，续写沿用已有设定。所有工厂正文（人物圣经 / 全剧大纲 / 连续性台账 / 分集规划 / 集正文 / 机检报告 / 合规报告）一律由文本模型产出：按工件类型组装 prompt，调用 generate_short_drama_factory 生成 Markdown 原文；Agent 本人不写正文、不转写为 ArcReel JSON。",
     "2. 每集必须走完整质量闭环：初稿 → AI 医生精修（dialogue-doctor-anti-ai）→ 规则机检（validate_episode.py，长档 / 漫剧按对应档位）→ 失败项回喂文本模型返修 → 更新 ledger.md → 阶段性 validate_series.py → 合规检查（screenplay-compliance-rules.md，红线问题返修）。机检 / 合规通过的报告随工件保存，不得裸交失败件。",
-    "3. 全部通过后，用唯一交稿入口 ingest_short_drama_artifacts 把七类 Markdown 工件原样写入 source/short_drama/：系列级工件（character-bible.md / series-outline.md / ledger.md）随首批提交并可跨批复用；每集至少包含分集规划、集正文、机检报告与合规报告。传参为各工件的相对路径与 UTF-8 原文 Base64，不改写内容、不抽取到 story_plan、不登记资产、不调用 generate_episode_script。",
+    "3. 每个单元或批次通过后立即用唯一交稿入口 ingest_short_drama_artifacts 把七类 Markdown 工件原样写入 source/short_drama/，不得等全剧写完：系列级工件（character-bible.md / series-outline.md / ledger.md）随首批提交并可跨批复用，台账有变化必须提交新版；每集必须同批包含分集规划、集正文、机检报告与合规报告。报告基于真实检查结果生成，以“结果: PASSED / FAILED”明确结论。传参为各工件的相对路径与 UTF-8 原文 Base64，不改写内容、不抽取到 story_plan、不登记资产、不调用 generate_episode_script。",
     "4. 禁止把 import_short_drama_script / import_short_drama_series（旧导入会把工厂 Markdown 重写为原生剧本 JSON）或 generate_episode_script（旧视觉提示词生成）作为交付手段；视觉层留待后续独立制作步骤处理。",
     `5. 目标集 ${rangeLabel} 已由前端建好；工件路径用零填充集号（如 episodes/episode_${String(episodes[0]).padStart(2, "0")}.md）。`,
   );
@@ -280,10 +280,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const handOff = async () => {
     if (!canSubmit || submitting) return;
     setSubmitting(true);
-    // 创建模式：把「全剧规划总集数」落库，后续续写再打开弹窗时读回，不再默认 1。
-    if (createMode && Number.isFinite(total) && total >= 1 && total !== projectTotal) {
-      void API.updateProject(request.projectName, { total_episodes: total }).catch(() => {});
-    }
+    const signal = storyController.current.signal;
     // 创建模式：优先复用末尾的空白集，不够再补建；上下文取这批目标集之前的内容，
     // 保证连写从正确的位置接着写（填第 1 集时上下文为空，等于从头起故事）。
     const reused = createMode ? reusable.slice(0, Number(count)) : [];
@@ -294,16 +291,34 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     try {
       // 先读取上下文再创建空白集，失败重试不会留下重复集。
       const result = await API.getStoryContext(request.projectName, contextEpisode, {
-        signal: storyController.current.signal,
+        signal,
       });
-      storyController.current.signal.throwIfAborted();
+      signal.throwIfAborted();
       storyContext = result.context;
     } catch (err) {
-      if (!storyController.current.signal.aborted) {
+      if (!signal.aborted) {
         useAppStore.getState().pushToast(errMsg(err), "error");
         setSubmitting(false);
       }
       return;
+    }
+    // 总集数与建集都成功并刷新后才把指令交给 Agent；失败时保留简报供重试。
+    if (createMode && total !== projectTotal) {
+      try {
+        await API.updateProject(request.projectName, { total_episodes: total }, { signal });
+        const refreshed = await refreshAfterWrite(request.projectName, t);
+        signal.throwIfAborted();
+        if (refreshed !== "success") {
+          setSubmitting(false);
+          return;
+        }
+      } catch (err) {
+        if (!signal.aborted) {
+          useAppStore.getState().pushToast(errMsg(err), "error");
+          setSubmitting(false);
+        }
+        return;
+      }
     }
     // 创建模式下补足目标集；import 工具要求目标集已存在。
     let episodes: number[];
@@ -311,8 +326,16 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       const remaining = Number(count) - reused.length;
       if (remaining > 0) {
         try {
-          episodes = [...reused, ...(await createBlankEpisodes(request.projectName, remaining))];
+          episodes = [...reused, ...(await createBlankEpisodes(request.projectName, remaining, { signal }))];
         } catch {
+          // 部分建集可能已提交：补拉后下次复用这些空集，避免重复建集。
+          await refreshAfterWrite(request.projectName, t);
+          if (!signal.aborted) setSubmitting(false);
+          return;
+        }
+        const refreshed = await refreshAfterWrite(request.projectName, t);
+        if (signal.aborted) return;
+        if (refreshed !== "success") {
           setSubmitting(false);
           return;
         }
@@ -322,7 +345,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     } else {
       episodes = [Number(episode)];
     }
-    const prompt = buildOriginalShortDramaPrompt({ episodes, genre, brief, tone, format, totalEpisodes: createMode ? total : episodes[0] }) +
+    if (signal.aborted) return;
+    const prompt = buildOriginalShortDramaPrompt({
+      episodes, genre, brief, tone, format,
+      totalEpisodes: createMode ? total : Math.max(projectTotal ?? maxEpisode, ...episodes),
+    }) +
       (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);

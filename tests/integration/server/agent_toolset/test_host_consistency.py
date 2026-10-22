@@ -62,7 +62,9 @@ from server.agent_toolset.repair_channel import MERGE_ASSET
 from server.agent_toolset.script_authoring import (
     CONFIRM_SCRIPT_REVIEW,
     GENERATE_EPISODE_SCRIPT,
+    GENERATE_SHORT_DRAMA_FACTORY,
     IMPORT_SHORT_DRAMA_SCRIPT,
+    IMPORT_SHORT_DRAMA_SERIES,
     OPEN_DRAFT,
     PATCH_DRAFT,
     PROMOTE_DRAFT,
@@ -119,6 +121,10 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "generate_episode_script": {"episode_id": 1, "dry_run": True},
     "generate_script_plan": {"episode_id": 1, "dry_run": True},
     "confirm_script_review": {"episode_id": 1},
+    "generate_short_drama_factory": {"prompt": "按人物圣经生成分集规划"},
+    "ingest_short_drama_artifacts": {
+        "artifacts": [{"path": "character-bible.md", "content_base64": base64.b64encode(b"# Bible\n").decode()}],
+    },
     "import_short_drama_script": {"episode_id": 1, "markdown": "第【1】集：测试"},
     "import_short_drama_series": {
         "episodes": [{"episode_id": 1, "markdown": "第【1】集：测试"}],
@@ -530,8 +536,8 @@ def _twin_services(seeded_projects: ProjectManager, tmp_path: Path) -> Services:
     )
 
 
-# 真实 handler 的结果随调用时刻变化，两次调用无法逐字比较；透传一致性由其余用例的 fake handler 覆盖。
-_TIME_DEPENDENT_RESULTS = frozenset({CREATE_PROJECT.name, CREATE_TIMELINE.name})
+# 创建结果带时间戳，模型正文也不可逐字复现；透传一致性由其余用例的 fake handler 覆盖。
+_NONDETERMINISTIC_RESULTS = frozenset({CREATE_PROJECT.name, CREATE_TIMELINE.name, GENERATE_SHORT_DRAMA_FACTORY.name})
 
 # 样例入参下合法地返回 problem 的声明：测试项目缺少它们要找的对象或能力配置。其余声明在样例入参下必须成功。
 _PROBLEM_ON_SAMPLE = frozenset(
@@ -546,6 +552,7 @@ _PROBLEM_ON_SAMPLE = frozenset(
         PATCH_DRAFT.name,
         PROMOTE_DRAFT.name,
         IMPORT_SHORT_DRAMA_SCRIPT.name,
+        IMPORT_SHORT_DRAMA_SERIES.name,
         PATCH_EPISODE_SCRIPT.name,
         SPLIT_GRIDS.name,
         SELECT_VIDEO_VERSION.name,
@@ -570,7 +577,7 @@ _PROBLEM_ON_SAMPLE = frozenset(
         declaration
         for declaration in AGENT_TOOLSET
         if not (isinstance(declaration, ToolDeclaration) and declaration.long_task)
-        and declaration.name not in _TIME_DEPENDENT_RESULTS
+        and declaration.name not in _NONDETERMINISTIC_RESULTS
     ],
     ids=lambda declaration: declaration.name,
 )

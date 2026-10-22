@@ -4,6 +4,8 @@ import { API } from "@/api";
 import type { ShotGridPlan } from "@/types/shot-grid";
 import type { ShotGridDialogRequest } from "@/stores/shot-grid-dialog-store";
 import { ShotGridDialog } from "./ShotGridDialog";
+import { useProjectsStore } from "@/stores/projects-store";
+import { useTasksStore } from "@/stores/tasks-store";
 
 const PROJECT = "demo";
 const SCRIPT = "episode_1.json";
@@ -53,6 +55,8 @@ function promptBox(): HTMLElement {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.spyOn(useProjectsStore.getState(), "refreshProject").mockResolvedValue("success");
+  useTasksStore.setState({ tasks: [], optimisticActive: new Set(), optimisticActiveScriptFile: new Set() });
 });
 
 afterEach(() => {
@@ -60,18 +64,19 @@ afterEach(() => {
 });
 
 describe("ShotGridDialog", () => {
-  it("打开时回填已有宫格的规格与逐格文本，AI 生成后回填并立刻存草稿", async () => {
+  it("打开时回填已有记录，AI 生成只回填可编辑文本，不写入或入队", async () => {
     const existing = plan({ rows: 2, cols: 3 });
     const authored = "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下\n第3格（近景）：行人驻足\n第4格（特写）：水洼倒影\n第5格（远景）：街角\n第6格（中景）：橱窗";
     vi.spyOn(API, "authorShotGridPrompt").mockResolvedValue({ prompt: authored });
-    const draft = vi.spyOn(API, "saveShotGridDraft").mockResolvedValue(plan({ rows: 2, cols: 3, prompt: authored }));
+    const save = vi.spyOn(API, "saveShotGrid");
+    const generate = vi.spyOn(API, "generateShotGrid");
 
     render(<ShotGridDialog request={request({ plan: existing })} onClose={vi.fn()} />);
 
     // 规格随记录选中 2×3，输入框里是这条记录已写成的逐格文本
     expect(screen.getByRole("button", { name: "2×3" })).toHaveAttribute("aria-pressed", "true");
     expect(promptBox()).toHaveValue(existing.prompt);
-    expect(screen.getByText("已写 4 格，不足 6 格，最后一格会延续补足。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "AI 生成" }));
 
@@ -82,18 +87,10 @@ describe("ShotGridDialog", () => {
       shot_id: "E1S01",
       rows: 2,
       cols: 3,
-    });
-    // 生成即落草稿：随后直接关窗也不会丢
-    await waitFor(() =>
-      expect(draft).toHaveBeenCalledWith(PROJECT, {
-        script_file: SCRIPT,
-        episode: 1,
-        shot_id: "E1S01",
-        rows: 2,
-        cols: 3,
-        prompt: authored,
-      }),
-    );
+    }, { signal: expect.any(AbortSignal) });
+    expect(save).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    expect(promptBox()).toBeEnabled();
   });
 
   it("按写出的格数提示空、不足与超出", () => {
@@ -101,10 +98,10 @@ describe("ShotGridDialog", () => {
 
     // 首次生成默认 2×2，四格
     expect(screen.getByRole("button", { name: "2×2" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("还没有写任何一格。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeEnabled();
 
     fireEvent.change(promptBox(), { target: { value: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下" } });
-    expect(screen.getByText("已写 2 格，不足 4 格，最后一格会延续补足。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeDisabled();
 
     fireEvent.change(promptBox(), {
       target: { value: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下\n第3格（近景）：行人驻足\n第4格（特写）：水洼倒影" },
@@ -114,17 +111,15 @@ describe("ShotGridDialog", () => {
     fireEvent.change(promptBox(), {
       target: { value: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下\n第3格（近景）：行人驻足\n第4格（特写）：水洼倒影\n第5格（远景）：街角" },
     });
-    expect(screen.getByText("已写 5 格，超出 4 格，多出的会被丢弃。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeDisabled();
   });
 
   it("确定 = 保存配置并入队；没有改动时取消不写入任何东西", async () => {
     const save = vi.spyOn(API, "saveShotGrid").mockResolvedValue(plan());
     const generate = vi.spyOn(API, "generateShotGrid").mockResolvedValue({ task_id: "t1", status: "queued" });
-    const draft = vi.spyOn(API, "saveShotGridDraft").mockResolvedValue(plan());
     const onClose = vi.fn();
 
     const { unmount } = render(<ShotGridDialog request={request()} onClose={onClose} />);
-    fireEvent.change(promptBox(), { target: { value: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下" } });
     fireEvent.click(screen.getByRole("button", { name: "3×3" }));
     fireEvent.click(screen.getByRole("button", { name: "确定并生成" }));
 
@@ -135,11 +130,9 @@ describe("ShotGridDialog", () => {
       shot_id: "E1S01",
       rows: 3,
       cols: 3,
-      prompt: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下",
+      prompt: "",
     });
     expect(generate).toHaveBeenCalledWith(PROJECT, SCRIPT, "E1S01");
-    // 「确定」已经整份落盘，不再多写一次草稿
-    expect(draft).not.toHaveBeenCalled();
     unmount();
 
     const saveAgain = vi.spyOn(API, "saveShotGrid").mockResolvedValue(plan());
@@ -154,13 +147,9 @@ describe("ShotGridDialog", () => {
     expect(cancelClose).toHaveBeenCalled();
     expect(saveAgain).not.toHaveBeenCalled();
     expect(generateAgain).not.toHaveBeenCalled();
-    expect(draft).not.toHaveBeenCalled();
   });
 
-  it("取消/关闭时把改动存成草稿，下次打开能回填", async () => {
-    const draft = vi
-      .spyOn(API, "saveShotGridDraft")
-      .mockResolvedValue(plan({ prompt: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下" }));
+  it("手改文本后取消不写入", () => {
     const save = vi.spyOn(API, "saveShotGrid");
     const generate = vi.spyOn(API, "generateShotGrid");
     const onClose = vi.fn();
@@ -169,17 +158,6 @@ describe("ShotGridDialog", () => {
     fireEvent.change(promptBox(), { target: { value: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下" } });
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
 
-    await waitFor(() =>
-      expect(draft).toHaveBeenCalledWith(PROJECT, {
-        script_file: SCRIPT,
-        episode: 1,
-        shot_id: "E1S01",
-        rows: 2,
-        cols: 2,
-        prompt: "第1格（远景）：雨夜街道\n第2格（中景）：霓虹灯下",
-      }),
-    );
-    // 草稿不触发一次生成
     expect(save).not.toHaveBeenCalled();
     expect(generate).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
@@ -190,7 +168,7 @@ describe("ShotGridDialog", () => {
 
     expect(screen.getByRole("button", { name: "2×2" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "3×3" })).toBeDisabled();
-    expect(screen.getByText("已确认的参考素材不能换规格，重做只能改提示词重新生成。")).toBeInTheDocument();
+    expect(screen.getByText("已确认的参考素材锁定规格；要换规格请先取消确认。")).toBeInTheDocument();
     expect(promptBox()).toBeEnabled();
     expect(screen.getByRole("button", { name: "确定并生成" })).toBeEnabled();
   });
@@ -200,6 +178,14 @@ describe("ShotGridDialog", () => {
 
     expect(screen.getByRole("button", { name: "2×2" })).toBeDisabled();
     expect(screen.getByText("正在生成中，生成完成后可以再次配置。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeDisabled();
+  });
+
+  it("逐格多行正文与重复序号按同一格解析", () => {
+    render(<ShotGridDialog request={request()} onClose={vi.fn()} />);
+    fireEvent.change(promptBox(), { target: { value: `${plan().prompt}\n同一格的光线描述。\n第4格：重复格` } });
+    expect(screen.getByRole("button", { name: "确定并生成" })).toBeEnabled();
+    fireEvent.change(promptBox(), { target: { value: "第1格：\n第2格：雨夜" } });
     expect(screen.getByRole("button", { name: "确定并生成" })).toBeDisabled();
   });
 });

@@ -108,6 +108,7 @@ from lib.script.script_models import (
     build_reference_units_script_plan_model,
 )
 from lib.script.script_skeleton import resolve_declared_kind
+from lib.script.short_drama_source import read_short_drama_source_markdown
 from lib.script.storyboard_mentions import render_storyboard_mention_warnings, storyboard_mention_warnings
 from lib.speech.speech_composition import admit_script_unit
 from lib.speech.speech_rate import project_speech_rate_override
@@ -679,6 +680,8 @@ def script_plan_preflight(project_path: Path, project: Mapping[str, Any], episod
         project.get("content_mode", "narration"),
         episode_source=has_source,
         formal_script=(project_path / episode_script_relpath(episode)).is_file(),
+        factory_source=project.get("content_mode") == "drama"
+        and bool(read_short_drama_source_markdown(project_path, episode).strip()),
     )
     # 短剧导入态用专属文案，不附带「集原文位置」这种误导性细节。
     detail = (

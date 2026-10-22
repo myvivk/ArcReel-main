@@ -20,19 +20,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lib.artifacts.artifact_input_claims import resolve_usable_episode_script_input
+from lib.artifacts.artifact_input_claims import (
+    resolve_usable_episode_script_input,
+    resolve_usable_storyboard_video_slots,
+)
 from lib.artifacts.generation_input import (
     InputRefused,
     StoryboardImageInput,
     project_input_observation,
     storyboard_image_input,
 )
+from lib.generation.video_request_facts import VideoRequestFacts
 from lib.project.project_manager import ProjectManager, get_project_manager
-from lib.prompts.prompt_utils import render_storyboard_video_prompt
+from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_models import resolve_content_mode
 from lib.script.storyboard_sequence import find_storyboard_item, get_storyboard_items
+from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
 from server.services.admission.reference_admission import input_refusal_error
-from server.services.admission.video_batch_admission import resolve_voice_context
+from server.services.admission.video_batch_admission import storyboard_video_prompt, storyboard_video_request_facts
 from server.services.tasks.generation_context import ImageLaneRequest, resolve_generation_context
 
 logger = logging.getLogger(__name__)
@@ -144,7 +149,11 @@ async def preview_item_prompts(
 
     project, project_path, script, item, content_mode = await asyncio.to_thread(_load)
     # 声音绑定按项目当前的视频能力档解析（非 drama 或无声一律 None），与执行期同一判据。
-    voice_characters = await resolve_voice_context(project, content_mode)
+    video_facts = await storyboard_video_request_facts(project)
+    silent = isinstance(video_facts, VideoRequestFacts) and (
+        not video_facts.requested_generate_audio or video_facts.voice_consistency == "none"
+    )
+    voice_characters = (project.get("characters") or {}) if content_mode == "drama" and not silent else None
 
     def _assemble() -> StoryboardImageInput | InputRefused:
         # 与执行期读同一份生成输入（含上一分镜图的可用性判定），「图N」编号才能逐字一致；
@@ -207,15 +216,42 @@ async def preview_item_prompts(
                     is_text_form=is_text_form,
                     warnings=rendered.warnings,
                 )
-        video = _render(
-            item.get("video_prompt"),
-            lambda prompt: render_storyboard_video_prompt(
-                prompt,
+
+        def render_video(_prompt: object) -> str:
+            script_input = resolve_usable_episode_script_input(
+                project_path=project_path,
+                project=project,
+                script=script,
+                script_filename=script_file,
+            )
+            items, id_field, *_ = get_storyboard_items(script)
+            slots = resolve_usable_storyboard_video_slots(
+                project_path=project_path,
+                project=project,
+                episode=script_input.episode,
+                items=items,
+                id_field=id_field,
+                resource_id=item_id,
+            )
+            audio_speakers: tuple[str, ...] = ()
+            if isinstance(video_facts, VideoRequestFacts):
+                audio_speakers = resolve_storyboard_audio_inputs(
+                    project=project,
+                    project_path=project_path,
+                    item=item,
+                    slots=slots,
+                    voice=VoiceRenderSettings.from_request_facts(video_facts),
+                ).speakers
+            return storyboard_video_prompt(
                 item,
                 content_mode=content_mode,
                 voice_characters=voice_characters,
-            ),
-        )
+                slots=slots,
+                asset_links=storyboard_asset_links(project, item, project_name),
+                audio_speakers=audio_speakers,
+            )
+
+        video = _render(item.get("video_prompt"), render_video)
         return ItemPromptPreview(
             item_id=item_id,
             content_mode=content_mode,

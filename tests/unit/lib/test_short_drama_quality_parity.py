@@ -1,4 +1,4 @@
-"""工厂脚本与服务端质量闸的同源判定：同一批 fixture 的 E12–E14 必须逐条相同。"""
+"""工厂脚本与服务端质量闸的全部判定必须逐条相同。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from lib.short_drama_quality import check_episode
+
+pytestmark = pytest.mark.usefixtures("factory_profile")
 
 ROOT = Path(__file__).resolve().parents[3]
 SKILL = ROOT / "agent_runtime_profile/.claude/skills/short-drama-factory"
@@ -60,7 +62,7 @@ def _load_cli():
 def test_cli_and_lib_report_identical_gate_results(name: str) -> None:
     markdown, bible = FIXTURES[name]
     fails, warns, _ = _load_cli().validate(markdown, (), "auto", bible)
-    cli_lines = [line for line in fails + warns if line.startswith(("E12", "E13", "E14"))]
+    cli_lines = fails + warns
     lib_lines = [issue.render() for issue in check_episode(markdown, bible=bible)]
     assert Counter(cli_lines) == Counter(lib_lines), f"{name}: CLI={cli_lines} lib={lib_lines}"
 

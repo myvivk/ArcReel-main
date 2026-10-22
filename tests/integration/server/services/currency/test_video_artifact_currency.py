@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, contextmanager, suppress
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,6 +30,8 @@ from lib.script.reference_video.request_projection import (
     resolve_reference_assets,
     unit_reference_declarations,
 )
+from lib.script.storyboard_sequence import resolve_storyboard_video_slots
+from lib.script.storyboard_video_request import storyboard_frame_evidence
 from lib.speech.narration_delivery import TtsSynthesisSettings, build_narration_audio_basis
 from lib.speech.speech_artifact_provenance import (
     build_video_duration_basis,
@@ -630,6 +633,91 @@ def test_storyboard_current_basis_tracks_speech_and_ignores_provider_metadata(tm
         )
         != expected
     )
+
+
+@pytest.mark.parametrize(
+    "changed_input", ["previous_snapshot_binding", "previous_snapshot_bytes", "middle_keyframe", "contact_sheet"]
+)
+def test_current_basis_tracks_previous_shot_and_every_confirmed_keyframe(tmp_path: Path, changed_input: str) -> None:
+    from tests.integration.lib.script.storyboard_support import confirmed_grid
+
+    project_path, project, script, metadata = _storyboard_state(tmp_path)
+    current = script["scenes"][0]
+    current["scene_id"] = "E1S02"
+    grid = confirmed_grid(project_path, "E1S02")
+    current["generated_assets"] = {
+        "storyboard_image": grid.composite_path,
+        "shot_grid": {
+            "grid_id": grid.id,
+            "rows": grid.rows,
+            "cols": grid.cols,
+            "composite_path": grid.composite_path,
+            "cell_paths": list(grid.cell_paths),
+        },
+    }
+    snapshot = project_path / "end_frames/scene_E1S01.png"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(b"previous-shot-snapshot")
+    previous = {
+        "scene_id": "E1S01",
+        "end_frame_image": snapshot.relative_to(project_path).as_posix(),
+        "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
+    }
+    script["scenes"].insert(0, previous)
+    slots = resolve_storyboard_video_slots(
+        project_path=project_path, items=script["scenes"], id_field="scene_id", resource_id="E1S02"
+    )
+    assert slots.end is not None
+    visual = build_storyboard_video_artifact_visual_basis(
+        resource_id="E1S02",
+        visual_prompt=current["video_prompt"],
+        storyboard_image=slots.start.path,
+        end_frame_image=slots.end.path,
+        aspect_ratio="16:9",
+        frame_evidence=storyboard_frame_evidence(
+            slots, project_path=project_path, items=script["scenes"], id_field="scene_id"
+        ),
+    )
+    frozen = VideoArtifactCurrencyFacts.from_dict(metadata["artifact_video_currency"])
+    preparation = admit_script_unit("scenes", current).preparation
+    speech = build_video_speech_basis(
+        preparation,
+        voices=project_character_voice_evidence(
+            preparation,
+            characters=project["characters"],
+            voice_style_speakers=("阿离",),
+        ),
+    )
+    frozen = replace(
+        frozen,
+        visual_basis=visual,
+        speech_basis=speech,
+        video_basis=compose_video_artifact_basis(visual=visual, speech=speech, duration=frozen.duration_basis),
+    )
+    metadata["artifact_video_currency"] = frozen.to_dict()
+
+    def current_basis():
+        return build_current_video_artifact_basis(
+            project_path=project_path,
+            project=project,
+            script=script,
+            resource_type="videos",
+            resource_id="E1S02",
+            version_metadata=metadata,
+        )
+
+    assert current_basis() == frozen.video_descriptor
+    current["end_frame_image"] = previous["end_frame_image"]
+    assert current_basis() == frozen.video_descriptor
+    if changed_input == "previous_snapshot_binding":
+        del previous["end_frame_image"]
+    elif changed_input == "previous_snapshot_bytes":
+        snapshot.write_bytes(b"replaced-snapshot")
+    elif changed_input == "middle_keyframe":
+        (project_path / grid.cell_paths[1]).write_bytes(b"replaced-K1")
+    else:
+        (project_path / grid.composite_path).write_bytes(b"replaced-contact-sheet")
+    assert current_basis() != frozen.video_descriptor
 
 
 def test_current_video_basis_rejects_an_episode_rebound_to_another_script(tmp_path: Path) -> None:

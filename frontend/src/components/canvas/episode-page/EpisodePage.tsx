@@ -38,6 +38,7 @@ import {
 } from "./episode-view";
 import { DramaScriptContentView } from "./DramaScriptContentView";
 import { FactoryEpisodeSourceView } from "./FactoryEpisodeSourceView";
+import { useFactoryEpisodeSource } from "./useFactoryEpisodeSource";
 import { EpisodeHead } from "./EpisodeHead";
 import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeaderActions";
 import { EpisodePageHeader, episodeViewTabId } from "./EpisodePageHeader";
@@ -79,18 +80,10 @@ export function showsEpisodeSource(
   episode: number,
   script: EpisodeScript | null,
   demo: boolean,
+  hasFactorySource = false,
 ): boolean {
   const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
-  if (
-    meta !== undefined &&
-    projectData?.content_mode === "drama" &&
-    meta.source_origin === "own" &&
-    meta.source_kind === "screenplay"
-  ) {
-    // 短剧工厂登记的集：工厂 Markdown 就是已确认的本集剧本，不走「集原文确认」，
-    // 也不再给「AI 规划 / 从空白开始」起步区（那会把工厂正文引向空起稿死路）。
-    return false;
-  }
+  if (hasFactorySource) return false;
   return meta !== undefined && !script && !hasEpisodeDraft(meta) && projectData?.content_mode !== "ad" && !demo;
 }
 
@@ -111,6 +104,7 @@ function EpisodePageContent({
   onViewUnit,
   onRegenerate,
   renderCanvas,
+  factorySource,
 }: {
   projectName: string;
   episode: number;
@@ -126,6 +120,7 @@ function EpisodePageContent({
   /** 制作进度里重生某一步的指定单元；不传时只给「查看」。 */
   onRegenerate?: (stepId: string, unitIds: string[]) => void;
   renderCanvas: (context: EpisodeCanvasContext) => ReactNode;
+  factorySource: ReturnType<typeof useFactoryEpisodeSource>;
 }) {
   const { t } = useTranslation("dashboard");
   const [searchParams, setSearchParams] = useSearchParams();
@@ -137,10 +132,9 @@ function EpisodePageContent({
   const hasScript = Boolean(script);
   const hasDraft = hasEpisodeDraft(meta);
   const grid = gridStoryboardEnabled(projectData);
-  const sourceReview = showsEpisodeSource(projectData, episode, script, demo);
+  const sourceReview = showsEpisodeSource(projectData, episode, script, demo, factorySource.exists);
   const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
-  const hasShortDramaSource =
-    projectData?.content_mode === "drama" && (meta?.script_file == null || meta?.source_origin === "own");
+  const hasShortDramaSource = factorySource.exists;
   // 起步区据此给剧情演绎模式追加「AI 原创剧本」入口；演示态不可写入，不追加。
   const scriptContentMode = demo ? undefined : projectData?.content_mode === "drama" ? "drama" : undefined;
   const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
@@ -208,7 +202,9 @@ function EpisodePageContent({
 
   const ttsNarration = projectData?.narration_delivery === "use_tts";
   let body: ReactNode;
-  if (view === "edit") {
+  if ((factorySource.loading || factorySource.error) && (!script || view === "source")) {
+    body = <FactoryEpisodeSourceView source={factorySource} />;
+  } else if (view === "edit") {
     body = (
       <LazyBoundary variant="pane">
         <EditTimelineView
@@ -246,13 +242,12 @@ function EpisodePageContent({
       </EpisodeViewFactsProvider>
     );
   } else if (view === "assets") {
-    body = <EpisodeAssetsView projectName={projectName} episode={episode} projectData={projectData} />;
+    body = <EpisodeAssetsView key={`${projectName}:${episode}`} projectName={projectName} episode={episode} projectData={projectData} />;
   } else if (view === "source") {
-    // 「原文」视图：短剧工厂导入集编辑其持久化 Markdown 源稿，并显式重新导入正式脚本；
-    // 其余集就地查看与编辑本集原文，改后按需重新规划（脚本规划入口不在这页）。
+    // 工厂集只读展示 Markdown 原文；其他集保留原有的源文工作区。
     body =
       hasShortDramaSource ? (
-        <FactoryEpisodeSourceView projectName={projectName} episode={episode} />
+        <FactoryEpisodeSourceView source={factorySource} />
       ) : shortDrama && script?.content_mode === "drama" ? (
         <DramaScriptContentView
           script={script}
@@ -311,7 +306,7 @@ function EpisodePageContent({
           view={view}
           onViewChange={changeView}
           boardLabel={t(route === "reference_video" ? "episode_view_units" : "episode_view_board")}
-          // 短剧工厂导入的集没有集原文，这一页是剧本内容，页签据此改称「剧本」。
+          // 工厂 Markdown 是本集剧本原文。
           sourceLabel={shortDrama || hasShortDramaSource ? t("episode_view_script") : undefined}
           onActionsSlot={setActionsSlot}
         />
@@ -344,14 +339,17 @@ function EpisodePageContent({
 }
 
 /** 保留的是可见集页；原文编辑期间脚本到达，不让异步事件卸载编辑器。 */
-export function EpisodePage(props: Parameters<typeof EpisodePageContent>[0]) {
+export function EpisodePage(props: Omit<Parameters<typeof EpisodePageContent>[0], "factorySource">) {
   const { t } = useTranslation("dashboard");
   const meta = props.projectData?.episodes?.find((entry) => entry.episode === props.episode);
-  const source = showsEpisodeSource(props.projectData, props.episode, props.script, props.demo);
+  const factorySource = useFactoryEpisodeSource(
+    props.projectName, props.episode, !props.demo && Boolean(meta) && props.projectData?.content_mode === "drama",
+  );
+  const source = showsEpisodeSource(props.projectData, props.episode, props.script, props.demo, factorySource.exists);
   const identity = `${props.projectName}:${props.episode}:${!meta ? "missing" : source ? "source" : props.script ? "script" : "draft"}`;
   const message = !meta ? "episode_externally_removed" : props.script || hasEpisodeDraft(meta) ? "episode_source_replaced" : "episode_script_removed";
   return (
-    <RetainedEditUnit identity={identity} value={props} message={t(message)}>
+    <RetainedEditUnit identity={identity} value={{ ...props, factorySource }} message={t(message)}>
       {(shown) => <EpisodePageContent {...shown} />}
     </RetainedEditUnit>
   );

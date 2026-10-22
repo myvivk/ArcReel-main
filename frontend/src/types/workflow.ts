@@ -43,6 +43,8 @@ export const WORKFLOW_ACTION_TYPES = [
   "generate_script",
   "add_script_items",
   "author_prompts",
+  "prepare_episode_assets",
+  "plan_short_drama_storyboards",
   "generate_asset_sheets",
   "generate_storyboards",
   "generate_shot_grids",
@@ -108,6 +110,7 @@ export interface WorkflowTaskObservation {
   batch_id?: string | null;
   task_type: string;
   status: string;
+  fields?: string[] | null;
   provider_checkpoint?: WorkflowProviderCheckpoint | null;
 }
 
@@ -246,7 +249,7 @@ export interface WorkflowContent {
   drafts: WorkflowDraft[];
   formal_script?: "present" | "absent" | "invalid" | null;
   script_item_count?: number | null;
-  /** 本集正式脚本是不是短剧工厂导入产出（顶层带 short_drama_meta）；这类集不走集原文与脚本规划。 */
+  /** 实际工厂 Markdown 源稿在位；这类集不走原生脚本规划。 */
   script_from_short_drama?: boolean;
   pending_authoring_ids: string[];
   needs_replan_ids: string[];

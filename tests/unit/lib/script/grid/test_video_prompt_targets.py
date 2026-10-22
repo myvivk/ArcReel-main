@@ -80,7 +80,7 @@ class TestPlanVideoPromptTargets:
     def test_targets_awaiting_and_current_are_split_by_grid_state(self) -> None:
         items = [
             {"scene_id": "E1S01", "image_prompt": {"scene": "【镜头1】甲"}, "video_prompt": {"action": ""}},
-            {"scene_id": "E1S02", "video_prompt": {"action": "K0 起手"}},
+            {"scene_id": "E1S02", "image_prompt": "画面乙", "video_prompt": {"action": "K0 起手"}},
             {"scene_id": "E1S03", "video_prompt": {"action": ""}},
         ]
         grids = {
@@ -96,11 +96,21 @@ class TestPlanVideoPromptTargets:
         assert plan.awaiting_grid == ("E1S03",)
         assert plan.stale == ()
 
+    def test_completed_grid_waits_for_confirmation(self) -> None:
+        items = [{"scene_id": "E1S01", "video_prompt": {"action": ""}}]
+        grids = {"E1S01": grid("E1S01", status="completed")}
+
+        plan = plan_video_prompt_targets(items, id_field="scene_id", grids=grids)
+
+        assert plan.targets == ()
+        assert plan.awaiting_grid == ("E1S01",)
+
     def test_stale_prompts_are_not_targets(self) -> None:
         record = grid("E1S01")
         old_basis = video_prompt_basis_for(record)
         item = {
             "scene_id": "E1S01",
+            "image_prompt": "画面",
             "video_prompt": {"action": "K0 起手"},
             "generated_assets": {"video_prompt_basis": old_basis},
         }
@@ -112,6 +122,20 @@ class TestPlanVideoPromptTargets:
 
         assert plan.targets == ()
         assert plan.stale == ("E1S01",)
+
+    def test_missing_storyboard_prompt_is_not_ready_even_with_a_confirmed_grid(self) -> None:
+        plan = plan_video_prompt_targets(
+            [{"scene_id": "E1S01", "video_prompt": "K0 起手"}],
+            id_field="scene_id",
+            grids={"E1S01": grid()},
+        )
+        assert plan.targets == ()
+        assert plan.awaiting_grid == ("E1S01",)
+
+    def test_layout_change_with_the_same_cells_is_stale(self) -> None:
+        record = grid(prompts=("甲", "乙", "丙", "丁"))
+        item = {"generated_assets": {"video_prompt_basis": video_prompt_basis_for(record)}}
+        assert is_video_prompt_stale(item, replace(record, rows=2, cols=2)) is True
 
     def test_items_without_id_are_skipped(self) -> None:
         plan = plan_video_prompt_targets([{"video_prompt": ""}], id_field="scene_id", grids={})

@@ -87,6 +87,25 @@ def _step(plan, step_id: str):
     return next(step for step in plan.steps if step.id == step_id)
 
 
+def test_factory_plan_skips_native_planning_and_reports_assets_before_visual_json():
+    status = _status("drama", action="prepare_episode_assets", requested_ids=["张三"])
+    status.content = status.content.model_copy(
+        update={
+            "script_from_short_drama": True,
+            "formal_script": "absent",
+            "script_item_count": None,
+            "unregistered_references": ["张三"],
+        }
+    )
+    plan = build_workflow_plan(status)
+    assert plan.next_action.type == "prepare_episode_assets"
+    for step_id in ("episode_plan", "script_plan_content", "script_plan_review", "storyboard"):
+        assert _step(plan, step_id).state is WorkflowStepState.SKIPPED
+        assert not _step(plan, step_id).required
+    assert _step(plan, "asset_sheets").state is WorkflowStepState.READY
+    assert _step(plan, "asset_sheets").requested_ids == ["张三"]
+
+
 def test_rules_exhaust_the_six_content_and_generation_mode_combinations() -> None:
     assert set(WORKFLOW_RULES) == {
         ("narration", "storyboard"),
@@ -154,6 +173,18 @@ def test_episode_without_edit_timeline_points_to_the_edit_step() -> None:
     assert edit.action.type == "create_edit_timeline"
     assert edit.artifacts == {"timeline_ids": []}
     assert plan.next_action.type == "create_edit_timeline"
+
+
+def test_unconfirmed_reference_materials_keep_video_prompts_pending() -> None:
+    status = _status()
+    status.artifacts["video_prompts"] = {
+        "current_ids": [],
+        "missing_ids": [],
+        "stale_ids": [],
+        "awaiting_grid_ids": ["E1S01"],
+    }
+    plan = build_workflow_plan(status)
+    assert _step(plan, "video_prompt").state is WorkflowStepState.PENDING
 
 
 def test_episode_with_an_edit_timeline_completes_every_applicable_step() -> None:

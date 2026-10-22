@@ -33,6 +33,10 @@ export interface ShotGridPlan {
   created_at: string;
   updated_at: string;
   error_message: string | null;
+  cell_paths?: string[];
+  confirmed_at?: string | null;
+  video_aspect_ratio?: "9:16" | "16:9" | null;
+  stale?: boolean;
 }
 
 /** PUT 保存规格与逐格镜头文本；`prompt` 为 `null` 时保持原值（D-4）。 */
@@ -43,17 +47,4 @@ export interface SaveShotGridPayload {
   rows: number;
   cols: number;
   prompt: string | null;
-}
-
-/**
- * 草稿保存：关弹窗 / AI 生成返回时把输入框里的文本留下（D-5）。
- * 只写逐格文本，不动生成状态；`rows/cols` 只在记录尚不存在时用于新建。
- */
-export interface SaveShotGridDraftPayload {
-  script_file: string;
-  episode: number;
-  shot_id: string;
-  rows: number;
-  cols: number;
-  prompt: string;
 }

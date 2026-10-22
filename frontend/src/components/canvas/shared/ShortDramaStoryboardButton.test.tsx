@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Router } from "wouter";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
+import { useTasksStore } from "@/stores/tasks-store";
 import { ShortDramaStoryboardButton } from "./ShortDramaStoryboardButton";
 
 const SOURCE = {
@@ -19,7 +20,7 @@ const MISSING = [
   { type: "prop", name: "铁门", reason: "source_missing" },
 ];
 
-function renderButton(storyboardCount = 0, sceneIds: string[] = []) {
+function renderButton(storyboardCount = 0, sceneIds: string[] = [], readOnly = false) {
   return render(
     <Router>
       <ShortDramaStoryboardButton
@@ -27,6 +28,7 @@ function renderButton(storyboardCount = 0, sceneIds: string[] = []) {
         episode={3}
         storyboardCount={storyboardCount}
         sceneIds={sceneIds}
+        readOnly={readOnly}
       />
     </Router>,
   );
@@ -81,6 +83,7 @@ describe("AI 分镜弹窗", () => {
       2,
       false,
       undefined,
+      { signal: expect.any(AbortSignal) },
     );
   });
 
@@ -104,6 +107,7 @@ describe("AI 分镜弹窗", () => {
         2,
         false,
         undefined,
+        { signal: expect.any(AbortSignal) },
       ),
     );
   });
@@ -128,10 +132,9 @@ describe("AI 分镜弹窗", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "重新分镜" }));
 
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", true, 2, false, [
-        "E3S1",
-        "E3S4",
-      ]),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith(
+        "proj", 3, "rev-3", true, 2, false, ["E3S1", "E3S4"], { signal: expect.any(AbortSignal) },
+      ),
     );
     await waitFor(() => expect(screen.getByText("已重写 2 个分镜")).toBeInTheDocument());
   });
@@ -145,7 +148,9 @@ describe("AI 分镜弹窗", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
 
     await waitFor(() =>
-      expect(API.reimportShortDramaSource).toHaveBeenCalledWith("proj", 3, "rev-3", false, 3, false, undefined),
+      expect(API.reimportShortDramaSource).toHaveBeenCalledWith(
+        "proj", 3, "rev-3", false, 3, false, undefined, { signal: expect.any(AbortSignal) },
+      ),
     );
   });
 
@@ -186,5 +191,52 @@ describe("AI 分镜弹窗", () => {
       "href",
       "/characters?focus=%E6%9E%97%E8%BE%B0",
     );
+  });
+
+  it("全选时仍可强制重新智能分镜", async () => {
+    renderButton(2, ["E3S1", "E3S2"]);
+    fireEvent.click(screen.getByRole("button", { name: "AI 重新分镜" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /重新智能分镜/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "重新分镜" }));
+    await waitFor(() => expect(API.reimportShortDramaSource).toHaveBeenCalledWith(
+      "proj", 3, "rev-3", true, 2, true, undefined, { signal: expect.any(AbortSignal) },
+    ));
+  });
+
+  it("只读时不能打开或提交分镜", () => {
+    renderButton(0, [], true);
+    const button = screen.getByRole("button", { name: "AI 分镜" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(API.reimportShortDramaSource).not.toHaveBeenCalled();
+  });
+
+  it("弹窗打开后出现编写任务，提交随最新占用置灰", async () => {
+    renderButton();
+    const dialog = await openDialog();
+    let mark: ReturnType<ReturnType<typeof useTasksStore.getState>["beginOptimisticActive"]> | undefined;
+    act(() => {
+      mark = useTasksStore.getState().beginOptimisticActive("proj", "text_episode_script", "episode-3", "text_episode_script");
+    });
+    const submit = within(dialog).getByRole("button", { name: "开始分镜" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(API.reimportShortDramaSource).not.toHaveBeenCalled();
+    act(() => mark?.rollback());
+  });
+
+  it("写入后刷新失败只允许重试刷新，不重复生成或显示成功", async () => {
+    vi.mocked(useProjectsStore.getState().refreshProject).mockResolvedValueOnce("failed").mockResolvedValueOnce("success");
+    renderButton();
+    const dialog = await openDialog();
+    fireEvent.click(within(dialog).getByRole("button", { name: "开始分镜" }));
+    const retry = await within(dialog).findByRole("button", { name: "重试" });
+    expect(within(dialog).queryByText("已生成 5 个分镜")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "开始分镜" })).toBeDisabled();
+    fireEvent.click(retry);
+    await within(dialog).findByText("已生成 5 个分镜");
+    expect(API.reimportShortDramaSource).toHaveBeenCalledTimes(1);
   });
 });

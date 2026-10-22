@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "wouter";
 import { AlertTriangle, Check, Loader2, Sparkles } from "lucide-react";
-import { API } from "@/api";
-import { reimportShortDramaSource, type ShortDramaSource } from "@/actions/shortDrama";
+import { reimportShortDramaSource } from "@/actions/shortDrama";
+import { promptAuthoringResourceId } from "@/actions/generation";
+import { useFactoryEpisodeSource } from "@/components/canvas/episode-page/useFactoryEpisodeSource";
+import { isResourceBusy, useActiveResourceIds } from "@/stores/tasks-store";
+import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Dialog,
   DialogBody,
@@ -35,6 +39,7 @@ interface Props {
   sceneIds: string[];
   /** 页头动作用描边小按钮；空态里的主操作用实心按钮。 */
   prominent?: boolean;
+  readOnly?: boolean;
 }
 
 const ASSET_ROUTE: Record<string, string> = {
@@ -55,17 +60,27 @@ function sceneLabel(sceneId: string): string {
  * 本集引用的资产缺外观描述时入口置灰，提示先去资产页补齐；不新增资产、不生成图片或视频，
  * 视频提示词留待宫格确认后编写。
  */
-export function ShortDramaStoryboardButton({
+export function ShortDramaStoryboardButton(props: Props) {
+  return <ShortDramaStoryboardAction key={`${props.projectName}:${props.episode}`} {...props} />;
+}
+
+function ShortDramaStoryboardAction({
   projectName,
   episode,
   storyboardCount,
   sceneIds,
   prominent = false,
+  readOnly = false,
 }: Props) {
   const { t } = useTranslation("dashboard");
+  const demo = useDemoWorkbench();
+  const readonly = readOnly || demo;
+  const sourceState = useFactoryEpisodeSource(projectName, episode, !readonly);
+  const source = sourceState.value;
+  const loading = sourceState.loading;
+  const busy = useActiveResourceIds("text_episode_script", projectName).has(promptAuthoringResourceId(episode));
+  const controllerRef = useRef<AbortController | null>(null);
   const [open, setOpen] = useState(false);
-  const [source, setSource] = useState<ShortDramaSource | null>(null);
-  const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [planningStrength, setPlanningStrength] = useState(2);
   const [forceRegenerate, setForceRegenerate] = useState(false);
@@ -77,41 +92,21 @@ export function ShortDramaStoryboardButton({
     missing: MissingAsset[];
     cached: boolean;
   } | null>(null);
+  const [pendingResult, setPendingResult] = useState<typeof result>(null);
 
   const hasStoryboards = storyboardCount > 0;
   const missing = source?.assets_missing_description ?? [];
   const blocked = missing.length > 0;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setSource(await API.getShortDramaSource(projectName, episode));
-    } catch (err) {
-      setError(errMsg(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [projectName, episode]);
-
-  // 缺描述资产的置灰判定要在入口渲染时就可用，因此挂载即拉取源稿（弹窗复用同一份）。
-  useEffect(() => {
-    let cancelled = false;
-    // setState 不能同步发生在 effect 体里（react-hooks/set-state-in-effect），放进微任务。
-    queueMicrotask(() => {
-      if (!cancelled) void load();
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   const openDialog = () => {
+    if (readonly || blocked || submitting || isResourceBusy("text_episode_script", projectName, promptAuthoringResourceId(episode))) return;
     setResult(null);
     setError(null);
     setSelected(sceneIds);
     setOpen(true);
-    void load();
+    sourceState.reload();
   };
 
   const toggleScene = (sceneId: string, checked: boolean) => {
@@ -120,12 +115,18 @@ export function ShortDramaStoryboardButton({
     );
   };
 
-  const allSelected = hasStoryboards && sceneIds.length > 0 && selected.length === sceneIds.length;
+  const selectedIds = selected.filter((id) => sceneIds.includes(id));
+  const allSelected = hasStoryboards && sceneIds.length > 0 && selectedIds.length === sceneIds.length;
   /** 部分=勾选了既有分镜的真子集：按分镜重写，其余分镜原样保留。 */
   const partial = hasStoryboards && sceneIds.length > 0 && !allSelected;
 
   const submit = async () => {
-    if (submitting) return;
+    if (readonly || blocked || loading || submitting || pendingResult) return;
+    if (isResourceBusy("text_episode_script", projectName, promptAuthoringResourceId(episode))) {
+      setError(t("prompt_authoring_busy"));
+      return;
+    }
+    if (hasStoryboards && sceneIds.length > 0 && selectedIds.length === 0) return;
     const revision = source?.revision;
     if (!revision) {
       setError(t("short_drama_ai_storyboard_source_missing"));
@@ -133,6 +134,8 @@ export function ShortDramaStoryboardButton({
     }
     setSubmitting(true);
     setError(null);
+    const controller = new AbortController();
+    controllerRef.current = controller;
     try {
       const res = await reimportShortDramaSource(
         projectName,
@@ -141,15 +144,23 @@ export function ShortDramaStoryboardButton({
         hasStoryboards,
         planningStrength,
         forceRegenerate,
-        partial ? selected : undefined,
+        partial ? selectedIds : undefined,
+        { signal: controller.signal },
       );
+      controller.signal.throwIfAborted();
       const resMissing = res.assets_without_description ?? [];
-      setResult({
+      const completed = {
         scenes: partial ? res.regenerated_scenes ?? res.scenes : res.scenes,
         partial,
         missing: resMissing,
         cached: res.planning_cached,
-      });
+      };
+      setPendingResult(completed);
+      const refreshed = await refreshAfterWrite(projectName, t);
+      controller.signal.throwIfAborted();
+      if (refreshed !== "success") return;
+      setPendingResult(null);
+      setResult(completed);
       if (resMissing.length > 0) {
         useAppStore.getState().pushToast(
           t("short_drama_ai_storyboard_missing", {
@@ -159,11 +170,26 @@ export function ShortDramaStoryboardButton({
           "warning",
         );
       }
-      await refreshAfterWrite(projectName, t);
     } catch (err) {
-      setError(errMsg(err));
+      if (!controller.signal.aborted) setError(errMsg(err));
     } finally {
-      setSubmitting(false);
+      if (!controller.signal.aborted) setSubmitting(false);
+    }
+  };
+
+  const retryRefresh = async () => {
+    if (!pendingResult || submitting) return;
+    setSubmitting(true);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
+      const refreshed = await refreshAfterWrite(projectName, t);
+      if (!controller.signal.aborted && refreshed === "success") {
+        setResult(pendingResult);
+        setPendingResult(null);
+      }
+    } finally {
+      if (!controller.signal.aborted) setSubmitting(false);
     }
   };
 
@@ -173,14 +199,15 @@ export function ShortDramaStoryboardButton({
   };
 
   const canSubmit =
-    !loading && !submitting && Boolean(source?.revision) && (!hasStoryboards || selected.length > 0);
+    !readonly && !blocked && !busy && !loading && !submitting && !pendingResult
+    && Boolean(source?.exists && source.revision) && (!hasStoryboards || selectedIds.length > 0);
 
   const trigger = (
     <Button
       variant={prominent ? "default" : "outline"}
       size={prominent ? "default" : "sm"}
       onClick={openDialog}
-      disabled={blocked}
+      disabled={readonly || blocked || busy || submitting}
     >
       <Sparkles aria-hidden data-icon="inline-start" />
       {t(hasStoryboards ? "short_drama_ai_restoryboard" : "short_drama_ai_storyboard")}
@@ -293,38 +320,36 @@ export function ShortDramaStoryboardButton({
                 <p className="text-warn">{t("short_drama_ai_storyboard_overwrite", { count: storyboardCount })}</p>
               ) : null}
 
-              {!allSelected && (
-                <label className="flex items-center gap-2">
-                  <Checkbox
-                    checked={forceRegenerate}
-                    onCheckedChange={(value) => setForceRegenerate(value === true)}
-                    disabled={submitting}
-                  />
-                  <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
-                </label>
-              )}
+              <label className="flex items-center gap-2">
+                <Checkbox
+                  checked={forceRegenerate}
+                  onCheckedChange={(value) => setForceRegenerate(value === true)}
+                  disabled={submitting || readonly}
+                />
+                <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
+              </label>
 
               <div className="flex flex-col gap-1">
                 <span className="text-muted-foreground">{t("short_drama_ai_storyboard_strength")}</span>
-                <div
-                  className="flex flex-wrap gap-2"
-                  role="group"
+                <ToggleGroup
+                  value={[String(planningStrength)]}
+                  onValueChange={(values) => {
+                    if (values[0]) setPlanningStrength(Number(values[0]));
+                  }}
+                  variant="outline"
+                  size="sm"
+                  disabled={submitting || readonly}
                   aria-label={t("short_drama_ai_storyboard_strength")}
                 >
                   {[1, 2, 3].map((level) => (
-                    <Button
+                    <ToggleGroupItem
                       key={level}
-                      type="button"
-                      size="sm"
-                      variant={planningStrength === level ? "default" : "outline"}
-                      disabled={submitting}
-                      aria-pressed={planningStrength === level}
-                      onClick={() => setPlanningStrength(level)}
+                      value={String(level)}
                     >
                       {t(`short_drama_ai_storyboard_strength_${level}`)}
-                    </Button>
+                    </ToggleGroupItem>
                   ))}
-                </div>
+                </ToggleGroup>
                 <p className="text-xs text-muted-foreground">
                   {t("short_drama_ai_storyboard_strength_hint")}
                 </p>
@@ -359,7 +384,13 @@ export function ShortDramaStoryboardButton({
                 </div>
               ) : null}
 
-              {error ? <p className="text-destructive">{error}</p> : null}
+              {error || sourceState.error ? <p role="alert" className="text-destructive">{error ?? sourceState.error}</p> : null}
+              {sourceState.error ? <Button variant="outline" onClick={sourceState.reload}>{t("common:retry")}</Button> : null}
+              {pendingResult ? (
+                <Button variant="outline" onClick={() => void retryRefresh()} disabled={submitting}>
+                  {t("common:retry")}
+                </Button>
+              ) : null}
             </div>
           </DialogBody>
           <DialogFooter>

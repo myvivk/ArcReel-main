@@ -22,6 +22,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import type {
   AuthorPromptsRequest,
   DraftDocType,
+  EpisodeAssetGenerationResult,
   PlanningGap,
   PlanScriptRequest,
   GenerateAdScriptRequest,
@@ -31,7 +32,6 @@ import type {
   StoryboardBatchKind,
   StoryboardBatchSubmitted,
 } from "@/types";
-import type { SaveShotGridPayload } from "@/types/shot-grid";
 import {
   useTasksStore,
   type ImageEditResourceKind,
@@ -312,9 +312,13 @@ export async function enqueueShotGrid(
   projectName: string,
   scriptFile: string,
   shotId: string,
+  gridId?: string,
 ): Promise<EnqueueResult> {
   const res = await submit(
-    [markScriptFile(projectName, "shot_grid", scriptFile)],
+    [
+      markScriptFile(projectName, "shot_grid", scriptFile),
+      ...(gridId ? [markResource(projectName, "shot_grid", gridId, "shot_grid")] : []),
+    ],
     () => API.generateShotGrid(projectName, scriptFile, shotId),
     oneTaskId,
   );
@@ -459,6 +463,20 @@ export async function enqueueStoryboardBatch(
       );
   }
   return res;
+}
+
+/** 本集资产四步链路：目标由服务端决定，回执后按资产身份标记图像任务。 */
+export async function enqueueEpisodeAssets(projectName: string, episode: number): Promise<EpisodeAssetGenerationResult> {
+  const result = await API.generateEpisodeAssets(projectName, episode);
+  for (const member of result.members) {
+    if (!member.task_id || member.status === "blocked") continue;
+    const kind = member.asset_type;
+    if (kind === "character" || kind === "scene" || kind === "prop") {
+      const name = member.derivative ? `${member.name}/${member.derivative}` : member.name;
+      markResource(projectName, kind, name, kind).settle([member.task_id]);
+    }
+  }
+  return result;
 }
 
 /** 文本任务批次里已建出任务的成员的任务 ID。 */

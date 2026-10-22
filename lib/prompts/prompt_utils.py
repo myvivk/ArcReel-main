@@ -7,7 +7,7 @@ Prompt 工具函数
 import logging
 import re
 from collections.abc import Mapping
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 import yaml
 
@@ -16,6 +16,9 @@ from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from lib.prompts.reference_image_numbering import REFERENCE_IMAGES_KEY
 from lib.script.script_models import CameraMotion, ShotType
+
+if TYPE_CHECKING:
+    from lib.script.storyboard_sequence import StoryboardVideoSlots
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +257,9 @@ def render_storyboard_video_prompt(
     *,
     content_mode: str,
     voice_characters: dict[str, Any] | None,
+    slots: "StoryboardVideoSlots | None" = None,
+    asset_links: str = "",
+    audio_speakers: tuple[str, ...] = (),
 ) -> str:
     """分镜生视频最终提示词文本的唯一出口。
 
@@ -266,10 +272,8 @@ def render_storyboard_video_prompt(
     """
 
     if isinstance(prompt, dict):
-        if "shot_sequence" in prompt:
-            return normalize_video_prompt(prompt)
         prompt = strip_voice_profiles(prompt)
-        if content_mode == "drama":
+        if content_mode == "drama" and "shot_sequence" not in prompt:
             if isinstance(item, Mapping) and "utterances" in item:
                 prompt = build_drama_video_prompt(prompt, item.get("utterances"), characters=voice_characters)
             else:
@@ -282,16 +286,53 @@ def render_storyboard_video_prompt(
     assets = item.get("generated_assets") if isinstance(item, Mapping) else None
     grid = assets.get("shot_grid") if isinstance(assets, Mapping) else None
     cells = grid.get("cell_paths") if isinstance(grid, Mapping) else None
-    if isinstance(cells, list) and cells:
+    instruction = ""
+    if slots is not None:
+        instruction = _storyboard_slot_declaration(slots)
+    elif isinstance(cells, list) and cells:
         last = len(cells) - 1
-        instruction = (
-            f"K0 is the opening frame of this shot. The reference images are K1–K{max(0, last - 1)} "
-            f"in their supplied order, followed by the final keyframe K{last} as the last frame. "
-            "Follow this temporal order and preserve character, setting and action continuity."
+        parts = ["K0 is the opening frame of this shot, supplied as the first frame."]
+        if last > 1:
+            parts.append(f"The reference images are K1–K{last - 1} in their supplied order.")
+        if last:
+            parts.append(f"The final keyframe K{last} is supplied as the last frame.")
+        instruction = " ".join(parts)
+    audio = "\n".join(
+        f"{speaker}: use the voice in reference audio {index} (音频{index})."
+        for index, speaker in enumerate(audio_speakers, 1)
+    )
+    for section in (asset_links, audio, instruction):
+        if section and section not in rendered:
+            rendered = f"{rendered.rstrip()}\n\n{section}"
+    return normalize_video_prompt(rendered)
+
+
+def _storyboard_slot_declaration(slots: "StoryboardVideoSlots") -> str:
+    """Describe precisely the K frames assigned to the request's three slots."""
+    if not slots.cell_count:
+        return ""
+    parts: list[str] = []
+    if slots.continues_previous:
+        parts.append("The first frame is the ending frame of the previous shot; continue from it.")
+        if slots.cell_count > 1:
+            parts.append("K0 is the opening frame of this shot.")
+    else:
+        parts.append("K0 is the opening frame of this shot, supplied as the first frame.")
+    if slots.references:
+        keys = [f"K{frame.keyframe_index}" for frame in slots.references]
+        key_range = keys[0] if len(keys) == 1 else f"{keys[0]}–{keys[-1]}"
+        parts.append(
+            f"The reference images are {key_range} in their supplied order: "
+            + (
+                "the consecutive keyframes from the opening through to the penultimate moment."
+                if slots.continues_previous
+                else "the consecutive keyframes that follow."
+            )
         )
-        if instruction not in rendered:
-            rendered = f"{rendered.rstrip()}\n\n{instruction}"
-    return rendered
+    if slots.end is not None:
+        parts.append(f"The final keyframe K{slots.end.keyframe_index} is supplied as the last frame.")
+    parts.append("Follow this temporal order and preserve character, setting and action continuity.")
+    return " ".join(parts)
 
 
 def _attach_drama_speech_text(text: str, item: Mapping[str, Any] | None, *, characters: dict[str, Any] | None) -> str:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from lib.project.story_plan_docs import (
     collect_story_plan,
+    episode_plan_asset_names,
     plan_episode_section,
     story_plan_asset_names,
     story_plan_documents,
@@ -36,6 +37,25 @@ class TestDocumentLookup:
 
     def test_a_project_without_source_has_no_plan_docs(self, tmp_path: Path):
         assert story_plan_documents(tmp_path) == {}
+
+    def test_factory_layout_reads_ledger_and_the_matching_episode_file(self, tmp_path: Path):
+        project = _project_dir(tmp_path)
+        root = project / "source/short_drama"
+        (root / "ledger.md").write_text("林辰在当前台账中存活\n", encoding="utf-8")
+        plans = root / "episode-plan"
+        plans.mkdir()
+        (plans / "episode_01.plan.md").write_text("[人物]：林辰\n[道具]：玉佩｜白玉\n", encoding="utf-8")
+        (plans / "episode_02.plan.md").write_text("[人物]：路人甲\n", encoding="utf-8")
+
+        assert episode_plan_asset_names(project, episode=1) == {
+            "character": ["林辰"],
+            "scene": [],
+            "prop": ["玉佩"],
+        }
+        context = "\n".join(collect_story_plan(project, "character", "林辰", episode=1))
+        assert "当前台账中存活" in context
+        assert "旧伤" not in context
+        assert "episode_02" not in context
 
 
 class TestEpisodeSection:

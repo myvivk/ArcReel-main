@@ -274,6 +274,7 @@ async def test_shot_grid_submit_queues_one_task_per_target_under_one_batch(
     first = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口"), ("全景", "小明推开院门")))
     second = _segment("E1S02", segment_break=True, image_prompt=_scene(("特写", "门环上的锈迹")))
     _write_episode(board_projects, [first, second, _segment("E1S03", image_prompt={"scene": ""})])
+    _grid(board_projects, "E1S01", prompt="旧手填画面\n必须清除", rows=3, cols=3)
 
     response = await board_client.post(f"{BASE}/1/shot-grids/batch")
 
@@ -288,7 +289,9 @@ async def test_shot_grid_submit_queues_one_task_per_target_under_one_batch(
         grid = manager.find(script_file="episode_1.json", shot_id=unit_id)
         assert grid is not None
         assert (grid.rows, grid.cols) == (2, 2)
-        assert grid.status == "draft"
+        assert grid.status == "generating"
+        assert grid.task_id == body["task_ids_by_unit"][unit_id]
+        assert grid.prompt == ""
         frames = parse_scene_shots(segment["image_prompt"]["scene"]).shots
         assert [cell.prompt for cell in grid.cells[: len(frames)]] == [frame.text for frame in frames]
     tasks = await board_queue.get_active_tasks_for_resources(
@@ -299,3 +302,12 @@ async def test_shot_grid_submit_queues_one_task_per_target_under_one_batch(
         user_id=DEFAULT_USER_ID,
     )
     assert len(tasks) == 2
+
+    again = await board_client.post(f"{BASE}/1/shot-grids/batch")
+    assert again.status_code == 200
+    assert again.json()["task_ids_by_unit"] == {}
+    assert again.json()["skipped"] == [
+        {"unit_id": "E1S01", "reason": "generating"},
+        {"unit_id": "E1S02", "reason": "generating"},
+        {"unit_id": "E1S03", "reason": "missing_prompt"},
+    ]

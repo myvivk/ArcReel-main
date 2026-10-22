@@ -3,12 +3,9 @@
   "path": "/api/v1/projects/demo/story-planning",
   "status": 200,
   "body": {
-    "plan": {
-      "premise": "",
-      "records": [],
-      "context_budget": 2400
-    },
-    "revision": "sha256-v1:7ba046bfe242dba887afd97c48b8131e1d7e194032028d3b93ddbd6e510d2179",
-    "stale_ids": []
+    "character_bible": null,
+    "series_outline": null,
+    "ledger": null,
+    "episode_plans": []
   }
 }

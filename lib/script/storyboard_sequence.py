@@ -37,6 +37,71 @@ class EndFrameImageUnavailable(ValueError):
     """The optional end-frame binding is invalid or its snapshot is unavailable."""
 
 
+@dataclass(frozen=True, slots=True)
+class StoryboardFrameSource:
+    """A request frame and the durable source from which it is obtained."""
+
+    path: Path
+    resource_id: str
+    kind: str
+    keyframe_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoryboardVideoSlots:
+    """Ordered, non-overlapping video slots with stable source K identities."""
+
+    start: StoryboardFrameSource
+    references: tuple[StoryboardFrameSource, ...]
+    end: StoryboardFrameSource | None
+    cell_count: int
+    continues_previous: bool
+
+    @property
+    def frames(self) -> tuple[tuple[str, StoryboardFrameSource], ...]:
+        return (
+            ("start_image", self.start),
+            *(("reference_image", frame) for frame in self.references),
+            *((("end_image", self.end),) if self.end is not None else ()),
+        )
+
+
+def resolve_storyboard_video_slots(
+    *,
+    project_path: Path,
+    items: Sequence[Any],
+    id_field: str,
+    resource_id: str,
+) -> StoryboardVideoSlots:
+    """Project the complete episode sequence without extracting or writing media."""
+    resolved = find_storyboard_item(items, id_field, resource_id)
+    if resolved is None:
+        raise KeyError(f"scene/segment not found: {resource_id}")
+    item, _ = resolved
+    cells = resolve_storyboard_video_cells(project_path=project_path, resource_id=resource_id, item=item)
+    previous = resolve_previous_storyboard_source(project_path, items, id_field, resource_id)
+    if previous is not None:
+        start = previous
+    else:
+        opening, _ = resolve_storyboard_video_inputs(project_path=project_path, resource_id=resource_id, item=item)
+        start = StoryboardFrameSource(
+            opening, resource_id, "grid_cell" if cells else "storyboard", 0 if cells else None
+        )
+    end = (
+        StoryboardFrameSource(cells[-1], resource_id, "grid_cell", len(cells) - 1)
+        if cells and (previous is not None or len(cells) > 1)
+        else None
+    )
+    indices = range(0 if previous else 1, max(0, len(cells) - 1))
+    return StoryboardVideoSlots(
+        start=start,
+        references=tuple(StoryboardFrameSource(cells[index], resource_id, "grid_cell", index) for index in indices),
+        end=end,
+        cell_count=len(cells),
+        continues_previous=previous is not None,
+    )
+
+
 def get_storyboard_items(script: dict) -> tuple[list[Any], str, str | None, str, str]:
     """返回 旁白/解说、剧情演绎与广告/短片剧本的分镜列表 + 各引用字段名。
 
@@ -205,13 +270,24 @@ def resolve_previous_storyboard_path(
     id_field: str,
     resource_id: str,
 ) -> Path | None:
-    """Resolve the previous shot's strongest available continuity frame."""
+    """Return the durable source of the previous shot's continuity frame."""
+    source = resolve_previous_storyboard_source(project_path, items, id_field, resource_id)
+    return source.path if source is not None else None
+
+
+def resolve_previous_storyboard_source(
+    project_path: Path,
+    items: Sequence[Any],
+    id_field: str,
+    resource_id: str,
+) -> StoryboardFrameSource | None:
+    """Prefer the selected video, then the user snapshot, then the last grid cell."""
     resolved = find_storyboard_item(items, id_field, resource_id)
     if resolved is None:
         raise KeyError(f"scene/segment not found: {resource_id}")
 
-    target_item, index = resolved
-    if index == 0 or bool(target_item.get("segment_break")):
+    _, index = resolved
+    if index == 0:
         return None
     previous_item = items[index - 1]
     if not isinstance(previous_item, dict):
@@ -221,25 +297,42 @@ def resolve_previous_storyboard_path(
         return None
 
     previous_assets = get_generated_assets(previous_item)
+    video_rel = previous_assets.get("video_clip")
+    if isinstance(video_rel, str) and video_rel:
+        video_path = try_safe_join(project_path, video_rel)
+        video_root = safe_join(project_path, "videos", allow_base=True)
+        if video_path is None or not video_path.is_relative_to(video_root):
+            raise ValueError("continuation video must stay under videos/")
+        if video_path.is_file():
+            return StoryboardFrameSource(video_path, previous_id, "video_last_frame")
     end_rel = previous_item.get("end_frame_image")
-    if isinstance(end_rel, str) and end_rel:
+    if end_rel not in (None, ""):
+        if not isinstance(end_rel, str):
+            raise EndFrameImageUnavailable(f"invalid end frame snapshot path: {end_rel!r}")
         normalized = end_rel.strip().replace("\\", "/")
         candidate = normalized if "/" in normalized else f"{END_FRAME_RESOURCE_TYPE}/{normalized}"
+        expected_rel = resource_relative_path(END_FRAME_RESOURCE_TYPE, previous_id)
+        raw_expected = project_path / expected_rel
+        if (
+            candidate != expected_rel
+            or raw_expected.is_symlink()
+            or raw_expected.is_junction()
+            or raw_expected.parent.is_symlink()
+            or raw_expected.parent.is_junction()
+        ):
+            raise EndFrameImageUnavailable(f"invalid end frame snapshot path: {end_rel!r}")
         end_path = try_safe_join(project_path, candidate)
-        expected = safe_join(project_path, resource_relative_path(END_FRAME_RESOURCE_TYPE, previous_id))
+        expected = safe_join(project_path, expected_rel)
         if end_path is not None and end_path == expected and end_path.is_file():
-            return end_path
+            return StoryboardFrameSource(end_path, previous_id, "end_frame_snapshot")
 
     previous_grid = previous_assets.get("shot_grid")
     previous_cells = previous_grid.get("cell_paths") if isinstance(previous_grid, dict) else None
     if isinstance(previous_cells, list) and previous_cells:
         last = resolve_storyboard_image_ref(project_path, previous_cells[-1])
         if last is not None and last.is_file():
-            return last
-
-    previous_rel = previous_assets.get("storyboard_image")
-    previous_path = resolve_storyboard_image_ref(project_path, previous_rel)
-    return previous_path if previous_path is not None and previous_path.is_file() else None
+            return StoryboardFrameSource(last, previous_id, "grid_cell", len(previous_cells) - 1)
+    return None
 
 
 def group_scenes_by_segment_break(items: list[dict], id_field: str) -> list[list[dict]]:

@@ -595,26 +595,27 @@ class _VideoSubmissionCheckpoint:
         if self.kind == _CHECKPOINT_KIND:
             if any(item.role not in ("reference_image", "reference_audio") for item in self.media):
                 raise ValueError("reference checkpoint contains storyboard media")
-            audio = tuple(item for item in self.media if item.role == "reference_audio")
-            image_count = sum(item.role == "reference_image" for item in self.media)
-            if self.reference_audio_targets is None:
-                if any(item.target_index is not None for item in audio):
-                    raise ValueError("media target_index requires reference_audio_targets")
-            else:
-                if any(not is_int(target, minimum=0) for target in self.reference_audio_targets):
-                    raise ValueError("reference_audio_targets must contain non-negative integers")
-                if tuple(item.target_index for item in audio) != self.reference_audio_targets:
-                    raise ValueError("reference_audio_targets do not match staged audio identities")
-                if any(target >= image_count for target in self.reference_audio_targets):
-                    raise ValueError("reference audio target_index must address a staged reference image")
         else:
             roles = tuple(item.role for item in self.media)
             if roles.count("start_image") != 1 or roles.count("end_image") > 1:
                 raise ValueError("storyboard checkpoint requires one start image and at most one end image")
-            if any(role not in ("start_image", "end_image", "reference_image") for role in roles):
+            allowed_roles = {"start_image", "end_image", "reference_image"}
+            if self.schema_version == _SCHEMA_VERSION:
+                allowed_roles.add("reference_audio")
+            if any(role not in allowed_roles for role in roles):
                 raise ValueError("storyboard checkpoint contains reference audio")
-            if self.reference_audio_targets is not None:
-                raise ValueError("storyboard checkpoint cannot have reference_audio_targets")
+        audio = tuple(item for item in self.media if item.role == "reference_audio")
+        image_count = sum(item.role == "reference_image" for item in self.media)
+        if self.reference_audio_targets is None:
+            if any(item.target_index is not None for item in audio):
+                raise ValueError("media target_index requires reference_audio_targets")
+        else:
+            if any(not is_int(target, minimum=0) for target in self.reference_audio_targets):
+                raise ValueError("reference_audio_targets must contain non-negative integers")
+            if tuple(item.target_index for item in audio) != self.reference_audio_targets:
+                raise ValueError("reference_audio_targets do not match staged audio identities")
+            if any(target >= image_count for target in self.reference_audio_targets):
+                raise ValueError("reference audio target_index must address a staged reference image")
         _require_digest(self.request_digest, "request_digest")
         if self.request_digest != canonical_json_digest(self._request_digest_payload()):
             raise ValueError("request_digest does not match checkpoint request")

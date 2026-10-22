@@ -112,12 +112,6 @@ def _shot_visual(*shot_ids: str, mark: str) -> str:
                         "scene": f"{mark}-{shot_id}",
                         "composition": {"shot_type": "Medium Shot", "lighting": "自然光", "ambiance": "明亮"},
                     },
-                    "video_prompt": {
-                        "action": "小美拧开杯盖喝水",
-                        "camera_motion": "Static",
-                        "ambiance_audio": "办公室环境声",
-                        "dialogue": [],
-                    },
                 }
                 for shot_id in shot_ids
             ]
@@ -177,7 +171,8 @@ class TestAdShotAuthoring:
         added = _items(project_dir, "shots", "shot_id")["E1S03"]
         assert added["image_prompt"]["scene"] == "补写-E1S03"
         assert added["voiceover_text"] == "下单就送杯刷。"
-        assert PENDING_AUTHORING_FIELD not in added
+        assert added["video_prompt"] is None
+        assert added[PENDING_AUTHORING_FIELD] is True
 
     async def test_timeline_insert_and_remove_survive_default_authoring(self, tmp_path: Path) -> None:
         """时间线新增 / 移除分镜之后编写：新增的空分镜被填充，移除的分镜不会被生成回来。"""
@@ -205,7 +200,8 @@ class TestAdShotAuthoring:
         assert list(_items(project_dir, "shots", "shot_id")) == ["E1S01", "E1S03"]
         added = _items(project_dir, "shots", "shot_id")["E1S03"]
         assert added["image_prompt"]["scene"] == "补写-E1S03"
-        assert PENDING_AUTHORING_FIELD not in added
+        assert added["video_prompt"] is None
+        assert added[PENDING_AUTHORING_FIELD] is True
         assert _item_json(project_dir, "shots", "shot_id", "E1S01") == before_first
 
     async def test_nothing_pending_leaves_the_script_untouched(self, tmp_path: Path) -> None:
@@ -231,6 +227,7 @@ class TestAdShotAuthoring:
 
         after_first = _items(project_dir, "shots", "shot_id")["E1S01"]
         assert after_first["image_prompt"]["scene"] == "点名-E1S01"
+        assert after_first["video_prompt"] == before_first["video_prompt"]
         visual = {"image_prompt", "video_prompt"}
         assert {k: v for k, v in after_first.items() if k not in visual} == {
             k: v for k, v in before_first.items() if k not in visual

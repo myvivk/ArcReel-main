@@ -1,0 +1,6 @@
+{
+  "method": "GET",
+  "path": "/api/v1/projects/demo/shot-grids?script_file=episode_1.json&shot_id=E1S01",
+  "status": 200,
+  "body": null
+}

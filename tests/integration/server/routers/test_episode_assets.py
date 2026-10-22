@@ -254,10 +254,11 @@ class TestEpisodeAssetExtraction:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["plan"]["total"] == 7
-        assert body["plan"]["by_type"] == {"character": 3, "scene": 2, "prop": 2}
-        assert body["plan"]["text_calls"] == 6
-        assert body["plan"]["image_calls"] == 7
+        # 工厂原稿优先，不把视觉派生状态里的阿岚 / 茶楼 / 玉佩带入本集。
+        assert body["plan"]["total"] == 4
+        assert body["plan"]["by_type"] == {"character": 2, "scene": 1, "prop": 1}
+        assert body["plan"]["text_calls"] == 4
+        assert body["plan"]["image_calls"] == 4
 
 
 @pytest.fixture
@@ -372,6 +373,19 @@ class TestGenerateEpisodeAssets:
         assert members["character/阿岚"]["status"] == "blocked"
         assert [item["unit_id"] for item in body["without_description"]] == ["character/阿岚", "prop/玉佩"]
         assert pm.load_project("demo")["characters"]["阿岚"]["description"] == ""
+
+    async def test_empty_ai_description_is_reported_and_never_queued(self, generate_client, monkeypatch):
+        client, pm, project_path = generate_client
+        pm.add_project_scene("demo", "茶楼", "临街二层")
+        atomic_write_json(project_path / SCRIPT_FILE, _script())
+        _patch_fill(monkeypatch, description="  ")
+        response = await client.post("/api/v1/projects/demo/episodes/1/generate-assets")
+        body = response.json()
+        assert body["description_filled"] == []
+        assert {item["reason"] for item in body["description_fill_failed"]} == {"empty_description"}
+        members = {member["unit_id"]: member for member in body["members"]}
+        assert members["character/阿岚"]["task_id"] is None
+        assert members["scene/茶楼"]["task_id"]
 
     async def test_registers_the_names_only_the_source_and_the_plan_wrote(self, generate_client, monkeypatch):
         # 本集还没有正式脚本：工厂源稿标记行与故事规划照样能抽出名字并登记（D-33 / D-36）。

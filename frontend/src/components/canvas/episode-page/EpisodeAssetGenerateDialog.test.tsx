@@ -4,7 +4,8 @@ import { API } from "@/api";
 import { EpisodeAssetGenerateDialog } from "./EpisodeAssetGenerateDialog";
 import { useAppStore } from "@/stores/app-store";
 import { useAssetSheetBatchStore } from "@/stores/asset-sheet-batch-store";
-import type { EpisodeAssetPlan } from "@/types";
+import { useProjectsStore } from "@/stores/projects-store";
+import type { EpisodeAssetPlan, ProjectData } from "@/types";
 
 const PLAN: EpisodeAssetPlan = {
   total: 12,
@@ -39,6 +40,9 @@ function generation(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAssetSheetBatchStore.setState({ batches: {}, trackedTaskIds: new Set() });
+  const project: ProjectData = { title: "短剧", style: "", content_mode: "drama", characters: {}, episodes: [] };
+  useProjectsStore.getState().setCurrentProject("demo", project);
+  vi.spyOn(API, "getProject").mockResolvedValue({ project, scripts: {} });
 });
 
 afterEach(() => {
@@ -127,5 +131,16 @@ describe("EpisodeAssetGenerateDialog", () => {
 
     expect(generate).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps tracking committed tasks when the project refresh fails", async () => {
+    vi.spyOn(API, "generateEpisodeAssets").mockResolvedValue(generation());
+    vi.mocked(API.getProject).mockRejectedValue(new Error("offline"));
+    render(<EpisodeAssetGenerateDialog projectName="demo" episode={1} episodeTitle="第一集" plan={PLAN}
+      onClose={vi.fn()} onSubmitted={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    await waitFor(() => expect(useAppStore.getState().toast?.tone).toBe("warning"));
+    expect(useAssetSheetBatchStore.getState().batches.b1?.members).toHaveLength(1);
+    expect(useAppStore.getState().toast?.text).toContain("刷新");
   });
 });

@@ -342,8 +342,6 @@ function ShotDetailContent({
   generatingNarration,
   durationOptions = [],
   durationEndpointFixed,
-  lastFrame,
-  capabilitiesLoading,
   durationWarningReason,
   editRef,
 }: ShotDetailProps) {
@@ -604,6 +602,7 @@ function ShotDetailContent({
           />
         </ShotSection>
         <ReferenceMaterialsSection
+          key={`${projectName}:${scriptFile}:${segmentId}`}
           projectName={projectName}
           scriptFile={scriptFile}
           episode={episode}
@@ -665,8 +664,6 @@ function ShotDetailContent({
       {scriptFile && onGenerateVideo ? (
         <EndFrameRow
           projectName={projectName}
-          lastFrame={lastFrame}
-          capabilitiesLoading={capabilitiesLoading}
           segmentId={segmentId}
           scriptFile={scriptFile}
           contentMode={contentMode}

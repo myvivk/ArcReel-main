@@ -21,8 +21,8 @@ from typing import Any, cast
 from lib.artifacts.artifact_activation import (
     ArtifactCurrencyResolver,
     active_artifact_currency_resolver,
-    resolve_usable_storyboard_video_inputs,
 )
+from lib.artifacts.artifact_input_claims import resolve_usable_storyboard_video_slots
 from lib.artifacts.artifact_manifest import ArtifactKey
 from lib.config.resolver import ConfigResolver, video_bucket_for_generation_mode
 from lib.db import async_session_factory
@@ -68,8 +68,10 @@ from lib.script.reference_video.request_projection import (
     configured_reference_request_facts,
     project_reference_unit_request,
 )
+from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_models import get_generated_assets
-from lib.script.storyboard_sequence import StoryboardImageUnavailable
+from lib.script.storyboard_sequence import StoryboardImageUnavailable, StoryboardVideoSlots
+from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
 from lib.speech.speech_composition import SpeechAdmission, SpeechAdmissionError, require_script_unit_admitted
 from server.services.admission.cost_estimation import quote_video_request
 from server.services.admission.reference_admission import reference_admission_problems
@@ -788,7 +790,13 @@ def speech_admission_ticket(unit_id: str, exc: SpeechAdmissionError) -> UnitAdmi
 
 
 def storyboard_video_prompt(
-    item: dict[str, Any], *, content_mode: str, voice_characters: dict[str, Any] | None = None
+    item: dict[str, Any],
+    *,
+    content_mode: str,
+    voice_characters: dict[str, Any] | None = None,
+    slots: StoryboardVideoSlots | None = None,
+    asset_links: str = "",
+    audio_speakers: tuple[str, ...] = (),
 ) -> str:
     prompt = item.get("video_prompt")
     if not prompt:
@@ -803,21 +811,26 @@ def storyboard_video_prompt(
     # 与执行路径共用 render_storyboard_video_prompt：入队快照与实发文本同构，反向约束尾词
     # 由该出口统一追加（执行期对已带尾词的字符串幂等）。
     rendered = render_storyboard_video_prompt(
-        prompt, item, content_mode=content_mode, voice_characters=voice_characters
+        prompt,
+        item,
+        content_mode=content_mode,
+        voice_characters=voice_characters,
+        slots=slots,
+        asset_links=asset_links,
+        audio_speakers=audio_speakers,
     )
     # K 引用有界（D-17）：越界文本写回时已被拒，这里在计费前再拦一次——声明了不存在的参考图
     # 只会在供应商那边失败，成本更高。
     assets = get_generated_assets(item)
     grid = assets.get("shot_grid")
     cells = grid.get("cell_paths") if isinstance(grid, Mapping) else None
-    if isinstance(cells, list) and cells:
-        problems = keyframe_reference_problems(rendered, len(cells))
-        if problems:
-            item_id = item.get("segment_id") or item.get("scene_id") or item.get("shot_id")
-            raise ValueError(
-                f"分镜 video_prompt 引用了不存在的关键帧: {'、'.join(problems)}"
-                f"（本分镜宫格共 {len(cells)} 格，id={item_id}）"
-            )
+    count = slots.cell_count if slots is not None else len(cells) if isinstance(cells, list) else 0
+    problems = keyframe_reference_problems(rendered, count)
+    if problems:
+        item_id = item.get("segment_id") or item.get("scene_id") or item.get("shot_id")
+        raise ValueError(
+            f"分镜 video_prompt 引用了不存在的关键帧: {'、'.join(problems)}（本分镜宫格共 {count} 格，id={item_id}）"
+        )
     return rendered
 
 
@@ -878,6 +891,7 @@ def build_storyboard_video_specs(
     episode: int = 1,
     resolver: ArtifactCurrencyResolver | None = None,
     voice_characters: dict[str, Any] | None = None,
+    storyboard_items: Sequence[Any] | None = None,
 ) -> tuple[list[TaskSpec], list[UnitAdmissionTicket]]:
     """Build the Storyboard-mode specs, refusing each unit that cannot be requested.
 
@@ -917,12 +931,13 @@ def build_storyboard_video_specs(
             continue
 
         try:
-            resolve_usable_storyboard_video_inputs(
+            slots = resolve_usable_storyboard_video_slots(
                 project_path=project_dir,
                 project=project,
                 episode=episode,
                 resource_id=str(item_id),
-                item=item,
+                items=storyboard_items if storyboard_items is not None else items,
+                id_field=id_field,
                 resolver=resolver,
             )
         except (OSError, ValueError) as exc:
@@ -939,7 +954,13 @@ def build_storyboard_video_specs(
             continue
 
         try:
-            prompt = storyboard_video_prompt(item, content_mode=content_mode, voice_characters=voice_characters)
+            prompt = storyboard_video_prompt(
+                item,
+                content_mode=content_mode,
+                voice_characters=voice_characters,
+                slots=slots,
+                asset_links=storyboard_asset_links(project, item, project_dir.name),
+            )
         except Exception as exc:
             refused.append(
                 refused_ticket(
@@ -955,6 +976,7 @@ def build_storyboard_video_specs(
         # 原样透传调用方显式指定的值，不在入队侧做 int() 截断式归一化（否则会把
         # 本应被执行层拒绝的非法值静默修正）。缺省由执行层按 caps 收口默认。
         extra_payload: dict[str, Any] = {}
+        extra_payload["storyboard_reference_count"] = len(slots.references)
         duration = item.get("duration_seconds")
         if duration is not None:
             extra_payload["duration_seconds"] = duration
@@ -1014,6 +1036,10 @@ async def admit_storyboard_video_request(
     queue: GenerationQueue | None = None,
     config_resolver: ConfigResolver | None = None,
     video_request_facts: VideoRequestFacts | VideoRequestFactsFailure | None = None,
+    project_dir: Path | None = None,
+    storyboard_items: Sequence[Any] | None = None,
+    episode: int = 1,
+    content_mode: str | None = None,
 ) -> BatchAdmission:
     """Admit one Storyboard-mode request from the specs it would actually enqueue.
 
@@ -1048,15 +1074,103 @@ async def admit_storyboard_video_request(
         config_resolver=config_resolver,
         video_request_facts=request_facts,
     )
-    if conflict is None:
-        return admission
     # 音频开关冲突与投影侧的缺口写进同一批票：短路返回只会报出这一条，用户改完配置
     # 重试才撞见下一个已知缺口，正是这道门要免掉的逐条试探。
     target_ids = {spec.resource_id for spec in specs}
+    shape_problems: dict[str, tuple[GenerationProblem, ...]] = {}
+    if isinstance(request_facts, VideoRequestFacts):
+        for spec in specs:
+            problems: list[GenerationProblem] = []
+            count = (spec.payload or {}).get("storyboard_reference_count", 0)
+            if project_dir is not None:
+                try:
+                    slots = resolve_usable_storyboard_video_slots(
+                        project_path=project_dir,
+                        project=project,
+                        episode=episode,
+                        items=storyboard_items if storyboard_items is not None else items,
+                        id_field=id_field,
+                        resource_id=spec.resource_id,
+                    )
+                    count = len(slots.references)
+                    if spec.payload is not None:
+                        spec.payload["storyboard_reference_count"] = count
+                    audio = resolve_storyboard_audio_inputs(
+                        project=project,
+                        project_path=project_dir,
+                        item=items_by_id[spec.resource_id],
+                        slots=slots,
+                        voice=VoiceRenderSettings.from_request_facts(request_facts),
+                    )
+                    if spec.payload is not None:
+                        spec.payload["prompt"] = storyboard_video_prompt(
+                            items_by_id[spec.resource_id],
+                            content_mode=content_mode or str(project.get("content_mode") or "narration"),
+                            voice_characters=None
+                            if not request_facts.requested_generate_audio or request_facts.voice_consistency == "none"
+                            else project.get("characters") or {},
+                            slots=slots,
+                            asset_links=storyboard_asset_links(
+                                project, items_by_id[spec.resource_id], project_dir.name
+                            ),
+                            audio_speakers=audio.speakers,
+                        )
+                    if audio.paths and (
+                        request_facts.voice_consistency != "native"
+                        or len(audio.paths) > request_facts.max_reference_audio_count
+                    ):
+                        problems.append(
+                            GenerationProblem(
+                                code="video_reference_audio_exceeded"
+                                if request_facts.voice_consistency == "native"
+                                else "video_reference_audio_unsupported",
+                                detail="参考音频不符合模型能力，请更换模型或调整角色参考音频",
+                                action=GenerationAction.CONFIGURE_PROVIDER,
+                                params={
+                                    "provider": request_facts.provider_id,
+                                    "model": request_facts.model_id,
+                                    "count": len(audio.paths),
+                                    "limit": request_facts.max_reference_audio_count,
+                                },
+                            )
+                        )
+                except (OSError, ValueError) as exc:
+                    problems.append(
+                        GenerationProblem(
+                            code=GenerationProblemCode.UNIT_INPUT_UNUSABLE,
+                            detail=str(exc),
+                            action=GenerationAction.FIX_INPUT,
+                        )
+                    )
+            limit = request_facts.max_reference_images
+            if limit is not None and count > limit:
+                problems.append(
+                    GenerationProblem(
+                        code="video_reference_images_exceeded" if limit else "video_reference_images_unsupported",
+                        detail="关键帧数量超过模型上限，请调整宫格规格或更换模型",
+                        action=GenerationAction.CONFIGURE_PROVIDER,
+                        params={
+                            "provider": request_facts.provider_id,
+                            "model": request_facts.model_id,
+                            "count": count,
+                            "limit": limit,
+                        },
+                    )
+                )
+            shape_problems[spec.resource_id] = tuple(problems)
     return replace(
         admission,
         tickets=tuple(
-            replace(ticket, problems=(*ticket.problems, conflict)) if ticket.unit_id in target_ids else ticket
+            replace(
+                ticket,
+                problems=(
+                    *ticket.problems,
+                    *((conflict,) if conflict is not None else ()),
+                    *shape_problems.get(ticket.unit_id, ()),
+                ),
+            )
+            if ticket.unit_id in target_ids
+            else ticket
             for ticket in admission.tickets
         ),
     )

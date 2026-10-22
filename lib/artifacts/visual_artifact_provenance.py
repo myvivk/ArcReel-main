@@ -367,6 +367,8 @@ def build_storyboard_video_artifact_visual_basis(
     storyboard_image: Path,
     end_frame_image: Path | None,
     aspect_ratio: str,
+    frame_evidence: Sequence[Mapping[str, object]] | None = None,
+    asset_links: str = "",
 ) -> ArtifactBasis:
     """Describe the visual component of one storyboard-driven video.
 
@@ -392,18 +394,21 @@ def build_storyboard_video_artifact_visual_basis(
         }
     else:
         raise ValueError("visual_prompt must be a string or structured object")
-    frame_evidence: list[dict[str, object]] = [{"role": "storyboard", "sha256": visual_file_digest(storyboard_image)}]
+    frames = [{"role": "storyboard", "sha256": visual_file_digest(storyboard_image)}]
     if end_frame_image is not None:
-        frame_evidence.append({"role": "end_frame", "sha256": visual_file_digest(end_frame_image)})
+        frames.append({"role": "end_frame", "sha256": visual_file_digest(end_frame_image)})
+    inputs: dict[str, object] = {
+        "resource_id": _require_non_empty("resource_id", resource_id),
+        "visual_prompt": projected_prompt,
+        "canvas": {"aspect_ratio": _require_non_empty("aspect_ratio", aspect_ratio)},
+        "frames": [dict(frame) for frame in frame_evidence] if frame_evidence is not None else frames,
+    }
+    if frame_evidence is not None:
+        inputs["asset_links"] = asset_links
     return ArtifactBasis.build(
         "artifact-visual/video-storyboard",
-        kind_version=1,
-        inputs={
-            "resource_id": _require_non_empty("resource_id", resource_id),
-            "visual_prompt": projected_prompt,
-            "canvas": {"aspect_ratio": _require_non_empty("aspect_ratio", aspect_ratio)},
-            "frames": frame_evidence,
-        },
+        kind_version=2 if frame_evidence is not None else 1,
+        inputs=inputs,
     )
 
 

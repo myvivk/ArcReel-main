@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { API } from "@/api";
 import type { StoryPlanningArtifacts } from "@/types/story-planning";
@@ -20,5 +21,13 @@ describe("StoryPlanningCanvas", () => {
     expect(screen.getByRole("tab", { name: "全剧大纲" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "连续性台账" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "分集规划" })).toBeInTheDocument();
+    expect(screen.getByText("林夏：记者")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "全剧大纲" }));
+    expect(screen.getByText("寻找真相")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "连续性台账" }));
+    expect(screen.getByText("第 1 集：雨夜")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "分集规划" }));
+    expect(screen.getByText("门外重逢")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 });

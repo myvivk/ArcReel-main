@@ -28,5 +28,5 @@ class TestKeyframeReferenceProblems:
         assert keyframe_reference_problems("铁镐入缝，手腕先沉后拧", 4) == []
         assert keyframe_reference_problems("K 后面没有数字", 4) == []
 
-    def test_no_cells_means_no_check(self) -> None:
-        assert keyframe_reference_problems("K4", 0) == []
+    def test_no_cells_rejects_every_keyframe_reference(self) -> None:
+        assert keyframe_reference_problems("K0 到 K4", 0) == ["K0", "K4"]

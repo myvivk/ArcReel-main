@@ -286,6 +286,12 @@ def profile_env(tmp_path_factory):
 
 
 @pytest.fixture
+def factory_profile(monkeypatch):
+    """工厂集成使用完整的随包配置，包含实际单集与系列机检脚本。"""
+    monkeypatch.setenv("ARCREEL_PROFILE_DIR", str(Path(__file__).resolve().parents[1] / "agent_runtime_profile"))
+
+
+@pytest.fixture
 def fd_count():
     """Return a callable that reports the current process file-descriptor count.
 

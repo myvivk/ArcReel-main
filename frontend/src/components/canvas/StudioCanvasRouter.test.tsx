@@ -684,7 +684,7 @@ describe("StudioCanvasRouter", () => {
     expect(history.at(-1)).toBe("/episodes/1");
   });
 
-  it("falls back to the default view when the linked one is unknown or not available yet", () => {
+  it("opens the board before a script exists and falls back for an unknown view", () => {
     useProjectsStore.setState({
       currentProjectName: "demo",
       currentProjectData: makeProjectData({
@@ -696,10 +696,8 @@ describe("StudioCanvasRouter", () => {
     });
 
     renderAt("/episodes/1?view=board");
-    // 只有脚本规划中间稿时分镜还不可选，停在脚本规划
-    expect(screen.getByRole("tab", { name: "分镜" })).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByRole("tab", { name: "脚本规划" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("timeline-canvas")).toHaveAttribute("data-view", "plan");
+    expect(screen.getByRole("tab", { name: "分镜" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("timeline-canvas")).toHaveAttribute("data-view", "board");
     cleanup();
 
     renderAt("/episodes/1?view=nonsense");
@@ -780,7 +778,7 @@ describe("StudioCanvasRouter", () => {
     expect(await screen.findByTestId("edit-timeline-view")).toBeInTheDocument();
   });
 
-  it("keeps the edit view closed for an episode that has no script yet", () => {
+  it("opens the edit view for an episode that has no script yet", async () => {
     useProjectsStore.setState({
       currentProjectName: "demo",
       currentProjectData: makeProjectData({
@@ -795,8 +793,8 @@ describe("StudioCanvasRouter", () => {
       </Router>,
     );
 
-    expect(screen.queryByRole("tab", { name: "剪辑" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("edit-timeline-view")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "剪辑" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByTestId("edit-timeline-view")).toBeInTheDocument();
   });
 
   it("submits character generation, marks the character active and confirms with a toast", async () => {

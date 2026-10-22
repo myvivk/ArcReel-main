@@ -69,6 +69,12 @@ class ShotGrid:
     image_basis: dict[str, object] | None = None
     #: 生图时冻结的项目画布比例（16:9 或 9:16），供确认切分按该比例 center-crop 对齐单格。
     video_aspect_ratio: str | None = None
+    confirmed_at: str | None = None
+
+    @property
+    def cell_paths(self) -> tuple[str, ...]:
+        """确认后按阅读顺序派生路径，避免与 cells 维护两份列表。"""
+        return tuple(cell.image_path for cell in self.cells if cell.image_path)
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +85,7 @@ class ShotGrid:
             "rows": self.rows,
             "cols": self.cols,
             "cells": [cell.to_dict() for cell in self.cells],
+            "cell_paths": list(self.cell_paths),
             "prompt": self.prompt,
             "scene_revision": self.scene_revision,
             "composite_path": self.composite_path,
@@ -89,6 +96,7 @@ class ShotGrid:
             "task_id": self.task_id,
             "image_basis": self.image_basis,
             "video_aspect_ratio": self.video_aspect_ratio,
+            "confirmed_at": self.confirmed_at,
         }
 
     @classmethod
@@ -111,6 +119,7 @@ class ShotGrid:
             task_id=data.get("task_id"),
             image_basis=data.get("image_basis"),
             video_aspect_ratio=data.get("video_aspect_ratio"),
+            confirmed_at=data.get("confirmed_at"),
         )
 
     @classmethod

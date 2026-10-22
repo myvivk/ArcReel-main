@@ -222,7 +222,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     : undefined;
   const importedShortDrama =
     editorContentMode === "drama" &&
-    (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null;
+    (hasShortDramaSource || (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null);
   // 短剧导入的分镜提示词来自哪条路径：快速切分与「AI 回落」都只给骨架，得让用户看见并知道怎么重写。
   const storyboardOptions = (episodeScript as DramaEpisodeScript | null)?.short_drama_meta
     ?.ai_storyboard_options as { mode?: string; fallback?: string } | undefined;
@@ -257,12 +257,14 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
-          <BatchFillButton
-            kind="storyboards"
-            count={storyboardGap}
-            disabled={demoReadOnly}
-            onClick={() => setBatchKind("storyboards")}
-          />
+          {!importedShortDrama && (
+            <BatchFillButton
+              kind="storyboards"
+              count={storyboardGap}
+              disabled={demoReadOnly}
+              onClick={() => setBatchKind("storyboards")}
+            />
+          )}
           <BatchFillButton
             kind="shot-grids"
             count={shotGridGap}

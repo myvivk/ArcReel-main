@@ -19,6 +19,8 @@ import { enqueueShotGrid } from "@/actions/generation";
 import { useShotGridDialogStore, type ShotGridDialogRequest } from "@/stores/shot-grid-dialog-store";
 import type { ShotGridLayout, ShotGridPlan } from "@/types/shot-grid";
 import { errMsg } from "@/utils/async";
+import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
+import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 
 /** 规格 → 行列；与后端 SUPPORTED_LAYOUTS 同一闭集（ADR 0099 D-1）。 */
 const LAYOUTS: Record<ShotGridLayout, [rows: number, cols: number]> = {
@@ -33,18 +35,28 @@ function layoutOf(plan: ShotGridPlan | null): ShotGridLayout {
   return LAYOUT_BY_SIZE[`${plan?.rows ?? 2}x${plan?.cols ?? 2}`] ?? "2x2";
 }
 
-/** 输入框里已写成的格数：按服务端同一口径数非空行。 */
+/** 与 parse_grid_prompt_cells 一致：标记行续写并入同一格、重复序号留首。 */
 function writtenCells(prompt: string): number {
-  return prompt.split("\n").filter((line) => line.trim()).length;
+  const lines = prompt.trim().split("\n").filter((line) => line.trim());
+  const mark = /^[ \t]*第\s*(\d+)\s*格\s*(?:[（(]\s*([^）)\n]*?)\s*[）)])?\s*[：:][ \t]*/;
+  const cells: { number: string; body: string }[] = [];
+  for (const line of lines) {
+    const match = mark.exec(line);
+    if (match) cells.push({ number: String(Number(match[1])), body: line.slice(match[0].length) });
+    else if (cells.length) cells[cells.length - 1].body += line;
+  }
+  if (!cells.length) return lines.length;
+  const seen = new Set<string>();
+  for (const cell of cells) if (cell.body.trim()) seen.add(cell.number);
+  return seen.size;
 }
 
 /**
  * 「参考素材」弹窗：定宫格规格、编辑（或让 AI 写）逐格镜头提示词，「确定」落盘并入队。
  *
  * 规格 2×2 / 2×3 / 3×3，默认 2×2；打开时读这一分镜已有的宫格记录，逐格文本回填输入框。
- * 已确认的宫格锁死规格——重做只能改提示词重新生成（R7），换规格被服务端 409 拒绝。
- * 「确定」= 保存配置 + 入队；AI 生成返回与关窗（取消 / Esc / ×）都把输入框里的文本存成草稿，
- * 下次打开自动回填——草稿只写逐格文本，不动生成状态，也不会清掉已出的宫格图。
+ * 已确认的宫格锁定规格；换规格先取消确认。
+ * 「确定」= 保存配置 + 入队；AI 生成仅回填，取消 / Esc / × 不写入。
  */
 export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRequest; onClose: () => void }) {
   const { t } = useTranslation("dashboard");
@@ -55,31 +67,25 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
   const [prompt, setPrompt] = useState(plan?.prompt ?? "");
   const [authoring, setAuthoring] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  //: 已落盘的逐格文本：只有它与输入框不一致才需要存草稿。
-  const baseline = useRef(plan?.prompt ?? "");
+  const authorController = useRef<AbortController | null>(null);
+  useEffect(() => () => authorController.current?.abort(), []);
+  useTasksStore((state) => state.tasks);
+  useTasksStore((state) => state.optimisticActive);
+  const resourceBusy = isResourceBusy("shot_grid", projectName, plan?.id ?? shotId);
 
   const [rows, cols] = LAYOUTS[layout];
   const count = rows * cols;
   const locked = plan?.status === "confirmed";
-  const generating = plan?.status === "generating";
+  const generating = plan?.status === "generating" || resourceBusy;
   const written = writtenCells(prompt);
-  const busy = submitting || closing;
-
-  const persistDraft = async (text: string) => {
-    await API.saveShotGridDraft(projectName, {
-      script_file: scriptFile,
-      episode,
-      shot_id: shotId,
-      rows,
-      cols,
-      prompt: text,
-    });
-    baseline.current = text;
-  };
+  const busy = submitting;
+  const mismatch = prompt.trim().length > 0 && written !== count;
 
   const author = async () => {
+    authorController.current?.abort();
+    const controller = new AbortController();
+    authorController.current = controller;
     setAuthoring(true);
     setError(null);
     try {
@@ -89,41 +95,32 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
         shot_id: shotId,
         rows,
         cols,
-      });
-      // AI 产出的是整套逐格文本：回填后由用户在手改里定稿；先落成草稿，关窗也不会丢。
+      }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       setPrompt(result.prompt);
-      await persistDraft(result.prompt).catch(() => {
-        // 草稿没存上不影响回填：文本还在输入框里，关窗时会再存一次。
-      });
     } catch (err) {
-      setError(errMsg(err));
+      if (!controller.signal.aborted) setError(errMsg(err));
     } finally {
-      setAuthoring(false);
+      if (!controller.signal.aborted) setAuthoring(false);
     }
   };
 
-  const closeWithDraft = async () => {
+  const close = () => {
     if (busy) return;
-    if (prompt === baseline.current) {
-      onClose();
-      return;
-    }
-    setClosing(true);
-    try {
-      await persistDraft(prompt);
-    } catch {
-      // 草稿写失败不挡关闭：下次打开至多回到上一次落盘的文本。
-    } finally {
-      setClosing(false);
-    }
+    authorController.current?.abort();
     onClose();
   };
 
   const submit = async () => {
+    if (busy || authoring || generating || mismatch) return;
+    if (isResourceBusy("shot_grid", projectName, plan?.id ?? shotId)) {
+      setError(t("shot_grid_generating"));
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      await API.saveShotGrid(projectName, {
+      const saved = await API.saveShotGrid(projectName, {
         script_file: scriptFile,
         episode,
         shot_id: shotId,
@@ -131,8 +128,8 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
         cols,
         prompt,
       });
-      await enqueueShotGrid(projectName, scriptFile, shotId);
-      onClose();
+      await enqueueShotGrid(projectName, scriptFile, shotId, saved.id);
+      if (await refreshAfterWrite(projectName, t) === "success") onClose();
     } catch (err) {
       setError(errMsg(err));
     } finally {
@@ -151,7 +148,7 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
     <Dialog
       open
       onOpenChange={(next) => {
-        if (!next) void closeWithDraft();
+        if (!next) close();
       }}
     >
       <DialogContent size="lg" showCloseButton={!busy}>
@@ -171,7 +168,7 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
                   // 单选：再次点击已选项不取消选择
                   if (next[0]) setLayout(next[0] as ShotGridLayout);
                 }}
-                disabled={locked || generating}
+                disabled={locked || generating || authoring || busy}
               >
                 <ToggleGroupItem value="2x2">2×2</ToggleGroupItem>
                 <ToggleGroupItem value="2x3">2×3</ToggleGroupItem>
@@ -189,7 +186,7 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
                   type="button"
                   variant="outline"
                   size="xs"
-                  disabled={authoring || busy}
+                  disabled={authoring || busy || generating}
                   onClick={() => void author()}
                 >
                   {authoring ? (
@@ -207,9 +204,8 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
                 maxLength={12000}
                 rows={10}
                 className="max-h-none min-h-40"
-                mono
                 placeholder={t("shot_grid_prompt_placeholder", { count })}
-                disabled={submitting}
+                disabled={submitting || authoring || generating}
               />
               <p className="text-xs text-muted-foreground">{hint}</p>
               <p className="text-xs text-muted-foreground">{t("shot_grid_prompt_note")}</p>
@@ -223,10 +219,10 @@ export function ShotGridDialog({ request, onClose }: { request: ShotGridDialogRe
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={() => void closeWithDraft()}>
+          <Button variant="outline" disabled={busy} onClick={close}>
             {t("common:cancel")}
           </Button>
-          <Button disabled={busy || authoring || generating || written === 0} onClick={() => void submit()}>
+          <Button disabled={busy || authoring || generating || mismatch} onClick={() => void submit()}>
             {submitting ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : null}
             {submitting ? t("shot_grid_submitting") : t("shot_grid_confirm")}
           </Button>

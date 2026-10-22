@@ -61,6 +61,14 @@
       "author_prompts": {
         "state": "refused",
         "reason": "no_pending_authoring"
+      },
+      "generate_shot_grids": {
+        "state": "refused",
+        "reason": "no_missing_shot_grid"
+      },
+      "author_video_prompts": {
+        "state": "refused",
+        "reason": "no_missing_video_prompt"
       }
     },
     "gates": {
@@ -105,6 +113,17 @@
         "current_ids": [],
         "missing_ids": [],
         "stale_ids": []
+      },
+      "shot_grids": {
+        "current_ids": [],
+        "missing_ids": [],
+        "stale_ids": []
+      },
+      "video_prompts": {
+        "current_ids": [],
+        "missing_ids": [],
+        "stale_ids": [],
+        "awaiting_grid_ids": []
       },
       "videos": {
         "current_ids": [],

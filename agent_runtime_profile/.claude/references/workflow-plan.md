@@ -113,9 +113,13 @@ ID 参数时，前者传入，后者必须**省略该参数**，不得把 `[]` �
 | `generate_script` | dispatch `create-episode-script` 子智能体（ad 直接调 `mcp__arcreel__generate_episode_script`） |
 | `add_script_items` | 正式脚本为空：引导用户在 Web 端添加条目，或经 `mcp__arcreel__patch_episode_script` 插入 |
 | `author_prompts` | 正式剧本里有待编写条目，`requested_ids` 列出这些条目：调 `mcp__arcreel__generate_episode_script`，不传 `entry_ids`，即编写全部待编写条目（见 generate-script skill） |
+| `prepare_episode_assets` | 工厂源稿已保存：引导打开本集「资产」页，点击「生成本集资产」，按本集源稿完成抽取、登记、描述与资产图生成；不先转制或规划原生脚本 |
+| `plan_short_drama_storyboards` | 引导打开本集「分镜」页，点击「AI 分镜」；该操作只读工厂 Markdown 与已登记资产，生成视觉制作状态；不调用原生脚本规划 |
 | `generate_asset_sheets` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_assets({"episode_id": <args.episode_id>})` 一次生成本集引用、仍缺资产图的资产。因缺少 description 记为 `blocked` 的资产（`fix_input`）：角色描述按 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md` 的标准，依据原文写好后经 `mcp__arcreel__patch_project` 补上并重跑同一调用；原文没有依据时向用户确认描述，或请用户在 Web 端上传资产图。衍生报 `generation_dependency_failed` / `derivative_owner_sheet_missing` 时先解决本体资产图 |
 | `generate_storyboards` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_storyboards` 并传 `segment_ids` |
 | `generate_grid` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_grid`，不传 `scene_ids`（缺失即生成）；联合图就绪后经用户审阅同意，再调 `mcp__arcreel__split_grids` |
+| `generate_shot_grids` | 本集分镜页的「生成参考素材」；逐镜保存规格与逐格提示词，生成联合图、审阅并确认后绑定完整有序 K 帧 |
+| `author_video_prompts` | 只消费已确认参考素材：调用 `mcp__arcreel__generate_episode_script`，传 `fields=["video_prompt"]`；不得同次写 `image_prompt`，未确认宫格的分镜不进入批次 |
 | `repair_video_units` | `mcp__arcreel__get_episode_script` + `mcp__arcreel__patch_episode_script` 一次改完，再点名重做 |
 | `patch_episode_script` | 计划注入：`next_action.args` 已给 `base_revision` 与逐条 `problems`，一次批量改完 |
 | `confirm_request_duration` | 计划注入：见「整批准入判定」 |

@@ -59,19 +59,31 @@ def build_storyboard_video_visual_basis(
     utterances: object,
     has_utterances: bool,
     voice_characters: object,
+    rendered_prompt: str | None = None,
+    reference_images: Sequence[Path] = (),
+    reference_audio_files: Sequence[Path] = (),
+    reference_audio_speakers: Sequence[str] = (),
+    reference_audio_targets: Sequence[int] | None = None,
+    frame_evidence: Sequence[Mapping[str, object]] = (),
 ) -> ArtifactBasis:
     """Describe the request facts that determine one storyboard video prompt and frames."""
 
     # 与执行路径共用同一渲染出口：摘要收的就是实发文本本身，两者不各写一份。
-    provider_prompt = render_storyboard_video_prompt(
-        prompt,
-        {"utterances": utterances} if has_utterances else None,
-        content_mode=content_mode,
-        voice_characters=voice_characters if isinstance(voice_characters, dict) else None,
+    provider_prompt = (
+        rendered_prompt
+        if rendered_prompt is not None
+        else render_storyboard_video_prompt(
+            prompt,
+            {"utterances": utterances} if has_utterances else None,
+            content_mode=content_mode,
+            voice_characters=voice_characters if isinstance(voice_characters, dict) else None,
+        )
     )
     files = [("storyboard", storyboard_image)]
     if end_frame_image is not None:
         files.append(("end_frame", end_frame_image))
+    files.extend((f"reference_image_{index}", path) for index, path in enumerate(reference_images))
+    files.extend((f"reference_audio_{index}", path) for index, path in enumerate(reference_audio_files))
     return _build_video_visual_basis(
         "storyboard",
         semantics={
@@ -85,6 +97,9 @@ def build_storyboard_video_visual_basis(
                 "requested_generate_audio": requested_generate_audio,
             },
             "content_mode": content_mode,
+            "frame_sources": list(frame_evidence),
+            "reference_audio_speakers": list(reference_audio_speakers),
+            "reference_audio_targets": list(reference_audio_targets) if reference_audio_targets is not None else None,
         },
         files=files,
     )

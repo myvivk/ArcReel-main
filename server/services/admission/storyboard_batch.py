@@ -59,6 +59,7 @@ from lib.generation.generation_result import (
     select_generation_targets,
 )
 from lib.generation.video_request_facts import VideoRequestCostFacts, VideoRequestFacts, VideoRequestFactsFailure
+from lib.infra.async_thread import run_sync_transaction
 from lib.infra.schema_guards import is_int
 from lib.project.project_manager import ProjectManager, find_episode, is_reference_video_project
 from lib.prompts.prompt_builders import render_storyboard_image_prompt
@@ -605,6 +606,7 @@ def plan_shot_grid_batch(
         },
         grid_ids={state.unit_id: grids[state.unit_id].id for state in targets if state.unit_id in grids},
         confirmed=confirmed,
+        generating=frozenset(unit_id for unit_id, grid in grids.items() if grid.status == "generating"),
         missing_prompt=frozenset(missing_prompt),
         reference_blocked=frozenset(reference_blocked),
     )
@@ -643,7 +645,9 @@ async def load_shot_grid_batch_plan(
         resource_ids=list(plan.grid_ids.values()),
         user_id=user_id,
     )
-    generating = frozenset(unit_id for unit_id, grid_id in plan.grid_ids.items() if grid_id in active_grid_ids)
+    generating = plan.generating | frozenset(
+        unit_id for unit_id, grid_id in plan.grid_ids.items() if grid_id in active_grid_ids
+    )
     return loaded, replace(plan, generating=generating)
 
 
@@ -661,8 +665,7 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
     prepared: dict[str, ShotGrid] = {}
     for unit_id in plan.target_ids:
         existing = grids.get(unit_id)
-        if unit_id in plan.generating and existing is not None:
-            prepared[unit_id] = existing
+        if unit_id in plan.generating or (existing is not None and existing.status in {"generating", "confirmed"}):
             continue
         scene_text = shot_scene_text(items_by_id[unit_id])
         frames = parse_scene_shots(scene_text).shots
@@ -674,6 +677,7 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
             cols=SHOT_GRID_BATCH_COLS,
         )
         grid.rows, grid.cols = SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS
+        grid.prompt = ""
         # 留证与拼装出口读到的序列同一个：执行期再从 scene 现解析一次（D-1 / D-3）。
         grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
         grid.status = "draft"
@@ -681,6 +685,7 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
         grid.task_id = None
         grid.image_basis = None
         grid.error_message = None
+        grid.confirmed_at = None
         grid.updated_at = datetime.now(UTC).isoformat()
         manager.save(grid)
         prepared[unit_id] = grid
@@ -698,7 +703,7 @@ async def submit_shot_grid_batch(
 ) -> tuple[GenerationBatchReadModel, list[EnqueuedTask], list[BatchTaskResult]]:
     """把一次参考素材规划作为一个持久批次提交，不等待结果。"""
 
-    prepared = await asyncio.to_thread(_write_shot_grid_records, plan, project_path=project_path)
+    prepared = await run_sync_transaction(_write_shot_grid_records, plan, project_path=project_path)
     items_by_id = {str(item[plan.id_field]): item for item in plan.items if item.get(plan.id_field)}
     specs = [
         TaskSpec.from_request(
@@ -719,7 +724,7 @@ async def submit_shot_grid_batch(
         pending_ids=[unit_id for unit_id in plan.target_ids if unit_id in prepared],
         states=plan.states,
     )
-    return await submit_generation_batch(
+    result = await submit_generation_batch(
         project_name=project_name,
         operation=SHOT_GRID_BATCH_OPERATION,
         requested=requested,
@@ -729,6 +734,17 @@ async def submit_shot_grid_batch(
         user_id=user_id,
         queue=queue,
     )
+    manager = ShotGridManager(project_path)
+    for task in result[1]:
+
+        def mark_submitted(current: ShotGrid, task_id: str = task.task_id) -> None:
+            if current.status in {"draft", "failed", "generating"}:
+                current.status = "generating"
+                current.task_id = task_id
+                current.updated_at = datetime.now(UTC).isoformat()
+
+        await run_sync_transaction(manager.update_formal, task.resource_id, mark_submitted)
+    return result
 
 
 # --- 分镜视频 -----------------------------------------------------------------
@@ -841,6 +857,7 @@ async def load_storyboard_video_batch_plan(
         resolver=resolver,
         skip_ids=None,
         voice_characters=await resolve_voice_context(loaded.project, content_mode),
+        storyboard_items=clean,
     )
     facts = (
         (video_request_facts or await storyboard_video_request_facts(loaded.project, config_resolver))
@@ -862,6 +879,10 @@ async def load_storyboard_video_batch_plan(
         queue=queue,
         config_resolver=config_resolver,
         video_request_facts=facts,
+        project_dir=loaded.project_path,
+        storyboard_items=clean,
+        episode=loaded.episode,
+        content_mode=content_mode,
     )
     items_by_id = {str(storyboard_item_id(item, id_field)): item for item in candidates}
     durations: dict[str, int | None] = {}

@@ -13,6 +13,7 @@ from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.generation.batch_admission import BatchAdmissionDecision
 from lib.generation.generation_queue import GenerationQueue
+from lib.generation.generation_result import GenerationSelectionMode
 from lib.generation.video_request_facts import VideoRequestCostFacts
 from lib.project.project_manager import ProjectManager
 from lib.script.grid.keyframe_parser import parse_scene_shots
@@ -36,7 +37,9 @@ from server.services.admission.storyboard_batch import (
     submit_storyboard_image_batch,
     submit_storyboard_video_batch,
 )
-from tests.factories import make_video_request_facts
+from server.services.admission.video_batch_admission import admit_storyboard_video_request
+from tests.factories import make_video_request_facts, wav_bytes
+from tests.integration.lib.script.storyboard_support import confirmed_grid
 
 PROJECT = "demo"
 
@@ -395,7 +398,178 @@ async def test_video_batch_cost_is_unknown_when_a_target_has_no_planned_duration
     assert await estimate_storyboard_video_batch_cost(plan, session_factory) is None
 
 
+async def test_video_keyframe_limit_blocks_the_whole_batch_before_queueing(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    healthy = _with_storyboard(board_projects, "E1S01")
+    current = _with_storyboard(board_projects, "E1S02")
+    grid = confirmed_grid(board_projects.get_project_path(PROJECT), "E1S02", rows=3, cols=3)
+    current["generated_assets"] = {
+        "storyboard_image": grid.composite_path,
+        "shot_grid": {
+            "grid_id": grid.id,
+            "rows": grid.rows,
+            "cols": grid.cols,
+            "composite_path": grid.composite_path,
+            "cell_paths": grid.cell_paths,
+        },
+    }
+    _write_episode(board_projects, [healthy, current])
+    _claim_storyboards(board_projects, "E1S01", "E1S02")
+    plan = await load_storyboard_video_batch_plan(
+        board_projects,
+        board_queue,
+        project_name=PROJECT,
+        episode_id=1,
+        user_id=DEFAULT_USER_ID,
+        video_request_facts=make_video_request_facts(max_reference_images=3),
+    )
+    assert plan.admission.decision is BatchAdmissionDecision.BLOCKED
+    refused = next(ticket for ticket in plan.admission.tickets if ticket.unit_id == "E1S02")
+    assert [problem.code for problem in refused.problems] == ["video_reference_images_exceeded"]
+    assert refused.problems[0].params["count"] == 7
+    with pytest.raises(ValueError, match="整批准入未通过"):
+        await submit_storyboard_video_batch(
+            plan, project_name=PROJECT, queue=board_queue, source="webui", user_id=DEFAULT_USER_ID
+        )
+    assert (
+        await board_queue.get_active_tasks_for_resources(
+            project_name=PROJECT,
+            task_type="video",
+            resource_ids=["E1S01", "E1S02"],
+            script_file="episode_1.json",
+            user_id=DEFAULT_USER_ID,
+        )
+        == []
+    )
+
+
+async def test_admission_reprojects_previous_frame_and_count_for_a_selected_subset(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    project_path = board_projects.get_project_path(PROJECT)
+    prior = _with_storyboard(board_projects, "E1S01")
+    current = _with_storyboard(board_projects, "E1S02")
+    grid = confirmed_grid(project_path, "E1S02")
+    current["generated_assets"] = {
+        "storyboard_image": grid.composite_path,
+        "shot_grid": {"composite_path": grid.composite_path, "cell_paths": grid.cell_paths},
+    }
+    _write_episode(board_projects, [prior, current])
+    _claim_storyboards(board_projects, "E1S01", "E1S02")
+    facts = make_video_request_facts(max_reference_images=2)
+    plan = await load_storyboard_video_batch_plan(
+        board_projects,
+        board_queue,
+        project_name=PROJECT,
+        episode_id=1,
+        user_id=DEFAULT_USER_ID,
+        video_request_facts=facts,
+    )
+    assert plan.admission.decision is BatchAdmissionDecision.ADMITTED
+    spec = next(spec for spec in plan.specs if spec.resource_id == "E1S02")
+    assert spec.payload["storyboard_reference_count"] == 2
+    _write_media(board_projects, "end_frames/scene_E1S01.png")
+    prior, current = board_projects.load_script(PROJECT, "episode_1.json")["segments"]
+    prior["end_frame_image"] = "end_frames/scene_E1S01.png"
+    admission = await admit_storyboard_video_request(
+        project_name=PROJECT,
+        project=board_projects.load_project(PROJECT),
+        project_dir=project_path,
+        script_file="episode_1.json",
+        items=[current],
+        storyboard_items=[prior, current],
+        id_field="segment_id",
+        specs=[spec],
+        operation="generate_videos",
+        selection=GenerationSelectionMode.EXPLICIT,
+        extra_tickets=[],
+        user_id=DEFAULT_USER_ID,
+        queue=board_queue,
+        video_request_facts=facts,
+        content_mode="narration",
+    )
+    assert admission.decision is BatchAdmissionDecision.BLOCKED
+    assert admission.unit_ids == ("E1S02",)
+    assert admission.tickets[0].problems[0].params["count"] == 3
+    assert "previous shot" in spec.payload["prompt"]
+    assert spec.payload["storyboard_reference_count"] == 3
+
+
 # --- 参考素材 -----------------------------------------------------------------
+
+
+async def test_reference_audio_limit_blocks_every_target_before_queueing(
+    board_projects: ProjectManager, board_queue: GenerationQueue
+) -> None:
+    project_path = board_projects.get_project_path(PROJECT)
+    for name in ("Alice", "Bob"):
+        board_projects.add_character(PROJECT, name, f"{name}的外观")
+        audio = project_path / f"characters/refs_audio/{name}.wav"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(wav_bytes(1))
+    board_projects.update_project(
+        PROJECT,
+        lambda project: project.update(
+            content_mode="drama",
+            character_voice_binding="reference_audio",
+            characters={
+                name: {"description": f"{name}的外观", "reference_audio": f"characters/refs_audio/{name}.wav"}
+                for name in ("Alice", "Bob")
+            },
+        ),
+    )
+    scenes = [
+        {
+            "scene_id": scene_id,
+            "duration_seconds": 4,
+            "image_prompt": "门外远景",
+            "video_prompt": {"action": "两人交谈" if speakers else "门外空镜", "camera_motion": "Static"},
+            "characters_in_scene": [],
+            "scenes": [],
+            "props": [],
+            "utterances": [{"kind": "dialogue", "speaker": name, "text": "走吧。"} for name in speakers],
+            "generated_assets": {"storyboard_image": f"storyboards/scene_{scene_id}.png"},
+        }
+        for scene_id, speakers in (("E1S01", ()), ("E1S02", ("Bob", "Alice", "Bob")))
+    ]
+    for scene in scenes:
+        _write_media(board_projects, scene["generated_assets"]["storyboard_image"])
+    scripts = project_path / "scripts"
+    scripts.mkdir(exist_ok=True)
+    (scripts / "episode_1.json").write_text(
+        json.dumps({"episode": 1, "content_mode": "drama", "scenes": scenes}, ensure_ascii=False), encoding="utf-8"
+    )
+    board_projects.add_episode(PROJECT, 1, "第一集", "scripts/episode_1.json")
+    _claim_storyboards(board_projects, "E1S01", "E1S02")
+    plan = await load_storyboard_video_batch_plan(
+        board_projects,
+        board_queue,
+        project_name=PROJECT,
+        episode_id=1,
+        user_id=DEFAULT_USER_ID,
+        video_request_facts=make_video_request_facts(voice_consistency="native", max_reference_audio_count=1),
+    )
+    assert plan.admission.decision is BatchAdmissionDecision.BLOCKED
+    refused = next(ticket for ticket in plan.admission.tickets if ticket.unit_id == "E1S02")
+    assert [problem.code for problem in refused.problems] == ["video_reference_audio_exceeded"]
+    assert refused.problems[0].params["count"] == 2
+    assert "Bob: use the voice in reference audio 1" in plan.specs[1].payload["prompt"]
+    assert "Alice: use the voice in reference audio 2" in plan.specs[1].payload["prompt"]
+    with pytest.raises(ValueError, match="整批准入未通过"):
+        await submit_storyboard_video_batch(
+            plan, project_name=PROJECT, queue=board_queue, source="webui", user_id=DEFAULT_USER_ID
+        )
+    assert (
+        await board_queue.get_active_tasks_for_resources(
+            project_name=PROJECT,
+            task_type="video",
+            resource_ids=["E1S01", "E1S02"],
+            script_file="episode_1.json",
+            user_id=DEFAULT_USER_ID,
+        )
+        == []
+    )
 
 
 def _save_grid(board_projects: ProjectManager, segment_id: str, **overrides: object) -> ShotGrid:
@@ -468,9 +642,9 @@ async def test_shot_grid_batch_writes_records_from_scene_and_submits_one_batch(
         grid = manager.find(script_file="episode_1.json", shot_id=unit_id)
         assert grid is not None
         assert (grid.rows, grid.cols) == (SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS)
-        assert grid.status == "draft"
+        assert grid.status == "generating"
         assert grid.composite_path is None
-        assert grid.task_id is None
+        assert grid.task_id == next(task.task_id for task in enqueued if task.unit_id == unit_id)
         assert grid.image_basis is None
         # 逐格文本从 scene 现解析，留证与拼装出口读到的序列同一个。
         frames = parse_scene_shots(scene["image_prompt"]["scene"]).shots
@@ -489,7 +663,7 @@ async def test_shot_grid_batch_writes_records_from_scene_and_submits_one_batch(
     assert len(tasks) == 2
 
 
-async def test_shot_grid_batch_adopts_a_running_task_without_rewriting_the_record(
+async def test_shot_grid_batch_skips_a_running_task_without_rewriting_the_record(
     board_projects: ProjectManager, board_queue: GenerationQueue
 ) -> None:
     busy = _segment("E1S01", image_prompt=_scene(("远景", "小明站在院门口")))
@@ -523,15 +697,12 @@ async def test_shot_grid_batch_adopts_a_running_task_without_rewriting_the_recor
     )
 
     assert failures == []
-    # 生成中的那一条并入原任务（deduped），记录原样不动：仍是生成中、还挂着原任务。
-    deduped = next(task for task in enqueued if task.unit_id == "E1S01")
-    assert deduped.deduped
-    assert deduped.resource_id == grid.id
+    assert [task.unit_id for task in enqueued] == ["E1S02"]
     kept = ShotGridManager(board_projects.get_project_path(PROJECT)).get(grid.id)
     assert kept is not None
     assert kept.status == "generating"
     assert kept.task_id == grid.task_id
-    assert [member.unit_id for member in batch.members] == ["E1S01", "E1S02"]
+    assert [member.unit_id for member in batch.members] == ["E1S02"]
 
 
 async def test_shot_grid_batch_rejects_an_unknown_episode_and_a_reference_project(

@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -164,16 +166,14 @@ async def test_identical_save_keeps_the_generated_grid(
     assert body["prompt"] == PROMPT
 
 
-async def test_draft_save_keeps_the_generated_grid(
+async def test_same_layout_save_keeps_generated_image_and_actual_cell_evidence(
     grid_client: httpx.AsyncClient, grid_projects: ProjectManager
 ) -> None:
-    """草稿只写逐格文本：关闭弹窗不会把已出的宫格图或生成状态清掉。"""
-
     saved = (await grid_client.put(BASE, json=_payload())).json()
     composite = _mark_completed(ShotGridManager(grid_projects.get_project_path(PROJECT)), saved["id"])
-    edited = f"{PROMPT}\n第5格（远景）：街角的雨。"
+    edited = PROMPT.replace("指尖轻触一片尖锐瓷片。", "手掌离开瓷片。")
 
-    response = await grid_client.put(f"{BASE}/draft", json=_payload(prompt=edited))
+    response = await grid_client.put(BASE, json=_payload(prompt=edited))
 
     assert response.status_code == 200
     body = response.json()
@@ -186,17 +186,25 @@ async def test_draft_save_keeps_the_generated_grid(
     assert [cell["prompt"] for cell in body["cells"]] == CELL_TEXTS
 
 
-async def test_draft_save_creates_a_record_with_the_dialog_layout(grid_client: httpx.AsyncClient) -> None:
-    """没有记录时草稿也留得下：按弹窗当前规格新建，状态仍是待生成。"""
+@pytest.mark.parametrize("prompt", ["一格", PROMPT + "\n第5格：多余画面"])
+async def test_manual_cell_count_mismatch_is_rejected_without_record(
+    grid_client: httpx.AsyncClient, grid_projects: ProjectManager, prompt: str
+) -> None:
+    response = await grid_client.put(BASE, json=_payload(prompt=prompt))
+    assert response.status_code == 422
+    assert not ShotGridManager(grid_projects.get_project_path(PROJECT)).list_all()
 
-    response = await grid_client.put(f"{BASE}/draft", json=_payload(rows=3, cols=3))
 
+async def test_empty_prompt_is_saved_and_generated_from_scene(
+    grid_client: httpx.AsyncClient, grid_projects: ProjectManager
+) -> None:
+    saved = await grid_client.put(BASE, json=_payload(prompt=""))
+    assert saved.status_code == 200
+    response = await grid_client.post(f"{BASE}/generate", params={"script_file": SCRIPT, "shot_id": SHOT})
     assert response.status_code == 200
-    body = response.json()
-    assert body["prompt"] == PROMPT
-    assert body["status"] == "draft"
-    assert (body["rows"], body["cols"]) == (3, 3)
-    assert body["composite_path"] is None
+    grid = ShotGridManager(grid_projects.get_project_path(PROJECT)).get(saved.json()["id"])
+    assert grid is not None
+    assert [cell.prompt for cell in grid.cells] == CELL_TEXTS
 
 
 async def test_put_rejects_unsupported_layout(grid_client: httpx.AsyncClient) -> None:
@@ -227,6 +235,38 @@ async def test_generate_enqueues_the_saved_grid(grid_client: httpx.AsyncClient, 
     ]
     refreshed = await grid_client.get(BASE, params={"script_file": SCRIPT, "shot_id": SHOT})
     assert refreshed.json()["status"] == "generating"
+
+
+async def test_cancelled_queued_task_releases_the_grid_for_retry(
+    grid_client: httpx.AsyncClient,
+    grid_projects: ProjectManager,
+    grid_queue: _RecordingQueue,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = (await grid_client.put(BASE, json=_payload())).json()
+    await grid_client.post(f"{BASE}/generate", params={"script_file": SCRIPT, "shot_id": SHOT})
+    monkeypatch.setattr(
+        grid_queue,
+        "get_task",
+        AsyncMock(
+            return_value={
+                "task_id": "task-1",
+                "task_type": "shot_grid",
+                "project_name": PROJECT,
+                "resource_id": saved["id"],
+                "status": "cancelled",
+            }
+        ),
+        raising=False,
+    )
+    response = await grid_client.get(f"{BASE}/tasks/task-1")
+    assert response.status_code == 200
+    record = ShotGridManager(grid_projects.get_project_path(PROJECT)).get(saved["id"])
+    assert record is not None
+    assert record.status == "failed"
+    retry = await grid_client.put(BASE, json=_payload(rows=3, cols=3, prompt=""))
+    assert retry.status_code == 200
+    assert retry.json()["status"] == "draft"
 
 
 def _write_composite(project_path: Path, grid_id: str, width: int, height: int) -> str:
@@ -280,3 +320,60 @@ async def test_confirm_splits_cells_at_the_frozen_orientation(
         with Image.open(project_path / cell["image_path"]) as image:
             width, height = image.size
         assert abs(width / height - expected) < 0.02
+    body = response.json()["grid"]
+    assert body["cell_paths"] == [cell["image_path"] for cell in cells]
+    binding = grid_projects.load_script(PROJECT, SCRIPT)["scenes"][0]["generated_assets"]["shot_grid"]
+    assert set(binding) == {"grid_id", "layout", "composite_path", "cell_paths", "confirmed_at"}
+
+    unconfirmed = await grid_client.post(f"{BASE}/{saved['id']}/unconfirm")
+    assert unconfirmed.status_code == 200
+    assert unconfirmed.json()["grid"]["status"] == "completed"
+    assert not any(cell["confirmed"] for cell in unconfirmed.json()["grid"]["cells"])
+    assert not grid_projects.load_script(PROJECT, SCRIPT)["scenes"][0]["generated_assets"].get("shot_grid")
+    reconfirmed = await grid_client.post(f"{BASE}/{saved['id']}/confirm")
+    assert reconfirmed.status_code == 200
+    assert reconfirmed.json()["grid"]["status"] == "confirmed"
+    locked = await grid_client.put(BASE, json=_payload(rows=3, cols=3, prompt=""))
+    assert locked.status_code == 409
+    await grid_client.post(f"{BASE}/{saved['id']}/unconfirm")
+    resized = await grid_client.put(BASE, json=_payload(rows=3, cols=3, prompt=""))
+    assert resized.status_code == 200
+    assert resized.json()["status"] == "draft"
+
+
+async def test_confirmation_rolls_back_cells_grid_and_script_when_registration_fails(
+    grid_client: httpx.AsyncClient, grid_projects: ProjectManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = (await grid_client.put(BASE, json=_payload())).json()
+    project_path = grid_projects.get_project_path(PROJECT)
+    _write_composite(project_path, saved["id"], 640, 360)
+    _mark_completed(ShotGridManager(project_path), saved["id"])
+    grid_file = project_path / "shot_grids" / f"{saved['id']}.json"
+    script_file = project_path / "scripts" / SCRIPT
+    before = (grid_file.read_bytes(), script_file.read_bytes())
+    monkeypatch.setattr(shot_grids, "register_current_resource_artifact", lambda *args, **kwargs: False)
+    response = await grid_client.post(f"{BASE}/{saved['id']}/confirm")
+    assert response.status_code == 422
+    assert (grid_file.read_bytes(), script_file.read_bytes()) == before
+    assert not list((project_path / "storyboards" / saved["id"]).glob("*.png"))
+
+
+@pytest.mark.parametrize("count", [3, 4, 5])
+async def test_author_returns_exact_draft_without_writing_or_truncating(
+    grid_client: httpx.AsyncClient, grid_projects: ProjectManager, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    from lib.backends.text_generator import TextGenerator
+
+    generator = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=SimpleNamespace(
+                text=json.dumps(
+                    {"frames": [{"shot_size": "全景", "description": f"画面{index}"} for index in range(count)]}
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(TextGenerator, "create", AsyncMock(return_value=generator))
+    response = await grid_client.post(f"{BASE}/author-prompt", json=_payload())
+    assert response.status_code == (200 if count == 4 else 502)
+    assert not ShotGridManager(grid_projects.get_project_path(PROJECT)).list_all()

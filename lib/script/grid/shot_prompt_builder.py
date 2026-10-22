@@ -31,11 +31,25 @@ CONTINUATION_TAIL = "直到自然结束，不新增事件、不切换场景。"
 def resolve_grid_cells(frames: Sequence[ShotFrame], count: int) -> list[ShotFrame]:
     """把解析出的镜头序列对齐到宫格格数。
 
-    多则截断到前 ``count`` 个（超员镜头在成图里没有对应画格，切格回填会错配）；少则尾格
-    延续最后一个镜头的动作，不留空格、不补无关内容。序列为空由调用方拒绝（ADR 0099 D-7）。
+    叙事镜头多于画格时，按时间顺序分组覆盖整个段落；少则尾格延续最后一个镜头的动作。
+    手写逐格提示词的数量校验由提交入口负责，此处只映射分镜段，不丢弃尾部事件。
     """
 
-    resolved = list(frames[:count])
+    if count < 1:
+        raise ValueError("宫格格数必须为正整数")
+    if len(frames) > count:
+        resolved = []
+        for index in range(count):
+            group = frames[index * len(frames) // count : (index + 1) * len(frames) // count]
+            resolved.append(
+                ShotFrame(
+                    number=index + 1,
+                    shot_size=" / ".join(dict.fromkeys(frame.shot_size for frame in group if frame.shot_size)),
+                    text="\n".join(frame.text for frame in group),
+                )
+            )
+        return resolved
+    resolved = list(frames)
     if resolved and len(resolved) < count:
         last = resolved[-1]
         resolved.extend(

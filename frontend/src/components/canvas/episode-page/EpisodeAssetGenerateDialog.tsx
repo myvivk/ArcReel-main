@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { API } from "@/api";
+import { enqueueEpisodeAssets } from "@/actions/generation";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { useAppStore } from "@/stores/app-store";
 import { useAssetSheetBatchStore } from "@/stores/asset-sheet-batch-store";
+import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { errMsg } from "@/utils/async";
 import type { AssetSheetType, EpisodeAssetPlan } from "@/types";
 
@@ -49,10 +50,16 @@ export function EpisodeAssetGenerateDialog({
   const handleConfirm = async () => {
     setSubmitting(true);
     try {
-      const result = await API.generateEpisodeAssets(projectName, episode);
+      const result = await enqueueEpisodeAssets(projectName, episode);
       const members = result.members.filter((member) => member.status !== "blocked");
       if (members.length > 0) {
         useAssetSheetBatchStore.getState().track({ batchId: result.batch_id, projectName, members });
+      }
+      const refreshed = await refreshAfterWrite(projectName, t);
+      if (refreshed !== "success") {
+        onSubmitted();
+        onClose();
+        return;
       }
       const queuedCount = members.filter((member) => member.task_id).length;
       if (queuedCount > 0) {
@@ -93,6 +100,11 @@ export function EpisodeAssetGenerateDialog({
             }),
             "warning",
           );
+      }
+      if (result.conflicts.length > 0) {
+        useAppStore.getState().pushToast(
+          t("episode_assets_conflicts", { ns: "dashboard", count: result.conflicts.length }), "warning",
+        );
       }
       onSubmitted();
       onClose();

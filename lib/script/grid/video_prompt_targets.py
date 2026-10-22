@@ -1,9 +1,9 @@
 """视频提示词的目标集合、宫格指纹与时效（D-18 / D-20）。
 
-视频提示词正文只存正式脚本（D-12），这里不落任何文本，只回答三个结构问题：
+视频提示词正文只存视觉制作状态（D-12），这里不落任何文本，只回答三个结构问题：
 
-- 哪些分镜「宫格已生成、视频提示词还空着」——整集批量补缺的目标；
-- 哪些分镜「宫格还没生成完成」——不进本批，只在行上提示报数；
+- 哪些分镜「宫格已确认、视频提示词还空着」——整集批量补缺的目标；
+- 哪些分镜「宫格还没确认完成」——不进本批，只在行上提示报数；
 - 哪些分镜「提示词是按旧宫格写的」——标 stale，不阻断视频生成，重写只单个走详情。
 """
 
@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.grid.shot_models import ShotGrid
 
-_GENERATED_GRID_STATUSES = frozenset({"completed", "confirmed"})
+_GENERATED_GRID_STATUSES = frozenset({"confirmed"})
 
 #: 宫格指纹长度：与 scene 指纹同一口径，只留 12 位十六进制。
 CELLS_REVISION_LENGTH = 12
@@ -40,6 +41,21 @@ def video_prompt_text(item: Mapping[str, Any]) -> str:
         action = value.get("action", "")
         return action.strip() if isinstance(action, str) else ""
     return value.strip() if isinstance(value, str) else ""
+
+
+def video_prompt_body_text(item: Mapping[str, Any]) -> str:
+    """所有视频正文文本字段的投影，供 K 引用校验；不把字段名当作正文。"""
+
+    def texts(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, Mapping):
+            return [text for child in value.values() for text in texts(child)]
+        if isinstance(value, list):
+            return [text for child in value for text in texts(child)]
+        return []
+
+    return "\n".join(texts(item.get("video_prompt")))
 
 
 def video_prompt_basis(item: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -74,6 +90,8 @@ def is_video_prompt_stale(item: Mapping[str, Any], grid: ShotGrid | None) -> boo
     if basis is None or grid is None:
         return False
     if str(basis.get("grid_id") or "") != grid.id:
+        return True
+    if str(basis.get("layout") or "") != f"{grid.rows}x{grid.cols}":
         return True
     return str(basis.get("cells_revision") or "") != grid_cells_revision(grid)
 
@@ -117,7 +135,12 @@ def plan_video_prompt_targets(
         unit_id = str(raw_id)
         unit_ids.append(unit_id)
         grid = grids.get(unit_id)
-        if grid is None or grid.status not in _GENERATED_GRID_STATUSES:
+        if (
+            not shot_scene_text(item).strip()
+            or grid is None
+            or grid.status not in _GENERATED_GRID_STATUSES
+            or not grid.cells
+        ):
             awaiting.append(unit_id)
             continue
         if not video_prompt_text(item):
@@ -140,5 +163,6 @@ __all__ = [
     "plan_video_prompt_targets",
     "video_prompt_basis",
     "video_prompt_basis_for",
+    "video_prompt_body_text",
     "video_prompt_text",
 ]

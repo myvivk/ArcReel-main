@@ -13,7 +13,7 @@ import { useShortDramaImportStore, type ShortDramaImportOpenRequest } from "@/st
 const ARTIFACT_PATH_RE = /^(?:character-bible\.md|series-outline\.md|ledger\.md|episode-plan\/episode_\d+\.plan\.md|episodes\/episode_\d+\.md|reports\/episode_\d+\.machine\.md|compliance\/episode_\d+\.compliance\.md)$/;
 
 function normalizeArtifactPath(path: string): string {
-  const parts = path.replaceAll("\", "/").split("/");
+  const parts = path.replaceAll("\\", "/").split("/");
   const start = parts.findIndex((part) => [
     "character-bible.md", "series-outline.md", "ledger.md", "episode-plan", "episodes", "reports", "compliance",
   ].includes(part));

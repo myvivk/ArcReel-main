@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from datetime import UTC, datetime
@@ -25,23 +24,18 @@ from lib.project.project_migration_report import build_migration_report, load_mi
 from lib.project.project_migrations.runner import migrate_project_dir
 from lib.project.project_migrations.v14_to_v15_formal_script_truth import migrate_v14_to_v15
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script.grid.grid_manager import GridManager
-from lib.script.grid.models import GridGeneration
-from lib.script.script_generator import PromptAuthoringTargetError, ScriptGenerator
-from lib.script.script_review import (
-    content_fingerprint,
-    formal_script_filename,
-    prompt_authoring_generated,
-    review_status,
-)
+from lib.script.script_revision import content_fingerprint
 from lib.speech.narration_delivery import POST_PRODUCTION
 from lib.speech.speech_presentation import presentation_artifact_paths
 from lib.workflow.workflow_state import WorkflowStateService
 from server.services.project.project_activity import project_last_activity_at
+from tests.legacy_project_shapes import LegacyGridFixtureStore as LegacyGridStore
 from tests.legacy_project_shapes import (
     ScriptPlanVariantName,
     advance_project_schema,
     bind_episode_script_to_filename,
+    legacy_plan_confirmation_matches,
+    make_legacy_grid_record,
     write_legacy_script_plan_project,
 )
 
@@ -115,16 +109,12 @@ def test_whole_chain_leaves_every_episode_ready_for_the_next_step(
     project = _read_json(project_dir / "project.json")
     assert project["schema_version"] == CURRENT_PROJECT_SCHEMA_VERSION
     service = WorkflowStateService(ProjectManager(tmp_path))
-    materialized = service.get_status(project_dir.name, 2)
-    assert materialized.next_action is not None
-    assert materialized.next_action.type.value == "author_prompts"
-    unit = "U" if variant == "reference_video" else "S"
-    assert materialized.next_action.requested_ids == [f"E2{unit}01", f"E2{unit}02"]
     for episode in (1, 2, 3):
         status = service.get_status(project_dir.name, episode)
-        assert status.artifacts["script"]["state"] == "current"
-        assert status.next_action.type.value not in {"prepare_script_plan", "confirm_script_plan"}
-        assert review_status(project_dir, project, episode) == "confirmed"
+        assert status.next_action.type == ("collect_project_input" if variant == "drama" else "none")
+        assert status.next_alternatives == []
+        assert legacy_plan_confirmation_matches(project_dir, project, episode)
+        assert _read_json(project_dir / "scripts" / f"episode_{episode}.json")
     report = load_migration_report(project_dir)
     assert report is not None
     assert report.registered["episode-script"] == 3
@@ -167,11 +157,11 @@ def test_rerunning_the_script_plan_of_a_grandfathered_episode_only_asks_for_conf
     _write_json(plan_path, plan)
 
     project = _read_json(project_dir / "project.json")
-    assert review_status(project_dir, project, 3) == "pending_review"
+    assert not legacy_plan_confirmation_matches(project_dir, project, 3)
+    before = _read_json(project_dir / "scripts/episode_3.json")
     status = WorkflowStateService(ProjectManager(tmp_path)).get_status(project_dir.name, 3)
-    assert status.artifacts["script"]["state"] == "current"
-    assert status.next_action is not None
-    assert status.next_action.type.value == "author_prompts"
+    assert status.next_action.type == "none"
+    assert _read_json(project_dir / "scripts/episode_3.json") == before
 
 
 def test_script_registered_by_the_plan_based_basis_is_rebased_and_stays_current(tmp_path: Path) -> None:
@@ -245,8 +235,8 @@ def _bind_episode_1_to_custom(project_dir: Path) -> None:
 
 
 def _reference_the_bound_script(project_dir: Path) -> None:
-    GridManager(project_dir).save(
-        GridGeneration.create(
+    LegacyGridStore(project_dir).save(
+        make_legacy_grid_record(
             episode=1,
             script_file="custom.json",
             scene_ids=["E1S01", "E1S02"],
@@ -303,23 +293,3 @@ def test_canonical_bindings_are_left_verbatim(tmp_path: Path) -> None:
     assert sorted(path.name for path in (project_dir / "scripts").glob("*.json")) == sorted(
         [*scripts_before, "episode_2.json"]
     )
-
-
-def test_every_reader_resolves_the_same_script_after_the_migration(tmp_path: Path) -> None:
-    """内容确认、提示词编写与 prompt_authoring 已产出判定读的是同一份剧本。"""
-
-    project_dir = _project_at_v14(tmp_path / "projects")
-    migrate_project_dir(project_dir)
-    project = _read_json(project_dir / "project.json")
-    confirmed = formal_script_filename(project_dir, project, 1)
-    assert project["episodes"][0]["script_file"] == f"scripts/{confirmed}"
-    assert prompt_authoring_generated(project_dir, project, 1) is True
-
-    # 从内容确认解析出的那份剧本里拿掉一个条目，提示词编写随之认不出它。
-    asyncio.run(ScriptGenerator(project_dir).build_prompt(1, entry_ids=["E1S02"]))
-    script_path = project_dir / "scripts" / confirmed
-    script = _read_json(script_path)
-    script["segments"] = [item for item in script["segments"] if item["segment_id"] != "E1S02"]
-    _write_json(script_path, script)
-    with pytest.raises(PromptAuthoringTargetError, match="E1S02"):
-        asyncio.run(ScriptGenerator(project_dir).build_prompt(1, entry_ids=["E1S02"]))

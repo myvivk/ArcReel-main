@@ -106,7 +106,7 @@ pnpm e2e:remote   # 终端二：构建前端，连接容器里的浏览器运行
 | `README.md` | 产品定位、核心价值、最短上手路径 | 完整模型清单、所有环境变量、内部实现细节 |
 | `website/docs/index.mdx` | 文档站定位、主要入口和导航概览 | 具体功能的完整操作步骤 |
 | `website/docs/guide/getting-started.md` | 从部署到第一条成片的完整操作路径 | 生产级反向代理和备份策略 |
-| `website/docs/guide/workflows.md` | 创作类型、生成模式、内容确认节点、选择建议 | 供应商密钥和运维命令 |
+| `website/docs/guide/workflows.md` | 短剧工厂各阶段的输入、审核节点、完成条件和历史数据边界 | 供应商密钥和运维命令 |
 | `website/docs/guide/providers.md` | 供应商类型、覆盖能力、选择原则、配置层级 | 容易过期的价格承诺 |
 | `website/docs/guide/comfyui.md` | ComfyUI workflow 的导入、节点绑定、尺寸/时长/种子换算语义、测试与运行限制 | ComfyUI 自身的部署方式与自定义节点安装教程 |
 | `website/docs/guide/market.md` | 市场源管理、市场条目的安装确认、更新与卸载 | 投稿流程与开设市场源的步骤（以官方市场源仓库文档为准） |

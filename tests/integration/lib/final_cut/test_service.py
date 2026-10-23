@@ -42,6 +42,7 @@ from lib.infra.media_probe import probe_media
 from lib.project.project_manager import ProjectManager
 from lib.project.resource_paths import resource_relative_path
 from tests.factories import install_current_video, make_test_clip, wav_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 CREATOR = RevisionAuthor(kind="creator", user_id="u1")
 VARIANT = FinalCutVariant()
@@ -57,7 +58,7 @@ def _unit(unit_id: str, text: str) -> dict[str, Any]:
 def render_project(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(str(tmp_path / "projects"))
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     manager.upsert_assets("demo", "characters", {"角色A": {"description": "主角"}})
     manager.update_project(
         "demo", lambda project: project.update({"generation_mode": "reference_video", "aspect_ratio": "9:16"})

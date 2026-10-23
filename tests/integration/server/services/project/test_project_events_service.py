@@ -30,6 +30,7 @@ from server.services.project.workflow_planner import WorkflowPlanner
 from tests.auth_deps import override_auth
 from tests.factories import make_test_video
 from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class _ControlledReader:
@@ -87,8 +88,8 @@ async def _next_event(stream, *, timeout: float) -> tuple[str, dict]:  # noqa: A
 async def test_timeline_creation_refreshes_project_events_and_completes_workflow(tmp_path, db_factory, entry):
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata(
-        "demo", "Demo", "", "ad", target_duration=4, extras={"generation_mode": "reference_video"}
+    seed_legacy_project_metadata(
+        pm, "demo", "Demo", "", "ad", target_duration=4, extras={"generation_mode": "reference_video"}
     )
     project_path = pm.get_project_path("demo")
     pm.save_script(
@@ -175,7 +176,7 @@ class TestProjectEventService:
     async def test_emitted_batch_is_broadcast_without_waiting_for_snapshot_diff(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=1.0)
         await service.start()
@@ -211,7 +212,7 @@ class TestProjectEventService:
     async def test_assistant_session_resumed_is_broadcast_to_project_subscribers(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=1.0)
         await service.start()
@@ -238,7 +239,7 @@ class TestProjectEventService:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         reader = _ControlledReader(pm)
         service = ProjectEventService(tmp_path, poll_interval=30.0, read_state=reader)
@@ -326,7 +327,7 @@ class TestProjectEventService:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         script = {
             "episode": 1,
@@ -386,7 +387,7 @@ class TestProjectEventService:
         """资产已落盘再发本批事件（worker 成功路径的真实次序）时，补扫不重复广播同一条变更。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         script = {
             "episode": 1,
@@ -467,7 +468,9 @@ class TestProjectEventService:
         补扫按同一件事让给本批，只广播一次。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration", extras={"generation_mode": "reference_video"})
+        seed_legacy_project_metadata(
+            pm, "demo", "Demo", "Anime", "narration", extras={"generation_mode": "reference_video"}
+        )
 
         script = {
             "episode": 1,
@@ -569,7 +572,7 @@ class TestProjectEventService:
         custom_projects = tmp_path / "external-data"
         pm = ProjectManager(custom_projects)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, data_root=custom_projects, poll_interval=30.0)
         await service.start()
@@ -591,7 +594,7 @@ class TestProjectEventService:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         script = {
             "episode": 1,
@@ -698,7 +701,7 @@ class TestProjectEventService:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         reader = _ControlledReader(pm)
         service = ProjectEventService(tmp_path, poll_interval=30.0, read_state=reader)
@@ -753,7 +756,7 @@ class TestProjectEventService:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         reader = _ControlledReader(pm)
         service = ProjectEventService(tmp_path, poll_interval=0.05, read_state=reader)
@@ -836,7 +839,7 @@ class TestProjectEventService:
         收得到经注册表路由的 hint 广播，且旧 watch task 退役、无脱离注册表的 task。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=1.0)
         await service.start()
@@ -914,7 +917,7 @@ class TestProjectEventService:
         流正常结束、通道从注册表移除，仅记一条 INFO 日志，无 ERROR/traceback。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=0.05)
         await service.start()
@@ -949,7 +952,7 @@ class TestProjectEventService:
         按通用异常兜底记 ERROR，通道不终止、继续轮询重试。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=0.05)
         await service.start()
@@ -971,7 +974,7 @@ class TestProjectEventService:
         """hint 触发的显式重建路径对已删除项目同样走终止处理，不产生 ERROR 日志。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         # 轮询间隔调大，确保观察到的是 hint 路径而非后台轮询先行探测到删除。
         service = ProjectEventService(tmp_path, poll_interval=5.0)
@@ -1013,7 +1016,7 @@ class TestProjectEventService:
         """项目删除后原通道终止；同名项目重建后新订阅走全新通道，行为与现在一致。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         service = ProjectEventService(tmp_path, poll_interval=0.05)
         await service.start()
@@ -1031,7 +1034,7 @@ class TestProjectEventService:
 
         # 同名项目重建：新订阅应走全新通道，正常收到 snapshot 与后续变更（不复用将死通道）。
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo Reborn", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo Reborn", "Anime", "narration")
 
         async with service.stream_events("demo", idle_timeout=0.1) as stream:
             first = await anext(stream)

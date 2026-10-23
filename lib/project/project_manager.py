@@ -23,14 +23,13 @@ from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard
 
 import portalocker
 from pydantic import BaseModel, Field
 
 from lib.agent.agent_profile import agent_profile_dir
 from lib.agent.profile_manifest import (
-    VALID_CONTENT_MODES,
     ContentMode,
     ProfileEmptyError,
     ProfileMisconfiguredError,
@@ -44,12 +43,10 @@ from lib.agent.profile_manifest import (
 from lib.artifacts.artifact_manifest import ArtifactBasisDescriptor
 from lib.artifacts.formal_write import formal_write_transaction, project_metadata_lock
 from lib.episode.episode_ids import raise_episode_id_high_water
-from lib.episode.episode_ledger import SOURCE_TEXT_SUFFIXES
 from lib.episode.episode_paths import (
     REFERENCE_VIDEO_SCRIPT_PLAN_FILENAME,
     SCRIPT_PLAN_FILENAMES,
     episode_script_filename,
-    episode_script_relpath,
 )
 from lib.episode.episode_sources import (
     SOURCE_ORIGIN_FIELD,
@@ -70,13 +67,12 @@ from lib.episode.episode_total import (
     TOTAL_EPISODES_FIELD,
     is_valid_total_episodes,
 )
-from lib.episode.source_kinds import project_overview_source_kind
 from lib.infra.app_data_dir import app_data_dir
 from lib.infra.content_digest import canonical_json_digest
 from lib.infra.data_root_layout import PROJECT_FILENAME, PROJECT_NAME_PATTERN, DataRootLayout, list_project_dirs
 from lib.infra.json_io import atomic_write_bytes, atomic_write_json, load_json, load_json_or_none
 from lib.infra.path_safety import PathTraversalError, safe_join
-from lib.infra.schema_guards import is_int, is_shape, is_str
+from lib.infra.schema_guards import is_shape
 from lib.infra.validation_messages import ValidationResult, default_translate
 from lib.project.asset_rename import (
     AssetDeletionPreview,
@@ -106,13 +102,13 @@ from lib.project.asset_types import (
     resolve_asset_key,
     validate_asset_name,
 )
+from lib.project.legacy_reference_durations import migrate_script_unit_durations
 from lib.project.project_change_hints import emit_project_change_hint
 from lib.project.project_schema import parse_project_schema_version
 from lib.project.script_entry_cleanup import purge_replaced_entry_media
 from lib.project.task_project_claim import ensure_task_project_claim
 from lib.references.reference_catalog import derivative_reference
 from lib.script.draft_quarantine import QUARANTINE_FILENAMES
-from lib.script.reference_video.duration_migration import migrate_script_unit_durations
 from lib.script.script_editor import ScriptEditError, resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.speech.audio_utils import discard_stale_reference_audio, resolve_audio_ref_path, resolve_stale_reference_audio
@@ -164,15 +160,6 @@ def _file_content_fingerprint(path: Path) -> tuple[str | None, dict[str, Any] | 
     except (ValueError, UnicodeDecodeError):
         return hashlib.sha256(raw).hexdigest(), None
     return canonical_json_digest(parsed), parsed if isinstance(parsed, dict) else None
-
-
-def grid_storyboard_enabled(project: dict[str, Any]) -> bool:
-    """项目是否按宫格生产分镜图。
-
-    宫格是分镜图生视频内的分镜图生产方式：参考生视频无分镜图步骤，
-    即使残留 grid_storyboard=true 也不激活宫格分支。
-    """
-    return project.get("generation_mode") == "storyboard" and bool(project.get("grid_storyboard"))
 
 
 def find_episode(project: Mapping[str, Any], episode: int | None) -> dict[str, Any] | None:
@@ -260,10 +247,6 @@ def _resolve_items_or_warn(script: dict, *, script_filename: str | None = None) 
 
 class EpisodeScriptReboundError(RuntimeError):
     """加锁前后 episode→script_file 绑定发生变化（并发 PATCH 改绑），调用方应重试。"""
-
-
-class EmptySourceError(ValueError):
-    """source 目录为空，无法生成概述；与「无可用文本供应商」等配置错误区分，避免路由层误判用户操作。"""
 
 
 # ==================== 数据模型 ====================
@@ -437,7 +420,7 @@ class ProjectManager:
     def create_project(
         self,
         name: str,
-        content_mode: ContentMode = "narration",
+        content_mode: str = "drama",
         *,
         publish: bool = True,
     ) -> Path:
@@ -446,12 +429,14 @@ class ProjectManager:
 
         Args:
             name: 项目标识（全局唯一，用于 URL 和文件系统）
-            content_mode: 创作类型（narration / drama），影响 profile 物化时选哪份变体
+            content_mode: 固定为工厂剧情模式 drama
             publish: 是否立即写入最小 project.json；组合创建流程应在完整元数据就绪后再发布
 
         Returns:
             项目目录路径
         """
+        if content_mode != "drama":
+            raise ValueError("新建项目只支持短剧工厂（drama / storyboard）")
         name = self.normalize_project_name(name)
         project_dir = self.projects_dir / name
 
@@ -465,7 +450,10 @@ class ProjectManager:
             for subdir in self.SUBDIRS:
                 (project_dir / subdir).mkdir(exist_ok=True)
             if publish:
-                atomic_write_json(project_dir / self.PROJECT_FILE, {"content_mode": content_mode})
+                atomic_write_json(
+                    project_dir / self.PROJECT_FILE,
+                    {"content_mode": "drama", "generation_mode": "storyboard"},
+                )
             self.sync_agent_profile(project_dir, content_mode=content_mode)
         except Exception:
             # sync 失败时回滚 project_dir，避免残缺目录阻塞重试（同名 create 撞 FileExistsError）
@@ -525,8 +513,7 @@ class ProjectManager:
     ) -> dict:
         """物化 agent_runtime_profile 到项目目录的 .claude / CLAUDE.md。
 
-        ``content_mode=None`` 时从 ``project_dir/project.json`` 读取；
-        project.json 缺失或 ``content_mode`` 字段缺失 → 回退到 ``"narration"`` + log info。
+        内置配置只提供工厂模式；历史项目的数据模式保持原样。
         ``content_mode`` 显式非法值 → 抛 ``ValueError``。
 
         详见 ``lib.agent.profile_manifest.sync_profile_to_project``：manifest-driven
@@ -567,29 +554,22 @@ class ProjectManager:
         return get_profile_status(agent_profile_dir(), project_dir, content_mode)
 
     def _resolve_content_mode(self, project_dir: Path) -> ContentMode:
-        """从 project_dir/project.json 读 content_mode；缺失回退 narration。
+        """统一提供工厂配置，不改写历史项目的内容模式。
 
-        ``project.json`` 不存在或缺 ``content_mode`` 字段 → 回退 narration（兼容
-        老项目）。文件存在但读取/解析失败 → raise，让上层 sync_all_agent_profiles
-        走 failed_projects 分支；若静默回退到 narration，drama 项目会因 manifest
-        记录的 mode 不匹配触发破坏性 reset，把 profile 错误切回旁白/解说变体。
+        文件读取或解析失败仍交给上层隔离；合法历史模式只用于读取。
         """
         pj_path = project_dir / self.PROJECT_FILE
         try:
             data = load_json(pj_path)
         except FileNotFoundError:
-            logger.info("project.json missing under %s, defaulting content_mode=narration", project_dir)
-            return "narration"
+            return "drama"
         mode = data.get("content_mode") if isinstance(data, dict) else None
-        if mode is None:
-            logger.info("project.json has no content_mode under %s, defaulting narration", project_dir)
-            return "narration"
-        if not isinstance(mode, str) or mode not in VALID_CONTENT_MODES:
+        if mode is not None and mode not in ("drama", "narration", "ad"):
             raise ValueError(
                 f"project {project_dir.name}: invalid content_mode={mode!r} "
-                f"(must be one of {sorted(VALID_CONTENT_MODES)})"
+                "(unknown historical content mode)"
             )
-        return cast(ContentMode, mode)
+        return "drama"
 
     def sync_all_agent_profiles(self) -> dict:
         """扫描所有项目目录，物化 agent_runtime_profile（启动 hook 用）。
@@ -2405,29 +2385,18 @@ class ProjectManager:
             project.pop("video_model_settings", None)
 
     # 广告/短片项目恒单集：episodes 恒为第 1 集单条，剧本即第 1 集脚本文件
-    AD_SINGLE_EPISODE: ClassVar[dict[str, str | int]] = {
-        "episode": 1,
-        "title": "",
-        "script_file": episode_script_relpath(1),
-        SOURCE_ORIGIN_FIELD: SourceOrigin.NONE.value,
-    }
-    # 创建入口未传 target_duration 时的数据层兜底（与创建向导默认档位同值）
-    AD_DEFAULT_TARGET_DURATION = 60
-
     def create_project_metadata(
         self,
         project_name: str,
         title: str | None = None,
         style: str | None = None,
-        content_mode: str | None = "narration",
+        content_mode: str = "drama",
         aspect_ratio: str | None = "9:16",
         default_duration: int | None = None,
         episode_target_duration: int | None = None,
         total_episodes: int | None = None,
         style_template_id: str | None = None,
         extras: dict | None = None,
-        target_duration: int | None = None,
-        brief: str | None = None,
         narration: Mapping[str, object] | None = None,
     ) -> dict:
         """
@@ -2438,39 +2407,18 @@ class ProjectManager:
         本方法只按字面写入 extras 中已有的键——退役的单字段 image_backend 不在写入范围
         （解析链不读取、写边界已拒绝），调用方不应再传入。
 
-        `target_duration` / `brief` 仅 content_mode=ad 可用；ad 项目不持有
-        `default_duration` 与 `episode_target_duration`，且 episodes 恒为第 1 集单条。
-
         `episode_target_duration` 为单集目标时长（秒），取值区间见
         `lib.episode.episode_target_duration`；软偏好，只注入脚本规划提示词与审核面板对比，不做阻断。
 
-        `total_episodes` 为全剧规划总集数（集），取值区间见 `lib.episode.episode_total`；仅非 ad 项目
-        持有，供「AI 原创剧本」连写 / 续写流程告诉 Agent 全剧体量。ad 项目不持有该字段。
+        `total_episodes` 为工厂规划总集数，取值区间见 `lib.episode.episode_total`。
 
         `narration` 是旁白交付配置字段（交付方式与 TTS 快照，见 `lib.speech.narration_config`），
         缺省为后期配音；TTS 配音必须带完整快照。
         """
         project_name = self.normalize_project_name(project_name)
         project_title = str(title).strip() if title is not None else ""
-        resolved_mode = content_mode or "narration"
-
-        # 数据层守卫：模式专属字段互斥。路由层已返回 400，这里再兜一道防非路由调用方。
-        if resolved_mode == "ad":
-            if default_duration is not None:
-                raise ValueError("广告/短片项目不持有 default_duration（分镜时长按 target_duration 预算逐个分镜规划）")
-            if episode_target_duration is not None:
-                raise ValueError("广告/短片项目不持有 episode_target_duration（整集体量按 target_duration 预算规划）")
-            if total_episodes is not None:
-                raise ValueError("广告/短片项目不持有 total_episodes（整集体量按 target_duration 预算规划）")
-            if target_duration is not None and not is_int(target_duration, minimum=1):
-                raise ValueError(f"target_duration 必须为正整数秒，当前为 {target_duration!r}")
-            if brief is not None and not is_str(brief):
-                raise ValueError(f"brief 必须是字符串，当前为 {brief!r}")
-        else:
-            if target_duration is not None:
-                raise ValueError("target_duration 仅广告/短片项目（content_mode=ad）可用")
-            if brief is not None:
-                raise ValueError("brief 仅广告/短片项目（content_mode=ad）可用")
+        if content_mode != "drama":
+            raise ValueError("新建项目只支持短剧工厂（drama / storyboard）")
 
         # schema_version 与 CURRENT_SCHEMA_VERSION 对齐：新项目即最新形态，
         # 避免被启动迁移误处理（如 v0→v1 在"未含 clues 字段"时误清空 scenes/props）。
@@ -2481,7 +2429,8 @@ class ProjectManager:
             # 允许空字符串:前端会以 i18n「未命名项目」兜底显示,避免把 slug
             # 风格的 project_name 固化为用户可见的标题。
             "title": project_title,
-            "content_mode": resolved_mode,
+            "content_mode": "drama",
+            "generation_mode": "storyboard",
             "aspect_ratio": aspect_ratio or "9:16",
             "style": style or "",
             "episodes": [],
@@ -2501,12 +2450,6 @@ class ProjectManager:
                 raise ValueError(f"narration 只接受旁白交付配置字段，收到: {sorted(unknown)}")
             project.update(narration)
             validate_project_narration_config(project)
-        if resolved_mode == "ad":
-            project["target_duration"] = (
-                target_duration if target_duration is not None else self.AD_DEFAULT_TARGET_DURATION
-            )
-            project["brief"] = brief if brief is not None else ""
-            project["episodes"] = [dict(self.AD_SINGLE_EPISODE)]
         if default_duration is not None:
             project["default_duration"] = default_duration
         if episode_target_duration is not None:
@@ -2538,22 +2481,12 @@ class ProjectManager:
                 "style_template_id",
                 "target_duration",
                 "brief",
+                "grid_storyboard",
             }
             forbidden = reserved & set(extras)
             if forbidden:
                 raise ValueError(f"extras 不允许覆盖核心字段: {sorted(forbidden)}")
             project.update(extras)
-
-        # 生成模式与宫格开关：路由层已做必填二值校验与 ad 互斥（400/422），这里再兜一道防非路由
-        # 调用方；未传时按数据层默认补写显式值，保证新项目落盘即含两字段（与 schema v5 形态对齐）。
-        generation_mode = project.setdefault("generation_mode", _DEFAULT_GENERATION_MODE)
-        if not isinstance(generation_mode, str) or generation_mode not in VALID_GENERATION_MODES:
-            raise ValueError(f"generation_mode 值无效: {generation_mode!r}，必须是 {sorted(VALID_GENERATION_MODES)}")
-        grid_storyboard = project.setdefault("grid_storyboard", False)
-        if not isinstance(grid_storyboard, bool):
-            raise ValueError(f"grid_storyboard 必须是布尔值，当前为 {grid_storyboard!r}")
-        if resolved_mode == "ad" and grid_storyboard:
-            raise ValueError("广告/短片项目不支持宫格分镜（grid_storyboard）")
 
         self.save_project(project_name, project)
         return project
@@ -3026,11 +2959,11 @@ class ProjectManager:
         用户只改了个名字，那一集就退回待确认、被引向覆盖正式脚本的确认操作。
         """
         # script_review 在模块级 import 本模块，惰性 import 破环。
-        from lib.script.script_review import (
+        from lib.project.legacy_script_plans import (
             carry_confirmation_through_migration,
-            content_fingerprint_of_data,
             script_plan_path,
         )
+        from lib.script.script_revision import content_fingerprint_of_data
 
         for path, payload, before in changed_drafts:
             episode = self.filename_episode(path.parent.name)
@@ -4014,107 +3947,6 @@ class ProjectManager:
         return refs
 
     # ==================== 项目概述生成 ====================
-
-    def _read_source_files(self, project_name: str, max_chars: int = 50000) -> str:
-        """
-        读取项目 source 目录下的所有 UTF-8 文本文件内容。
-
-        非 UTF-8 文件会抛 SourceDecodeError —— 上传路径已统一规范化为 UTF-8，
-        启动迁移已修历史项目；这里若仍遇到非 UTF-8，说明用户绕过 API 直接拷贝
-        文件，需显式报错而非"源目录为空"误导。
-        """
-        from lib.script.source_loader.errors import SourceDecodeError
-
-        project_dir = self.get_project_path(project_name)
-        source_dir = project_dir / "source"
-
-        if not source_dir.exists():
-            return ""
-
-        contents = []
-        total_chars = 0
-        for file_path in sorted(source_dir.glob("*")):
-            if not (file_path.is_file() and file_path.suffix.lower() in SOURCE_TEXT_SUFFIXES):
-                continue
-
-            raw = file_path.read_bytes()
-            try:
-                content = raw.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise SourceDecodeError(
-                    filename=file_path.name,
-                    tried_encodings=["utf-8"],
-                ) from exc
-
-            remaining = max_chars - total_chars
-            if remaining <= 0:
-                break
-            if len(content) > remaining:
-                content = content[:remaining]
-            contents.append(f"--- {file_path.name} ---\n{content}")
-            total_chars += len(content)
-
-        return "\n\n".join(contents)
-
-    async def generate_overview(self, project_name: str) -> dict:
-        """
-        使用 Gemini API 异步生成项目概述
-
-        Args:
-            project_name: 项目名称
-
-        Returns:
-            生成的 overview 字典，包含 synopsis, genre, theme, world_setting, generated_at
-        """
-        from lib.backends.providers import CallPurpose
-        from lib.backends.text_backends.base import TextGenerationRequest, TextTaskType
-        from lib.backends.text_generator import TextGenerator
-        from lib.prompts.prompt_builders_script import build_overview_prompt
-
-        # 读取源文件内容
-        source_content = self._read_source_files(project_name)
-        if not source_content:
-            raise EmptySourceError("source 目录为空，无法生成概述")
-
-        # 创建 TextGenerator（自动追踪用量）
-        generator = await TextGenerator.create(
-            TextTaskType.OVERVIEW, project_name, purpose=CallPurpose.PROJECT_OVERVIEW
-        )
-
-        # 调用 TextGenerator（Structured Outputs）。全部源文都是剧本时翻为「提取优先」：
-        # 作者写下的创作方案前言优先照用，缺失才退回从正文归纳；混合时按小说口径。
-        project_data = self.load_project(project_name)
-        source_kind = project_overview_source_kind(project_data)
-        # source_language 来自 project.json，可能是非字符串脏数据；非字符串或空串回退默认语言
-        raw_source_language = project_data.get("source_language")
-        target_language = (
-            raw_source_language if isinstance(raw_source_language, str) and raw_source_language.strip() else "中文"
-        )
-        prompt = build_overview_prompt(source_content, source_kind=source_kind, target_language=target_language)
-
-        result = await generator.generate(
-            TextGenerationRequest(
-                prompt=prompt,
-                response_schema=ProjectOverview,
-            ),
-            project_name=project_name,
-        )
-        response_text = result.text
-
-        # 解析并验证响应
-        overview = ProjectOverview.model_validate_json(response_text)
-        overview_dict = overview.model_dump()
-        overview_dict["generated_at"] = datetime.now(UTC).isoformat()
-
-        # 保存到 project.json（RMW 在单一 _project_lock 内完成，避免并发覆盖其它字段）
-        def _mutate(project: dict) -> None:
-            project["overview"] = overview_dict
-            project["source_language"] = overview_dict["language"]
-
-        self.update_project(project_name, _mutate)
-
-        logger.info("项目概述已生成并保存")
-        return overview_dict
 
 
 _project_manager: ProjectManager | None = None

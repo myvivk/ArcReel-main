@@ -29,17 +29,11 @@ from lib.project.project_manager import ProjectManager
 from lib.project.project_migrations.runner import migrate_project_with_verdict
 from lib.project.resource_paths import resource_relative_path
 from lib.project.source_revision import SourceRevisionResult, compute_source_revision
-from lib.script import script_review
 from lib.workflow.workflow_state import WorkflowStateService
-from tests.factories import register_project_sources
 from tests.integration.lib.episode_media_support import episodes_with_media
 from tests.integration.lib.manifest_parse_support import count_manifest_parses, count_versions_parses
 from tests.integration.lib.workflow.test_workflow_state import (
-    _complete_episode_media,
-    _count_source_reads,
-    _create_edit_timeline,
     _make_project,
-    _one_complete_episode,
     _register_produced_artifacts,
     _valid_ad_shot,
     _valid_narration_segment,
@@ -48,6 +42,9 @@ from tests.integration.lib.workflow.test_workflow_state import (
     _write_episode_source,
     _write_registered_script,
     _write_source,
+    complete_episode_media,
+    count_source_reads,
+    create_edit_timeline,
 )
 
 
@@ -86,7 +83,7 @@ def _episode_with_media(
 
     _plan_one_episode(pm, project_path, source_text)
     _write_script_plan(project_path)
-    generated_assets = _complete_episode_media(project_path)
+    generated_assets = complete_episode_media(project_path)
     _write_registered_script(
         project_path,
         {
@@ -98,7 +95,7 @@ def _episode_with_media(
     )
     _register_produced_artifacts(project_path)
     if edit_timeline:
-        _create_edit_timeline(pm)
+        create_edit_timeline(pm)
 
 
 def _count_artifact_opens(monkeypatch: pytest.MonkeyPatch, project_path: Path) -> dict[str, int]:
@@ -312,7 +309,7 @@ def test_episode_with_all_videos_completes_only_once_it_has_an_edit_timeline(tmp
     assert before.episodes[0].status == "in_production"
     assert before.episodes_summary.completed == 0
 
-    _create_edit_timeline(pm)
+    create_edit_timeline(pm)
 
     after = service.get_project_summary("demo", currency=currency)
     assert after.episodes[0].status == "completed"
@@ -377,39 +374,6 @@ def test_stale_ledger_episode_falls_back_to_pending_preprocess(tmp_path: Path) -
     assert summary.episodes[0].videos.total == 0
 
 
-def test_stale_episode_counts_as_complete_only_after_its_script_plan_is_rebuilt(tmp_path: Path) -> None:
-    """大厅与顶栏对 stale 集同一口径：未重建时两处都不算完成，重建后两处都按常规进度算完成。"""
-
-    pm, project_path = _make_project(tmp_path, "narration")
-    _one_complete_episode(pm, project_path)
-    _create_edit_timeline(pm)
-
-    def _mark_stale(project: dict) -> None:
-        script_review.mark_ledger_stale(project_path, project, project["episodes"][0], 1)
-
-    pm.update_project("demo", _mark_stale)
-    service = WorkflowStateService(pm)
-
-    awaiting = service.get_project_summary("demo", currency="registered")
-    assert awaiting.episodes[0].script_status == "none"
-    assert awaiting.episodes_summary.completed == 0
-    awaiting_status = service.get_status("demo")
-    assert awaiting_status.content is not None
-    assert awaiting_status.content.project_complete is False
-
-    atomic_write_json(
-        project_path / "drafts" / "episode_1" / "script_plan_segments.json",
-        {"episode": 1, "segments": [{"segment_id": "E1S01"}]},
-    )
-
-    rebuilt = service.get_project_summary("demo", currency="registered")
-    assert rebuilt.episodes[0].status == "completed"
-    assert rebuilt.episodes_summary.completed == 1
-    rebuilt_status = service.get_status("demo")
-    assert rebuilt_status.content is not None
-    assert rebuilt_status.content.project_complete is True
-
-
 def test_stale_artifacts_stay_available_and_are_counted_separately(tmp_path: Path) -> None:
     pm, project_path = _make_project(tmp_path, "narration")
     source_text = "完整原文"
@@ -448,7 +412,7 @@ def test_summary_never_reads_the_source_corpus(tmp_path: Path, monkeypatch: pyte
         return compute_source_revision(project_path, *args, **kwargs)
 
     monkeypatch.setattr("lib.workflow.workflow_state.compute_source_revision", _spy)
-    source_reads = _count_source_reads(monkeypatch, project_path)
+    source_reads = count_source_reads(monkeypatch, project_path)
     summary = WorkflowStateService(pm).get_project_summary("demo")
 
     assert summary.episodes_summary.completed == 1
@@ -625,7 +589,7 @@ def _episode_with_storyboards(pm: ProjectManager, project_path: Path, count: int
     _write_script_plan(project_path)
     segments = [
         _valid_narration_segment(
-            segment_id=resource_id, generated_assets=_complete_episode_media(project_path, resource_id)
+            segment_id=resource_id, generated_assets=complete_episode_media(project_path, resource_id)
         )
         for resource_id in (f"E1S{index:02d}" for index in range(1, count + 1))
     ]
@@ -704,41 +668,3 @@ def test_externally_replaced_upload_is_stale_but_still_available(tmp_path: Path)
 
     assert verified.videos.model_dump() == {"total": 1, "available": 1, "stale": 1}
     assert registered.videos.model_dump() == {"total": 1, "available": 1, "stale": 0}
-
-
-def test_source_remaining_follows_ledger_commands_like_the_workbench(tmp_path: Path) -> None:
-    """列表口径「源文还有未规划的原文」由账本命令记下，与工作台「继续分集规划」同一判定。
-
-    项目列表不读源文，靠写账本的命令把结论写进 project.json；每一步都与按源文现算的制作状态一致。
-    """
-
-    from lib.episode.episode_manual_split import cut_unsplit_source
-
-    pm, project_path = _make_project(tmp_path, "narration")
-    text = "第一章。少年下山。第二章。城里起火。"
-    _write_source(pm, project_path, text)
-    service = WorkflowStateService(pm)
-
-    def _assert_remaining(expected: bool) -> None:
-        summary = service.get_project_summary("demo", currency="registered")
-        status = service.get_status("demo")
-        assert summary.source_remaining is expected
-        assert status.content is not None
-        assert status.content.source_remaining is expected
-
-    _assert_remaining(True)
-
-    cut_unsplit_source(project_path, source_file="source/novel.txt", end=text.index("第二章"))
-    _assert_remaining(True)
-
-    cut_unsplit_source(project_path, source_file="source/novel.txt", end=len(text))
-    _assert_remaining(False)
-
-    register_project_sources(pm, "demo", whole_source={"sequel.txt": "第三章。重逢。"})
-    _assert_remaining(True)
-
-
-def test_ad_project_never_reports_remaining_source(tmp_path: Path) -> None:
-    pm, _project_path = _make_project(tmp_path, "ad")
-
-    assert WorkflowStateService(pm).get_project_summary("demo", currency="registered").source_remaining is False

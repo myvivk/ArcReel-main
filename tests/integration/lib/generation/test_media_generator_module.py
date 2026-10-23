@@ -610,7 +610,7 @@ class TestMediaGenerator:
         assert [outcome["status"] for outcome in gen.ledger.outcomes] == ["failed"]
 
     @pytest.mark.asyncio
-    async def test_video_before_submit_is_not_repeated_for_413_compression_retry(self, tmp_path):
+    async def test_video_413_preserves_checkpointed_references_without_retry(self, tmp_path):
         gen = _build_generator(tmp_path)
         ref = _solid_png(tmp_path, "ref-checkpoint.png", 16, 16)
 
@@ -640,15 +640,18 @@ class TestMediaGenerator:
             nonlocal checkpoint_calls
             checkpoint_calls += 1
 
-        await gen.generate_video_async(
-            prompt="p",
-            resource_type="reference_videos",
-            resource_id="E1U1",
-            reference_images=[ref],
-            before_submit=_checkpoint,
-        )
+        import httpx
 
-        assert backend.attempts == 2
+        with pytest.raises(httpx.HTTPStatusError, match="Request Entity Too Large"):
+            await gen.generate_video_async(
+                prompt="p",
+                resource_type="videos",
+                resource_id="E1S01",
+                reference_images=[ref],
+                before_submit=_checkpoint,
+            )
+
+        assert backend.attempts == 1
         assert checkpoint_calls == 1
 
     @pytest.mark.asyncio
@@ -1448,7 +1451,7 @@ class TestReferenceCompressionSeam:
         # 单次调用，无降档重试
         assert len(backend.calls) == 1
 
-    async def test_video_frame_not_resized_array_laddered(self, tmp_path):
+    async def test_video_keeps_start_and_reference_image_dimensions(self, tmp_path):
         gen = _build_generator(tmp_path)
 
         from arcreel_market_core.video_backend_contract import VideoCapabilities
@@ -1479,7 +1482,7 @@ class TestReferenceCompressionSeam:
         gen._video_backend = backend
 
         start = _solid_png(tmp_path, "start.png", 3000, 2000)  # FRAME：永不缩尺寸（重格式仅重编码）
-        ref = _solid_png(tmp_path, "ref.png", 3000, 3000)  # ARRAY：走梯子缩到 ≤2048
+        ref = _solid_png(tmp_path, "ref.png", 3000, 3000)  # 视频图片与付费前留证使用相同字节
 
         await gen.generate_video_async(
             prompt="p",
@@ -1490,7 +1493,7 @@ class TestReferenceCompressionSeam:
         )
 
         assert backend.start_dims == (3000, 2000)  # FRAME 尺寸保持
-        assert max(backend.ref_dims[0]) == 2048  # ARRAY 缩到长边 2048
+        assert backend.ref_dims == [(3000, 3000)]
 
     async def test_reference_audio_reaches_backend_unreordered(self, tmp_path):
         """参考音频原样透传到请求：gate 放行后若不下传，音频会在校验之后被静默丢弃。

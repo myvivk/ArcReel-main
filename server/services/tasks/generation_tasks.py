@@ -21,13 +21,11 @@ from lib.artifacts.artifact_activation import (
     active_artifact_currency_resolver,
     assert_current_artifact_input_claims_usable,
     bind_artifact_input_claims_to_content_digests,
-    bind_artifact_input_claims_to_frozen_visuals,
     resolve_usable_episode_script_input,
 )
 from lib.artifacts.artifact_input_claims import resolve_usable_storyboard_video_slots
 from lib.artifacts.artifact_manifest import (
     ArtifactBasisDescriptor,
-    ArtifactKey,
     compose_video_artifact_basis,
 )
 from lib.artifacts.generation_input import (
@@ -36,23 +34,26 @@ from lib.artifacts.generation_input import (
     InputRefused,
     StoryboardImageInput,
     asset_sheet_input,
-    grid_references,
     project_input_observation,
     storyboard_image_input,
 )
-from lib.artifacts.image_reference_snapshot import FrozenImageReferences, freeze_image_references
 from lib.artifacts.version_manager import PaidVersionCommit
 from lib.artifacts.video_artifact_facts import VideoArtifactCurrencyFacts
 from lib.artifacts.video_visual_provenance import build_storyboard_video_visual_basis
 from lib.artifacts.visual_artifact_provenance import (
-    GridStoryboardVisual,
-    build_grid_composite_visual_basis,
     build_storyboard_video_artifact_visual_basis,
-    project_basis_style_description,
 )
 from lib.config.resolver import video_bucket_for_generation_mode
 from lib.config.service import DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS
 from lib.db.base import DEFAULT_USER_ID
+from lib.generation.execution_checkpoint import (
+    ProviderMediaInput,
+    StagedProviderMedia,
+    StoryboardSubmissionCheckpoint,
+    checkpoint_version_metadata,
+    cleanup_staged_provider_media,
+    stage_provider_media_for_task,
+)
 from lib.generation.generation_queue import (
     DispatchProviderChanged,
     get_generation_queue,
@@ -65,9 +66,9 @@ from lib.generation.video_request_facts import (
     audio_switch_conflict,
     require_video_request_facts,
 )
-from lib.infra.async_thread import run_noninterruptible_sync, run_sync_transaction
+from lib.infra.async_thread import run_sync_transaction
 from lib.infra.content_digest import sha256_file
-from lib.infra.path_safety import safe_join, try_safe_join
+from lib.infra.path_safety import safe_join
 from lib.infra.thumbnail import extract_video_last_frame, extract_video_thumbnail
 from lib.project.asset_derivatives import DERIVATIVE_ASSET_TYPE, DERIVATIVE_TASK_TYPE
 from lib.project.asset_types import (
@@ -80,13 +81,11 @@ from lib.project.project_manager import (
     EpisodeScriptReboundError,
     ProjectManager,
     get_project_manager,
-    is_reference_video_project,
     resolve_episode_script_binding,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
-from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
-from lib.prompts.reference_image_numbering import clamp_reference_images
+from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
     keyframe_reference_problems,
     parse_grid_prompt_cells,
@@ -97,15 +96,6 @@ from lib.script.grid.keyframe_parser import (
 from lib.script.grid.layout import grid_aspect_ratio_for
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_prompt_builder import build_shot_grid_prompt, shot_grid_cells
-from lib.script.reference_video.execution_checkpoint import (
-    ProviderMediaInput,
-    StagedProviderMedia,
-    StoryboardSubmissionCheckpoint,
-    checkpoint_version_metadata,
-    cleanup_staged_provider_media,
-    stage_provider_media_for_task,
-)
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import resolve_content_mode
 from lib.script.script_skeleton import SKELETON_ENTITY_TYPES, SKELETON_ITEM_LABEL_KEYS, resolve_script_kind
@@ -137,6 +127,7 @@ from lib.speech.narration_delivery import (
 )
 from lib.speech.speech_artifact_provenance import build_video_duration_basis
 from lib.speech.speech_composition import SpeechAdmissionError, admit_script_unit
+from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import input_refusal_error
 from server.services.currency.video_artifact_currency import (
     VideoArtifactCommitter,
@@ -149,7 +140,6 @@ from server.services.tasks.formal_image_commit import (
     FormalImagePlan,
     StagedImageCommit,
     get_aspect_ratio,
-    grid_formal_image_callback,
     run_asset_sheet_image_task,
     run_formal_image_task,
     shot_grid_formal_image_callback,
@@ -162,7 +152,6 @@ from server.services.tasks.generation_context import (
     resolve_generation_context,
 )
 from server.services.tasks.image_edit_tasks import execute_image_edit_task
-from server.services.tasks.reference_video_tasks import execute_reference_video_task
 from server.services.tasks.render_tasks import execute_render_task
 
 logger = logging.getLogger(__name__)
@@ -258,58 +247,6 @@ def compute_affected_fingerprints(project_name: str, task_type: str, resource_id
                 project_path / "props" / f"{resource_id}.png",
             )
         )
-    elif task_type == "product":
-        paths.append(
-            (
-                f"products/{resource_id}.png",
-                project_path / "products" / f"{resource_id}.png",
-            )
-        )
-    elif task_type in ("grid", "grid_split"):
-        paths.append(
-            (
-                f"grids/{resource_id}.png",
-                project_path / "grids" / f"{resource_id}.png",
-            )
-        )
-        # 宫格切分会覆写多个 canonical 分镜图，实际写入的 cell 路径持久化在
-        # grid 记录的 frame_chain 中，一并纳入指纹让前端对这些文件 cache-bust；
-        # 记录缺失/损坏时降级为只报宫格主图。生成事件（"grid"）也带上 cell 指纹：
-        # 生成本身不再触碰分镜格，未变更文件的 mtime 指纹与前端已持有值相同，无副作用。
-        try:
-            from lib.script.grid.grid_manager import GridManager
-
-            grid = GridManager(project_path).get(resource_id)
-        except Exception:
-            grid = None
-        if grid is not None:
-            # 记录是磁盘上的 JSON，image_path 不可直接信任：绝对路径会覆盖左操作数、
-            # ../ 会越出项目目录，把任意服务器文件的存在性/mtime 暴露给前端
-            project_root = project_path.resolve()
-            for frame in grid.frame_chain:
-                if not frame.image_path:
-                    continue
-                candidate = try_safe_join(project_root, frame.image_path)
-                if candidate is None:
-                    logger.warning("跳过越出项目目录的宫格 cell 路径: %s", frame.image_path)
-                    continue
-                # 指纹 key 用归一化后的项目相对路径：原始字符串若是项目内的
-                # 绝对路径，会把服务器路径泄漏给前端且匹配不上前端的资源 key
-                rel = candidate.relative_to(project_root).as_posix()
-                paths.append((rel, candidate))
-    elif task_type == "reference_video":
-        paths.append(
-            (
-                f"reference_videos/{resource_id}.mp4",
-                project_path / "reference_videos" / f"{resource_id}.mp4",
-            )
-        )
-        paths.append(
-            (
-                f"reference_videos/thumbnails/{resource_id}.jpg",
-                project_path / "reference_videos" / "thumbnails" / f"{resource_id}.jpg",
-            )
-        )
     elif task_type == "tts":
         audio_rel = resource_relative_path("audio", resource_id)
         paths.append((audio_rel, project_path / audio_rel))
@@ -334,8 +271,6 @@ def compute_affected_fingerprints(project_name: str, task_type: str, resource_id
 # video_units）动态派生 entity_type 与条目名词，见 _SKELETON_DRIVEN_TASK_ACTIONS，避免恒发
 # ``segment``/「分镜」而与分镜级事件（project_state_projection.py）名词不一致。
 _TASK_CHANGE_SPECS: dict[str, tuple] = {
-    "grid": ("grid", "grid_ready", "grid", True),
-    "grid_split": ("grid", "grid_split_done", "grid_split", True),
     "voice_sample": ("character", "voice_sample_ready", "voice_sample", False),
     **{atype: (atype, "updated", f"asset_image_{atype}", False) for atype in ASSET_SPECS},
     # 衍生资产图落在本体的 entity 下（entity_id 是 `本体名/衍生名`），但条目名词另立一条：
@@ -348,7 +283,6 @@ _TASK_CHANGE_SPECS: dict[str, tuple] = {
 _SKELETON_DRIVEN_TASK_ACTIONS: dict[str, str] = {
     "storyboard": "storyboard_ready",
     "video": "video_ready",
-    "reference_video": "reference_video_ready",
     "tts": "tts_ready",
 }
 
@@ -356,7 +290,6 @@ _SKELETON_DRIVEN_TASK_ACTIONS: dict[str, str] = {
 # 指向视频单元，与参考生视频项目的骨架名词同口径；storyboard/video 未列出，回退到按骨架种类派生
 # 的 label_key（分镜），与同项目分镜级事件同口径。
 _SKELETON_TASK_LABEL_KEYS: dict[str, str] = {
-    "reference_video": "skeleton_video_units",
     "tts": "narration_audio",
 }
 
@@ -398,18 +331,7 @@ def emit_generation_success_batch(
 
     action = _SKELETON_DRIVEN_TASK_ACTIONS.get(task_type)
     if action is not None:
-        reference_route_task = task_type == "reference_video"
-        if task_type == "tts":
-            try:
-                reference_route_task = is_reference_video_project(get_project_manager().load_project(project_name))
-            except Exception:
-                reference_route_task = False
-        if reference_route_task:
-            # 参考生视频的资源身份恒为 video unit；生成模式来自创建后不可变的 project.json，
-            # 不让 ad 剧本残留的 shots[] 在 TTS 成功后把 E1U* 事件错分为 shot。
-            kind = "video_units"
-        else:
-            kind = resolve_script_kind(script) if isinstance(script, dict) else "segments"
+        kind = resolve_script_kind(script) if isinstance(script, dict) else "scenes"
         entity_type = SKELETON_ENTITY_TYPES.get(kind, "segment")
         label_key = _SKELETON_TASK_LABEL_KEYS.get(task_type) or SKELETON_ITEM_LABEL_KEYS.get(kind, "skeleton_segments")
         include_script_episode = True
@@ -482,6 +404,7 @@ async def execute_storyboard_task(
             script=_script,
             script_filename=str(script_file),
         )
+        require_factory_script(_project_path, _project, _script, _script_input.episode)
         _currency_resolver = active_artifact_currency_resolver(_project_path, _project)
         _generation_input = storyboard_image_input(
             _project,
@@ -577,19 +500,6 @@ async def execute_storyboard_task(
         )
 
 
-def _resolve_tts_task_items(
-    script: dict[str, Any],
-    *,
-    reference_video_route: bool,
-) -> tuple[list[Any], str, str]:
-    """Resolve TTS units from the generation route fixed at task start."""
-
-    if not reference_video_route:
-        return resolve_items(script)
-    # 参考生视频的骨架种类由任务开工时定死的生成模式给出，直接指定；取证解析只服务于生成模式未知的调用方。
-    return resolve_items(script, kind="video_units")
-
-
 async def execute_tts_task(
     project_name: str,
     resource_id: str,
@@ -601,10 +511,9 @@ async def execute_tts_task(
     """为一个 narrator-owned script unit 合成独立旁白配音。"""
     script_file = payload.get("script_file")
 
-    def _prepare() -> tuple[dict, Path, str, Any | None, int | None, bool, tuple[ArtifactInputClaim, ...]]:
+    def _prepare() -> tuple[dict, Path, str, Any, int, tuple[ArtifactInputClaim, ...]]:
         pm = get_project_manager()
         current_project = pm.load_project(project_name)
-        reference_video_route = is_reference_video_project(current_project)
         project_path = pm.get_project_path(project_name)
         if script_file:
             script = pm.load_script(project_name, script_file)
@@ -615,10 +524,8 @@ async def execute_tts_task(
                 script_filename=str(script_file),
             )
             episode = script_input.episode
-            items, id_field, kind = _resolve_tts_task_items(
-                script,
-                reference_video_route=reference_video_route,
-            )
+            require_factory_script(project_path, current_project, script, episode)
+            items, id_field, kind = resolve_items(script)
             item = next(
                 (
                     candidate
@@ -643,14 +550,10 @@ async def execute_tts_task(
                 text,
                 admission.preparation,
                 episode,
-                reference_video_route,
                 (script_input.claim,),
             )
 
-        legacy_text = payload.get("text") or payload.get("prompt")
-        if not isinstance(legacy_text, str) or not legacy_text.strip():
-            raise ValueError("tts task 需要 payload.text 或 payload.script_file 之一")
-        return current_project, project_path, legacy_text.strip(), None, None, reference_video_route, ()
+        raise ValueError("tts task 需要工厂派生剧本 payload.script_file")
 
     (
         project,
@@ -658,7 +561,6 @@ async def execute_tts_task(
         text,
         preparation,
         episode,
-        reference_video_route,
         formal_input_claims,
     ) = await asyncio.to_thread(_prepare)
 
@@ -679,7 +581,7 @@ async def execute_tts_task(
     if ctx.audio.backend_model != settings.model_id:
         raise NarrationConfigError("narration_tts_model_invalid")
     generator = ctx.generator
-    basis = build_narration_audio_basis(preparation, settings) if preparation is not None else None
+    basis = build_narration_audio_basis(preparation, settings)
 
     audio_rel = resource_relative_path("audio", resource_id)
     duration_seconds: float | None = None
@@ -704,23 +606,6 @@ async def execute_tts_task(
 
     def _commit_staged(staged_path: Path, output_path: Path) -> int | PaidVersionCommit:
         nonlocal selected_current
-        if script_file is None or preparation is None or episode is None or basis is None:
-            selected_current = False
-            return generator.versions.commit_staged_paid_version(
-                resource_type="audio",
-                resource_id=resource_id,
-                prompt=text,
-                staged_file=staged_path,
-                current_file=output_path,
-                select_current=False,
-                tts_provider_id=settings.provider_id,
-                tts_model_id=settings.model_id,
-                tts_voice=settings.voice,
-                tts_speed=settings.speed,
-                tts_basis_digest=None,
-                tts_actual_duration_seconds=duration_seconds,
-            )
-
         committed_preparation = preparation
         committed_episode = episode
         committed_basis = basis
@@ -799,10 +684,7 @@ async def execute_tts_task(
                 if current_commit_settings is None:
                     tts_selection_errors.append(ValueError("project TTS snapshot is no longer complete"))
                     raise _TtsSelectionResolutionFailed
-                items, id_field, current_kind = _resolve_tts_task_items(
-                    current_script,
-                    reference_video_route=reference_video_route,
-                )
+                items, id_field, current_kind = resolve_items(current_script)
                 item = next(
                     (
                         candidate
@@ -826,9 +708,7 @@ async def execute_tts_task(
                     assert item is not None
                     assets = item.get("generated_assets")
                     if not isinstance(assets, dict):
-                        assets = ProjectManager.create_generated_assets(
-                            str(current_script.get("content_mode") or "narration")
-                        )
+                        assets = ProjectManager.create_generated_assets("drama")
                         item["generated_assets"] = assets
                     assets["narration_audio"] = audio_rel
                     pm.update_scene_status(item)
@@ -867,7 +747,7 @@ async def execute_tts_task(
         tts_model_id=settings.model_id,
         tts_voice=settings.voice,
         tts_speed=settings.speed,
-        tts_basis_digest=basis.digest if basis is not None else None,
+        tts_basis_digest=basis.digest,
     )
 
     if tts_selection_errors:
@@ -897,7 +777,7 @@ async def execute_tts_task(
         "resource_type": "audio",
         "resource_id": resource_id,
         "duration_seconds": duration_seconds,
-        "tts_basis_digest": basis.digest if basis is not None else None,
+        "tts_basis_digest": basis.digest,
         "selected_current": selected_current,
     }
 
@@ -1041,6 +921,7 @@ async def execute_video_task(
             script=_script,
             script_filename=script_file,
         )
+        require_factory_script(_project_path, _project, _script, _script_input.episode)
         _items, _id_field, _, _, _ = get_storyboard_items(_script)
         _resolved = find_storyboard_item(_items, _id_field, resource_id)
         _item = _resolved[0] if _resolved else {}
@@ -1663,19 +1544,6 @@ async def execute_prop_task(
     return await execute_asset_sheet_task("prop", project_name, resource_id, payload, user_id=user_id, task_id=task_id)
 
 
-async def execute_product_task(
-    project_name: str,
-    resource_id: str,
-    payload: dict[str, Any],
-    *,
-    user_id: str = DEFAULT_USER_ID,
-    task_id: str | None = None,
-) -> dict[str, Any]:
-    return await execute_asset_sheet_task(
-        "product", project_name, resource_id, payload, user_id=user_id, task_id=task_id
-    )
-
-
 def _shot_grid_scene_opening(image_prompt: object) -> str:
     """分镜提示词 scene 的导语段，作为跨格基调进「风格与锚点」。
 
@@ -1724,6 +1592,7 @@ async def execute_shot_grid_task(
     try:
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
         script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
+        await asyncio.to_thread(require_factory_script, project_path, project, script, grid.episode)
         # 逐格文本：ShotGrid.prompt 优先（单分镜弹窗填写），否则现解析 scene（整集批量）。
         frames = parse_grid_prompt_cells(grid.prompt) if grid.prompt else []
         if grid.prompt.strip() and len(frames) != grid.rows * grid.cols:
@@ -1827,242 +1696,6 @@ async def execute_shot_grid_task(
         raise
 
 
-async def execute_grid_task(
-    project_name: str,
-    resource_id: str,
-    payload: dict[str, Any],
-    *,
-    user_id: str = DEFAULT_USER_ID,
-    task_id: str | None = None,
-) -> dict[str, Any]:
-    """Execute a grid joint-image generation task.
-
-    resource_id is the grid_id. Steps:
-    1. Load GridGeneration (an already completed record ends the task without generating),
-       set status to generating
-    2. Generate the joint image via MediaGenerator (versioned as resource_type "grids")
-    3. Mark completed; splitting into storyboard cells is a separate, explicit step
-    """
-    from lib.script.grid.grid_manager import GridManager
-    from lib.script.grid.layout import GRID_FALLBACK_RESOLUTION, grid_aspect_ratio_for
-    from lib.script.grid.prompt_builder import build_grid_prompt
-
-    project_path = await asyncio.to_thread(get_project_manager().get_project_path, project_name)
-    grid_manager = GridManager(project_path)
-
-    # a) Load grid
-    grid = grid_manager.get(resource_id)
-    if grid is None:
-        raise ValueError(f"grid not found: {resource_id}")
-    project = await asyncio.to_thread(get_project_manager().load_project, project_name)
-    if grid.status == "completed":
-        # 新建与重生成的记录都从 pending 起步，失败重试从 failed 起步：记录已是 completed，只能是
-        # 沿用在途宫格时恰好赶上上一任务完成而重复入队的任务，不再出图、不再计费。
-        # 结果只在联合图登记在案且可用时报成功，与切分落格同一口径。
-        grid_path = f"grids/{resource_id}.png"
-        resolver = await asyncio.to_thread(active_artifact_currency_resolver, project_path, project)
-        comparison = await asyncio.to_thread(
-            resolver.compare, ArtifactKey.episode_grid(grid.episode, resource_id), artifact_path=grid_path
-        )
-        if not comparison.usable:
-            raise ValueError(f"grid {resource_id} is completed but its composite is not usable")
-        logger.info("宫格已完成，跳过重复入队的生成任务: grid_id=%s task_id=%s", resource_id, task_id)
-        return {"file_path": grid_path, "resource_type": "grids", "resource_id": resource_id}
-    script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
-    script_input = await asyncio.to_thread(
-        resolve_usable_episode_script_input,
-        project_path=project_path,
-        project=project,
-        script=script,
-        script_filename=grid.script_file,
-    )
-    artifact_episode = script_input.episode
-    if artifact_episode != grid.episode:
-        raise ValueError(f"grid episode {grid.episode} does not match bound script episode {artifact_episode}")
-
-    frozen_references: FrozenImageReferences | None = None
-    try:
-        # b) Set status to generating
-        grid.status = "generating"
-        grid.error_message = None
-        grid_manager.save(grid)
-
-        items, id_field, _char_field, _scene_field, _prop_field = get_storyboard_items(script)
-        item_by_id = {str(item.get(id_field)): item for item in items if isinstance(item, dict)}
-        if len(set(grid.scene_ids)) != len(grid.scene_ids):
-            raise ValueError("grid scene identities must be unique")
-        missing_members = [scene_id for scene_id in grid.scene_ids if scene_id not in item_by_id]
-        if missing_members:
-            raise ValueError(f"grid scenes are no longer present in the bound script: {missing_members}")
-
-        # c) Build reference images + metadata
-        from lib.script.grid.models import ReferenceImage
-
-        grid_input = await asyncio.to_thread(
-            grid_references,
-            project,
-            script,
-            member_ids=grid.scene_ids,
-            observation=project_input_observation(project_path),
-        )
-        # 参考图集不成立时在解析供应商通道与付费之前失败，一次报出全部缺口。
-        if isinstance(grid_input, InputRefused):
-            raise input_refusal_error(grid_input)
-        assembled = grid_input.references
-        visual_references = [reference.visual for reference in assembled]
-        currency_resolver = await asyncio.to_thread(active_artifact_currency_resolver, project_path, project)
-        # 参考图先于提示词定型：backend 的上限决定实际发出几张，各格正文的「图N」只能按
-        # 裁剪后的序列渲染，故 image lane 在冻结之前解析一次并沿用到提交。
-        ctx = await resolve_generation_context(
-            project_name,
-            payload,
-            project=project,
-            project_path=project_path,
-            user_id=user_id,
-            image=ImageLaneRequest(generation_type="i2i" if assembled else "t2i"),
-        )
-        frozen_references = await asyncio.to_thread(
-            freeze_image_references,
-            [reference.visual.path for reference in assembled] or None,
-            visual_references,
-        )
-        # 剧本 claim 排在最前，其后是参考图按冻结字节绑定的 claims。
-        formal_claims = list(
-            await asyncio.to_thread(
-                bind_artifact_input_claims_to_frozen_visuals,
-                project_path=project_path,
-                resolver=currency_resolver,
-                claims=[
-                    script_input.claim,
-                    *(reference.claim for reference in assembled if reference.claim is not None),
-                ],
-                source_references=visual_references,
-                frozen_references=frozen_references.visual_references,
-            )
-        )
-        # 依据与宫格记录按完整装配集登记，供应商只收裁剪后的前几张（与分镜路径同口径）；
-        # 裁剪 warning 随任务结果返回。
-        reference_clamp = clamp_reference_images(
-            visual_references, ctx.image.max_reference_images, model=ctx.image.backend_model
-        )
-        sent_references = frozen_references.sent(reference_clamp.kept)
-        reference_images = sent_references.reference_images
-        # 宫格的时效判定重放这份记录，故由完整参考集投影，与依据里的参考图逐项对应。
-        grid.reference_images = []
-        for reference in assembled:
-            visual = reference.visual
-            if visual.logical_type is None or visual.logical_id is None:
-                raise ValueError(f"grid reference has no asset identity: {reference.artifact_path}")
-            grid.reference_images.append(
-                ReferenceImage(path=reference.artifact_path, name=visual.logical_id, ref_type=visual.logical_type)
-            )
-        grid_manager.save(grid)
-
-        # d) Generate grid image
-        members = tuple(
-            GridStoryboardVisual(
-                resource_id=scene_id,
-                image_prompt=item_by_id[scene_id].get("image_prompt"),
-                video_prompt=item_by_id[scene_id].get("video_prompt"),
-            )
-            for scene_id in grid.scene_ids
-        )
-        member_aspect_ratio = grid.video_aspect_ratio or get_aspect_ratio(project, "storyboards")
-        grid_aspect_ratio = grid_aspect_ratio_for(grid.rows, grid.cols, member_aspect_ratio)
-        prompt_text = build_grid_prompt(
-            scenes=[item_by_id[scene_id] for scene_id in grid.scene_ids],
-            id_field=id_field,
-            rows=grid.rows,
-            cols=grid.cols,
-            style=normalize_style_value(project.get("style")),
-            style_description=normalize_style_value(project.get("style_description")),
-            aspect_ratio=member_aspect_ratio,
-            grid_aspect_ratio=grid_aspect_ratio,
-            references=sent_references.visual_references,
-        )
-        grid_basis = build_grid_composite_visual_basis(
-            group_id=grid.id,
-            members=members,
-            rows=grid.rows,
-            columns=grid.cols,
-            style=str(project.get("style") or ""),
-            style_description=project_basis_style_description(project),
-            grid_aspect_ratio=grid_aspect_ratio,
-            references=frozen_references.visual_references,
-        )
-        generator = ctx.generator
-        aspect_ratio = grid_aspect_ratio
-
-        # 回填 grid metadata：route 层创建/重建时无法预知 needs_i2i，由此处补齐。
-        # provider 记 registry 身份（供后续重解析定位供应商），model 记 backend 实际身份
-        # （自定义供应商目标 model 被禁用回退时，实际调用的 model 与解析出的 model_id 不同）。
-        grid.provider = ctx.image.provider_model.provider_id
-        grid.model = ctx.image.backend_model
-        grid.prompt = prompt_text
-        grid_manager.save(grid)
-        # 保底档与档位门控（``large_grid_allowed``）取同一常量，避免门控按 2K 判定、
-        # 渲染却按别的档位下发
-        image_size = ctx.image.resolution or GRID_FALLBACK_RESOLUTION
-        formal_outcomes: list[FormalImageCommitOutcome] = []
-
-        await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, formal_claims)
-
-        async def _before_submit() -> None:
-            await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, formal_claims)
-
-        await generator.generate_image_async(
-            prompt=prompt_text,
-            resource_type="grids",
-            resource_id=resource_id,
-            reference_images=reference_images,
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            before_submit=_before_submit,
-            formal_output=True,
-            task_id=task_id,
-            commit_formal_output=grid_formal_image_callback(
-                project_path=project_path,
-                grid_manager=grid_manager,
-                grid=grid,
-                resource_id=resource_id,
-                prompt=str(prompt_text),
-                versions=generator.versions,
-                task_id=task_id,
-                basis=grid_basis,
-                outcome_box=formal_outcomes,
-            ),
-        )
-
-        # formal_output=True 时 generate_image_async 恒经活化回调提交，回调恰好记录一条结果。
-        outcome = formal_outcomes[0]
-
-    except Exception:
-        # The formal-write transaction restores the durable grid record on failure.
-        # Reload it before recording failure so the in-memory ``grid`` never carries
-        # completion fields that did not become durable.
-        grid = grid_manager.get(resource_id) or grid
-        grid.status = "failed"
-        import traceback
-
-        grid.error_message = traceback.format_exc()
-        grid_manager.save(grid)
-        raise
-    finally:
-        if frozen_references is not None:
-            await run_noninterruptible_sync(frozen_references.cleanup)
-
-    grid_result: dict[str, Any] = {
-        "version": outcome.version,
-        "file_path": f"grids/{resource_id}.png",
-        "created_at": outcome.created_at,
-        "resource_type": "grids",
-        "resource_id": resource_id,
-    }
-    if (clamp_warning := reference_clamp.warning()) is not None:
-        grid_result["warnings"] = [clamp_warning]
-    return grid_result
-
-
 _TASK_EXECUTORS = {
     "storyboard": execute_storyboard_task,
     "video": execute_video_task,
@@ -2071,10 +1704,7 @@ _TASK_EXECUTORS = {
     "character": execute_character_task,
     "scene": execute_scene_task,
     "prop": execute_prop_task,
-    "product": execute_product_task,
-    "grid": execute_grid_task,
     "shot_grid": execute_shot_grid_task,
-    "reference_video": execute_reference_video_task,
     "image_edit": execute_image_edit_task,
     DERIVATIVE_TASK_TYPE: execute_character_derivative_task,
 }
@@ -2109,7 +1739,7 @@ async def execute_generation_task(task: dict[str, Any], *, claimed_provider_id: 
         # 能力类异常（Image/VideoCapabilityError、ReferencePayloadFloorError）原样上抛：
         # worker 的 encode_task_failure_message 按 code + params 落库，渲染留到读侧
         # Translator，同一失败任务按 Accept-Language 显示 zh/en/vi。
-        if task_type in ("video", "reference_video"):
+        if task_type == "video":
             result = await executor(
                 project_name,
                 resource_id,

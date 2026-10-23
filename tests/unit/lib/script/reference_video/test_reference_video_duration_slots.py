@@ -2,7 +2,7 @@
 
 import pytest
 
-from lib.script.reference_video.duration_slots import project_request_duration, resolve_duration_slot
+from lib.generation.duration_slots import project_request_duration, resolve_duration_slot
 
 
 def test_total_is_slot_member_requests_it_unchanged():

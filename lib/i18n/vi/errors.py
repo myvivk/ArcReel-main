@@ -295,6 +295,7 @@ MESSAGES = {
     "ad_script_task_active": "Tập này đang có tác vụ tạo kịch bản chưa hoàn tất. Hãy đợi tác vụ xong rồi gửi lại",
     "ad_script_refused": "Không thể gửi yêu cầu tạo kịch bản bằng AI: {reason}",
     "short_drama_import_refused": "Nhập kịch bản short-drama-factory thất bại: {reason}",
+    "short_drama_factory_only": "Hãy tạo hoặc nhập đầy đủ sản phẩm của xưởng phim ngắn trước khi sản xuất",
     "short_drama_source_missing": "Tập này chưa có nguồn Markdown đã lưu",
     "short_drama_source_conflict": "Nguồn Markdown đã được cập nhật ở nơi khác; hãy làm mới và thử lại",
     "short_drama_script_conflict": "Phân cảnh đã được cập nhật ở nơi khác; hãy làm mới và thử lại",

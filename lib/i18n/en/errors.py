@@ -295,6 +295,7 @@ MESSAGES = {
     "ad_script_task_active": "A script generation task for this episode is already running. Wait for it to finish before submitting again",
     "ad_script_refused": "AI script generation could not be submitted: {reason}",
     "short_drama_import_refused": "Short-drama-factory script import failed: {reason}",
+    "short_drama_factory_only": "Generate or import the complete short-drama factory artifacts before production",
     "short_drama_source_missing": "This episode has no saved Markdown source",
     "short_drama_source_conflict": "The Markdown source was updated elsewhere; refresh and try again",
     "short_drama_script_conflict": "The storyboards were updated elsewhere; refresh and try again",

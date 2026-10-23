@@ -1,13 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { clearAgentOverlay } from "../support/region-helpers.ts";
 import { defineRegionScenarios } from "../support/scenarios.ts";
-import { RECORDED_ACCESS_TOKEN, RECORDED_DIR, type RecordedResponse } from "../support/recorded.ts";
+import { RECORDED_ACCESS_TOKEN } from "../support/recorded.ts";
 import { expect, test, type ApiOverrides } from "../support/test.ts";
 
-// 首次使用引导：driver.js 气泡、大厅「示例项目」区块、只读演示工作台（Agent 面板、顶栏徽标），
-// 以及真实项目故事设定区底部的一次性就地提示。引导只在服务端报告未看过时自动启动。
+// 首次使用引导：driver.js 气泡、大厅示例与只读演示工作台。服务端报告未看过时自动启动。
 
 const LOBBY_PATH = "/app/projects";
 const DEMO_PATH = "/app/projects/onboarding_demo";
@@ -64,28 +60,6 @@ async function expectPopoverBesideAnchor(page: Page) {
 async function advance(page: Page, steps: number) {
   for (let i = 0; i < steps; i++) await next(page);
 }
-
-// 就地提示：项目先没有故事设定（有原文），从原文生成后变为有内容。
-const PROJECT = "GET /api/v1/projects/demo";
-const recordedProject = (
-  JSON.parse(readFileSync(join(RECORDED_DIR, "project-demo.json"), "utf8")) as RecordedResponse
-).body as { project: Record<string, unknown> };
-const OVERVIEW = {
-  synopsis: "灯塔守夜人在雾季收到一封三十年前寄出的信，循着邮戳找回失踪的邮差。",
-  genre: "悬疑",
-  theme: "迟到的消息与没说出口的话",
-  world_setting: "常年起雾的港口小城，灯塔、邮局与渡轮码头。",
-};
-const SOURCE_ONLY: ApiOverrides = {
-  "GET /api/v1/projects/demo/events/stream": { status: 404, body: { detail: "页面级套件不回放事件流" } },
-  [PROJECT]: {
-    status: 200,
-    body: {
-      ...recordedProject,
-      project: { ...recordedProject.project, overview: undefined, whole_source_files: [{ source_file: "source/novel.txt" }] },
-    },
-  },
-};
 
 defineRegionScenarios("新手引导", [
   {
@@ -174,27 +148,6 @@ defineRegionScenarios("新手引导", [
       await expect(page.locator("[data-slot=tooltip-content]")).toBeInViewport({ ratio: 1 });
     },
     screenshot: { name: "onboarding-demo-badge", target: (page) => page.getByRole("banner") },
-  },
-  {
-    name: "故事设定从原文生成后，底部出现一次性提示",
-    path: "/app/projects/demo",
-    api: SOURCE_ONLY,
-    ready: async (page) => {
-      await page.getByRole("button", { name: "从原文生成" }).waitFor();
-    },
-    act: async (page) => {
-      // 生成成功后重新拉取项目，这时故事设定已有内容
-      await page.route("**/api/v1/projects/demo/generate-overview", (route) =>
-        route.fulfill({ json: { success: true, overview: OVERVIEW } }),
-      );
-      await page.route("**/api/v1/projects/demo", (route) => route.fulfill({ json: { ...recordedProject, project: { ...recordedProject.project, overview: OVERVIEW } } }));
-      await clearAgentOverlay(page);
-      await page.getByRole("button", { name: "从原文生成" }).click();
-      const tip = page.getByRole("status").filter({ hasText: "故事设定已提炼完成" });
-      await tip.scrollIntoViewIfNeeded();
-      await expect(tip).toBeInViewport({ ratio: 1 });
-    },
-    screenshot: { name: "overview-handoff-tip", target: (page) => page.getByRole("status").filter({ hasText: "故事设定已提炼完成" }) },
   },
 ]);
 

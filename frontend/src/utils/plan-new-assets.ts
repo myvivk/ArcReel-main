@@ -50,16 +50,3 @@ export function planReferenceCandidates(
   }
   return result;
 }
-
-/** 台词说话人的候选：已登记角色加本集新增角色（不含「不登记」的项）。说话人仍可以写其他名字。 */
-export function speakerCandidates(
-  characters: Record<string, Character>,
-  items: readonly PlanNewAsset[] = [],
-): string[] {
-  const names = new Set(Object.keys(characters));
-  for (const item of items) {
-    const name = item.name.trim();
-    if (item.type === "character" && item.decision !== "skip" && name) names.add(name);
-  }
-  return [...names];
-}

@@ -18,7 +18,7 @@ import { errMsg } from "@/utils/async";
 import { costEntries, formatCurrencyAmount } from "@/utils/cost-format";
 import type { AssetSheetBatchPreview, AssetSheetBatchScope, AssetSheetRef, AssetSheetType } from "@/types";
 
-const TYPE_ORDER: AssetSheetType[] = ["character", "scene", "prop", "product"];
+const TYPE_ORDER: AssetSheetType[] = ["character", "scene", "prop"];
 
 function refLabel(ref: AssetSheetRef): string {
   return ref.derivative ? `${ref.name} / ${ref.derivative}` : ref.name;

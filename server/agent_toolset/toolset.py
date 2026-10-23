@@ -5,10 +5,8 @@ from __future__ import annotations
 from server.agent_toolset.content_read import CONTENT_READ_TOOLS
 from server.agent_toolset.declaration import AgentToolDeclaration, Blocked, ToolDeclaration
 from server.agent_toolset.edit_timelines import EDIT_TIMELINE_TOOLS
-from server.agent_toolset.episode_planning import EPISODE_PLANNING_TOOLS
 from server.agent_toolset.final_cuts import FINAL_CUT_TOOLS
 from server.agent_toolset.generation_batches import GENERATION_BATCH_TOOLS
-from server.agent_toolset.grid_storyboards import GRID_STORYBOARD_TOOLS
 from server.agent_toolset.jianying_drafts import JIANYING_DRAFT_TOOLS
 from server.agent_toolset.media_generation import MEDIA_GENERATION_TOOLS
 from server.agent_toolset.orientation import ORIENTATION_TOOLS
@@ -18,7 +16,6 @@ from server.agent_toolset.script_authoring import SCRIPT_AUTHORING_TOOLS
 from server.agent_toolset.script_editing import SCRIPT_EDITING_TOOLS
 from server.agent_toolset.video_review import VIDEO_REVIEW_TOOLS
 from server.agent_toolset.video_versions import VIDEO_VERSION_TOOLS
-from server.agent_toolset.workflow_completion import WORKFLOW_COMPLETION_TOOLS
 
 AGENT_TOOLSET: tuple[AgentToolDeclaration, ...] = (
     *PROJECT_ENTRY_TOOLS,
@@ -26,7 +23,6 @@ AGENT_TOOLSET: tuple[AgentToolDeclaration, ...] = (
     *GENERATION_BATCH_TOOLS,
     *CONTENT_READ_TOOLS,
     *MEDIA_GENERATION_TOOLS,
-    *GRID_STORYBOARD_TOOLS,
     *VIDEO_VERSION_TOOLS,
     *VIDEO_REVIEW_TOOLS,
     *EDIT_TIMELINE_TOOLS,
@@ -35,8 +31,6 @@ AGENT_TOOLSET: tuple[AgentToolDeclaration, ...] = (
     *SCRIPT_AUTHORING_TOOLS,
     *REPAIR_CHANNEL_TOOLS,
     *SCRIPT_EDITING_TOOLS,
-    *EPISODE_PLANNING_TOOLS,
-    *WORKFLOW_COMPLETION_TOOLS,
 )
 
 # 工具 id 是短名（SDK 注册时另加 ``mcp__arcreel__`` 前缀）。前端显示名在 ``frontend/src/i18n/{zh,en,vi}/dashboard.ts``

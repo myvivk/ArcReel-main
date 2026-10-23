@@ -2,7 +2,7 @@ import { taskResourceKind } from "@/stores/tasks-store";
 import type { TaskItem } from "@/types";
 
 /** 集页上会留下失败反馈的文本任务：AI 规划脚本、编写提示词与 AI 修复。 */
-export type EpisodeTextTaskKind = "text_script_plan" | "text_episode_script" | "text_draft_repair";
+export type EpisodeTextTaskKind = "text_episode_script";
 
 export interface EpisodeTextTaskFailure {
   kind: EpisodeTextTaskKind;
@@ -13,8 +13,7 @@ export interface EpisodeTextTaskFailure {
 function episodeTextTaskKind(task: TaskItem, episode: number): EpisodeTextTaskKind | null {
   const kind = taskResourceKind(task);
   const slot = `episode-${episode}`;
-  if (kind === "text_script_plan" || kind === "text_episode_script") return task.resource_id === slot ? kind : null;
-  if (kind === "text_draft_repair") return task.resource_id.startsWith(`${slot}-`) ? kind : null;
+  if (kind === "text_episode_script") return task.resource_id === slot ? kind : null;
   return null;
 }
 

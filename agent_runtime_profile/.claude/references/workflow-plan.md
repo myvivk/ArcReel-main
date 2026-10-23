@@ -1,198 +1,73 @@
-# 工作流计划契约
+# 工作流计划与动作
 
-`mcp__arcreel__get_workflow_plan` 是编排的**唯一权威入口**。它返回一份只读计划：内容现状、
-各 AI 操作此刻能否执行（准入）、有序步骤、活动任务、视频整批准入判定，以及建议的下一步。
+`get_workflow_plan` 返回 `schema_version: 2`，包含 `status`、`steps`、`blockers`、`problems`、
+`next_action` 和 `next_alternatives`。REST 与 MCP 共用同一序列化。
+步骤适用性、顺序、进度和操作准入以服务端为准，不由 Agent 重算。
 
-**不要在 profile 里另建一张按创作类型或生成模式展开的步骤表。** 六种模式组合（narration /
-drama / ad × storyboard / reference_video）之间哪些步骤适用、顺序如何、当前停在哪一步，全部由
-计划的 `steps[]` 表达；Agent 只负责执行计划交回的受控动作。
+## 四条状态轴
 
-## 查询
+- 步骤：`completed / ready / active / blocked / pending / skipped`。
+- 产物：`current / stale / missing / blocked`；stale 仍可预览、剪辑、导出，不自动重生。
+- 任务：队列、运行、成功、失败或中断；任务成功不证明 current。
+- 供应商提交：`provider_checkpoint.submitted` 独立表示供应商已收单、可能已经计费。
 
-```text
-mcp__arcreel__get_workflow_plan({
-  "episode_id": X,                               // 可选：用户指定某一集时传该集的集 ID
-  "confirmed_request_durations": {"E1U1": 8}    // 可选：用户已确认的逐视频单元申请档位（键是 unit ID）
-})
-```
-
-两个字段都只属于**这一次查询**，服务端不会持久化。因此每次重新查询都要把仍然成立的选择原样
-带上；漏带等于把选择撤回。旁白交付方式是项目配置，计划直接读项目，查询里没有这个字段。
-
-调用时机：进入工作流、用户说「继续 / 下一步 / 查看进度」、以及**每次工具或子智能体完成之后**。
-`Read` / `Glob` 只用于取执行已选定动作所需的内容，不用于另建一套状态机。不得根据空资产 bucket、
-文件名、旧文件存在性或对话记忆覆盖服务端结论。
-
-## 点名与继续
-
-准入属于 AI 操作，不属于流水线位置：一个操作能否执行只看它自己的输入是否成立，与建议的下一步
-是不是它无关。据此分两种请求：
-
-- **用户点名一个操作**（如「生成第 2 集的脚本规划」「编写提示词」）：查计划后看
-  `plan.status.operations[操作]`。`state == "admitted"` 就执行，即使 `next_action` 指向别处；
-  `refused` 时把 `reason` 转述给用户（缺什么、怎样补上），不执行；`not_applicable` 时说明本项目
-  没有这个操作。`operations` 只陈述列出的操作；生成类操作的准入维持各入口自身判定
-  （ADR 0073），被拒时转述入口返回的理由。
-  工具入口用同一份判定：被拒时返回 `operation_not_admitted`，`params.reason` 与计划里的理由码相同。
-- **用户说「继续 / 下一步」**：执行 `next_action`。`next_alternatives` 非空表示此处是**分岔**
-  （如没有集原文时「手写脚本」与「补集原文后 AI 规划」并列）：把 `next_action` 与各备选讲给用户，
-  由用户选定再执行，不替用户挑。
-
-## 读计划
-
-| 字段 | 含义 |
-|---|---|
-| `steps[]` | 有序步骤。`id` 是稳定步骤名，`state` ∈ `completed` / `ready` / `active` / `blocked` / `pending` / `skipped`，`required=false` 表示该步骤在本项目模式组合下不适用 |
-| `steps[].action` | 该步骤自己的受控动作（可能为 null） |
-| `steps[].artifacts` | 该步骤的产物时效快照：`current_ids` / `stale_ids` / `missing_ids` 三个 ID 桶，外加集合级 `state`（`current` / `stale` / `partial` / `missing` / `blocked` / `not_applicable`）。`blocked` 是集合级状态，**没有**逐 ID 的 blocked 桶 |
-| `steps[].tasks[]` | 该步骤排队中与运行中的任务，每条含 `unit_id`、`task_id`、`status` 与 `provider_checkpoint`（只有 `submitted`）。进行中的任务是进度，不是问题 |
-| `steps[].admission` | 视频步骤的整批准入判定（见下） |
-| `steps[].problems[]` | 该步骤的逐条问题，带稳定问题码 `code`、闭集 `action`、所属单元 `unit_id` 与文案参数 `params`；每条只在所属步骤出现一次。视频整批准入的逐单元问题只在 `steps[].admission.units[]` 里 |
-| `problems[]` | 不属于任何步骤的项目级问题（目前只有数据升级失败），不重复步骤里的问题 |
-| `blockers[]` | 项目整体不可用（数据升级失败、project.json 或产物清单读不出、创作类型或生成模式非法），含 `code` / `path` / `reason` |
-| `status.issues[]` | 内容本身的数据问题（剧本读不出、字段非法、资产定义损坏等），同样含 `code` / `path` / `reason`；只阻止依赖该内容的操作 |
-| `status.content` | 内容现状：集数、整本源文与集原文在不在、目标集的草稿、正式脚本（`present` / `absent` / `invalid`）与条目数、待编写条目、需重新规划的视频单元、被引用却没有资产图的资产；`episode_plan_stale` 为真表示该集集规划 stale、脚本规划待重建 |
-| `status.operations` | 列出的 AI 操作的结构准入，键是动作名，值为 `state`（`admitted` / `refused` / `not_applicable`）与稳定理由码 `reason`（见「点名与继续」） |
-| `next_action` | 建议的下一步。用户说「继续」时按它路由，不要自己从 `steps[]` 里挑一个更靠前的动作抢跑 |
-| `next_alternatives[]` | 分岔处与 `next_action` 并列的备选；非空时由用户选 |
-
-`blockers` 非空时：向用户展示 blockers，**停止一切变更**。`next_action.type == "none"` 且 `steps` 中
-`edit` 为 `completed` 表示工作流已走完：查询范围内的每一集都至少有一条剪辑时间线。其余
-`next_action.type == "none"` 而 `blockers` 为空的情况，把 `status.issues` 与 `status.content` 讲给用户
-（如该集脚本读不出、集规划 stale 待重建、剪辑时间线读不出），用户点名的、准入成立的操作照常可以执行。
-
-## 数据升级失败：修复 → 重试
-
-项目的数据升级（含产物补录）没跑完时，该项目整体阻断。此时计划只交回一件事：
-
-- `blockers[]` 里只有一条 `code == "project_migration_failed"`，`reason` 是升级失败的原文；
-- `problems[]` 里只有一条同码问题，`action == "retry_project_migration"`，
-  `params.details[]` 逐条给出 `episode`（集 ID）/ `file` / `violation` —— 哪一集、哪个文件、违了什么约；
-- `next_action.type == "retry_project_migration"`，`args.details` 同上。
-
-所有生成工具与正式写入工具在这个状态下一律返回同一条问题、不做任何事，也不计费。项目本身
-仍可读：`Read` 脚本、看画布上已有的图和视频照常。
-
-处理顺序：
-
-1. 把 `details[]` 逐条讲给用户：哪一集（按项目详情 `episodes[]` 换成标题与播出位置）的哪个文件、违了什么约，
-   不要压成一句「升级失败」。
-2. 阻断期仍可用的写入工具只有 `mcp__arcreel__patch_project`、`mcp__arcreel__patch_episode_meta`、
-   `mcp__arcreel__rename_asset`、`mcp__arcreel__merge_asset`；`mcp__arcreel__patch_episode_script` 与所有生成
-   工具一律被拒。按明细用这几个工具能修的先修，够不着的（如剧本正文类违约）按第 4 步如实告知用户。
-   **没有裸文件写入这条路**，也不要用 `Edit` 直接改正式脚本。
-3. 调用 `mcp__arcreel__retry_project_migration` 重跑升级链。它幂等，重复调用不会造成损失。
-4. 成功时工具返回新的制作计划，项目解除阻断，照常按 `next_action` 继续；失败时返回新的结构化
-   明细，回到第 1 步。修不动时如实告诉用户卡在哪里，不要反复空跑重试。
-
-用户在 Web 项目页点「重试迁移」时，请求文本会被填进对话输入框由用户自己发送——收到它就走上面
-这条路径。
+`status.operations` 表示用户点名操作的结构准入：`admitted / refused / not_applicable`，
+拒绝时 `reason` 为稳定码。`blockers` 表示项目整体不可用，`issues` 只陈述内容问题。
+`status.content` 包含工厂正文、正式视觉状态、待编写条目和资产缺口，不提供旧路线规划门禁。
+`status.artifacts` 枚举各类产物状态。`steps[].tasks` 显示在途任务，不把它们计作 current 产物。
 
 ## 受控动作表
 
-按 `next_action.type` 路由，把 `target.episode`、`next_action.args` 与 `requested_ids` 带入对应动作。
-计划模型总会序列化 `requested_ids`：非空数组表示显式点名；`[]` 表示计划未点名。映射到工具的可选
-ID 参数时，前者传入，后者必须**省略该参数**，不得把 `[]` 原样传给工具（工具入参的显式空数组非法）。
-`plan.status.target` 提供 `episode`（目标集的集 ID）、`script`、`script_filename`、`source`。工具的
-`episode_id` 参数一律取 `next_action.args.episode_id` 或 `target.episode`。两个剧本字段不可互换：
-`script` 是相对项目根的剧本路径（`scripts/episode_{集 ID}.json`），用 Read 读剧本内容时用它；
-`script_filename` 是剥掉 `scripts/` 前缀的裸文件名，所有 `mcp__arcreel__*` 工具的 `script` 参数用它。
+`next_action.type` 只能取下表值。使用回执里的 `args`、`requested_ids` 和当前目标集，
+不要按旧项目模式改选流程。
 
-| `next_action.type` | 执行入口 |
-|---|---|
-| `collect_project_input` | 引导用户在 Web 端补齐项目输入（上传整本源文；ad 填创作灵感或登记商品） |
-| `create_episode` | 引导用户在 Web 端新建一集 |
-| `draft_selling_points` | 用户要求时起草卖点，经 `mcp__arcreel__patch_project` 写回（ad） |
-| `reset_episode_planning` | `mcp__arcreel__reset_episode_planning`，按 `next_action.args` 原样传参（无 `episode_id` 即全量重置） |
-| `plan_episodes` | `mcp__arcreel__plan_episodes` |
-| `resolve_draft` | 目标集上有草稿（`args.draft_kind`）：`args.needs_repair` 为真时是写入失败留下的待修复草稿，向用户说明并按其对应操作重跑；为假时是 Agent 的可编辑草稿，按对应 skill 接着完成 |
-| `prepare_script_plan` | dispatch `next_action.args.preprocessor` 指名的子智能体 |
-| `start_blank_script` | 引导用户在 Web 集页点「从空白开始」，在时间线上逐条手写这一集的正式脚本 |
-| `provide_episode_source` | 引导用户为这一集补上集原文（`source/episode_{集 ID}.txt`），之后即可 AI 规划脚本 |
-| `confirm_script_plan` | `mcp__arcreel__confirm_script_review` |
-| `generate_script` | dispatch `create-episode-script` 子智能体（ad 直接调 `mcp__arcreel__generate_episode_script`） |
-| `add_script_items` | 正式脚本为空：引导用户在 Web 端添加条目，或经 `mcp__arcreel__patch_episode_script` 插入 |
-| `author_prompts` | 正式剧本里有待编写条目，`requested_ids` 列出这些条目：调 `mcp__arcreel__generate_episode_script`，不传 `entry_ids`，即编写全部待编写条目（见 generate-script skill） |
-| `prepare_episode_assets` | 工厂源稿已保存：引导打开本集「资产」页，点击「生成本集资产」，按本集源稿完成抽取、登记、描述与资产图生成；不先转制或规划原生脚本 |
-| `plan_short_drama_storyboards` | 引导打开本集「分镜」页，点击「AI 分镜」；该操作只读工厂 Markdown 与已登记资产，生成视觉制作状态；不调用原生脚本规划 |
-| `generate_asset_sheets` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_assets({"episode_id": <args.episode_id>})` 一次生成本集引用、仍缺资产图的资产。因缺少 description 记为 `blocked` 的资产（`fix_input`）：角色描述按 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md` 的标准，依据原文写好后经 `mcp__arcreel__patch_project` 补上并重跑同一调用；原文没有依据时向用户确认描述，或请用户在 Web 端上传资产图。衍生报 `generation_dependency_failed` / `derivative_owner_sheet_missing` 时先解决本体资产图 |
-| `generate_storyboards` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_storyboards` 并传 `segment_ids` |
-| `generate_grid` | dispatch `generate-assets` 子智能体，调用 `mcp__arcreel__generate_grid`，不传 `scene_ids`（缺失即生成）；联合图就绪后经用户审阅同意，再调 `mcp__arcreel__split_grids` |
-| `generate_shot_grids` | 本集分镜页的「生成参考素材」；逐镜保存规格与逐格提示词，生成联合图、审阅并确认后绑定完整有序 K 帧 |
-| `author_video_prompts` | 只消费已确认参考素材：调用 `mcp__arcreel__generate_episode_script`，传 `fields=["video_prompt"]`；不得同次写 `image_prompt`，未确认宫格的分镜不进入批次 |
-| `repair_video_units` | `mcp__arcreel__get_episode_script` + `mcp__arcreel__patch_episode_script` 一次改完，再点名重做 |
-| `patch_episode_script` | 计划注入：`next_action.args` 已给 `base_revision` 与逐条 `problems`，一次批量改完 |
-| `confirm_request_duration` | 计划注入：见「整批准入判定」 |
-| `generate_videos` | 视频生成工具（见 `generate-video` skill） |
-| `wait_for_task` | 计划注入：有活动任务，不入队新任务；等待并复查计划 |
-| `create_edit_timeline` | 本集视频已齐、还没有剪辑时间线：`mcp__arcreel__create_timeline`（`episode` 取 `next_action.args.episode_id`，`from: "script"`）按脚本机械新建一条，至少有一条剪辑时间线，「剪辑」一步即完成；之后按 `edit-video` skill 剪辑 |
-| `retry_project_migration` | 项目数据升级未完成：按明细修复后 `mcp__arcreel__retry_project_migration`（见「数据升级失败」） |
-| `none` | `blockers` 非空时展示并停止变更；`steps` 中 `edit` 为 `completed` 时工作流已走完；其余情况讲 `status.issues` 与 `status.content` |
+| 动作 | 执行方式 |
+| --- | --- |
+| `none` | 无变更；有 blocker 就展示原因。检查 issues 和完成状态。 |
+| `collect_project_input` | 使用 short-drama-factory 完成内容质量闭环并入库七类工件，或 Web 工件目录导入。 |
+| `create_episode` | Web 分集页新建工厂集账本，再交付工件。 |
+| `prepare_episode_assets` | Web 本集资产步骤按工件准备角色、场景、道具和描述。 |
+| `generate_asset_sheets` | generate_assets 按目标集补齐缺图；描述或引用缺口按逐 ID 问题处理。 |
+| `plan_short_drama_storyboards` | Web AI 分镜从规范工厂源稿生成视觉派生状态，支持全量和指定范围。 |
+| `author_prompts` | generate_episode_script，独立 fields=["image_prompt"]。 |
+| `generate_storyboards` | 用户点名的工厂单图生成，经 generate_storyboards；不能替代 K 帧确认。 |
+| `generate_shot_grids` | Web 分镜详情按镜生成并确认参考素材 K 帧，保存完整联系表和逐格关系。 |
+| `author_video_prompts` | 已确认 K 帧后 generate_episode_script，独立 fields=["video_prompt"]。 |
+| `generate_videos` | generate_videos；整批准入 admitted 后入队。 |
+| `create_edit_timeline` | 按 edit-video 新建本集剪辑时间线，按用户要求剪辑、预览和导出。 |
+| `patch_episode_script` | 按问题字段修改视觉状态；get_episode_script 取 revision 后一次 patch_episode_script。 |
+| `retry_project_migration` | 展示迁移失败细节，修复后 retry_project_migration；迁移失败前不修改产物。 |
+| `retry` | 按回执重试失败目标；先排除在途或已提交任务，避免重复付费。 |
+| `fix_input` | 修复回执指出的输入，再刷新计划。 |
+| `generate_dependency` | 完成缺失依赖，再刷新计划。 |
+| `wait_for_task` | 查询已有 batch 和任务，等待终态，不再入队。 |
+| `replan_unit` | 在 AI 分镜步骤修复目标视觉分组；内容修改回到工厂返修。 |
+| `confirm_request_duration` | 展示逐档位时长与费用，确认后把 confirmed_request_durations 带回原批。 |
+| `configure_provider` | Web 设置修复模型与供应商配置，重新查询能力与准入。 |
+| `repair_artifact_state` | 按回执修复产物登记或选择；不自动重生已付费媒体。 |
+| `retry_artifact_download` | 恢复已完成供应商请求的下载，不重新提交生成。 |
 
-`next_action.args.preprocessor` 是权威的脚本规划子智能体名，**不要自己按创作类型×
-`generation_mode` 反推**：服务端在同一张规则表上得出它，profile 侧再推一遍只会造出第二个真相源。
+## 请求选择与准入
 
-### 整批被拒时交回的逐问题动作
+默认补缺省略 ID 或使用工具的 episode scope。明确点名重做时才使用 selected scope 和 force。
+计划空 `requested_ids` 不能传成工具显式空数组。
 
-视频整批准入判定被拒时，计划把**第一个问题的 `action`** 直接当成 `next_action.type` 交回，
-`next_action.args.admission` 带完整准入结论。因此上表之外还可能收到下面这些动作——它们与
-`problems[].action` 同一个闭集，逐视频单元的处理方式一律读各自的 `problems[].action`，不要按
-`code` 自己猜：
+视频 `admission.decision` 为 `admitted / confirmation_required / blocked`。
+后两者一个任务也没建；逐 ID 说明缺口，被同批缺口扣下的目标带
+`generation_batch_admission_withheld`。修复后原批重试，不拆小批绕过。
+`admission.confirmation.tiers` 给出申请时长档位、目标与费用；确认值只作用于本次请求，不写项目。
 
-| `next_action.type` | 执行入口 |
-|---|---|
-| `fix_input` | 剧本/声明本身不合法：按 `admission.units[].problems[].detail` 定位，经 `mcp__arcreel__patch_episode_script` 改对再重查 |
-| `replan_unit` | 视频单元需要重新规划：走 `repair_video_units` 那一行的改法 |
-| `generate_dependency` | 缺上游产物（资产图等参考图）：先补齐依赖再重查 |
-| `configure_provider` | 当前供应商或档位不支持这次请求：告知用户要改哪项配置，**重试同一请求只会被同样拒绝** |
-| `repair_artifact_state` | 产物状态读不出来：报为独立缺口，绝不当作缺失去重生 |
-| `retry` | 可安全重发同一请求 |
-| `retry_artifact_download` | 产物已在供应商侧生成、只是没取回来：调 `POST /tasks/{id}/retry-download` 接续取件，**不要重发生成请求**——那会再建一个付费任务 |
+## 来源与声音
 
-`retry` 与 `configure_provider` 在不入队新批次之前，先把动作原因说给用户；
-凡是会产生新费用的动作，取得用户明确同意再执行。
+正式生成要求工厂源稿和视觉来源修订一致，源稿变更后先重新 AI 分镜。
+提示词先 image_prompt，再 K 帧确认，最后单独 video_prompt，不同字段不得同批写入。
 
-## 旁白交付
+角色声音、参考音频和旁白 TTS 保留。项目选 TTS 时按缺失补齐 narrator 单元音频，
+已经 stale 的音频仍复用，只有用户要求时重合成。TTS 不阻塞视频生成；后期配音项目无需 TTS。
+剪辑声音和字幕时序读取服务端 presentation，Agent 不自行估算。
 
-旁白交付方式（`post_production` 后期配音 / `use_tts` TTS 配音）是项目配置，在项目设置里修改；工作流
-里没有交付选择这一步。视频请求与它无关：两种方式下视频的申请档位、准入与费用完全相同。
+## 历史与恢复
 
-旁白配音不是视频生成的前置条件。`plan.status.artifacts.audio` 只在 TTS 配音项目里报告哪些旁白
-配音缺失或 stale；后期配音项目为 `not_applicable`。TTS 项目在首轮自动剪辑时按缺失补齐配音，
-项目选择 TTS 即已授权，无需另行确认；用户也可随时要求用 `generate-narration-audio` 生成。
-stale 配音仅在用户要求重合成时重新生成。
-
-## 整批准入判定
-
-视频整批请求是**全有或全无**：`steps[].admission.decision` 为 `admitted` 时整批入队；为
-`blocked` 或 `confirmation_required` 时**一个任务都不入队**。Web 与 Agent 走同一套准入和同一套
-请求选择语义（视频点名须另传 `force: true` 才强制重做 / 不传即只补缺 / 空数组非法），不存在 Agent 专属的宽松通道。
-
-`decision != "admitted"` 时：
-
-- 逐视频单元报告 `admission.units[]`：`unit_id`、是否 `admitted`、`problems[].code`、
-  `problems[].action`（下一步动作）。通过的视频单元会带 `generation_batch_admission_withheld`，
-  其 `blocked_unit_ids` 指出是被谁挡住的——把这层因果如实说给用户，不要报成它们自己有问题。
-- `decision == "confirmation_required"` 时 `admission.confirmation.tiers[]` 给出按申请档位分组的
-  视频单元与费用。取得用户确认后，把确认过的档位填进 `confirmed_request_durations` 重查计划；`generate_videos` 重发时带上同一份 `confirmed_request_durations`。
-- **不要把整批拆成小批去「先跑通过的那半批」。** 那既绕开了全有或全无，也会在补齐后重复提交
-  已经付过费的视频单元。修掉被拒的视频单元，整批重来。
-
-## 四条状态轴分开报告
-
-计划里这四轴的字段分别是 `steps[].state`（步骤进度）、`steps[].tasks[].status`（队列任务）、
-`steps[].tasks[].provider_checkpoint`（供应商是否已提交）与 `steps[].artifacts`
-（`current_ids` / `stale_ids` / `missing_ids` 与集合级 `state`）。四轴互相独立、分开陈述、
-不要互相翻译——读法与逐轴含义见
-[generation-results.md](generation-results.md)。
-
-## stale 与历史
-
-- **stale 产物照常可预览、可导出、可参与成片**，服务端会复用它，不会自动重生。
-- 是否重做由**用户明确决定**。Agent 不得自动删除、覆盖或重生任何已付费产物，也不得因为
-  「看起来旧」就点名重做——视频必须同时点名并传 `force: true` 才强制重做且必然产生费用。
-- 产物状态读不出来（`blocked`）的单元报为独立缺口，绝不当作缺失去重新生成：那会把一次损坏
-  变成一次重复计费。
-- 恢复中断的任务由服务端接回原请求，不重新提交已在供应商侧落定的请求。
-
-逐 ID 结果结构、选择语义与问题码清单见 [generation-results.md](generation-results.md)。
+历史模式数据不清空、不改模式、不自动转换为工厂工件；只读、迁移和已提交任务恢复保留。
+外部 Agent 长任务返回持久 batch，按建议轮询间隔调用 get_generation_batch，终态后读取实际结果。
+覆盖回执要求的 revision 必须来自当前输入；冲突后重新读取，不复用过期凭据。

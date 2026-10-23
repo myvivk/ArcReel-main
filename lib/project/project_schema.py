@@ -6,6 +6,9 @@ from collections.abc import Mapping
 
 CURRENT_PROJECT_SCHEMA_VERSION = 18
 
+# 磁盘项目包含历史创作类型；新建与生成入口另行限制为短剧工厂。
+PERSISTED_PROJECT_CONTENT_MODES: frozenset[str] = frozenset({"narration", "drama", "ad"})
+
 
 def parse_project_schema_version(project: Mapping[str, object]) -> int:
     """Return a canonical non-negative version without coercing corrupt data."""
@@ -29,6 +32,7 @@ def project_schema_is_current(project: Mapping[str, object]) -> bool:
 
 __all__ = [
     "CURRENT_PROJECT_SCHEMA_VERSION",
+    "PERSISTED_PROJECT_CONTENT_MODES",
     "parse_project_schema_version",
     "project_schema_is_current",
 ]

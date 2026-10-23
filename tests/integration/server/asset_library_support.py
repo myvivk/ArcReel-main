@@ -10,6 +10,7 @@ from lib.project.asset_derivatives import derivative_artifact_key, derivative_sh
 from lib.project.asset_types import DERIVATIVES_FIELD
 from lib.project.project_manager import ProjectManager
 from tests.integration.server.derivative_sheet_support import solid_png_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _OWNER = "王"
 #: 库角色「王」带的两个衍生：名、变化描述与图的纯色。
@@ -26,7 +27,7 @@ def store_character_with_derivatives(client: TestClient, pm: ProjectManager, *, 
     """在源项目 source 里造一个带资产图和两个衍生资产图的角色「王」，经 ``/assets/from-project`` 存入资产库，返回库资产 id。"""
 
     pm.create_project("source")
-    pm.create_project_metadata("source", "Source", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "source", "Source", "Anime", "narration")
     pm.add_character("source", _OWNER, owner_description)
     pm.install_asset_sheet_bytes(
         "character", "source", _OWNER, f"characters/{_OWNER}.png", solid_png_bytes((30, 30, 30))

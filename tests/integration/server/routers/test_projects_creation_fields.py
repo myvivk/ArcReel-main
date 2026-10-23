@@ -163,8 +163,8 @@ class TestProjectsRouter:
             assert cleared.status_code == 200
             assert "video_provider_r2v" not in fake_pm.project_data["ready"]
 
-    def test_create_project_ignores_legacy_image_backend(self, tmp_path, monkeypatch):
-        """退役的 image_backend 字段已从写模型移除，传入时被静默忽略。"""
+    def test_create_project_rejects_legacy_image_backend(self, tmp_path, monkeypatch):
+        """退役的 image_backend 字段不能通过创建接口写入。"""
         fake_pm = _FakePM(tmp_path)
         client = build_projects_client(monkeypatch, fake_pm)
 
@@ -178,9 +178,8 @@ class TestProjectsRouter:
                     "image_backend": "gemini-aistudio/nano-banana",
                 },
             )
-            assert resp.status_code == 200
-            # 关键保证：退役字段不得落进 project.json，否则解析链会忽略它、静默错配供应商
-            assert "image_backend" not in fake_pm.project_data["legacy-1"]
+            assert resp.status_code == 422
+            assert "legacy-1" not in fake_pm.project_data
 
     def test_create_project_empty_model_fields_not_written(self, tmp_path, monkeypatch):
         fake_pm = _FakePM(tmp_path)
@@ -194,7 +193,6 @@ class TestProjectsRouter:
                     "title": "空字段项目",
                     "name": "e-1",
                     "video_backend": "",
-                    "image_backend": None,
                 },
             )
             assert resp.status_code == 200
@@ -280,49 +278,34 @@ class TestProjectsRouter:
             )
             assert resp.status_code == 400
 
-    def test_create_requires_binary_generation_mode(self, tmp_path, monkeypatch):
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            # 缺失 generation_mode：必填无默认值，不被悄悄锁进某种生成模式
-            missing = client.post(
-                "/api/v1/projects",
-                json={"name": "no-mode", "title": "X", "content_mode": "narration"},
-            )
-            assert missing.status_code == 422
+    def test_create_defaults_to_factory_workflow(self, tmp_path, monkeypatch):
+        fake_pm = _FakePM(tmp_path)
+        with build_projects_client(monkeypatch, fake_pm) as client:
+            response = client.post("/api/v1/projects", json={"name": "factory", "title": "短剧"})
+        assert response.status_code == 200
+        project = response.json()["project"]
+        assert project["content_mode"] == "drama"
+        assert project["generation_mode"] == "storyboard"
+        assert "grid_storyboard" not in project
 
-            # 旧三值 grid 不再是合法创建值
-            legacy_grid = client.post(
-                "/api/v1/projects",
-                json={"name": "old-grid", "title": "X", "content_mode": "narration", "generation_mode": "grid"},
-            )
-            assert legacy_grid.status_code == 422
-
-            # 两种生成模式均可创建
-            for mode in ("storyboard", "reference_video"):
-                created = client.post(
-                    "/api/v1/projects",
-                    json={"name": f"m-{mode.replace('_', '-')}", "title": "X", "generation_mode": mode},
-                )
-                assert created.status_code == 200, created.text
-                assert created.json()["project"]["generation_mode"] == mode
-
-    def test_create_persists_grid_storyboard(self, tmp_path, monkeypatch):
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            # 缺省 false 也落盘为显式值
-            default_off = client.post(
-                "/api/v1/projects",
-                json={"name": "grid-off", "title": "X", "generation_mode": "storyboard"},
-            )
-            assert default_off.status_code == 200
-            assert default_off.json()["project"]["grid_storyboard"] is False
-
-            enabled = client.post(
-                "/api/v1/projects",
-                json={"name": "grid-on", "title": "X", "generation_mode": "storyboard", "grid_storyboard": True},
-            )
-            assert enabled.status_code == 200
-            assert enabled.json()["project"]["grid_storyboard"] is True
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"content_mode": "narration"},
+            {"content_mode": "ad"},
+            {"generation_mode": "reference_video"},
+            {"generation_mode": "grid"},
+            {"grid_storyboard": True},
+            {"brief": "广告诉求"},
+            {"target_duration": 60},
+        ],
+    )
+    def test_create_rejects_retired_workflow_fields(self, tmp_path, monkeypatch, fields):
+        fake_pm = _FakePM(tmp_path)
+        with build_projects_client(monkeypatch, fake_pm) as client:
+            response = client.post("/api/v1/projects", json={"name": "retired", **fields})
+        assert response.status_code == 422
+        assert "retired" not in fake_pm.project_data
 
 
 class TestProjectCreationNarrationDelivery:

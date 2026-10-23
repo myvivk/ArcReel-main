@@ -12,12 +12,13 @@ from server.media_tools.bgm import BgmListItem
 from server.tool_runtime import CallerContext
 from tests.factories import wav_bytes
 from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _harness(tmp_path: Path) -> ToolHarness:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     return ToolHarness("demo", tmp_path, pm, caller=CallerContext(user_id=DEFAULT_USER_ID, source="mcp"))
 
 

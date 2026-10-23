@@ -1,4 +1,4 @@
-import type { AssetSheetStatusRow, AssetSheetType, Character, Product, Prop, Scene } from "@/types";
+import type { AssetSheetStatusRow, AssetSheetType, Character, Prop, Scene } from "@/types";
 
 /** 浏览卡展示的资产：四类资产归一后的同一形状，类型差异只体现在可选的计数上。 */
 export interface GalleryAsset {
@@ -13,7 +13,7 @@ export interface GalleryAsset {
   referenceCount: number;
 }
 
-export type GalleryAssetSource = Character | Scene | Prop | Product;
+export type GalleryAssetSource = Character | Scene | Prop;
 
 function sheetPathOf(type: AssetSheetType, asset: GalleryAssetSource): string | undefined {
   switch (type) {
@@ -23,8 +23,6 @@ function sheetPathOf(type: AssetSheetType, asset: GalleryAssetSource): string | 
       return (asset as Scene).scene_sheet;
     case "prop":
       return (asset as Prop).prop_sheet;
-    case "product":
-      return (asset as Product).product_sheet;
   }
 }
 
@@ -36,7 +34,7 @@ export function toGalleryAsset(type: AssetSheetType, name: string, asset: Galler
     sheetPath: sheetPathOf(type, asset) || null,
     aliasCount: "aliases" in asset ? (asset.aliases?.length ?? 0) : 0,
     derivativeCount: type === "character" ? Object.keys((asset as Character).derivatives ?? {}).length : 0,
-    referenceCount: type === "product" ? ((asset as Product).reference_images?.length ?? 0) : 0,
+    referenceCount: 0,
   };
 }
 
@@ -69,5 +67,4 @@ export const VERSION_RESOURCE = {
   character: "characters",
   scene: "scenes",
   prop: "props",
-  product: "products",
 } as const satisfies Record<AssetSheetType, string>;

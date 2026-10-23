@@ -36,15 +36,15 @@ def _persist_with_ratio(pm: _FakePM, *, content_mode: str, aspect_ratio: object)
     ("content_mode", "aspect_ratio", "expected_ratio"),
     [
         pytest.param("drama", None, "16:9", id="drama-missing-ratio"),
-        pytest.param("narration", {"storyboards": "4:3", "videos": "9:16"}, "4:3", id="per-resource-ratio"),
-        pytest.param("narration", {"videos": "16:9"}, "9:16", id="per-resource-ratio-without-storyboards"),
+        pytest.param("drama", {"storyboards": "4:3", "videos": "9:16"}, "4:3", id="per-resource-ratio"),
+        pytest.param("drama", {"videos": "16:9"}, "16:9", id="per-resource-ratio-without-storyboards"),
     ],
 )
 async def test_generated_storyboard_is_current_against_the_target_state(
     tmp_path, monkeypatch, content_mode, aspect_ratio, expected_ratio
 ):
     project_path = prepare_files(tmp_path)
-    fixture = _FakePM(project_path)
+    fixture = _FakePM(project_path, factory=True)
     _persist_with_ratio(fixture, content_mode=content_mode, aspect_ratio=aspect_ratio)
     register_asset_sheet_claims(fixture)
     pm = ProjectManager(tmp_path)

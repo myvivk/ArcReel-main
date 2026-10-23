@@ -5,7 +5,6 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { NarrationDeliveryFields, type NarrationDeliveryValue } from "@/components/shared/NarrationDeliveryFields";
 import type { CharacterVoiceBinding, NarrationDefaultsResponse } from "@/types";
-import type { GenerationRoute } from "@/utils/generation-mode";
 
 import type { ProjectSettingsForm } from "./project-settings-form";
 import { SettingsBlock, TabHeader } from "./SettingsBlock";
@@ -26,7 +25,6 @@ const VOICE_BINDINGS: readonly { value: CharacterVoiceBinding; labelKey: string;
 interface VoiceTabProps {
   value: ProjectSettingsForm;
   onChange: (update: (prev: ProjectSettingsForm) => ProjectSettingsForm) => void;
-  generationRoute: GenerationRoute;
   /** 全局默认的 TTS 设置：没有快照的项目切到 TTS 配音时用它预填。 */
   narrationDefaults: NarrationDefaultsResponse | null;
   audioBackends: string[];
@@ -34,11 +32,10 @@ interface VoiceTabProps {
   modelNames: Record<string, string>;
 }
 
-/** 「配音」：旁白交付方式；角色声音绑定只在参考生视频项目出现。 */
+/** 「配音」：工厂旁白交付和角色声音绑定。 */
 export function VoiceTab({
   value,
   onChange,
-  generationRoute,
   narrationDefaults,
   audioBackends,
   providerNames,
@@ -79,9 +76,7 @@ export function VoiceTab({
         />
       </SettingsBlock>
 
-      {/* 参考音频通道属于参考生视频路线；分镜图生视频路线上这项设置不改变任何交付内容，不展示也不写入 */}
-      {generationRoute === "reference_video" && (
-        <SettingsBlock title={t("character_voice_binding_title")} titleId={bindingId}>
+      <SettingsBlock title={t("character_voice_binding_title")} titleId={bindingId}>
           <RadioGroup
             aria-labelledby={bindingId}
             value={value.voiceBinding}
@@ -97,8 +92,7 @@ export function VoiceTab({
               </Label>
             ))}
           </RadioGroup>
-        </SettingsBlock>
-      )}
+      </SettingsBlock>
     </div>
   );
 }

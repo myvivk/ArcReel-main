@@ -41,9 +41,8 @@ skipped                                     （复用旧产物，不在 requeste
   `replan_unit` / `configure_provider` / `confirm_request_duration` / …）
 - `unit_id` 与（若有）`artifact_key`、`artifact_path`
 
-宫格按**分镜 ID** 记账：同一分组的分镜共享一张宫格联合图，这张图的入队与任务结果投影到
-它覆盖的每个分镜。宫格生成只产出联合图：成功分镜的 `artifact_path` 是 `grids/<grid_id>.png`，
-分镜图要等用户审阅同意后经 `split_grids` 切分落格才写入。
+工厂参考素材按镜生成，每镜保留联系表与全部 K 帧关系，审阅确认后才能编写对应视频提示词。
+媒体任务的结果不能代替参考素材的确认状态。
 
 **按 `code` 与 `action` 决定下一步，不要解析文本判断能不能重试。**
 

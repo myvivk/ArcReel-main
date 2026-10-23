@@ -41,14 +41,14 @@ from lib.project.asset_rename import (
     rewrite_payload_references,
 )
 from lib.project.asset_types import ASSET_SPECS
+from lib.project.legacy_script_plans import apply_confirmation, script_plan_path
 from lib.project.project_manager import ProjectManager, _rename_agnostic_errors
 from lib.script.draft_quarantine import QUARANTINE_FILENAMES
-from lib.script.script_review import (
-    apply_confirmation,
-    content_fingerprint,
-    formal_script_plan_confirmed,
-    review_status,
-    script_plan_path,
+from lib.script.script_revision import content_fingerprint
+from tests.legacy_project_shapes import (
+    legacy_plan_confirmation_matches,
+    make_legacy_project,
+    seed_legacy_project_metadata,
 )
 
 
@@ -151,7 +151,7 @@ def _reference_script(episode: int = 1) -> dict[str, Any]:
 def pm_with_assets(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(str(tmp_path))
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     manager.upsert_assets("demo", "characters", {"角色A": {"description": "主角"}})
     manager.upsert_assets("demo", "scenes", {"场景A": {"description": "村口"}})
     manager.upsert_assets("demo", "props", {"道具A": {"description": "长剑"}})
@@ -187,7 +187,8 @@ def _plan_review(manager: ProjectManager) -> tuple[str, bool]:
     """第 1 集的内容确认状态，以及正式脚本规划是否因已确认而只读。"""
     project = manager.load_project("demo")
     project_dir = _project_dir(manager)
-    return review_status(project_dir, project, 1), formal_script_plan_confirmed(project_dir, project, 1)
+    confirmed = legacy_plan_confirmation_matches(project_dir, project, 1)
+    return ("confirmed" if confirmed else "pending_review"), confirmed
 
 
 class TestRewritePayloadReferences:
@@ -459,8 +460,8 @@ class TestRenameAssetCascade:
 
     def test_product_sequenced_files_and_paths(self, tmp_path: Path) -> None:
         pm_with_assets = ProjectManager(str(tmp_path))
-        pm_with_assets.create_project("demo", content_mode="ad")
-        pm_with_assets.create_project_metadata("demo", "Demo", "Anime", "ad")
+        make_legacy_project(pm_with_assets.projects_dir, "demo", content_mode="ad")
+        seed_legacy_project_metadata(pm_with_assets, "demo", "Demo", "Anime", "ad")
         pm_with_assets.upsert_assets("demo", "products", {"商品A": {"description": "饮料"}})
         pm_with_assets.upsert_assets("demo", "characters", {"角色A": {"description": "代言人"}})
         pm_with_assets.save_script("demo", _ad_script(), "episode_1.json")

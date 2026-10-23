@@ -10,10 +10,10 @@ import { PromptAuthoringHost } from "./PromptAuthoringDialog";
 const ACCEPTED = { batch: { members: [] } } as unknown as Awaited<ReturnType<typeof API.authorPrompts>>;
 
 const SCRIPT = {
-  segments: [
-    { segment_id: "E1S01", image_prompt: "", video_prompt: "", pending_authoring: true },
-    { segment_id: "E1S02", image_prompt: "雨夜", video_prompt: "推近" },
-    { segment_id: "E1S03", image_prompt: "", video_prompt: "", pending_authoring: true },
+  scenes: [
+    { scene_id: "E1S01", image_prompt: "", video_prompt: "", pending_authoring: true },
+    { scene_id: "E1S02", image_prompt: "雨夜", video_prompt: "推近" },
+    { scene_id: "E1S03", image_prompt: "", video_prompt: "", pending_authoring: true },
   ],
 };
 

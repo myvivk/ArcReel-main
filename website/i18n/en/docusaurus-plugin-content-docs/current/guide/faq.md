@@ -177,46 +177,35 @@ A read timeout after a generation request is submitted can leave an uncertain st
 
 ## Project workflows and tasks {#project-workflow-and-tasks}
 
-### How should I choose the project mode, and between storyboard and reference-to-video? Can I change them after creation? {#choose-mode-and-route}
+### How should I choose the production workflow? {#choose-mode-and-route}
 
-You must choose two separate dimensions when creating a project:
+New projects use the fixed short drama factory workflow: factory delivery → assets → AI storyboards → per-shot keyframe references → separate video prompts → video → edit and export. Configure aspect ratio, style, total episode count, episode target, and models; narration, ad, and reference-video project routes are no longer selectable.
 
-- **Content Mode**: Narration/Commentary, Drama, or Ad / Short Video. This determines the screenplay structure and production workflow.
-- **Generation mode**: Storyboard or Reference-to-video. This determines whether videos use storyboard images or reference images such as asset images.
+Each shot’s references are consecutive K-frames of that shot. Video inputs preserve all K-frames and the previous-shot continuity point. Provider support for multiple reference images remains available; check reference count, first/last frames, and audio inputs. See [Short Drama Factory Workflow](./workflows.md).
 
-Content mode and generation mode cannot be changed after creation. Multi-grid storyboards are not a third generation mode; they are an image-generation method within Storyboard mode. Ad / Short Video projects do not support multi-grid storyboards. Before creating the full project, use a short sample to confirm that the generation mode fits your needs.
+### What can I import? {#supported-source-formats}
 
-- **Storyboard mode**: screenplay → character/scene/prop asset images → storyboard images → video. Each shot must have a corresponding storyboard image before video generation.
-- **Multi-grid storyboards**: still part of Storyboard mode, as an image-generation method within it. ArcReel first generates one or more grid images, splits them into starting storyboard images for each shot, and then generates video from those storyboard images.
-- **Reference-to-video mode**: skips storyboard images and directly uses the character, scene, and prop asset images referenced by the screenplay as video references.
+**Import script** accepts seven factory Markdown artifact types: character bible, series outline, ledger, and each episode’s plan, source, machine report, and compliance report. Each episode requires all four episode artifacts in the same batch. Both reports must explicitly pass, and import runs quality checks again.
 
-Reference-to-video does not mean that asset images are unnecessary. If a referenced asset in a Narration/Commentary or Drama project has no asset image, the related videos will fail. In an Ad / Short Video project, a task may continue without product reference images, but product fidelity cannot be guaranteed.
+Ordinary novels, single Markdown files, PDF, DOCX, or EPUB cannot serve as factory deliveries. Use factory creation and quality checks to prepare complete artifacts. Historical source files remain in the project, but ordinary source uploads and native planning entries are removed.
 
-If the video provider receives only text and no storyboard or reference image, verify the project's generation mode, actual model, and custom model's call endpoint:
+### What happens to old projects after an upgrade? {#historical-projects}
 
-1. Storyboard mode sends the shot's storyboard image as the video's starting image.
-2. Reference-to-video mode collects the asset images referenced by the screenplay.
-3. The selected video model and call endpoint must explicitly support the corresponding image-to-video or reference-to-video capability.
+Historical narration, ad, and reference-video projects retain sources, media, versions, and task records. Upgrades preserve mode fields and never turn old JSON into factory artifacts. Old production entries are removed. For new production, create a factory project and submit complete artifacts.
 
-If a custom model is registered only with a text-to-video endpoint, or if its declared capabilities do not match the upstream API, ArcReel cannot send reference images to the service using the correct protocol.
+Submitted video tasks that can resume continue polling with stored provider task IDs. Failed downloads support **Retry download**. Built-in Agent files update by fingerprint and preserve user changes; external Agents must refresh the MCP tool list.
 
-### Which source-file formats are supported? {#supported-source-formats}
+### Why can’t I enter the next stage, or why did the Agent stop? {#stage-blocked}
 
-ArcReel currently supports `.txt`, `.md`, `.docx`, `.epub`, and `.pdf`. Uploaded files are extracted into UTF-8 text.
+A prerequisite review or asset is usually incomplete:
 
-A scanned PDF with no extractable text cannot be used directly and must go through OCR first. Convert legacy `.doc` files to `.docx` before uploading. If a TXT or Markdown file displays garbled characters, convert it to a common text encoding and upload it again.
+1. Check that complete factory artifacts passed quality checks and were ingested.
+2. Check episode asset registrations, descriptions, and sheets.
+3. Check that AI storyboarding succeeded and its source revision matches the current source.
+4. Check that each shot’s references are confirmed and its video prompt was written separately.
+5. Check model input limits and task errors.
 
-### Why can't I move to the next stage, or why did the Agent stop? {#stage-blocked}
-
-Usually a prerequisite review or asset is incomplete:
-
-1. For Narration/Commentary and Drama projects, confirm that the script plan result has been reviewed. Editing it after confirmation requires another confirmation. Ad / Short Video projects do not have this step.
-2. Check whether characters, scenes, and props have definitions but no generated asset images.
-3. In Storyboard mode, check whether the target shot has a storyboard image.
-4. In Reference-to-video mode, verify that referenced assets in Narration/Commentary and Drama projects have complete asset images. For Ad / Short Video projects, at least confirm that the original product images were uploaded. Missing reference images may not block the task, but they reduce product fidelity.
-5. Expand the task panel and check for tasks that are still queued, running, or failed.
-
-The status bar in the header shows only how many episodes are completed and the project's next step; open the episode count to see the next step for each episode. For what exactly is missing, check the assets in the sidebar, "Production status" on the episode page, and task errors.
+The top bar shows completed episodes and the project’s next step. Open the episode count to see individual next steps. Check assets, the episode’s production status, and task errors for details.
 
 ### What should I do when a task is queued, running, failed, canceled, or interrupted by a service restart? {#task-states}
 
@@ -234,24 +223,24 @@ To avoid duplicate charges, ArcReel does not unconditionally requeue every runni
 
 ### How can I improve character consistency? {#character-consistency}
 
-1. Generate and review character asset images before generating storyboards and videos in batches.
-2. Confirm that the target shot in the screenplay actually references the character.
-3. After changing a character asset image, regenerate the affected storyboards and videos. Existing results are not updated automatically.
-4. Validate the selected model's reference-image capabilities with a few shots before scaling up the batch.
+1. Generate and review character sheets before batch storyboards and videos.
+2. Check that the target shot references the character.
+3. Regenerate affected storyboards and videos after sheet changes; existing outputs do not update automatically.
+4. Test the model’s reference capability on a small sample before expanding the batch.
 
-When generating a storyboard, ArcReel uses the character, scene, and prop asset images referenced by that shot as reference images. Videos in Storyboard mode then use the storyboard image as their first frame, while Reference-to-video mode directly uses asset images. Generation models still cannot guarantee absolute frame-by-frame consistency.
+Reference generation includes the shot’s character, scene, and prop sheets. Video then uses confirmed K-frames and the previous-shot continuity point. Models cannot guarantee perfect consistency in every frame.
 
 ### How can I make adjacent shots more continuous? {#shot-continuity}
 
-In Storyboard mode, when a shot is not the first shot, is not marked as a new segment, and the previous storyboard has already been generated, ArcReel uses that previous storyboard as a continuity reference. This helps carry over composition, color, and setting, but it cannot guarantee a seamless join between two independently generated videos.
+The previous-shot continuity point helps preserve composition, color, and location, but cannot guarantee seamless joins between separately generated videos.
 
-Lock down assets and storyboards before generating video, and keep location, time, clothing, and character descriptions consistent across adjacent shots. For important transitions, use a model that supports end frames or handle them in a post-production tool such as Jianying.
+Lock assets and storyboards before video generation, and keep location, time, clothing, and characters consistent. Use models supporting end frames for important transitions, or refine them in Jianying.
 
-### How do start and end frames work? {#first-and-last-frame}
+### How do first and last frames work? {#first-and-last-frame}
 
-In Storyboard mode, the storyboard image is the video's first frame. You can also select or upload an end frame for each shot, but generation is available only when the current video model explicitly supports end frames. For unsupported models, ArcReel rejects the request instead of silently ignoring the end frame. Changing a storyboard or end frame does not automatically update an existing video; regenerate the corresponding video to apply the change.
+Video opens on the previous shot’s available continuity point and ends on the current shot’s last cell. Continuity prefers the actual last frame of the previous video, then a saved user snapshot, then the previous grid’s last cell. If none is available, use the current first cell.
 
-Reference-to-video mode has no separate end-frame setting.
+Snapshots belong to their shot and feed the next shot. Regeneration preserves them. The model must support all submitted frames and references; inputs are never silently discarded.
 
 ### Why do people appear in a scene asset image? {#people-in-scene-images}
 
@@ -261,9 +250,9 @@ A scene asset image is different from a story storyboard image: the scene asset 
 
 ### Does ArcReel support voice-over? {#voice-over-support}
 
-The Web UI currently offers standalone voice-over TTS only for Narration/Commentary. You can preview or generate voice-over segment by segment or for a full episode, then include it in a Jianying draft export. Narration delivery is a project setting. With "TTS narration" the project keeps its own TTS model, voice and speed, prefilled from the global defaults at creation; later changes to the global defaults do not affect existing projects. With "post-production voiceover" ArcReel does not generate narration audio and you add the voiceover during editing. You can switch delivery in the project settings at any time without making existing content outdated. Some models do not support speed control; the speed input is then unavailable.
+Factory projects support generated source audio, character voices, and TTS narration. TTS projects retain their own model, voice, and speed; global-default changes do not alter existing projects. Models without speed control disable that input. With post-production voiceover, add audio during editing.
 
-Built-in speech from the video model, character reference audio, and voice-over TTS are three separate capabilities. By default, character voices are bound by prompt constraint: each character's voice description is written into the prompt and the video model voices it accordingly, so the voice may vary slightly between clips. To have the video model reuse a character's actual voice, set "Character voice binding" to "Reference audio" in project settings and make sure the project uses Reference-to-video mode, the selected video model supports reference audio, and every speaking character has reference audio configured. Storyboard (image-to-video) mode does not support reference audio.
+Character voices normally follow prompt descriptions. To reuse a voice, select reference-audio binding in project settings, upload speaking characters’ reference audio, and use a supporting model. Audio follows first-spoken order; count, duration, and image-binding requirements come from model capabilities.
 
 ## Costs, data, and export {#cost-data-export}
 
@@ -291,7 +280,7 @@ When downloading, select the 5.x or 6+ format that matches your local Jianying v
 
 A Jianying draft is generated from the selected edit timeline and contains only the clips on that edit timeline. If a video unit on the edit timeline has no usable video yet, the **Render** button is disabled; resolve it from the issue list in the edit view first.
 
-Narration/Commentary currently exports the original novel text as subtitles, Ad / Short Video exports spoken promotional copy as subtitles, and Drama exports dialogue and voice-over subtitles. The narration track appears only in the version with narration: TTS narration projects export the version with narration by default, and other projects export the version without narration. See the [Jianying draft export guide](./jianying-export.md) for the complete steps.
+Factory subtitles come from dialogue and voice-over. Narration tracks appear only in the narrated variant: TTS projects default to it, while other projects export without narration. See the [Jianying draft export guide](./jianying-export.md).
 
 ### Is there a mobile app? Which platforms are supported? {#mobile-app-support}
 

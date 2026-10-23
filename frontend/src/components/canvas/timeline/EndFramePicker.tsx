@@ -17,7 +17,6 @@ import {
 import { cn } from "cn";
 import { useProjectsStore } from "@/stores/projects-store";
 import { getScriptItems, getScriptItemId, type EditorContentMode } from "@/utils/script-shape";
-import { stripScriptsPrefix } from "@/utils/task-target";
 import { itemIdWithinEpisode } from "@/utils/episode-display";
 
 /** 可选的项目内图片：path 是项目内相对路径，交给 /end-frame/select 做快照复制。 */
@@ -79,35 +78,19 @@ export function EndFramePicker({
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
-    const normalized = stripScriptsPrefix(scriptFile);
-    API.listGrids(projectName, { signal })
-      .then((grids) => {
+    const ids = getScriptItems(script, contentMode).map((item) => getScriptItemId(item, contentMode));
+    void Promise.all(ids.map((id) => API.getShotGrid(projectName, scriptFile, id, { signal }).catch(() => null)))
+      .then((plans) => {
         if (signal.aborted) return;
-        setGridImages(
-          grids
-            .filter((g) => stripScriptsPrefix(g.script_file) === normalized)
-            .flatMap((g) =>
-              g.frame_chain
-                .filter((cell) => cell.image_path)
-                .map((cell) => ({
-                  path: cell.image_path as string,
-                  label: t("end_frame_picker_grid_cell_label", {
-                    grid: g.grid_size,
-                    index: cell.index + 1,
-                  }),
-                })),
-            ),
-        );
-      })
-      .catch(() => {
-        if (signal.aborted) return;
-        // 宫格取不到不阻断选图：其余分组仍可用，空分组自然不渲染。
-        setGridImages([]);
+        setGridImages(plans.flatMap((grid) => grid ? grid.cells.flatMap((cell) => cell.image_path ? [{
+          path: cell.image_path,
+          label: t("end_frame_picker_grid_cell_label", { grid: grid.rows + "×" + grid.cols, index: cell.index + 1 }),
+        }] : []) : []));
       });
     return () => {
       controller.abort();
     };
-  }, [projectName, scriptFile, t]);
+  }, [projectName, scriptFile, script, contentMode, t]);
 
   const groups = useMemo<ImageGroup[]>(() => {
     const storyboards: PickableImage[] = getScriptItems(script, contentMode)

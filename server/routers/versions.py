@@ -6,7 +6,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 from lib.artifacts.artifact_activation import (
     forget_current_resource_artifact,
-    forget_unbound_grid_artifacts,
     forget_unbound_storyboard_artifacts,
     register_current_resource_artifact,
 )
@@ -28,7 +27,6 @@ from lib.project.asset_derivatives import DerivativeSheetTarget, derivative_arti
 from lib.project.project_change_hints import project_change_source
 from lib.project.project_manager import get_project_manager
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE
-from lib.script.grid.grid_access import ensure_grid_writable
 from server.services.currency.artifact_version_restore import (
     is_typed_media_restore_resource,
     is_typed_media_version_restorable,
@@ -50,9 +48,7 @@ _RESTORABLE_RESOURCE_TYPES = frozenset(
         "characters",
         "scenes",
         "props",
-        "products",
         "reference_videos",
-        "grids",
         CHARACTER_DERIVATIVE_RESOURCE_TYPE,
     }
 )
@@ -75,39 +71,11 @@ def _resolve_resource_path(
     return resolve_media_file(resource_type, resource_id, project_path)
 
 
-def _sync_grid_record(
-    project_path: Path,
-    resource_id: str,
-    *,
-    on_commit: Callable[[], None] | None = None,
-    on_miss: Callable[[], None] | None = None,
-) -> None:
-    """还原联合图后复位宫格记录：内容已换回历史版本，旧的落格结果不再对应当前图。
-
-    只动宫格记录自身（split_at / 失败态），不同步剧本或分镜——落格由切分端点显式执行；
-    frame_chain 原样保留。记录缺失/损坏时跳过：联合图文件已还原成功，记录属 best-effort。
-
-    还原本身不设在途闸门（与分镜图还原同口径），复位口径见
-    ``GridGeneration.mark_composite_replaced``：生成在途时保留在途态，否则记录会谎报空闲。
-    """
-    from lib.script.grid.grid_manager import GridManager
-
-    manager = GridManager(project_path)
-    manager.update_formal(
-        resource_id,
-        lambda grid: grid.mark_composite_replaced(),
-        on_commit=on_commit,
-        on_miss=on_miss,
-        ignore_invalid=True,
-    )
-
-
 # resource_type（复数，URL 段）→ asset_type（单数，ASSET_SPECS 键）
 _RESOURCE_TO_ASSET_TYPE: dict[str, str] = {
     "characters": "character",
     "scenes": "scene",
     "props": "prop",
-    "products": "product",
 }
 # 资产图、衍生资产图与分镜图：还原到手动上传记录时按上传字节重新登记。
 _UPLOAD_CLAIMED_RESOURCE_TYPES = frozenset(
@@ -129,8 +97,6 @@ def _commit_non_typed_restore_claim(
     if not owner_present:
         if resource_type == "storyboards":
             forget_unbound_storyboard_artifacts(project_path, resource_id)
-        elif resource_type == "grids":
-            forget_unbound_grid_artifacts(project_path, resource_id)
         else:
             forget_current_resource_artifact(
                 project_path,
@@ -250,13 +216,6 @@ def _restore_non_typed_version(
         except KeyError:
             with project_metadata_lock(project_path):
                 _restore(owner_present=False)
-    elif resource_type == "grids":
-        _sync_grid_record(
-            project_path,
-            resource_id,
-            on_commit=lambda: _restore(owner_present=True),
-            on_miss=lambda: _restore(owner_present=False),
-        )
     else:
         with project_metadata_lock(project_path):
             _restore(owner_present=True)
@@ -386,8 +345,6 @@ async def restore_resource_version(
         def _sync():
             # 还原同样是一条联合图写入路径（换回历史联合图 + 复位宫格记录），
             # 与重生成/切分/上传共用准入判定；漏掉这里，被封禁项目就能从还原绕过。
-            if resource_type == "grids":
-                ensure_grid_writable(get_project_manager().load_project(project_name))
 
             vm = get_version_manager(project_name)
             project_path = get_project_manager().get_project_path(project_name)

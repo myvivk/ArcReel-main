@@ -110,7 +110,6 @@ describe("资产详情 Sheet", () => {
     vi.spyOn(API, "updateCharacter").mockImplementation((_p, name, patch) => patchServer("character", name, patch));
     vi.spyOn(API, "updateProjectScene").mockImplementation((_p, name, patch) => patchServer("scene", name, patch));
     vi.spyOn(API, "updateProjectProp").mockImplementation((_p, name, patch) => patchServer("prop", name, patch));
-    vi.spyOn(API, "updateProjectProduct").mockImplementation((_p, name, patch) => patchServer("product", name, patch));
   });
 
   afterEach(() => {
@@ -382,19 +381,6 @@ describe("资产详情 Sheet", () => {
       call: () =>
         expect(API.updateProjectProp).toHaveBeenCalledWith("demo", "玉佩", { description: "温润白玉，刻有云纹" }),
     },
-    {
-      type: "product" as const,
-      name: "保温杯",
-      edit: async (user: ReturnType<typeof userEvent.setup>, sheet: HTMLElement) => {
-        await user.type(within(sheet).getByRole("textbox", { name: "品牌" }), "家");
-        await user.type(within(sheet).getByRole("textbox", { name: "卖点" }), "{Enter}{Enter}一键开盖");
-      },
-      call: () =>
-        expect(API.updateProjectProduct).toHaveBeenCalledWith("demo", "保温杯", {
-          brand: "暖暖家",
-          selling_points: ["保温 12 小时", "一键开盖"],
-        }),
-    },
   ])("edits a $type in the same editor and saves only the changed fields", async ({ type, name, edit, call }) => {
     const user = userEvent.setup();
     renderGallery(type);
@@ -464,16 +450,16 @@ describe("资产详情 Sheet", () => {
 
   it("keeps the create form open and explains why when creating fails", async () => {
     const user = userEvent.setup();
-    vi.spyOn(API, "addProjectProduct").mockRejectedValue(new Error("商品「保温杯」已存在"));
-    renderGallery("product");
+    vi.spyOn(API, "addProjectProp").mockRejectedValue(new Error("道具「保温杯」已存在"));
+    renderGallery("prop");
 
-    await user.click(screen.getByRole("button", { name: "添加商品" }));
-    const form = await screen.findByRole("dialog", { name: "添加商品" });
+    await user.click(screen.getByRole("button", { name: "添加道具" }));
+    const form = await screen.findByRole("dialog", { name: "添加道具" });
     await user.type(within(form).getByRole("textbox", { name: "名称" }), "保温杯");
     await user.click(within(form).getByRole("button", { name: "创建" }));
 
-    expect(await within(form).findByRole("alert")).toHaveTextContent("创建失败：商品「保温杯」已存在");
-    expect(screen.getByRole("dialog", { name: "添加商品" })).toBeInTheDocument();
+    expect(await within(form).findByRole("alert")).toHaveTextContent("创建失败：道具「保温杯」已存在");
+    expect(screen.getByRole("dialog", { name: "添加道具" })).toBeInTheDocument();
   });
 
   it("keeps unsaved edits visible when the asset is removed elsewhere, and closes once they are discarded", async () => {

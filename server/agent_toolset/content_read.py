@@ -7,11 +7,9 @@ from server.tool_runtime import (
     EpisodeScriptRequest,
     NoArguments,
     ProjectFileRequest,
-    ScriptPlanContentRequest,
     SourceTextRequest,
     get_episode_script,
     get_project_content,
-    get_script_plan_content,
     get_source_text,
     list_project_files,
     list_source_files,
@@ -71,19 +69,6 @@ GET_EPISODE_SCRIPT = ToolDeclaration(
     handler=get_episode_script,
 )
 
-GET_SCRIPT_PLAN_CONTENT = ToolDeclaration(
-    name="get_script_plan_content",
-    description=(
-        "读取指定集当前正式的 script_plan（剧本规划中间态，位于 drafts/episode_{集 ID}/）正文及其 canonical "
-        "revision。只读，无副作用。项目不使用 script_plan 时返回 script_plan_not_applicable；"
-        "该集尚无 script_plan 时返回 file_not_found。"
-    ),
-    request_model=ScriptPlanContentRequest,
-    migration=_READ_ONLY_FILE,
-    domain_key="script_plan_content",
-    handler=get_script_plan_content,
-)
-
 LIST_PROJECT_FILES = ToolDeclaration(
     name="list_project_files",
     description=(
@@ -102,8 +87,7 @@ READ_PROJECT_FILE = ToolDeclaration(
     description=(
         "读取一个项目业务文本文件的内容及其 revision 与 etag：JSON 文件返回解析后的对象，文本文件返回字符串。"
         "可读范围与 list_project_files 一致，敏感文件、symlink、越界路径与超过大小上限的文件会被拒绝。"
-        "只读，无副作用。有专用读取工具的文件（get_project_content、get_source_text、get_episode_script、"
-        "get_script_plan_content）优先使用专用工具。"
+        "只读，无副作用。有专用读取工具的文件（get_project_content、get_source_text、get_episode_script）优先使用专用工具。"
     ),
     request_model=ProjectFileRequest,
     migration=_READ_ONLY_FILE,
@@ -116,7 +100,6 @@ CONTENT_READ_TOOLS = (
     LIST_SOURCE_FILES,
     GET_SOURCE_TEXT,
     GET_EPISODE_SCRIPT,
-    GET_SCRIPT_PLAN_CONTENT,
     LIST_PROJECT_FILES,
     READ_PROJECT_FILE,
 )

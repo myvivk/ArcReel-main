@@ -22,12 +22,10 @@ from lib.artifacts.artifact_manifest import (
     InMemoryArtifactManifestAdapter,
 )
 from lib.artifacts.generation_input import (
-    GridReferences,
     InputGap,
     InputRefused,
     ManifestInputObservation,
     StoryboardImageInput,
-    grid_references,
     storyboard_image_input,
 )
 
@@ -183,11 +181,9 @@ class TestAssemblyOrder:
     def test_reference_whitespace_does_not_change_asset_identity_or_basis(self, tmp_path, field):
         fixture = _Fixture(tmp_path)
         basis = _admitted(fixture).expected_basis()
-        grid = _grid(fixture, [TARGET])
         fixture.target()[field] = [f"  {name}  " for name in fixture.target()[field]]
 
         assert _admitted(fixture).expected_basis() == basis
-        assert _grid(fixture, [TARGET]) == grid
 
     def test_products_then_sheets_by_field_then_previous_storyboard(self, tmp_path):
         fixture = _Fixture(tmp_path)
@@ -490,59 +486,3 @@ class TestFreeze:
         _admitted(fixture)
 
         assert (fixture.project, fixture.script) == (project, script)
-
-
-def _grid(fixture: _Fixture, member_ids: Sequence[str]) -> GridReferences | InputRefused:
-    return grid_references(fixture.project, fixture.script, member_ids=member_ids, observation=fixture.observation())
-
-
-class TestGridReferences:
-    def test_member_sheets_are_unioned_in_member_order_without_products_or_previous_storyboard(self, tmp_path):
-        fixture = _Fixture(tmp_path)
-        fixture.script["shots"][0].update(characters_in_shot=["张三"], props=["玉佩"], products_in_shot=["保温杯"])
-
-        references = _grid(fixture, ["E1S01", TARGET])
-
-        assert isinstance(references, GridReferences)
-        assert [
-            (ref.visual.logical_type, ref.visual.logical_id, ref.artifact_path) for ref in references.references
-        ] == [
-            ("character", "张三", "characters/张三.png"),
-            ("prop", "玉佩", "props/玉佩.png"),
-            ("character", "张三/劲装", "characters/derivatives/张三/劲装.png"),
-            ("scene", "祠堂", "scenes/祠堂.png"),
-        ]
-        assert references.references[2].claim == ArtifactInputClaim(
-            key=ArtifactKey.asset_sheet("character", "张三/劲装"),
-            artifact_path="characters/derivatives/张三/劲装.png",
-        )
-
-    def test_product_gaps_do_not_refuse_a_grid(self, tmp_path):
-        fixture = _Fixture(tmp_path)
-        fixture.remove_file("products/保温杯.png")
-        fixture.remove_file("products/refs/保温杯_1.jpg")
-
-        assert isinstance(_grid(fixture, [TARGET]), GridReferences)
-
-    def test_every_member_gap_is_reported_once_in_assembly_order(self, tmp_path):
-        fixture = _Fixture(tmp_path)
-        fixture.script["shots"][0]["characters_in_shot"] = ["李四"]
-        fixture.script["shots"][2]["characters_in_shot"] = ["李四", "张三/劲装"]
-        fixture.project["characters"]["张三"]["derivatives"]["劲装"]["character_sheet"] = ""
-        fixture.remove_file("props/玉佩.png")
-
-        refused = _grid(fixture, ["E1S01", TARGET, "E1S03"])
-
-        assert refused == InputRefused(
-            reasons=(
-                InputGap("reference_asset_unregistered", "character", "李四"),
-                InputGap("reference_asset_missing", "character", "张三/劲装"),
-                InputGap("reference_asset_missing", "prop", "玉佩"),
-            )
-        )
-
-    def test_a_member_missing_from_the_script_is_structural_damage(self, tmp_path):
-        fixture = _Fixture(tmp_path)
-
-        with pytest.raises(ValueError, match="E1S09"):
-            _grid(fixture, [TARGET, "E1S09"])

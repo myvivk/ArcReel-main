@@ -170,27 +170,20 @@ def test_missing_episode_keeps_artifacts_without_creating_ledger_entry(monkeypat
     assert not (manager.get_project_path("demo") / "source/episode_2.txt").exists()
 
 
-def test_source_legacy_state_save_and_revision_conflict(monkeypatch, tmp_path: Path) -> None:
+def test_source_empty_state_is_read_only(monkeypatch, tmp_path: Path) -> None:
     client, _manager = _client(monkeypatch, tmp_path)
 
     with client:
         legacy = client.get("/api/v1/projects/demo/episodes/1/short-drama-source")
-        saved = client.put(
+        refused = client.put(
             "/api/v1/projects/demo/episodes/1/short-drama-source",
             json={"markdown": MARKDOWN, "expected_revision": None},
-        )
-        conflict = client.put(
-            "/api/v1/projects/demo/episodes/1/short-drama-source",
-            json={"markdown": f"{MARKDOWN}\n改动", "expected_revision": None},
         )
 
     assert legacy.status_code == 200
     assert legacy.json()["exists"] is False
     assert legacy.json()["path"] == "source/short_drama/episodes/episode_01.md"
-    assert saved.status_code == 200
-    assert saved.json()["exists"] is True
-    assert saved.json()["revision"]
-    assert conflict.status_code == 409
+    assert refused.status_code == 405
 
 
 def test_reimport_uses_saved_source_without_registering_assets(monkeypatch, tmp_path: Path) -> None:
@@ -199,20 +192,17 @@ def test_reimport_uses_saved_source_without_registering_assets(monkeypatch, tmp_
     monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
-        saved = client.put(
-            "/api/v1/projects/demo/episodes/1/short-drama-source",
-            json={"markdown": MARKDOWN, "expected_revision": None},
-        ).json()
+        revision = _save_source(client)
         imported = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": saved["revision"], "confirm_artifacts": False},
+            json={"source_revision": revision, "confirm_artifacts": False},
         )
 
     assert imported.status_code == 200
     assert imported.json()["scenes"] >= 1
     script = manager.load_script("demo", "episode_1.json")
     assert script["short_drama_meta"]["source_path"] == "source/short_drama/episodes/episode_01.md"
-    assert script["short_drama_meta"]["source_revision"] == saved["revision"]
+    assert script["short_drama_meta"]["source_revision"] == revision
     # AI 分镜是唯一路径：reimport 恒走文本模型并留痕 smart。
     assert script["short_drama_meta"]["ai_storyboard_options"]["mode"] == "smart"
     assert all(12 <= scene["duration_seconds"] <= 15 for scene in script["scenes"]), [
@@ -236,20 +226,14 @@ def test_reimport_refuses_missing_assets_before_calling_model(monkeypatch, tmp_p
         "demo",
         lambda project: project.setdefault("characters", {}).update({"周明": {"description": ""}}),
     )
-    markdown = MARKDOWN.replace("（女主｜齐肩短发，米色风衣，右腕有旧疤）", "（女主）").replace(
-        "（前夫｜寸头，深灰西装，领口松开）", "（前夫）"
-    )
-    model = FakeTextGenerator(_plan_payload(markdown))
+    model = FakeTextGenerator(_plan_payload(MARKDOWN))
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
     with client:
-        saved = client.put(
-            "/api/v1/projects/demo/episodes/1/short-drama-source",
-            json={"markdown": markdown, "expected_revision": None},
-        ).json()
+        revision = _save_source(client)
         imported = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": saved["revision"], "confirm_artifacts": False},
+            json={"source_revision": revision, "confirm_artifacts": False},
         )
 
     assert imported.status_code == 422
@@ -258,44 +242,43 @@ def test_reimport_refuses_missing_assets_before_calling_model(monkeypatch, tmp_p
     assert not (manager.get_project_path("demo") / "scripts/episode_1.json").exists()
 
 
-def test_initial_import_persists_markdown_source(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("path", ["import", "import-batch"])
+def test_legacy_import_endpoints_are_absent(monkeypatch, tmp_path: Path, path: str) -> None:
     client, manager = _client(monkeypatch, tmp_path)
 
     with client:
         imported = client.post(
-            "/api/v1/projects/demo/short-drama/import",
+            f"/api/v1/projects/demo/short-drama/{path}",
             json={"episode_id": 1, "markdown": MARKDOWN},
         )
         source = client.get("/api/v1/projects/demo/episodes/1/short-drama-source")
 
-    assert imported.status_code == 200
+    assert imported.status_code == 404
     assert source.status_code == 200
-    assert source.json()["markdown"] == MARKDOWN
-    assert (
-        manager.load_script("demo", "episode_1.json")["short_drama_meta"]["source_revision"]
-        == source.json()["revision"]
-    )
+    assert source.json()["exists"] is False
+    assert not (manager.get_project_path("demo") / "scripts/episode_1.json").exists()
 
 
 def test_reimport_requires_confirmation_when_media_exists(monkeypatch, tmp_path: Path) -> None:
-    client, manager = _client(monkeypatch, tmp_path)
+    client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     monkeypatch.setattr(TextGenerator, "create", FakeTextGenerator(_plan_payload(MARKDOWN)).create)
 
     with client:
-        imported = client.post(
-            "/api/v1/projects/demo/short-drama/import",
-            json={"episode_id": 1, "markdown": MARKDOWN},
-        ).json()
+        revision = _save_source(client)
+        assert client.post(
+            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+            json={"source_revision": revision},
+        ).status_code == 200
         script = manager.load_script("demo", "episode_1.json")
         script["scenes"][0]["generated_assets"]["storyboard_image"] = "storyboards/scene_E1S1.png"
         manager.save_script("demo", script, "episode_1.json")
         refused = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": imported["source_revision"], "confirm_artifacts": False},
+            json={"source_revision": revision, "confirm_artifacts": False},
         )
         confirmed = client.post(
             "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": imported["source_revision"], "confirm_artifacts": True},
+            json={"source_revision": revision, "confirm_artifacts": True},
         )
 
     assert refused.status_code == 409
@@ -340,11 +323,13 @@ def _plan_payload(markdown: str, *, header: str = "【镜头1】中景，平视�
     )
 
 
-def _save_source(client: TestClient) -> str:
-    return client.put(
-        "/api/v1/projects/demo/episodes/1/short-drama-source",
-        json={"markdown": MARKDOWN, "expected_revision": None},
-    ).json()["revision"]
+def _save_source(client: TestClient, markdown: str = MARKDOWN) -> str:
+    response = client.post(
+        "/api/v1/projects/demo/short-drama/import-artifacts",
+        json=artifact_request(factory_package(markdown)),
+    )
+    assert response.status_code == 200, response.text
+    return client.get("/api/v1/projects/demo/episodes/1/short-drama-source").json()["revision"]
 
 
 def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> None:
@@ -649,10 +634,7 @@ def test_get_source_reports_assets_missing_description(monkeypatch, tmp_path: Pa
     )
 
     with client:
-        client.put(
-            "/api/v1/projects/demo/episodes/1/short-drama-source",
-            json={"markdown": MARKDOWN, "expected_revision": None},
-        )
+        _save_source(client)
         body = client.get("/api/v1/projects/demo/episodes/1/short-drama-source").json()
 
     assert body["exists"] is True

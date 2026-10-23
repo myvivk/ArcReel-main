@@ -16,8 +16,8 @@ import type {
   CameraMotion,
   Character,
   EpisodeMeta,
-  NarrationEpisodeScript,
-  NarrationSegment,
+  DramaEpisodeScript,
+  DramaScene,
   Prop,
   ProjectData,
   ProjectStatus,
@@ -228,16 +228,10 @@ export function buildDemoProjectData(t: DemoT): ProjectData {
 
   return {
     title: t("demo_project_title"),
-    content_mode: "narration",
+    content_mode: "drama",
     style: t("demo_project_style"),
     aspect_ratio: "9:16",
     default_duration: 5,
-    overview: {
-      synopsis: t("demo_overview_synopsis"),
-      genre: t("demo_overview_genre"),
-      theme: t("demo_overview_theme"),
-      world_setting: t("demo_overview_world"),
-    },
     episodes,
     characters,
     scenes,
@@ -248,21 +242,22 @@ export function buildDemoProjectData(t: DemoT): ProjectData {
 }
 
 /** 演示工作台用的剧本集合，键与 `EpisodeMeta.script_file` 去前缀后对应。 */
-export function buildDemoScripts(t: DemoT): Record<string, NarrationEpisodeScript> {
+export function buildDemoScripts(t: DemoT): Record<string, DramaEpisodeScript> {
   const chars = characterNames(t);
   const scns = sceneNames(t);
   const prps = propNames(t);
 
-  const segments: NarrationSegment[] = SEGMENT_SKELETONS.map((skeleton, i) => {
+  const scenes: DramaScene[] = SEGMENT_SKELETONS.map((skeleton, i) => {
     const n = i + 1;
     const segmentId = `E${DEMO_SCRIPTED_EPISODE}S${n}`;
     return {
-      segment_id: segmentId,
+      scene_id: segmentId,
       episode: DEMO_SCRIPTED_EPISODE,
       duration_seconds: skeleton.duration,
       segment_break: skeleton.segmentBreak,
-      novel_text: t(`demo_shot_${n}_text`),
-      characters_in_segment: skeleton.characters.map((idx) => chars[idx]),
+      scene_description: t(`demo_shot_${n}_text`),
+      utterances: [],
+      characters_in_scene: skeleton.characters.map((idx) => chars[idx]),
       scenes: skeleton.scenes.map((idx) => scns[idx]),
       props: skeleton.props.map((idx) => prps[idx]),
       image_prompt: {
@@ -300,12 +295,13 @@ export function buildDemoScripts(t: DemoT): Record<string, NarrationEpisodeScrip
     [DEMO_SCRIPT_FILE]: {
       episode: DEMO_SCRIPTED_EPISODE,
       title: t(`demo_episode_${DEMO_SCRIPTED_EPISODE}_title`),
-      content_mode: "narration",
+      content_mode: "drama",
       novel: {
         title: t("demo_project_title"),
         chapter: t(`demo_episode_${DEMO_SCRIPTED_EPISODE}_title`),
       },
-      segments,
+      scenes,
+      short_drama_meta: {},
     },
   };
 }

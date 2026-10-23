@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -24,10 +25,14 @@ from lib.artifacts.artifact_manifest import (
 from lib.artifacts.version_manager import VersionManager
 from lib.artifacts.video_artifact_facts import VideoArtifactCurrencyFacts
 from lib.artifacts.visual_artifact_provenance import build_storyboard_video_artifact_visual_basis
+from lib.project.legacy_grid_record import FrameCell, LegacyGridRecord
+from lib.project.legacy_grid_store import LegacyGridStore
+from lib.project.legacy_script_plans import script_plan_path, stored_review
+from lib.project.project_manager import ProjectManager
 from lib.project.project_migrations.runner import MIGRATORS
+from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
 from lib.project.source_revision import SourceScope, compute_source_revision
-from lib.script.grid.models import GridGeneration, build_frame_chain
-from lib.script.script_review import content_fingerprint
+from lib.script.script_revision import content_fingerprint
 from lib.speech.narration_config import TtsSynthesisSettings, tts_snapshot_fields
 from lib.speech.narration_delivery import build_narration_audio_basis
 from lib.speech.speech_artifact_provenance import (
@@ -43,6 +48,147 @@ from lib.speech.speech_presentation import (
 )
 
 _LEGACY_SNAPSHOT_TIMESTAMP = "20260302T145652"
+
+
+def make_legacy_project(
+    projects_dir: Path,
+    name: str = "demo",
+    *,
+    content_mode: str = "narration",
+    generation_mode: str = "storyboard",
+    **fields: Any,
+) -> Path:
+    """铺设已升级过的历史项目目录；不调用新建项目或生产准入入口。"""
+    directory = projects_dir / name
+    directory.mkdir(parents=True, exist_ok=True)
+    for subdir in ProjectManager.SUBDIRS:
+        (directory / subdir).mkdir(exist_ok=True)
+    _write_json(
+        directory / "project.json",
+        {
+            "schema_version": CURRENT_PROJECT_SCHEMA_VERSION,
+            "title": "Demo",
+            "style": "Anime",
+            "content_mode": content_mode,
+            "generation_mode": generation_mode,
+            "aspect_ratio": "9:16",
+            "characters": {},
+            "scenes": {},
+            "props": {},
+            "episodes": [],
+            "narration_delivery": "post_production",
+            **fields,
+        },
+    )
+    return directory
+
+
+def seed_legacy_project_metadata(
+    manager: ProjectManager,
+    project_name: str,
+    title: str = "Demo",
+    style: str = "Anime",
+    content_mode: str = "narration",
+    *,
+    extras: dict[str, Any] | None = None,
+    narration: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """写入旧代码的元数据样本，供公共读写、归档和迁移回归使用。"""
+    defaults: dict[str, Any] = {
+        "whole_source_files": [],
+        "metadata": {
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        },
+    }
+    if content_mode == "ad":
+        defaults.update(
+            target_duration=60,
+            brief="",
+            products={},
+            episodes=[
+                {
+                    "episode": 1,
+                    "title": "",
+                    "script_file": "scripts/episode_1.json",
+                    "source_origin": "none",
+                }
+            ],
+        )
+    directory = make_legacy_project(
+        manager.projects_dir,
+        project_name,
+        title=title,
+        style=style,
+        content_mode=content_mode,
+        **(defaults | fields | (extras or {}) | (narration or {})),
+    )
+    return json.loads((directory / "project.json").read_text(encoding="utf-8"))
+
+
+def build_legacy_frame_chain(scene_ids: list[str], rows: int, cols: int) -> list[FrameCell]:
+    """历史联合宫格样本的固定排列；不创建生成任务。"""
+    return [
+        FrameCell(
+            index=index,
+            row=index // cols,
+            col=index % cols,
+            frame_type="first" if index == 0 else "transition" if index < len(scene_ids) else "placeholder",
+            prev_scene_id=scene_ids[index - 1] if 0 < index < len(scene_ids) else None,
+            next_scene_id=scene_ids[index] if index < len(scene_ids) else None,
+        )
+        for index in range(rows * cols)
+    ]
+
+
+class LegacyGridFixtureStore(LegacyGridStore):
+    """铺设历史样本记录，读取与删除仍使用生产存储器。"""
+
+    def save(self, record: LegacyGridRecord) -> Path:
+        path = self.image_path(record.id).with_suffix(".json")
+        _write_json(path, record.to_dict())
+        return path
+
+
+def make_legacy_grid_record(
+    episode: int,
+    script_file: str,
+    scene_ids: list[str],
+    rows: int,
+    cols: int,
+    grid_size: str,
+    provider: str,
+    model: str,
+    video_aspect_ratio: str,
+    prompt: str | None = None,
+) -> LegacyGridRecord:
+    """旧任务记录样本；不会排队或调用供应商。"""
+    return LegacyGridRecord(
+        id="grid_" + uuid.uuid4().hex[:12],
+        episode=episode,
+        script_file=script_file,
+        scene_ids=scene_ids,
+        grid_image_path=None,
+        rows=rows,
+        cols=cols,
+        cell_count=rows * cols,
+        frame_chain=build_legacy_frame_chain(scene_ids, rows, cols),
+        status="pending",
+        prompt=prompt,
+        provider=provider,
+        model=model,
+        grid_size=grid_size,
+        created_at="2026-01-01T00:00:00+00:00",
+        video_aspect_ratio=video_aspect_ratio,
+    )
+
+
+def legacy_plan_confirmation_matches(project_dir: Path, project: dict[str, Any], episode: int) -> bool:
+    """核验保留的历史确认指纹仍对应原文件；不恢复确认入口。"""
+    path = script_plan_path(project_dir, project, episode)
+    fingerprint = content_fingerprint(path) if path is not None else None
+    return fingerprint is not None and stored_review(project, episode).get("fingerprint") == fingerprint
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -723,7 +869,7 @@ def write_legacy_style_project(
     (project_dir / "source").mkdir()
     (project_dir / "source" / "episode_1.txt").write_text("雨夜", encoding="utf-8")
 
-    grid = GridGeneration(
+    grid = LegacyGridRecord(
         id=grid_id,
         episode=1,
         script_file="episode_1.json",
@@ -732,7 +878,7 @@ def write_legacy_style_project(
         rows=2,
         cols=2,
         cell_count=4,
-        frame_chain=build_frame_chain(list(grid_members), 2, 2),
+        frame_chain=build_legacy_frame_chain(list(grid_members), 2, 2),
         status="completed",
         prompt="grid",
         provider="provider",

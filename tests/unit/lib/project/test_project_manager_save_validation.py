@@ -14,6 +14,7 @@ import pytest
 from lib.project.project_manager import ProjectManager
 from lib.script.script_editor import ScriptEditError
 from lib.script.script_structure_validator import ScriptStructureValidationError
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _segment(segment_id: str = "E1S01", duration: int = 4) -> dict:
@@ -54,7 +55,7 @@ def _invalid_script() -> dict:
 def _pm(tmp_path: Path) -> ProjectManager:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     return pm
 
 

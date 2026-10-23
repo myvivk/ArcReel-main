@@ -6,9 +6,6 @@ from typing import Any
 import pytest
 
 from lib.prompts.prompt_builders import build_character_prompt, render_storyboard_image_prompt
-from lib.script.grid.prompt_builder import build_grid_prompt
-from lib.script.reference_video.prompt_render import render_unit_prompt
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 
 
 def _asset(style: Any, style_description: Any) -> str:
@@ -23,28 +20,14 @@ def _storyboard_structured(style: Any, style_description: Any) -> str:
     return render_storyboard_image_prompt({"scene": "林清坐在窗边"}, style=style, style_description=style_description)
 
 
-def _grid(style: Any, style_description: Any) -> str:
-    return build_grid_prompt(
-        scenes=[{"scene_id": "S1", "image_prompt": "林清坐在窗边", "video_prompt": "起身"}],
-        id_field="scene_id",
-        rows=2,
-        cols=2,
-        style=style,
-        style_description=style_description,
-    )
 
 
-def _reference_video(style: Any, style_description: Any) -> str:
-    project = {"style": style, "style_description": style_description}
-    return render_unit_prompt("林清走进酒馆", project, [], VoiceRenderSettings()).prompt
 
 
 _ENTRIES: dict[str, Callable[[Any, Any], str]] = {
     "asset": _asset,
     "storyboard-text": _storyboard_text,
     "storyboard-structured": _storyboard_structured,
-    "grid": _grid,
-    "reference-video": _reference_video,
 }
 
 

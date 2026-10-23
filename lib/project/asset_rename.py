@@ -25,7 +25,7 @@ from lib.project.asset_types import (
     rekey_equivalent_entries,
 )
 from lib.references.reference_catalog import renamed_reference, split_derivative_reference
-from lib.script.reference_video.text_parser import rewrite_mentions
+from lib.references.text_parser import rewrite_mentions
 from lib.script.script_references import iter_reference_sites
 
 

@@ -65,9 +65,6 @@ export function PromptAuthoringHost({ projectName, episode, script, savedInstruc
   const close = usePromptAuthoringStore((s) => s.close);
   useEffect(() => close, [close, projectName, episode]);
   const entries = useMemo(() => promptAuthoringEntries(script), [script]);
-  const unitMode = Boolean(
-    script && typeof script === "object" && Array.isArray((script as Record<string, unknown>).video_units),
-  );
   if (!request || request.projectName !== projectName || request.episode !== episode || !script) return null;
   return (
     <PromptAuthoringDialog
@@ -76,7 +73,6 @@ export function PromptAuthoringHost({ projectName, episode, script, savedInstruc
       projectName={projectName}
       episode={episode}
       entries={entries}
-      unitMode={unitMode}
       request={request}
       savedInstructions={savedInstructions ?? ""}
       onClose={close}
@@ -88,8 +84,6 @@ interface DialogProps {
   projectName: string;
   episode: number;
   entries: PromptAuthoringEntry[];
-  /** 参考生视频单元：视觉层是单元正文，提示文案按单元说。 */
-  unitMode: boolean;
   request: PromptAuthoringOpenRequest;
   savedInstructions: string;
   onClose: () => void;
@@ -99,7 +93,6 @@ export function PromptAuthoringDialog({
   projectName,
   episode,
   entries,
-  unitMode,
   request,
   savedInstructions,
   onClose,
@@ -126,9 +119,9 @@ export function PromptAuthoringDialog({
   });
   const [rewrite, setRewrite] = useState(request.defaultRewrite === true);
   const [fields, setFields] = useState<PromptAuthoringField[]>(
-    () => request.defaultFields ?? (unitMode ? [] : ["image_prompt"]),
+    () => request.defaultFields ?? ["image_prompt"],
   );
-  const fieldsLocked = request.lockFields === true && !unitMode && fields.length === 1;
+  const fieldsLocked = request.lockFields === true && fields.length === 1;
   const currentOnly = request.scope === "current" && currentEntryId !== null;
   const [instructions, setInstructions] = useState(savedInstructions);
   const [submitting, setSubmitting] = useState(false);
@@ -163,7 +156,7 @@ export function PromptAuthoringDialog({
       await enqueuePromptAuthoring(projectName, episode, {
         entry_ids: entryIds,
         rewrite,
-        fields: unitMode || fields.length === 0 ? null : fields,
+        fields: fields,
         instructions: instructions.trim() || null,
         overwrite_revision: overwriteRevision,
       });
@@ -197,7 +190,7 @@ export function PromptAuthoringDialog({
         episodeRef: episodeAgentRef(episodeLedger, episode, t),
         scopeLabel,
         rewrite,
-        fields: unitMode || fields.length === 0 ? null : fields,
+        fields: fields,
         instructions,
       }),
     );
@@ -301,20 +294,12 @@ export function PromptAuthoringDialog({
                 <div className="flex flex-col gap-0.5">
                   <Label htmlFor={rewriteId}>{t("prompt_authoring_rewrite_toggle")}</Label>
                   <p id={`${rewriteId}-hint`} className="text-xs text-muted-foreground">
-                    {t(
-                      rewrite
-                        ? unitMode
-                          ? "prompt_authoring_rewrite_hint_units"
-                          : "prompt_authoring_rewrite_hint"
-                        : unitMode
-                          ? "prompt_authoring_fill_hint_units"
-                          : "prompt_authoring_fill_hint",
-                    )}
+                    {t(rewrite ? "prompt_authoring_rewrite_hint" : "prompt_authoring_fill_hint")}
                   </p>
                 </div>
               </div>
 
-              {!unitMode ? (
+              {(
                 <div className="flex flex-col gap-2">
                   <span id={fieldScopeId} className="text-sm font-medium">
                     {t("prompt_authoring_field_label")}
@@ -341,7 +326,7 @@ export function PromptAuthoringDialog({
                     </RadioGroup>
                   )}
                 </div>
-              ) : null}
+              )}
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={fieldId}>{t("prompt_authoring_instructions_label")}</Label>

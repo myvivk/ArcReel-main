@@ -14,7 +14,7 @@ import type { ContentBlock, Turn } from "@/types";
  */
 const SCRIPT_GENERATION_TOOL_NAMES = new Set([
   "mcp__arcreel__generate_episode_script",
-  "mcp__arcreel__generate_script_plan",
+  "mcp__arcreel__generate_short_drama_factory",
 ]);
 
 function collectBlocks(turns: Turn[], draftTurn: Turn | null): ContentBlock[] {

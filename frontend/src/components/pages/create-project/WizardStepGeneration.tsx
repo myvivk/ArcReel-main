@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { DurationTierPicker } from "@/components/shared/DurationTierPicker";
 import { EpisodeTargetDurationField } from "@/components/shared/EpisodeTargetDurationField";
 import { SpeechRateField } from "@/components/shared/SpeechRateField";
 import { ModelConfigSection, type ModelConfigValue } from "@/components/shared/ModelConfigSection";
@@ -35,17 +34,13 @@ export interface WizardGenerationData {
 }
 
 export interface WizardDurationValue {
-  /** 广告项目的目标总时长（秒）；「自定义」输入无效时为 null。 */
-  targetDuration: number | null;
-  /** 单集目标时长（秒）；null = 不设目标。广告项目不使用。 */
+  /** 单集目标时长（秒）；null = 不设目标。 */
   episodeTargetDuration: number | null;
   /** 口播语速估算（阅读单位 / 秒）；null = 按项目语言的默认值估算。 */
   speechRate: number | null;
 }
 
 export interface WizardStepGenerationProps {
-  isAd: boolean;
-  usesReferenceImages: boolean;
   duration: WizardDurationValue;
   onDurationChange: (next: WizardDurationValue) => void;
   models: ModelConfigValue;
@@ -57,8 +52,6 @@ export interface WizardStepGenerationProps {
 }
 
 export function WizardStepGeneration({
-  isAd,
-  usesReferenceImages,
   duration,
   onDurationChange,
   models,
@@ -74,20 +67,13 @@ export function WizardStepGeneration({
     <div className="flex flex-col gap-6">
       <WizardSection
         title={t("wizard_duration_title")}
-        description={isAd ? t("wizard_duration_ad_desc") : t("wizard_duration_desc")}
+        description={t("wizard_duration_desc")}
       >
         <div className="flex flex-col gap-4">
-          {isAd ? (
-            <DurationTierPicker
-              value={duration.targetDuration}
-              onChange={(targetDuration) => onDurationChange({ ...duration, targetDuration })}
-            />
-          ) : (
-            <EpisodeTargetDurationField
-              value={duration.episodeTargetDuration}
-              onChange={(episodeTargetDuration) => onDurationChange({ ...duration, episodeTargetDuration })}
-            />
-          )}
+          <EpisodeTargetDurationField
+            value={duration.episodeTargetDuration}
+            onChange={(episodeTargetDuration) => onDurationChange({ ...duration, episodeTargetDuration })}
+          />
           {/* 项目还没有语言事实（由内容分析写入），单位按未知语言呈现 */}
           <SpeechRateField
             value={duration.speechRate}
@@ -125,9 +111,7 @@ export function WizardStepGeneration({
               modelNames: data.options.modelNames,
             }}
             globalDefaults={data.globalDefaults}
-            usesReferenceImages={usesReferenceImages}
-            // 广告项目按目标总时长逐个分镜规划，不暴露默认时长
-            enable={isAd ? { duration: false } : undefined}
+            usesReferenceImages={false}
           />
         )}
       </WizardSection>

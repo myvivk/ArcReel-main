@@ -22,7 +22,7 @@ from fastapi import APIRouter
 from lib.config.resolver import ConfigResolver
 from lib.db import async_session_factory
 from lib.generation.generation_queue import get_generation_queue
-from lib.infra.api_errors import BadRequestError, ConflictError, NotFoundError
+from lib.infra.api_errors import BadRequestError, NotFoundError
 from lib.project.project_manager import get_project_manager
 from lib.script.script_skeleton import SkeletonRouteMismatchError
 from server.auth import CurrentUser
@@ -34,7 +34,6 @@ from server.services.admission.storyboard_batch import (
     EpisodeStoryboardScript,
     ShotGridBatchPlan,
     StoryboardBatchEpisodeNotFound,
-    StoryboardBatchRouteMismatch,
     StoryboardImageBatchPlan,
     StoryboardVideoBatchPlan,
     estimate_storyboard_video_batch_cost,
@@ -63,8 +62,6 @@ def _planning_errors(project_name: str, episode: int) -> Generator[None]:
         raise NotFoundError("project_not_found", name=project_name) from exc
     except StoryboardBatchEpisodeNotFound as exc:
         raise NotFoundError("episode_not_found", episode=exc.episode_id) from exc
-    except StoryboardBatchRouteMismatch as exc:
-        raise ConflictError("video_route_is_reference_video") from exc
     except (SkeletonRouteMismatchError, ValueError) as exc:
         raise BadRequestError("storyboard_batch_script_invalid", episode=episode) from exc
 

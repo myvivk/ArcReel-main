@@ -24,6 +24,7 @@ from lib.project.asset_types import DERIVATIVES_FIELD
 from lib.project.project_manager import ProjectManager
 from tests.fakes import FakeConfigResolver
 from tests.integration.server.services.tasks.generation_tasks_support import register_stale_visual_claim
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 #: 本体资产图的可辨识内容：左右两半各一个纯色块，压缩后仍能按像素认出来。
 OWNER_SHEET_SIZE = (96, 48)
@@ -83,7 +84,7 @@ def seed_derivative_project(
     """
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.add_character("demo", owner, "少女")
 
     def _register(entry: dict[str, Any]) -> None:

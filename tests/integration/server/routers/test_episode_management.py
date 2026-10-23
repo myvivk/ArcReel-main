@@ -11,6 +11,7 @@ from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import episode_management
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 NOVEL = "少年下山。城里起火。夜雨。"
 
@@ -29,7 +30,7 @@ def _cut(episode: int, start: int, end: int) -> dict:
 def _client(monkeypatch, tmp_path: Path, episodes: list[dict]) -> tuple[TestClient, ProjectManager]:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project(
         "demo",
         lambda project: project.update(

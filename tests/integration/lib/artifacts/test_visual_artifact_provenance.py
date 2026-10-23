@@ -27,7 +27,7 @@ from lib.artifacts.visual_artifact_provenance import (
     build_storyboard_video_artifact_visual_basis,
     project_basis_style_description,
 )
-from lib.script.reference_video.request_projection import ResolvedReferenceAsset
+from lib.project.legacy_reference_assets import ResolvedReferenceAsset
 from lib.script.script_models import ReferenceResource
 
 

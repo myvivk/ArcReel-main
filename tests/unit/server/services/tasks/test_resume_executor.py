@@ -21,11 +21,11 @@ from arcreel_market_core.video_backend_contract import ResumeExpiredError
 from lib.artifacts.artifact_manifest import ArtifactBasis, compose_video_artifact_basis
 from lib.artifacts.version_manager import PaidVersionCommit
 from lib.artifacts.video_artifact_facts import VideoArtifactCurrencyFacts
-from lib.infra.content_digest import canonical_json, canonical_json_digest
-from lib.script.reference_video.execution_checkpoint import (
+from lib.generation.execution_checkpoint import (
     StagedProviderMedia,
     StoryboardSubmissionCheckpoint,
 )
+from lib.infra.content_digest import canonical_json, canonical_json_digest
 
 
 class _FakeProjectManager:
@@ -568,7 +568,7 @@ def _reference_checkpoint(
     endpoint_guard: str | None = None,
     legacy_narration: dict[str, Any] | None = None,
 ) -> str:
-    from lib.script.reference_video.execution_checkpoint import ReferenceSubmissionCheckpoint
+    from lib.generation.execution_checkpoint import ReferenceSubmissionCheckpoint
 
     staging = project_path / ".arcreel" / "tasks" / "T-ref" / "provider_media"
     staging.mkdir(parents=True, exist_ok=True)
@@ -628,7 +628,7 @@ def _reference_checkpoint(
 
 @pytest.mark.asyncio
 async def test_reference_resume_reads_only_strict_checkpoint_request_and_cleans_staging(monkeypatch, fake_pm):
-    from lib.script.reference_video.execution_checkpoint import ReferenceSubmissionCheckpoint
+    from lib.generation.execution_checkpoint import ReferenceSubmissionCheckpoint
     from server.services.tasks import resume_executor
     from server.services.tasks.resume_executor import execute_resume_video_task
 
@@ -717,7 +717,7 @@ async def test_reference_resume_without_tts_config_declares_no_audio_lane(
 
     升级前落库的 v3 检查点带着旁白交付事实（含 use_tts），续跑同样不声明音频 lane。
     """
-    from lib.script.reference_video.execution_checkpoint import ReferenceSubmissionCheckpoint
+    from lib.generation.execution_checkpoint import ReferenceSubmissionCheckpoint
     from server.services.tasks import resume_executor
     from server.services.tasks.resume_executor import execute_resume_video_task
 
@@ -812,7 +812,7 @@ async def test_reference_resume_endpoint_guard_is_exact(
 
 @pytest.mark.asyncio
 async def test_reference_resume_rejects_resolved_model_drift_before_poll(monkeypatch, fake_pm):
-    from lib.script.reference_video.execution_checkpoint import ReferenceExecutionIdentityError
+    from lib.generation.execution_checkpoint import ReferenceExecutionIdentityError
     from server.services.tasks import resume_executor
     from server.services.tasks.resume_executor import execute_resume_video_task
 

@@ -36,7 +36,7 @@ MODULES = [
     "lib.generation.restart_recovery",
     "lib.generation.task_failure_encoding",
     "lib.generation.video_resume",
-    "lib.script.grid.grid_manager",
+    "lib.project.legacy_grid_store",
     "lib.backends.grok_shared",
     "lib.infra.image_utils",
     "lib.infra.logging_config",
@@ -106,7 +106,9 @@ FIRST_IMPORT_MODULES = [
     "server.services.tasks.formal_image_commit",
     "server.services.tasks.generation_tasks",
     "server.services.tasks.image_edit_tasks",
-    "server.services.tasks.reference_video_tasks",
+    "lib.generation.execution_checkpoint",
+    "lib.speech.reference_audio",
+    "lib.references.text_parser",
 ]
 
 

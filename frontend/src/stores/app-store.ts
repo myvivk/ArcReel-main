@@ -110,13 +110,9 @@ interface AppState {
   setUsagePanelOpen: (open: boolean) => void;
 
   // Grid list invalidation signal (incremented on grid_ready SSE events)
-  gridsRevision: number;
-  invalidateGrids: () => void;
 
   // 视频单元失效信号：参考生视频任务终态经项目事件 SSE 推来时自增，参考生
   // 视频画布据此重拉单元，生成完成后无需手动刷新即可看到成片。
-  referenceVideoUnitsRevision: number;
-  invalidateReferenceVideoUnits: () => void;
 
   // Entity-scoped invalidation signal for cache-busted asset URLs
   entityRevisions: Record<string, number>;
@@ -271,12 +267,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   usagePanelOpen: false,
   setUsagePanelOpen: (open) => set({ usagePanelOpen: open }),
 
-  gridsRevision: 0,
-  invalidateGrids: () => set((s) => ({ gridsRevision: s.gridsRevision + 1 })),
 
-  referenceVideoUnitsRevision: 0,
-  invalidateReferenceVideoUnits: () =>
-    set((s) => ({ referenceVideoUnitsRevision: s.referenceVideoUnitsRevision + 1 })),
 
   entityRevisions: {},
   invalidateEntities: (keys) =>

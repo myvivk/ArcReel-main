@@ -1,307 +1,100 @@
 ---
 id: workflows
-title: Workflows and Modes
+title: Short Drama Factory Workflow
 sidebar_position: 2
 update_docs: full
 ---
 
-# Workflows and Modes {#workflows}
+# Short Drama Factory Workflow {#workflows}
 
-ArcReel supports multiple content sources and video generation methods. This page helps you choose the right path before starting a project and define the review criteria for each stage.
+ArcReel uses the short drama factory for writing and video production. After creating a project, complete factory delivery, asset preparation, AI storyboarding, reference confirmation, separate video prompts, video generation, and editing.
 
-## 1. Two Dimensions to Choose Separately {#two-dimensions}
+## 1. Create a Factory Project {#two-dimensions}
 
-When creating a project, distinguish between:
-
-1. **Content Mode**: determines how the script is organized;
-2. **Generation mode**: determines whether video production is organized around storyboard images or reference images such as asset images. Storyboard to video can optionally generate images as multi-grid storyboards.
-
-They can be combined. For example:
-
-- Drama + Storyboard to video;
-- Drama + Reference to video;
-- Narration/Commentary + Storyboard to video;
-- Ad / Short Video + Reference to video.
-
-## 2. Content Sources {#content-sources}
-
-### 2.1 Novel {#source-novel}
-
-Best for:
-
-- Novel adaptations;
-- Novel-recap videos;
-- Projects that need AI assistance with episode planning and structured scripts.
-
-ArcReel will process:
-
-- Characters and aliases;
-- Key scenes;
-- Key props;
-- Plot stages;
-- Episode boundaries;
-- Shot-oriented descriptions.
-
-Recommendations:
-
-- Do not upload an entire long novel for your first attempt;
-- Start with a self-contained chapter to validate the style and providers;
-- Confirm character assets before expanding the production scope.
-
-### 2.2 Finished Screenplay {#source-screenplay}
-
-Best for projects that:
-
-- Already have dialogue, voice-over, and scene directions;
-- Need to preserve the author's original text as closely as possible;
-- Only need asset design, storyboarding, and media generation.
-
-Core principles:
-
-- Dialogue and voice-over should be preserved verbatim whenever possible;
-- Characters should be based on the author's character list and screenplay content;
-- Extras and establishing shots should not automatically expand into long-lived character assets;
-- The focus is normalization and shot production, not rewriting.
-
-### 2.3 Merchandise Materials {#source-product-material}
-
-Best for:
-
-- Shoppable short videos;
-- Merchandise demos;
-- Ad scripts;
-- Branded short videos.
-
-Prepare:
-
-- Front, side, detail, and in-use merchandise images;
-- Core selling points;
-- Target audience;
-- Prohibited claims;
-- Brand visual requirements;
-- Target duration and publishing platform.
-
-Ad / Short Video projects should establish stable merchandise asset images before generating shots in context.
-
-## 3. Content Modes {#content-modes}
-
-### 3.1 Narration/Commentary {#narration-mode}
-
-#### Characteristics {#narration-traits}
-
-- Narration is the primary vehicle for information;
-- Visuals support the narrative and atmosphere;
-- Content is split by reading rhythm and semantic pauses;
-- Better suited to fast-paced vertical short videos.
-
-#### Recommended Workflow {#narration-flow}
+Enter the project name, aspect ratio, visual style, total episode count, episode target, and model settings. Production uses drama storyboards with no content-mode or generation-route selector. Both live-action and animation styles are supported.
 
 ```mermaid
 flowchart LR
-    A["Source Text"] --> B["Narration Segments"]
-    B --> C["Visual Descriptions"]
-    C --> D["Storyboard Images"]
-    D --> E["Video Clips"]
-    B --> F["TTS Narration"]
-    E --> G["Composition / Jianying Draft"]
-    F --> G
+    A["Creative Brief / Factory Continuation / Artifact Import"] --> B["Quality Checks & Seven Artifact Types"]
+    B --> C["Character / Scene / Prop Assets"]
+    C --> D["AI Storyboards & Image Prompts"]
+    D --> E["Confirm Per-Shot Keyframes"]
+    E --> F["Separate Video Prompts"]
+    F --> G["Video & Audio"]
+    G --> H["Edit / Final Cut / Jianying Draft"]
 ```
 
-#### Review Focus {#narration-review}
+## 2. Factory Delivery and Reading {#content-sources}
 
-- Whether each narration segment is too long;
-- Whether each visual conveys one clear point;
-- Whether the visuals merely restate the narration mechanically;
-- TTS pronunciation of proper nouns and character names;
-- Whether the narration and visuals have matching durations.
+### Factory Generation {#drama-flow}
 
-#### Best For {#narration-fit}
+**AI original script** supports new stories, continuations, and consecutive episodes. Enter the genre, creative brief, length tier, and total episode count, then hand the instructions to the Agent. It reads existing series artifacts and calls the configured strong text model.
 
-- Novel-recap videos;
-- History, storytelling, and educational content;
-- Narration-led merchandise introductions;
-- Projects with limited lip-sync requirements.
+Each episode goes through a first draft, doctor refinement, episode machine checks, repair, ledger updates, series machine checks, and compliance checks. Each passing batch is saved immediately. A failed check, failed report, or incomplete artifact set rejects the entire batch.
 
-### 3.2 Drama {#drama-mode}
+### Artifact Directory Import {#artifact-import}
 
-#### Characteristics {#drama-traits}
+For existing factory deliveries, open **Import script** from the overview, script, or storyboard page and select the artifact directory. ArcReel validates relative paths and seven artifact types, then stores the original Markdown:
 
-- Scenes, characters, dialogue, and action form the primary structure;
-- Greater emphasis on character consistency and shot continuity;
-- Suitable for AI motion comics, narrative shorts, and animated adaptations of finished screenplays.
+- Character bible: `character-bible.md`;
+- Series outline: `series-outline.md`;
+- Continuity ledger: `ledger.md`;
+- Episode plan: `episode-plan/episode_NN.plan.md`;
+- Episode text: `episodes/episode_NN.md`;
+- Machine report: `reports/episode_NN.machine.md`;
+- Compliance report: `compliance/episode_NN.compliance.md`.
 
-#### Recommended Workflow {#drama-flow}
+These files are stored under `source/short_drama/`. Existing series artifacts can be reused. Each delivered episode must include its plan, text, and both reports in the same batch; reports require the explicit final verdict `结果: PASSED`. Import runs the quality checks again. A novel, PDF, or single Markdown episode cannot satisfy this contract.
 
-```mermaid
-flowchart LR
-    A["Novel / Screenplay"] --> B["Episode Planning"]
-    B --> C["Structured Script & New Assets"]
-    C --> D["Content Review & Asset Registration"]
-    D --> E["Character / Scene Assets"]
-    E --> F["Storyboards"]
-    F --> G["Video"]
-    G --> H["Final Cut / Jianying Draft"]
-```
+### Story Planning and Episode Script {#story-planning}
 
-#### Review Focus {#drama-review}
+**Story planning** displays the character bible, series outline, ledger, and episode plans as read-only documents. The episode **Script** view displays the original `episodes/episode_NN.md`. Quality reports are stored in the project directory and are not yet displayed on the page.
 
-- Whether each episode has a complete objective and emotional arc;
-- Whether character appearances and costumes remain continuous;
-- Whether spatial relationships between shots remain stable;
-- Whether dialogue, actions, and shot duration align;
-- Whether eyelines and movement direction remain continuous across adjacent shots.
+Factory text is the source of truth for plot and dialogue. Revisions must pass the factory quality workflow and submit a complete artifact set. Pages do not edit the source directly. Delivery does not generate visual JSON or register assets automatically.
 
-#### Best For {#drama-fit}
+## 3. Assets and AI Storyboards {#content-modes}
 
-- Novel adaptations;
-- Serialized AI motion comics;
-- Character-driven narrative shorts;
-- Animating existing dialogue-based screenplays.
+### Episode Assets {#stage-reference-assets}
 
-### 3.3 Ad / Short Video {#ad-mode}
+In the episode **Assets** view, check characters, scenes, and props; complete registrations, descriptions, and asset sheets. Missing registrations or descriptions block AI storyboarding. Reusing assets across episodes reduces changes in appearance, clothing, and locations.
 
-#### Characteristics {#ad-traits}
+### AI Storyboards {#drama-mode}
 
-- A clearly defined target duration;
-- Shots organized around selling points, use cases, and calls to action;
-- Merchandise fidelity and reference consistency take priority;
-- Can generate voice-over copy, subtitles, and a Jianying draft, with dubbing completed after export.
+Open **Storyboards** to generate storyboard units and image prompts from the source and registered assets. Shot duration comes from project settings. Choose conservative, standard, or enhanced optimization. Existing storyboards can be rebuilt completely or only for selected shots; unselected shots are preserved.
 
-#### First Input and Story Setting {#ad-first-input}
+AI output must cover the source while preserving dialogue and source anchors. Invalid output is sent back for repair. When retries are exhausted, generation fails without a mechanical fallback. `scripts/episode_N.json` stores visual production state and does not replace the factory source.
 
-Ad/short video projects have no separate setup page. After you create the project, fill in the project overview:
+## 4. References and Separate Video Prompts {#video-production-routes}
 
-- **Creative brief**: the video you want, the target audience, tone and key selling points, plus the target duration.
-- **Merchandise**: click **Add product**, enter the name and description in the side panel, then upload product photos after the product is created. Without a product, you can still generate the script from the creative brief alone.
+### Shot Details and Keyframes {#storyboard-image-route}
 
-Ad/short video projects have no source text. Edit the synopsis, genre, theme and world setting in the **Story setting** tab on the video page; AI script generation draws on them. After you save changes, a script that was already generated is marked outdated.
+Shot details list **References** before **Prompts**. The prompt section contains, in order:
 
-#### Recommended Workflow {#ad-flow}
+1. **Storyboard prompt**: insert characters, scenes, and props with **Insert referenced assets**; image generation includes their asset sheets.
+2. **Reference materials**: generate consecutive keyframes for one shot from its image prompt. The default is 2×2, with 2×3 and 3×3 options. Cells are numbered K0, K1, and so on, from left to right and top to bottom. Review the composite, then confirm the references to split and bind them.
+3. **Video prompt**: write it separately after confirmation, inserting K-frame labels through **Insert reference materials**. Image and video prompts cannot be authored in the same generation.
 
-```mermaid
-flowchart LR
-    A["Merchandise Images + Selling Points"] --> B["Standard Merchandise References"]
-    B --> C["Short-Video Shot Script"]
-    C --> D["Merchandise-Anchored Storyboards"]
-    D --> E["Video Clips"]
-    C --> F["Voice-over Copy / Subtitles"]
-    E --> G["Jianying Draft / Export Without Dubbing"]
-    F --> G
-    G --> H["Final Cut After Dubbing"]
-```
+Cancelling reference editing does not save it. After changing the grid size, regenerate and confirm it before generating video from shot details. Changed references prompt a recommendation to rewrite the video prompt. Each grid contains consecutive keyframes of one shot only.
 
-#### Review Focus {#ad-review}
+### Inputs and Continuity {#shot-continuity}
 
-- Whether the merchandise's shape, Logo, colors, and structure are accurate;
-- Whether selling points are factually supported;
-- Whether shots rely too heavily on the generation model to fill in merchandise details;
-- Whether the opening quickly communicates the merchandise's value;
-- Whether the ending has a clear call to action;
-- Whether voice-over copy and subtitles comply with platform rules.
+Video generation submits the complete keyframe group, each cell once, and records the relationship between keyframes and the composite. The model must support the selected reference count and first/last frame inputs. Exceeding its limits blocks the entire batch; ArcReel does not remove keyframes.
 
-## 4. Generation Modes {#video-production-routes}
+Adjacent shots prefer the actual last frame of the previous video, then the saved user snapshot, then the last cell of the previous grid. If none is available, the shot opens on its own first cell and ends on its last cell. Regeneration preserves user snapshots.
 
-### 4.1 Storyboard to Video {#storyboard-image-route}
+Character reference audio follows the order of first spoken appearance, subject to the model’s clip-count and total-duration limits. Models requiring audio-image binding also require a keyframe target for each speaker.
 
-Uses a single storyboard image as the video input.
+## 5. Historical Projects and Upgrades {#historical-projects}
 
-#### Advantages {#storyboard-image-pros}
+Historical narration, ad, and reference-video projects retain data, media, and versions for reading, archiving, and existing edits. Their old and shared generation entries cannot produce new content. Mode fields are preserved, and old JSON is never converted automatically into the seven factory artifacts.
 
-- The most straightforward workflow;
-- Usually has the broadest provider support;
-- Makes it easy to redo individual shots;
-- Clearly separates storyboard review from video generation.
+To produce new content, create a factory project and provide a complete factory delivery. Submitted provider tasks that can resume continue with their stored task IDs; failed downloads remain retryable without submitting another paid request.
 
-#### Limitations {#storyboard-image-cons}
-
-- Primarily constrains the opening frame;
-- The model may change characters and details during motion;
-- The final frame may not transition well into the next shot.
-
-#### Recommended For {#storyboard-image-fit}
-
-- Most first-time projects;
-- Projects with high-quality storyboards;
-- Projects where each shot is relatively independent;
-- Projects that need to switch providers quickly.
-
-### 4.2 Multi-grid Storyboard Images in Storyboard to Video {#grid-storyboard-route}
-
-Multi-grid storyboards are not a separate generation mode but an image-generation method within storyboard to video. It generates multiple shots from the same passage together on one or more multi-grid storyboards; after review, each grid is split into an individual storyboard image for each shot, and each video is then generated separately. The video model still receives the individual storyboard image after splitting.
-
-Image generation takes two steps:
-
-1. **Generate**: produces only the multi-grid storyboard itself and leaves each shot's existing storyboard image unchanged. Review it in the episode page's **Storyboard grids** view; if you are not satisfied, regenerate it or upload your own composite image to replace it.
-2. **Split into cells**: once you are satisfied, click **Split into cells** in the **Storyboard grids** view, or agree in the conversation to let the Agent split it. Splitting overwrites every storyboard image the multi-grid storyboard covers for shots still in the script (shots since removed from the script are skipped); the previous storyboard images stay in the version history and can be rolled back.
-
-Multi-grid storyboards automatically use square 2×2 / 3×3 grids based on the number of shots. Each cell uses the same aspect ratio as the project video; when there are more shots, they are divided across multiple multi-grid storyboards according to the grid capacity. Denser 4×4 / 5×5 grids are available only when the image model's resolution tier is configured as 4K—the more cells a multi-grid storyboard contains, the lower the resolution of each cell, and dense grids at lower resolution tiers will degrade downstream video quality.
-
-Groups are set by chapter breaks: turn on **Set as chapter break** in the shot details, and a new group starts at that shot. Adding, removing, and reordering shots on the timeline, as well as chapter breaks, work the same way in grid projects.
-
-After the grouping or the order within a group changes, the old multi-grid storyboard no longer matches the new group, so the group shows as not generated and needs to be regenerated. Storyboard images already split from a multi-grid storyboard are not affected and remain usable.
-
-When a few shots in a group are missing storyboard images, you can generate them one by one from the shot details instead of regenerating the whole group.
-
-#### Advantages {#grid-storyboard-pros}
-
-- Characters, scenes, and visual style are easier to keep consistent within the same multi-grid storyboard;
-- Lets you review the composition and rhythm of a group of consecutive shots at once;
-- Suitable for establishing a unified visual direction before generating videos shot by shot.
-
-#### Limitations {#grid-storyboard-cons}
-
-- Multi-grid storyboard layouts and splitting rules add complexity;
-- Each cell may be less sharp;
-- Not available for reference to video or Ad / Short Video projects.
-
-#### Recommended For {#grid-storyboard-fit}
-
-- Consecutive shots that contain the same characters, scenes, or props;
-- Projects where cross-shot consistency matters more than the freedom of an individual storyboard;
-- Reviewing composition, costumes, and overall visual style in groups;
-- Long-form projects that need to reduce visual drift between batches.
-
-### 4.3 Reference to Video {#reference-video-route}
-
-Instead of using an ordinary storyboard as the sole input, the workflow directly provides reference images such as asset images of characters, scenes, props, or merchandise.
-
-#### Advantages {#reference-video-pros}
-
-- Makes more direct use of long-lived assets;
-- Suits video models that support multiple reference images;
-- Can eliminate the ordinary storyboard generation step;
-- Helps anchor character or merchandise identity.
-
-#### Limitations {#reference-video-cons}
-
-- Not supported by every provider;
-- Reference image count, type, and weighting limits vary;
-- Requires better prompts and asset selection;
-- Composition may be less controllable without an explicit storyboard.
-
-#### Recommended For {#reference-video-fit}
-
-- Models with mature reference-to-video capabilities;
-- High-quality character and merchandise assets;
-- Projects where identity consistency is the priority;
-- Projects that want fewer intermediate storyboard steps.
-
-## 5. Mode Selection Table {#mode-selection-table}
-
-| Requirement | Recommended Content Mode | Recommended Generation Mode |
-|---|---|---|
-| Novel recaps and narration-led content | Narration/Commentary | Storyboard to video |
-| Continuous narratives and character dialogue | Drama | Storyboard to video (with multi-grid storyboards) or Reference to video |
-| A complete existing screenplay | Drama | Storyboard to video |
-| Merchandise structure must remain stable | Ad / Short Video | Prefer Reference to video |
-| Strong cross-shot consistency requirements | Narration/Commentary or Drama | Storyboard to video (with multi-grid storyboards) |
-| First ArcReel trial | Any | Storyboard to video |
-| Limited provider support | Any | Storyboard to video |
-| An established library of high-quality character assets | Drama | Reference to video |
+Built-in Agent files are updated by fingerprint: unchanged obsolete instructions are removed, while user customizations are preserved. External Agents should refresh the MCP tool list and use factory generation, artifact ingestion, and prompt-authoring tools.
 
 ## 6. Standard Production Stages {#production-stages}
 
-Regardless of the selected mode, retain the following stages.
+Check the following factory stages. Validate a small sample before expanding the batch.
 
 ### Stage 1: Project Goals {#stage-project-goal}
 
@@ -320,23 +113,15 @@ Define:
 
 Confirm:
 
-- The sequence of plot points or selling points;
+- Plot order;
 - Episode boundaries;
 - The purpose of each shot;
-- Characters, scenes, and props that first appear in each episode, and how the AI proposes to handle them;
+- Characters, scenes, and props in each episode;
 - Content that must not be rewritten.
 
-When the AI plans the script for each episode, it compares the characters, scenes, and props in the episode with the names, aliases, and descriptions of registered assets. Unregistered assets are listed in the **New assets in this episode** section of the content review page, each with the AI's proposed handling and reason: register as new asset, merge into existing asset, register as derivative, or do not register. You can change any item before confirming. When you confirm, these assets are registered together with the final script. Aliases on asset cards help the AI recognize other names for the same asset.
+Check the factory source, series continuity, and episode plan before preparing assets. Plot and dialogue changes return to factory repair and artifact ingestion; visual changes use AI storyboarding or prompt editing.
 
-Before confirming, you can edit every field of each shot on the content review page, including duration, character / scene / prop references, the chapter break point, source text, lines, and speakers. Reference-to-video shots have no reference lists or chapter break points; asset references are written as `@[name]` in the shot text.
-
-- Pick the duration from the tiers of the current video model. A duration outside the tiers is marked in red with the reason, and you must pick another one before confirming.
-- References can use registered assets, and new assets in this episode whose handling is not **do not register**.
-- Pick a speaker from registered characters and new characters in this episode, or type another name, such as an extra who has no bound voice.
-
-If the references still contain a name that is neither registered nor a new asset registered in this episode, the confirmation is rejected and the affected shots and names are listed. Add, remove, and reorder shots on the timeline after confirming.
-
-### Stage 3: Asset Images {#stage-reference-assets}
+### Stage 3: Asset Images {#stage-assets-check}
 
 Confirm:
 
@@ -344,7 +129,6 @@ Confirm:
 - Recurring costumes;
 - Scenes;
 - Key props;
-- Merchandise;
 - Style references.
 
 #### Merge assets registered twice {#merge-assets}
@@ -361,7 +145,7 @@ The merged asset's description, sheet and version history, voice settings, refer
 
 Open the menu on an asset card and choose **Delete**. Before you confirm, the dialog checks references in every episode's script plan, final script, drafts, and prompt text:
 
-- If the asset is referenced, the dialog says which episodes reference it and how many times. Deleting doesn't rewrite those references, so shots that reference the asset will be blocked at generation. To keep the references, choose **Merge instead…** to [merge it into another asset of the same type](#merge-assets). Products can't be merged, so they don't have this button.
+- If the asset is referenced, the dialog says which episodes reference it and how many times. Deleting doesn't rewrite those references, so shots that reference the asset will be blocked at generation. To keep the references, choose **Merge instead…** to [merge it into another asset of the same type](#merge-assets).
 - If nothing references the asset, the dialog only warns that deletion can't be undone.
 
 Deleting a character also deletes its derivatives. Deletion can't be undone.
@@ -418,7 +202,7 @@ ArcReel's advantage is not “skipping review,” but placing review where the c
 
 | Review Point | What to Do When It Fails | What Not to Do |
 |---|---|---|
-| Content review | Correct the episode plan, shot content, and handling of new assets | Continue generating all character images |
+| Factory quality checks | Repair episode text, series continuity, and reports | Produce rejected content |
 | Character assets | Redo the character design or description | Batch-generate storyboards with an incorrect character |
 | Small storyboard sample | Correct composition and style | Generate the entire episode's videos immediately |
 | Small video sample | Adjust the model, parameters, and action descriptions | Repeatedly test expensive models without a plan |
@@ -441,10 +225,9 @@ ArcReel's advantage is not “skipping review,” but placing review where the c
 - Avoid unnecessary changes in lighting and time of day within the same passage;
 - Track where characters are positioned in the space.
 
-### Props and Merchandise {#consistency-props}
+### Props {#consistency-props}
 
 - Create prop assets for story-critical items;
-- Prefer real merchandise photos from multiple angles;
 - Do not let the model invent important text, Logo details, or structures;
 - When details drift, redo the affected shot first instead of concealing the problem with later shots.
 
@@ -466,7 +249,7 @@ An episode or short video is complete only when it meets at least the following 
 - The content structure has been confirmed;
 - The main assets have been confirmed;
 - Every shot has a clear purpose;
-- Characters and merchandise have no obvious identity drift;
+- Characters and key props have no obvious identity drift;
 - Video clips transition cleanly;
 - Narration and subtitles have been proofread;
 - Actual costs have been reviewed;

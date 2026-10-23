@@ -21,6 +21,7 @@ from server.agent_toolset.edit_timelines import (
 from server.media_tools.edit_timelines import CreateTimelineRequest
 from server.tool_runtime import CallerContext
 from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 @pytest.mark.parametrize(
@@ -33,7 +34,7 @@ from tests.integration.server.agent_tool_support import ToolHarness, run_declare
 async def test_created_revision_records_author(tmp_path: Path, caller: CallerContext, author: str) -> None:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script("demo", {"episode": 1, "title": "E1", "content_mode": "narration", "segments": []}, "episode_1.json")
     ctx = ToolHarness("demo", tmp_path, pm, caller=caller)
 
@@ -54,7 +55,7 @@ async def test_created_revision_records_author(tmp_path: Path, caller: CallerCon
 def harness(tmp_path: Path) -> ToolHarness:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script("demo", {"episode": 1, "title": "E1", "content_mode": "narration", "segments": []}, "episode_1.json")
     caller = CallerContext(user_id=DEFAULT_USER_ID, source="embedded")
     return ToolHarness("demo", tmp_path, pm, caller=caller)
@@ -124,7 +125,7 @@ async def test_rename_list_revisions_and_restore_through_the_tools(harness: Tool
 async def test_place_narration_moves_the_carrier_through_the_edit_tool(tmp_path: Path) -> None:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     segments = [
         {
             "segment_id": segment_id,

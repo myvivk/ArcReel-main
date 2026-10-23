@@ -13,7 +13,7 @@
 <p align="center">
   <strong>开源、自托管的 AI 视频生产工作台</strong>
   <br>
-  将小说、成品剧本或商品素材转化为角色一致、过程可控、成本可追踪、可继续编辑的短视频。
+  通过短剧工厂，将创作构想转化为角色一致、过程可控、成本可追踪、可继续编辑的短视频。
 </p>
 
 <p align="center">
@@ -85,12 +85,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/assets/screenshots/video-units.webp" alt="视频单元"></td>
     <td width="50%"><img src="docs/assets/screenshots/props.webp" alt="道具库"></td>
-  </tr>
-  <tr>
     <td width="50%"><img src="docs/assets/screenshots/scenes.webp" alt="场景库"></td>
-    <td width="50%"><img src="docs/assets/screenshots/ad-mode.webp" alt="广告/带货模式"></td>
   </tr>
 </table>
 
@@ -116,9 +112,9 @@
 
 ## ArcReel 是什么
 
-ArcReel 是面向 AI 漫剧与小说改编、旁白/解说短视频、广告与带货短片的开源自托管工作台。它把内容分析、资产管理、分镜、媒体生成、费用追踪和导出组织成一条可审核、可中断恢复的生产流水线。
+ArcReel 是面向 AI 漫剧和剧情短片的开源自托管工作台。短剧工厂完成写作、精修与质量检查，再进入资产、AI 分镜、关键帧、视频和剪辑，形成可审核、可恢复的制作流程。
 
-- **统一生产链路**：小说、成品剧本或商品素材都能逐步转化为角色、场景、道具、分镜、视频片段和最终成片。
+- **统一生产链路**：创意简报或完整工厂交稿逐步进入资产、AI 分镜、K 帧确认、独立视频提示词、视频与剪辑导出。
 - **视觉一致、人工可控**：跨分镜复用资产图等参考图，关键阶段可确认，单个素材可重做，历史版本可回滚。
 - **模型与成本可管理**：统一配置文本、图像、视频和 TTS 能力，并在生成前后查看费用与实际用量。
 - **交付可继续编辑**：既可直接合成视频，也可导出剪映草稿继续调整字幕、配音、节奏和转场。导出面向中国大陆版剪映，与 CapCut 的兼容性尚未验证。
@@ -127,16 +123,16 @@ ArcReel 是面向 AI 漫剧与小说改编、旁白/解说短视频、广告与�
 
 ```mermaid
 flowchart LR
-    A["小说 / 成品剧本 / 商品素材"] --> B["内容分析与项目规划"]
+    A["创意简报 / 工厂交稿"] --> B["工厂写作与质量检查"]
     B --> C["角色 / 场景 / 道具资产"]
-    C --> D["分集与结构化剧本"]
-    D --> E["分镜图 / 多宫格分镜"]
-    E --> F["视频片段 / 旁白音轨"]
-    F --> G["成片合成"]
+    C --> D["AI 分镜"]
+    D --> E["K 帧确认与独立视频提示词"]
+    E --> F["视频与声音"]
+    F --> G["剪辑与成片"]
     F --> H["剪映草稿导出"]
 ```
 
-每个阶段都可以由 Agent（智能体）编排，也可以由用户在工作台中审核、调整或重新生成。详细模式选择见 [创作流程与模式](https://docs.arc-reel.com/guide/workflows)。
+每个阶段都可以由 Agent（智能体）编排，也可以由用户在工作台中审核、调整或重新生成。详细阶段说明见 [短剧工厂制作流程](https://docs.arc-reel.com/guide/workflows)。
 
 ## 快速开始
 
@@ -164,7 +160,7 @@ docker compose up -d
 |---|---|
 | [文档首页](https://docs.arc-reel.com/) | 按使用者、运维者和开发者进入文档 |
 | [完整入门教程](https://docs.arc-reel.com/guide/getting-started) | 从首次部署到生成第一条视频 |
-| [创作流程与模式](https://docs.arc-reel.com/guide/workflows) | 小说、剧本与创作构想，三种创作类型及两种生成模式 |
+| [创作流程与模式](https://docs.arc-reel.com/guide/workflows) | 工厂交稿、资产、AI 分镜、K 帧、视频与剪辑的完成条件 |
 | [供应商与模型配置](https://docs.arc-reel.com/guide/providers) | Agent、文本、图像、视频、TTS 供应商的选择和配置 |
 | [剪映草稿导出](https://docs.arc-reel.com/guide/jianying-export) | 将 ArcReel 生成结果交给剪映继续编辑 |
 | [常见问题](https://docs.arc-reel.com/guide/faq) | 部署、费用、模型、数据和许可证问题 |

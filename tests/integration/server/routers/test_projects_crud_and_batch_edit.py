@@ -21,6 +21,7 @@ from tests.integration.server.routers.projects_router_support import (
     build_projects_client,
     override,
 )
+from tests.legacy_project_shapes import make_legacy_project, seed_legacy_project_metadata
 
 
 class TestProjectsRouter:
@@ -220,8 +221,8 @@ class TestProjectsRouter:
 
     def test_revisioned_batch_endpoint_returns_shared_result_and_rejects_stale_write(self, tmp_path, monkeypatch):
         pm = ProjectManager(str(tmp_path))
-        pm.create_project("demo", content_mode="narration")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        make_legacy_project(pm.projects_dir, "demo", content_mode="narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.save_script(
             "demo",
             {

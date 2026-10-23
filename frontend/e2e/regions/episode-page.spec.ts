@@ -35,7 +35,7 @@ function runningTask(resourceId: string) {
   return {
     task_id: `task-${resourceId}`,
     project_name: "demo",
-    task_type: "storyboard",
+    task_type: "shot_grid",
     media_type: "image",
     resource_id: resourceId,
     resource_type: null,
@@ -85,7 +85,7 @@ const STRESS: ApiOverrides = {
         ...plan.status,
         artifacts: {
           ...plan.status.artifacts,
-          storyboards: { current_ids: [], missing_ids: MISSING_STORYBOARDS, stale_ids: [] },
+          shot_grids: { current_ids: [], missing_ids: MISSING_STORYBOARDS, stale_ids: [] },
           videos: { current_ids: ids(148), missing_ids: [], stale_ids: [] },
           audio: { current_ids: [], missing_ids: ids(148), stale_ids: [] },
         },
@@ -128,7 +128,7 @@ const PROGRESS_STRESS: ApiOverrides = {
         ...plan.status,
         artifacts: {
           ...plan.status.artifacts,
-          storyboards: { current_ids: ids(36).slice(12), missing_ids: [], stale_ids: ids(12) },
+          shot_grids: { current_ids: ids(36).slice(12), missing_ids: [], stale_ids: ids(12) },
         },
       },
       steps: plan.steps.map((step) => {
@@ -143,7 +143,7 @@ const PROGRESS_STRESS: ApiOverrides = {
                 { code: "speech_admission_unrecognized", action: "fix_input", unit_id: "E1S11", params: {} },
               ],
             };
-          case "storyboard":
+          case "shot_grid":
             return {
               ...step,
               state: "active",
@@ -152,7 +152,7 @@ const PROGRESS_STRESS: ApiOverrides = {
                 unit_id: unitId,
                 task_id: `task-${unitId}-0f3c9a7e5b2d4c18a6e0`,
                 batch_id: null,
-                task_type: "storyboard",
+                task_type: "shot_grid",
                 status: "running",
                 provider_checkpoint: { submitted: true },
               })),
@@ -184,27 +184,6 @@ const PROGRESS_STRESS: ApiOverrides = {
   },
 };
 
-// 录制的集还没有脚本规划，脚本规划视图显示空态。
-const NO_SCRIPT_PLAN: ApiOverrides = {
-  ...API,
-  "GET /api/v1/projects/demo/episodes/1/script-review": {
-    status: 200,
-    body: {
-      episode: 1,
-      content_mode: "narration",
-      status: "no_script_plan",
-      fingerprint: null,
-      confirmed_at: null,
-      content: null,
-      quarantine: null,
-      supported_durations: null,
-      duration_tiers: null,
-      episode_target_duration: null,
-      script_overwrite: null,
-    },
-  },
-};
-
 // 两行页头：44px 与 40px 两行加 1px 底边。
 const HEADER_HEIGHT = 85;
 
@@ -227,18 +206,18 @@ async function pageReady(page: Page) {
 
 defineRegionScenarios("集页页头", [
   {
-    name: "两行页头约 85px，批量按钮写明补几份，没有可补的置灰",
+    name: "两行页头约 85px，参考素材按钮写明缺失数量，视频已齐时置灰",
     path: EPISODE_PATH,
     api: STRESS,
     ready: async (page) => {
       await pageReady(page);
-      await page.getByRole("button", { name: "补齐分镜图 · 34" }).waitFor();
+      await page.getByRole("button", { name: "补齐参考素材 · 36" }).waitFor();
     },
     act: async (page) => {
       expect((await box(header(page))).height).toBeCloseTo(HEADER_HEIGHT, 0);
       await expect(viewTabs(page).getByRole("tab", { name: "分镜" })).toHaveAttribute("aria-selected", "true");
-      // 缺 36 张、2 张正在生成：只补剩下的 34 张
-      await expect(page.getByRole("button", { name: "补齐分镜图 · 34" })).toBeEnabled();
+      // 参考素材按记录寻址；生成中的项由批量确认框跳过。
+      await expect(page.getByRole("button", { name: "补齐参考素材 · 36" })).toBeEnabled();
       await expect(page.getByRole("button", { name: "视频已齐" })).toBeDisabled();
       await expect(page.getByRole("button", { name: "补齐旁白配音 · 148" })).toBeEnabled();
       // 批量动作不在 tab 列表里
@@ -247,13 +226,13 @@ defineRegionScenarios("集页页头", [
     screenshot: { name: "episode-page-header", target: header },
   },
   {
-    name: "录制的集：没有可补的产物时三个批量按钮都置灰",
+    name: "工厂集提供提示词、参考素材与视频制作入口",
     path: EPISODE_PATH,
     api: API,
     ready: pageReady,
     act: async (page) => {
-      await expect(page.getByRole("button", { name: "分镜图已齐" })).toBeDisabled();
-      await expect(page.getByRole("button", { name: "视频已齐" })).toBeDisabled();
+      await expect(page.getByRole("button", { name: /补齐参考素材/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: /补齐视频/ })).toBeVisible();
     },
   },
   {
@@ -293,7 +272,7 @@ defineRegionScenarios("集页页头", [
       await expect(popover.getByText("这个单元同时有角色台词和旁白，需要拆开。")).toHaveCount(1);
       await expect(script.getByText("S02", { exact: true })).toBeVisible();
       // 正在生成的分镜图是进度，不是问题；不露出任务号与供应商
-      const boards = popover.getByTestId("workflow-row-boards");
+      const boards = popover.getByTestId("workflow-row-materials");
       await expect(boards.getByText("已提交给供应商，重试可能再次计费。")).toBeVisible();
       await expect(popover.getByText(/0f3c9a7e/)).toHaveCount(0);
       await expect(popover.getByText(LONG_MESSAGE)).toHaveCount(1);
@@ -315,21 +294,6 @@ defineRegionScenarios("集页页头", [
       await page.getByRole("button", { name: "这一集的更多操作" }).click();
       await expect(page.getByRole("menuitem", { name: "删除这一集" })).toBeVisible();
       await waitForEntrance(page.getByRole("menu"));
-    },
-  },
-  {
-    name: "地址带 view=plan 时直接打开脚本规划视图",
-    path: `${EPISODE_PATH}?view=plan`,
-    api: NO_SCRIPT_PLAN,
-    ready: async (page) => {
-      await pageReady(page);
-      await page.getByText("暂无脚本规划结果").waitFor();
-    },
-    act: async (page) => {
-      await expect(viewTabs(page).getByRole("tab", { name: "脚本规划" })).toHaveAttribute("aria-selected", "true");
-      await expect(page.getByRole("tabpanel", { name: "脚本规划" })).toBeVisible();
-      // 脚本规划视图没有分镜的批量动作
-      await expect(page.getByRole("button", { name: /^补齐|已齐$/ })).toHaveCount(0);
     },
   },
 ]);

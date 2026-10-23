@@ -25,7 +25,7 @@ const API: ApiOverrides = {
       },
       scripts: {
         "episode_1.json": {
-          ...project.scripts["episode_1.json"], content_mode: "drama", segments: undefined,
+          ...project.scripts["episode_1.json"], content_mode: "drama",
           scenes: [1, 2, 3].map((index) => ({
             scene_id: `E1S0${index}`, duration_seconds: 8, segment_break: false,
             characters_in_scene: ["林夕", "陈默"], scenes: ["茶馆"], props: ["罗盘"],

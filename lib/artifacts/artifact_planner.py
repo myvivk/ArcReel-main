@@ -66,6 +66,7 @@ from lib.jianying_draft.basis import (
     effective_unit_variant,
     jianying_draft_artifact_path,
 )
+from lib.project import legacy_script_plans
 from lib.project.asset_derivatives import DERIVATIVE_ASSET_TYPE, derivative_artifact_id, derivative_artifact_key
 from lib.project.asset_types import (
     ASSET_SPECS,
@@ -74,6 +75,7 @@ from lib.project.asset_types import (
     asset_name_comparison_key,
     resolve_asset_key,
 )
+from lib.project.legacy_grid_record import LegacyGridRecord
 from lib.project.project_migration_failure import ProjectMigrationError
 from lib.project.project_migration_report import MigrationSkippedArtifact
 from lib.project.project_schema import (
@@ -82,9 +84,8 @@ from lib.project.project_schema import (
     project_schema_is_current,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
-from lib.script import script_review
+from lib.project.story_plan_docs import factory_authoring_context
 from lib.script.grid.layout import grid_aspect_ratio_for
-from lib.script.grid.models import GridGeneration
 from lib.script.script_editor import resolve_items
 from lib.script.storyboard_sequence import get_storyboard_items
 from lib.speech.narration_delivery import POST_PRODUCTION, USE_TTS
@@ -108,7 +109,6 @@ from lib.speech.speech_presentation import (
     materialize_speech_presentation,
     presentation_artifact_paths,
 )
-from lib.story.story_planning import plan_from_project, project_authoring_context, stale_record_ids
 
 #: 清单激活把项目提升到的版本。它是 v7→v8 这一步的落点，与「项目是否为当前版本」是两件事：
 #: 后者随 ``CURRENT_PROJECT_SCHEMA_VERSION`` 走，把两者绑成一个常量会让每次 schema 升版都
@@ -693,7 +693,7 @@ class TargetStatePlanner:
     def _plan_one_script_plan(self, binding: _EpisodeBinding) -> None:
         if self.project.get("content_mode") not in {"narration", "drama"}:
             return
-        script_plan_path = script_review.script_plan_path(self.project_dir, self.project, binding.episode)
+        script_plan_path = legacy_script_plans.script_plan_path(self.project_dir, self.project, binding.episode)
         if script_plan_path is None:
             return
         script_plan_rel = script_plan_path.relative_to(self.project_dir).as_posix()
@@ -734,31 +734,7 @@ class TargetStatePlanner:
         characters: set[str] | None = None,
         visual: bool = False,
     ) -> str:
-        plan = plan_from_project(self.project)
-        bindings = {binding.script_file.removeprefix("scripts/"): binding.script_file for binding in self.bindings}
-        cache: dict[str, dict[str, Any]] = {}
-
-        def load_script(filename: str) -> dict[str, Any]:
-            if filename in cache:
-                return cache[filename]
-            rel = bindings.get(filename)
-            if rel is None:
-                raise FileNotFoundError(filename)
-            raw = self._read_dependency(rel, "story planning source script")
-            parsed = self._parse_json(raw, f"story planning source script {rel}")
-            if not isinstance(parsed, dict):
-                raise ValueError(f"story planning source script {rel} must contain an object")
-            cache[filename] = cast(dict[str, Any], parsed)
-            return cache[filename]
-
-        stale = stale_record_ids(self.project, plan, load_script)
-        return project_authoring_context(
-            self.project,
-            episode,
-            stale_ids=stale,
-            characters=characters,
-            visual=visual,
-        )
+        return factory_authoring_context(self.project_dir, episode)
 
     def _plan_storyboards(self) -> None:
         if "storyboards" in self._planned:
@@ -923,7 +899,7 @@ class TargetStatePlanner:
 
     def _grid_visual_members(
         self,
-        grid: GridGeneration,
+        grid: LegacyGridRecord,
         episode: _EpisodeState,
     ) -> tuple[GridStoryboardVisual, ...] | None:
         by_id = {str(item[episode.id_field]): item for item in episode.items}
@@ -946,7 +922,7 @@ class TargetStatePlanner:
                 return None
         return tuple(members)
 
-    def _grid_references(self, grid: GridGeneration) -> tuple[VisualReference, ...] | None:
+    def _grid_references(self, grid: LegacyGridRecord) -> tuple[VisualReference, ...] | None:
         references: list[VisualReference] = []
         for raw in grid.reference_images or []:
             path = self._safe_present_path(raw.path)
@@ -966,18 +942,18 @@ class TargetStatePlanner:
                 return None
         return tuple(references)
 
-    def load_grid_records(self) -> tuple[GridGeneration, ...]:
+    def load_grid_records(self) -> tuple[LegacyGridRecord, ...]:
         cached = getattr(self, "_grids", None)
         if cached is not None:
-            return cast(tuple[GridGeneration, ...], cached)
+            return cast(tuple[LegacyGridRecord, ...], cached)
         grids_dir = self.project_dir / "grids"
         if not grids_dir.exists():
-            grids: tuple[GridGeneration, ...] = ()
+            grids: tuple[LegacyGridRecord, ...] = ()
             self._grids = grids
             return grids
         if grids_dir.is_symlink() or not grids_dir.is_dir():
             raise ValueError("grids control directory is not a safe directory")
-        loaded: list[GridGeneration] = []
+        loaded: list[LegacyGridRecord] = []
         for path in sorted(grids_dir.iterdir()):
             if not _GRID_RECORD_RE.fullmatch(path.name):
                 continue
@@ -987,7 +963,7 @@ class TargetStatePlanner:
             if not isinstance(parsed, dict):
                 raise ValueError(f"grid record {rel} must contain an object")
             try:
-                grid = GridGeneration.from_dict(parsed)
+                grid = LegacyGridRecord.from_dict(parsed)
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"grid record {rel} is malformed") from exc
             if f"{grid.id}.json" != path.name:

@@ -231,25 +231,18 @@ _AUDIO_LAYERED_KEYS = _LayeredBackendKeys(
     global_default_key="default_audio_backend",
 )
 
-#: 视频任务类型桶：i2v（图生视频 / 宫格，由首帧驱动；另承接参考生视频无参考图视频单元的降级执行）、
-#: r2v（参考生视频中有参考图的视频单元）。t2v 不设桶（docs/adr/0054）。
+#: 工厂视频使用 i2v；r2v 保留供应商能力及历史请求配置。t2v 不设桶。
 VideoGenerationType = Literal["i2v", "r2v"]
 
-#: 视频任务类型 → 任务类型桶。执行路径与桶的映射固定在代码里（docs/adr/0054）：图生视频 /
-#: 宫格生视频（task_type ``video``）→ i2v；参考生视频按视频单元是否携带参考图分流
-#: （``lib.script.reference_video.units``），本表登记其代表桶 r2v，仅供剧本 / unit 读不到时回退。
-#: 表外任务类型无视频桶，调用方按「不定桶」处理。定义在本模块（而非 lib.backends.generation_type_buckets）
-#: 是分层约束：队列 / worker 的入队与认领路径处于 lib.backends.video_backends 的依赖闭包内，不得经
-#: 桶判定模块间接引入 lib.custom_provider。
+#: 可新建的视频任务类型 → 任务类型桶；表外任务类型无视频桶。
 VIDEO_BUCKET_BY_TASK_TYPE: dict[str, VideoGenerationType] = {
     "video": "i2v",
-    "reference_video": "r2v",
 }
 
 #: 生成模式 → 任务类型桶。与 ``VIDEO_BUCKET_BY_TASK_TYPE`` 描述同一套映射的两个入口：执行路径按
 #: 已成形任务的 task_type 定桶，读侧（能力查询 / 时长约束收窄等）在任务成形前只有项目的
 #: generation_mode，按它定同一个桶，两侧因此回答同一个「当前配置真正会执行的模型」。
-#: 参考生视频项目中无参考图分镜的降级（→ i2v）不经本表，见 ``lib.script.reference_video.units``。
+#: 旧 reference_video 仅用于历史项目的配置读取，不注册新生产任务。
 VIDEO_BUCKET_BY_GENERATION_MODE: dict[str, VideoGenerationType] = {
     "storyboard": "i2v",
     "reference_video": "r2v",
@@ -420,31 +413,11 @@ VoiceConsistency = Literal["native", "soft", "none"]
 def derive_voice_consistency(
     *,
     reference_audio_mode: str,
-    generation_mode: str | None,
     has_audio: bool,
     character_voice_binding: CharacterVoiceBinding | None,
 ) -> VoiceConsistency:
-    """三级声音一致性标识派生（native / soft / none）：模型能力 × 生效 generation_mode × 绑定方式。
-
-    全仓库唯一派生点：项目内场景经 `_resolve_video_caps_for_model` 走这里，无项目上下文的
-    目录场景由 `server/routers/providers.py` 以 ``generation_mode=None`` /
-    ``character_voice_binding=None`` 调同一函数，前端不复制第二份公式。
-
-    ``reference_audio_mode`` 按字面量比较（``ReferenceAudioMode`` 是 ``StrEnum``，两者可
-    直接 ``==``），不在 lib.config 层导入 lib.backends.video_backends（分层契约，config 是最底层）。
-
-    native 蕴含有音轨：generation_mode 非参考生视频、或项目选的是提示词软约束
-    （``character_voice_binding == "prompt"``，默认档）时一律降格 soft，不降到 none。降格是全链路
-    的总闸：脚本预览的参考音频类 warning、提示词里的 ``@音频N`` 编号与执行期的参考音频挂线都只认
-    ``native``，因此绑定方式不必再沿渲染链逐层传递。``has_audio`` 问的是「成片有没有音轨」而非
-    「开关可不可控」，故恒有声（开关不可控）的型号同样算有音轨；调用方由
-    :func:`builtin_video_audio_track` 得出该位，不各自解读一份声明。
-    """
-    if (
-        reference_audio_mode == "direct"
-        and generation_mode == "reference_video"
-        and character_voice_binding == "reference_audio"
-    ):
+    """声音一致性取自模型音轨能力和角色绑定方式，与项目路线无关。"""
+    if has_audio and reference_audio_mode == "direct" and character_voice_binding == "reference_audio":
         return "native"
     return "soft" if has_audio else "none"
 
@@ -1545,7 +1518,6 @@ class ConfigResolver:
 
         voice_consistency = derive_voice_consistency(
             reference_audio_mode=reference_audio_mode,
-            generation_mode=generation_mode,
             has_audio=has_audio,
             character_voice_binding=character_voice_binding(project),
         )

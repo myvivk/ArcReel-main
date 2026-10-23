@@ -95,9 +95,9 @@ flowchart TD
     MAIN --> SKILL["Workflow Orchestration Skill"]
     SKILL --> STATE["Read Project State"]
     STATE --> DECIDE{"Next Stage"}
-    DECIDE --> B["Episode Planning Subagent"]
-    DECIDE --> C["Script Normalization Subagent"]
-    DECIDE --> D["Asset Generation Subagent"]
+    DECIDE --> B["Factory Generation & Quality Tools"]
+    DECIDE --> C["Storyboard Prompt Subagent"]
+    DECIDE --> D["Asset Generation / Footage Review Subagents"]
     B --> SUMMARY["Condensed Summary"]
     C --> SUMMARY
     D --> SUMMARY
@@ -122,16 +122,11 @@ The orchestration layer should not perform all content reasoning itself, because
 
 Each Subagent focuses on one task, such as:
 
-- splitting narration segments;
-- normalizing episodic drama scripts;
-- splitting reference-to-video units;
-- producing a structured script for one episode;
+- authoring factory storyboard prompts;
 - generating assets;
-- reviewing footage.
+- reviewing footage in read-only mode.
 
-The first three are script planning tasks, and they also identify the new assets in the episode.
-
-Large amounts of source novel text and intermediate reasoning should remain within the Subagent whenever possible. The main Agent receives summaries and references to results.
+Factory generation uses a strong text model for writing, doctor refinement, machine checks, repair, ledger updates, and compliance checks. The main Agent calls factory tools and reads batch results; long text and intermediate outputs remain in factory artifacts.
 
 Quick-reference or condensed checklists in a Subagent's `.md` must not omit a rule's exception branches. When a rule cannot be kept complete, reference its source of truth instead of restating it.
 
@@ -264,7 +259,7 @@ An ArcReel project is more than a database record; it also includes media assets
 
 Typical contents include:
 
-- source novels, screenplays, or merchandise assets;
+- factory character bible, outline, ledger, episode plans, source text, and quality reports;
 - project configuration;
 - character, scene, and prop definitions;
 - reference images;
@@ -300,6 +295,16 @@ Layout of the data root ([ADR 0088](https://github.com/ArcReel/ArcReel/blob/main
 - Agent read access to the data root is denied by default; only the current project and the current user's memory are allowed.
 - The code directory holds only code and configuration; nothing writes runtime data into it.
 - When upgrading from the old layout, the data root layout migration at startup (`lib/infra/data_root_layout_migration.py`) moves entries into the locations above and then writes a completion marker under `runtime/`.
+
+### Factory Source and Visual Production State {#factory-source-and-production-state}
+
+New projects are fixed to `drama / storyboard`. Seven Markdown artifact types are stored unchanged under `source/short_drama/`, the source of truth for story and dialogue. `scripts/episode_N.json` holds derived AI storyboards, references, prompts, and media relationships.
+
+Production entries check the canonical source and the visual state’s source revision. Artifact ingestion, assets, AI storyboarding, per-shot ShotGrid, separate `video_prompt`, video/audio, and editing/export have distinct stage boundaries. Prompt generation handles one field at a time. K-frame video inputs preserve the complete relationship among keyframes, the contact sheet, and the previous-shot continuity point.
+
+HTTP, Agent, and production task entries for narration, ads, reference units, and cross-shot grids are removed. Historical scripts, sources, and media remain available through reading, archiving, migrations, and version recovery. Mode fields stay unchanged; old JSON never becomes factory artifacts automatically. Submitted video tasks that can resume still consume their stored checkpoints.
+
+The built-in profile source is `agent_runtime_profile/`, separate from development `.claude/`. Project copies use a manifest and SHA-256 fingerprints to update unchanged built-in files, remove unchanged obsolete copies, and preserve user customizations.
 
 ## 10. Database {#database}
 
@@ -442,7 +447,7 @@ Contact sheets return as MCP image content blocks after the text blocks. The dec
 
 The full review in the first editing round is delegated to the `review-footage` Subagent: the main Agent groups units by scene or adjacency and dispatches the groups in parallel, contact sheets stay in the Subagent's context, and the main Agent receives only text reports. The review Subagent is read-only, enforced twice: the `tools` frontmatter of its definition exposes only Read, Glob, Grep, and `inspect_video_units`, and `AgentAccessPolicy.READ_ONLY_SUBAGENT_TOOLS` denies any other call again in a PreToolUse hook keyed on `agent_type`. The two lists must match.
 
-Regeneration needs the creator to confirm the cost first. `generate_videos` with `preview: true` runs the same all-or-nothing admission as a real submission but enqueues nothing and creates no batch; it returns a `video_quote` sheet with each unit's outcome (generate, reuse, or blocked), planned duration, request tier, whether the tier changed, and the estimated cost. Reference-to-video quotes come from the admission tickets; storyboard-to-video quotes use the same video request facts the admission used, at the planned duration. Passing the sheet's `confirmed_request_durations` unchanged on the real submission keeps admission from asking to confirm the same tiers again; if a tier changes between the two calls, confirmation is required again. The REST entry points are unaffected.
+Regeneration needs the creator to confirm the cost first. `generate_videos` with `preview: true` runs the same all-or-nothing admission as a real submission but enqueues nothing and creates no batch; it returns a `video_quote` sheet with each unit's outcome (generate, reuse, or blocked), planned duration, request tier, whether the tier changed, and the estimated cost. Factory video quotes use the same video request facts the admission used, at the planned duration. Passing the sheet's `confirmed_request_durations` unchanged on the real submission keeps admission from asking to confirm the same tiers again; if a tier changes between the two calls, confirmation is required again. The REST entry points are unaffected.
 
 ### Presentation Read Model {#presentation-read-model}
 
@@ -544,7 +549,7 @@ The following constraints should be maintained over the long term:
 
 ## 19. Related Documentation {#related-docs}
 
-- [Workflows and Modes](../guide/workflows.md)
+- [Short Drama Factory Workflow](../guide/workflows.md)
 - [Provider and Model Configuration](../guide/providers.md)
 - [Deployment and Operations](../ops/deployment.md)
 - [Contributing Guide](./contributing.md)

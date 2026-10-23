@@ -24,13 +24,13 @@ from lib.custom_provider import make_endpoint_key, make_provider_id
 from lib.db.models.task import Task
 from lib.db.repositories.custom_endpoint_repo import CustomEndpointRepository
 from lib.db.repositories.custom_provider_repo import CustomProviderRepository
-from lib.generation.generation_queue import GenerationQueue
-from lib.generation.generation_worker import GenerationWorker
-from lib.project.project_manager import ProjectManager
-from lib.script.reference_video.execution_checkpoint import (
+from lib.generation.execution_checkpoint import (
     StagedProviderMedia,
     StoryboardSubmissionCheckpoint,
 )
+from lib.generation.generation_queue import GenerationQueue
+from lib.generation.generation_worker import GenerationWorker
+from lib.project.project_manager import ProjectManager
 from server.services.tasks import generation_context
 from server.services.tasks.generation_tasks import execute_generation_task
 from server.services.tasks.resume_executor import execute_resume_video_task

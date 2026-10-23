@@ -9,13 +9,14 @@ import pytest
 from lib.infra.api_errors import NotFoundError
 from lib.project.project_manager import ProjectManager
 from server.services.project.episode_instructions import EpisodeInstructionKind, save_episode_instructions
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 @pytest.fixture
 def pm(tmp_path: Path) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.add_episode("demo", 1, "第一集", "scripts/episode_1.json")
     return pm
 

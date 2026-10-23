@@ -15,12 +15,13 @@ from server.agent_toolset.video_review import INSPECT_VIDEO_UNITS
 from server.media_tools.video_review import MAX_FRAMES_PER_CALL
 from tests.factories import install_current_video, make_signal_clip, run_bundled_ffmpeg
 from tests.integration.server.agent_tool_support import ToolHarness, problem_of, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _harness(tmp_path: Path, unit_ids: list[str]) -> ToolHarness:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     script = {
         "episode": 1,
         "title": "E1",

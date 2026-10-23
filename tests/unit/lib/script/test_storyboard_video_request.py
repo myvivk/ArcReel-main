@@ -6,13 +6,13 @@ import pytest
 from lib.artifacts.visual_artifact_provenance import build_storyboard_video_artifact_visual_basis
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.storyboard_sequence import resolve_storyboard_video_slots
 from lib.script.storyboard_video_request import (
     resolve_storyboard_audio_inputs,
     storyboard_asset_links,
     storyboard_frame_evidence,
 )
+from lib.speech.voice_settings import VoiceRenderSettings
 
 
 @pytest.mark.parametrize("count", [1, 4, 9])

@@ -157,7 +157,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
     setEditorTarget({ mode: "edit", name });
   };
 
-  const importable = libraryPreview !== undefined && assetType !== "product";
+  const importable = libraryPreview !== undefined;
   const onPickFromLibrary = importable && !readOnly && !hideAddActions ? () => setPicking(true) : undefined;
   const handleImport = async (ids: string[]) => {
     try {
@@ -243,7 +243,7 @@ export function AssetGallery<T extends GalleryAssetSource>({
         onGenerate={generateAsset}
       />
 
-      {picking && assetType !== "product" && (
+      {picking && (
         <AssetPickerModal
           type={assetType}
           existingNames={new Set(Object.keys(assets))}

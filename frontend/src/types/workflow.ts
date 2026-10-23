@@ -32,16 +32,6 @@ export const WORKFLOW_ACTION_TYPES = [
   "none",
   "collect_project_input",
   "create_episode",
-  "draft_selling_points",
-  "plan_episodes",
-  "reset_episode_planning",
-  "resolve_draft",
-  "prepare_script_plan",
-  "start_blank_script",
-  "provide_episode_source",
-  "confirm_script_plan",
-  "generate_script",
-  "add_script_items",
   "author_prompts",
   "prepare_episode_assets",
   "plan_short_drama_storyboards",
@@ -49,8 +39,6 @@ export const WORKFLOW_ACTION_TYPES = [
   "generate_storyboards",
   "generate_shot_grids",
   "author_video_prompts",
-  "generate_grid",
-  "repair_video_units",
   "generate_videos",
   "create_edit_timeline",
   "retry_project_migration",
@@ -124,7 +112,7 @@ export type WorkflowArtifactState = ArtifactStatus | "not_applicable" | "partial
 /**
  * 一个步骤下的产物集合。集合可枚举时给三份 id 列表；容器本身读不了时
  * 只给 `state: "blocked"`，此时不猜任何 id 落进 current / stale / missing。
- * 单份产物（剧本、script_plan 等）只给 `state`。
+ * 单份产物（剧本等）只给 `state`。
  */
 export interface WorkflowArtifactCollection {
   state?: WorkflowArtifactState;
@@ -213,7 +201,6 @@ export interface WorkflowAdmission {
 export interface WorkflowProject {
   content_mode: string;
   generation_mode: string;
-  grid_storyboard: boolean;
 }
 
 export interface WorkflowTarget {
@@ -229,30 +216,15 @@ export interface WorkflowOperation {
   reason?: string | null;
 }
 
-/** 目标集上在场的一份草稿；`needs_repair` 区分待修复草稿与 Agent 的可编辑草稿。 */
-export interface WorkflowDraft {
-  kind: string;
-  path: string;
-  needs_repair: boolean;
-}
-
 /** 内容现状。集级字段只在有目标集时有值；项目整体不可用时整份为空。 */
 export interface WorkflowContent {
   episode_count: number;
-  whole_source: "present" | "absent" | "not_applicable";
-  source_remaining: boolean;
-  ad_inputs: "present" | "absent" | "not_applicable";
-  products_without_selling_points: string[];
   episode_source?: "present" | "absent" | "not_applicable" | null;
-  episode_plan_stale: boolean;
-  expected_stale_script_plan_revision?: string | null;
-  drafts: WorkflowDraft[];
   formal_script?: "present" | "absent" | "invalid" | null;
   script_item_count?: number | null;
   /** 实际工厂 Markdown 源稿在位；这类集不走原生脚本规划。 */
   script_from_short_drama?: boolean;
   pending_authoring_ids: string[];
-  needs_replan_ids: string[];
   referenced_assets_without_sheet: string[];
   unregistered_references: string[];
   /** 本集引用、资产图过期的资产；只陈述，不进建议的下一步。 */
@@ -261,7 +233,7 @@ export interface WorkflowContent {
   referenced_assets_without_description: string[];
   /** 目标集已完成：视频齐全且至少有一条剪辑时间线。 */
   episode_complete?: boolean;
-  /** 只在不指定集的查询里为 true：每集都完成，且整本源文没有剩余。 */
+  /** 只在不指定集的查询里为 true：每集都完成。 */
   project_complete?: boolean;
 }
 
@@ -312,8 +284,6 @@ export interface WorkflowStatus {
 /** 账本中一集建议的下一步（`GET /projects/{name}/workflow-status/episodes`），按账本顺序排列。 */
 export interface EpisodeNextStep {
   episode: number;
-  /** 该集的集规划已失效（原文已重新规划），下一步为 `none`。 */
-  plan_stale: boolean;
   next_action: WorkflowNextAction;
 }
 

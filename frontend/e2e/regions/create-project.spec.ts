@@ -57,11 +57,9 @@ async function openWizard(page: Page) {
   await waitForEntrance(wizard(page));
 }
 
-async function fillBasics(page: Page, { mode = "旁白/解说", route = "分镜图生视频" } = {}) {
+async function fillBasics(page: Page) {
   const dialog = wizard(page);
   await dialog.getByRole("textbox", { name: "项目标题" }).fill(LONG_TITLE);
-  await dialog.getByRole("radio", { name: new RegExp(mode) }).check({ force: true });
-  await dialog.getByRole("radio", { name: new RegExp(route) }).check({ force: true });
 }
 
 function nextButton(page: Page) {
@@ -89,31 +87,18 @@ async function scrollBodyToTop(page: Page) {
 
 defineRegionScenarios("新建项目向导", [
   {
-    name: "第一步未填写时列出缺少的必填项，正文可滚到生成方式",
+    name: "第一步未填写时说明缺少项目标题，画面比例可达",
     path: LOBBY,
     ready: lobbyReady,
     act: async (page) => {
       await openWizard(page);
       const dialog = wizard(page);
       await expect(nextButton(page)).toBeDisabled();
-      await expect(dialog.getByText("还需要：项目标题、创作类型、生成方式")).toBeVisible();
-      await expectBodyScrollsToEnd(page, dialog.getByRole("radio", { name: /参考生视频/ }).locator(".."));
+      await expect(dialog.getByText("还需要：项目标题")).toBeVisible();
+      await expectBodyScrollsToEnd(page, dialog.getByRole("radio", { name: /横屏 16:9/ }).locator(".."));
       await scrollBodyToTop(page);
     },
     screenshot: { name: "create-project-basics", target: wizard },
-  },
-  {
-    name: "第一步填满并展开宫格分镜后，正文仍可滚到底",
-    path: LOBBY,
-    ready: lobbyReady,
-    act: async (page) => {
-      await openWizard(page);
-      await fillBasics(page);
-      const grid = wizard(page).getByRole("switch", { name: "多宫格分镜" });
-      await grid.click();
-      await expect(nextButton(page)).toBeEnabled();
-      await expectBodyScrollsToEnd(page, grid);
-    },
   },
   {
     name: "切换步骤时外框与底部按钮不移动，进入新步骤从顶部开始",
@@ -126,7 +111,7 @@ defineRegionScenarios("新建项目向导", [
       const frame = await dialog.boundingBox();
       const cancel = await dialog.getByRole("button", { name: "取消" }).boundingBox();
       const next = await nextButton(page).boundingBox();
-      await dialog.getByRole("switch", { name: "多宫格分镜" }).scrollIntoViewIfNeeded();
+      await dialog.getByRole("radio", { name: /横屏 16:9/ }).scrollIntoViewIfNeeded();
 
       for (const step of ["生成设置", "风格"]) {
         await goNext(page);
@@ -150,7 +135,7 @@ defineRegionScenarios("新建项目向导", [
     ready: lobbyReady,
     act: async (page) => {
       await openWizard(page);
-      await fillBasics(page, { route: "参考生视频" });
+      await fillBasics(page);
       await goNext(page);
       const dialog = wizard(page);
       await dialog.getByRole("radio", { name: "TTS 配音" }).check({ force: true });
@@ -172,21 +157,6 @@ defineRegionScenarios("新建项目向导", [
       await waitForEntrance(listbox);
       await expect(listbox).toBeInViewport();
     },
-  },
-  {
-    name: "广告项目自定义目标总时长无效时说明需要修正的字段",
-    path: LOBBY,
-    ready: lobbyReady,
-    act: async (page) => {
-      await openWizard(page);
-      await fillBasics(page, { mode: "广告/短片" });
-      await goNext(page);
-      const dialog = wizard(page);
-      await dialog.getByRole("radio", { name: "自定义" }).check({ force: true });
-      await expect(dialog.getByText("请修正：目标总时长")).toBeVisible();
-      await expect(nextButton(page)).toBeDisabled();
-    },
-    screenshot: { name: "create-project-ad-duration", target: wizard },
   },
   {
     name: "风格步骤只有一个滚动容器，模版网格可滚到底",

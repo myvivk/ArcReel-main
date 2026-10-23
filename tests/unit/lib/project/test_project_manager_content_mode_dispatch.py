@@ -14,12 +14,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from lib.project.project_manager import ProjectManager
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _pm(tmp_path: Path) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     return pm
 
 

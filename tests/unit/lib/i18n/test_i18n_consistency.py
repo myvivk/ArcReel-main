@@ -157,7 +157,7 @@ def test_batch_admission_problem_codes_are_translated():
     """
 
     from lib.generation.generation_result import GenerationProblemCode
-    from lib.script.reference_video.request_projection import _PROBLEM_PRESENTATION
+    from lib.generation.video_request_facts import _ROUTE_FAILURE_CODES
     from lib.speech.speech_composition import SpeechProblemCode
 
     execution_only = {
@@ -169,9 +169,16 @@ def test_batch_admission_problem_codes_are_translated():
         GenerationProblemCode.DEPENDENCY_FAILED,
     }
     codes = (
-        set(_PROBLEM_PRESENTATION)
-        | {code.value for code in SpeechProblemCode}
+        {code.value for code in SpeechProblemCode}
         | {code.value for code in GenerationProblemCode if code not in execution_only}
+        # 求值失败的码按路线分族（时长档位 / 能力），准入原样交回失败码。
+        | {code for route_codes in _ROUTE_FAILURE_CODES.values() for code in route_codes.values()}
+        # 准入自己判出的请求形态冲突。
+        | {
+            "video_audio_switch_not_supported",
+            "video_reference_audio_exceeded",
+            "video_reference_images_exceeded",
+        }
     )
     for code in sorted(codes):
         for locale in SUPPORTED_LOCALES:

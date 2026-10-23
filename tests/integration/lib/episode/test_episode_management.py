@@ -11,13 +11,11 @@ from lib.episode.episode_deletion import (
     EpisodeBatchDeletionConfirmationRequired,
     EpisodeBatchDeletionResult,
     EpisodeDeletionConfirmationRequired,
-    EpisodeDeletionResult,
     delete_episode,
     delete_episodes,
     render_episode_batch_deletion_text,
     render_episode_deletion_text,
 )
-from lib.episode.episode_layout import build_episode_layout
 from lib.episode.episode_management import (
     EpisodeManagementError,
     create_episode,
@@ -134,24 +132,15 @@ class TestCreate:
 
         assert _order(project_dir) == [1, episode, 2]
 
-    def test_source_text_makes_it_an_own_source_episode(self, tmp_path: Path):
+    def test_blank_episode_preserves_an_unregistered_old_source_file(self, tmp_path: Path):
         project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2)])
         (project_dir / "source" / "episode_2.txt").write_text("没有登记的旧文件", encoding="utf-8")
 
-        episode = create_episode(_pm(project_dir), "demo", source_text="番外：山中一日。\r\n")
+        episode = create_episode(_pm(project_dir), "demo")
 
         assert episode == 2
-        assert _entry(project_dir, 2)["source_origin"] == "own"
-        assert (project_dir / "source" / "episode_2.txt").read_text(encoding="utf-8") == "番外：山中一日。\n"
-        # 盘上同名、没有登记的文件改名留底，不被覆盖
-        assert any(p.name.startswith("_episode_2") for p in (project_dir / "source").iterdir())
-
-    def test_blank_source_text_counts_as_no_source(self, tmp_path: Path):
-        project_dir = _project_dir(tmp_path, [])
-
-        episode = create_episode(_pm(project_dir), "demo", source_text="  \n ")
-
-        assert _entry(project_dir, episode)["source_origin"] == "none"
+        assert _entry(project_dir, 2)["source_origin"] == "none"
+        assert (project_dir / "source" / "episode_2.txt").read_text(encoding="utf-8") == "没有登记的旧文件"
 
     def test_unknown_anchor_is_rejected_without_writing(self, tmp_path: Path):
         project_dir = _project_dir(tmp_path, [_own(1)])
@@ -161,19 +150,6 @@ class TestCreate:
             create_episode(_pm(project_dir), "demo", after=9)
 
         assert exc.value.code == "episode_not_found"
-        assert _load(project_dir) == before
-
-    def test_ad_project_keeps_its_single_episode(self, tmp_path: Path):
-        project_dir = _project_dir(tmp_path, [_none(1)])
-        project = _load(project_dir)
-        project["content_mode"] = "ad"
-        (project_dir / "project.json").write_text(json.dumps(project), encoding="utf-8")
-        before = _load(project_dir)
-
-        with pytest.raises(EpisodeManagementError) as exc:
-            create_episode(_pm(project_dir), "demo")
-
-        assert exc.value.code == "ad_episode_locked"
         assert _load(project_dir) == before
 
 
@@ -253,19 +229,6 @@ class TestDelete:
 
         assert not source.exists()
 
-    def test_deleting_the_last_cut_episode_moves_the_planning_start_back(self, tmp_path: Path):
-        project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2), _cut(2, CH2, CH3)])
-
-        impact, result = _confirm_delete(project_dir, 2)
-
-        assert impact.recoverable is True
-        assert isinstance(result, EpisodeDeletionResult)
-        assert _order(project_dir) == [1]
-        assert not (project_dir / "source" / "episode_2.txt").exists()
-        project = _load(project_dir)
-        assert project["episode_id_high_water"] == 2
-        assert planning_start(project, discover_sources(project_dir, project)) == ("source/a.txt", CH2)
-
     def test_deleting_a_middle_cut_episode_leaves_a_gap(self, tmp_path: Path):
         project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2), _cut(2, CH2, CH3), _cut(3, CH3, len(A))])
 
@@ -273,13 +236,11 @@ class TestDelete:
 
         project = _load(project_dir)
         assert planning_start(project, discover_sources(project_dir, project)) == ("source/a.txt", len(A))
-        gaps = [
-            (segment.start, segment.end)
-            for file in build_episode_layout(project_dir, project).files
-            for segment in file.segments
-            if segment.kind == "unsplit" and segment.gap
+        assert [entry["episode"] for entry in project["episodes"]] == [1, 3]
+        assert [(entry["source_range"]["start"], entry["source_range"]["end"]) for entry in project["episodes"]] == [
+            (0, CH2),
+            (CH3, len(A)),
         ]
-        assert gaps == [(CH2, CH3)]
 
     def test_episode_with_products_lists_what_is_lost_and_removes_it(self, tmp_path: Path):
         project_dir = _project_dir(tmp_path, [_cut(1, 0, CH2), _own(2)])
@@ -419,16 +380,3 @@ class TestBatchDelete:
 
         assert isinstance(preview, EpisodeBatchDeletionConfirmationRequired)
         assert preview.episodes == [1, 2, 3]
-
-
-def test_drama_episode_created_with_source_text_records_its_source_kind(tmp_path: Path):
-    project_dir = _project_dir(tmp_path, [])
-    project = _load(project_dir)
-    project["content_mode"] = "drama"
-    (project_dir / "project.json").write_text(json.dumps(project), encoding="utf-8")
-
-    screenplay = create_episode(_pm(project_dir), "demo", source_text="【场景】雨夜。", source_kind="screenplay")
-    blank = create_episode(_pm(project_dir), "demo")
-
-    assert _entry(project_dir, screenplay)["source_kind"] == "screenplay"
-    assert "source_kind" not in _entry(project_dir, blank)

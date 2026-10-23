@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
-// 自动撑高输入框：借集页空状态「新增第一个分镜」的旁白对话框验证，输入框在弹层里随内容撑高。
+// 自动撑高输入框：工厂创意简报在弹层里随内容撑高。
 const EPISODE_PATH = "/app/projects/demo/episodes/1";
 // 项目事件流是 SSE，没有录制；按不可重试的状态拒绝，页面停在录制的项目数据上。
 const API: ApiOverrides = {
@@ -15,13 +15,13 @@ const NINE_LINES = Array.from(
   (_, i) => `第 ${i + 1} 行：夜色压低了城墙的轮廓，巡夜人提着灯从箭楼下走过，风把旗子吹得猎猎作响。`,
 ).join("\n");
 
-function narrationField(page: Page): Locator {
-  return page.getByRole("dialog").getByRole("textbox", { name: "旁白正文" });
+function briefField(page: Page): Locator {
+  return page.getByRole("dialog").getByRole("textbox", { name: "创意简报 / 梗概（可选）" });
 }
 
-async function openNarrationDialog(page: Page) {
-  await page.getByRole("button", { name: "新增第一个分镜" }).click();
-  await narrationField(page).waitFor();
+async function openFactoryDialog(page: Page) {
+  await page.getByRole("button", { name: "AI 原创剧本" }).first().click();
+  await briefField(page).waitFor();
 }
 
 /** 每一行都够得着：内容全部显示，或者撑到上限后可以在内部滚动到底。 */
@@ -49,12 +49,12 @@ defineRegionScenarios("自动撑高输入框", [
     path: EPISODE_PATH,
     api: API,
     ready: async (page) => {
-      await page.getByRole("button", { name: "新增第一个分镜" }).waitFor();
+      await page.getByRole("button", { name: "AI 原创剧本" }).first().waitFor();
     },
     act: async (page) => {
-      await openNarrationDialog(page);
-      await narrationField(page).fill(NINE_LINES);
-      await expectAllLinesReachable(narrationField(page));
+      await openFactoryDialog(page);
+      await briefField(page).fill(NINE_LINES);
+      await expectAllLinesReachable(briefField(page));
     },
     screenshot: { name: "auto-textarea-nine-lines", target: (page) => page.getByRole("dialog") },
   },
@@ -63,11 +63,11 @@ defineRegionScenarios("自动撑高输入框", [
     path: EPISODE_PATH,
     api: API,
     ready: async (page) => {
-      await page.getByRole("button", { name: "新增第一个分镜" }).waitFor();
+      await page.getByRole("button", { name: "AI 原创剧本" }).first().waitFor();
     },
     act: async (page) => {
-      await openNarrationDialog(page);
-      const field = narrationField(page);
+      await openFactoryDialog(page);
+      const field = briefField(page);
       // 两行在原宽度下尚未到高度上限，收窄后的新增折行必须使高度增加。
       await field.fill(NINE_LINES.split("\n").slice(0, 2).join("\n"));
       const before = await field.evaluate((el) => el.getBoundingClientRect().height);

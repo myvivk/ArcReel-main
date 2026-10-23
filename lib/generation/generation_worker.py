@@ -391,9 +391,8 @@ async def _extract_provider(task: dict[str, Any]) -> str:
     ``resolve_image_backend``，取 ``.provider_id``。image 任务按 ``generation_type="t2i"`` 取一个
     **代表性** provider——worker 认领时拿不到真实任务类型（见 ``docs/adr/0001``），这点近似不影响
     生成正确性（执行层会独立精确再解析一次）；``I2I_ONLY_TASK_TYPES``（图片编辑与衍生资产图）是
-    唯一例外（必然 i2i、入队即知），按 i2i 槽精确解析。两种视频生成模式都忽略 enqueue payload 中的旧身份，分镜视频定桶经
-    ``video_bucket_for_queued_task`` 与入队派生共用；reference_video 则重读最新
-    project/script/unit，以实际可用资产调用公共 request projection。
+    唯一例外（必然 i2i、入队即知），按 i2i 槽精确解析。工厂视频定桶经
+    ``video_bucket_for_queued_task`` 与入队派生共用，忽略 enqueue payload 中的旧身份。
     这份 provider 投影只服务 claim 过滤与限流路由，不是执行身份；正常 executor 会在开始时
     再按同一最新状态物化请求。
     解析失败（未配置供应商）时回退到 DEFAULT_PROVIDER 仅供限流，不阻断认领。
@@ -401,11 +400,7 @@ async def _extract_provider(task: dict[str, Any]) -> str:
     project_name = task.get("project_name")
     raw_payload = task.get("payload")
     payload = raw_payload if isinstance(raw_payload, dict) else {}
-    if task.get("task_type") == "reference_video" and isinstance(task.get("script_file"), str):
-        # Task.script_file is the immutable queue coordinate. The payload copy is retained only for old/direct
-        # callers and must not be able to redirect claim-time current-state projection to a different script.
-        payload = {**payload, "script_file": task["script_file"]}
-    # 以 media lane 区分 video / audio / image：reference_video 等 task_type 同属 video lane。
+    # 以 media lane 区分 video / audio / image，历史已提交视频仍可恢复。
     is_text = task.get("media_type") == "text"
     is_video = task.get("media_type") == "video" or task.get("task_type") in ("video", "reference_video")
     is_audio = task.get("media_type") == "audio" or task.get("task_type") == "tts"

@@ -1616,18 +1616,17 @@ class TestProjectGenerationModeCaps:
         assert (await _video_caps(db_factory, storyboard_project))["model"] == "kling-v3"
         assert (await _video_caps(db_factory, reference_project))["model"] == "S2V-01"
 
-    async def test_voice_consistency_follows_project_route(self, db_factory):
-        """参考生视频（且项目选了参考音频绑定）按 native 解析，分镜图生视频降格 soft。"""
+    async def test_factory_voice_binding_uses_supported_reference_audio(self, db_factory):
+        """参考音频绑定由模型能力决定，工厂分镜路线保留 native 配音能力。"""
         project = {
-            "generation_mode": "reference_video",
+            "generation_mode": "storyboard",
             "character_voice_binding": "reference_audio",
-            "video_provider_r2v": "ark/doubao-seedance-2-0-260128",
             "video_backend": "ark/doubao-seedance-2-0-260128",
         }
         caps = await _video_caps(db_factory, project)
         assert caps["voice_consistency"] == "native"
-        assert caps["generation_mode"] == "reference_video"
-        assert (await _video_caps(db_factory, {**project, "generation_mode": "storyboard"}))[
+        assert caps["generation_mode"] == "storyboard"
+        assert (await _video_caps(db_factory, {**project, "character_voice_binding": "prompt"}))[
             "voice_consistency"
         ] == "soft"
 

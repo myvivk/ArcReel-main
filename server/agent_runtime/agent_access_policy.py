@@ -27,7 +27,6 @@ from lib.episode.episode_paths import (
     REFERENCE_VIDEO_SCRIPT_PLAN_QUARANTINE_FILENAME,
 )
 from lib.infra.data_root_layout import DataRootLayout
-from lib.script.draft_quarantine import OPEN_DRAFT_TOOL_NAME, PROMOTE_TOOL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -815,7 +814,7 @@ class AgentAccessPolicy:
     def _is_protected_source(cls, target: Path, bases: list[Path]) -> bool:
         """命中源文目录（``source/`` 整子树，含目录本身）。
 
-        整本源文、集原文与快照只经服务命令写入：改动要按改动前后的对齐重映射分集账本，直改会让账本与源文对不上。
+        工厂工件只经质量校验与事务入库，直改会绕过源稿修订和派生状态的来源检查。
         ``bases`` 与 target 的 raw/resolved 双形式口径同 ``_is_protected_project_json``。
         """
         target_s = cls._normalize_path_for_protected_compare(target)
@@ -827,23 +826,10 @@ class AgentAccessPolicy:
 
     @classmethod
     def _is_protected_formal_script_plan(cls, target: Path, bases: list[Path]) -> bool:
-        """命中受写禁的正式 script_plan（``drafts/episode_N/`` 下 ``AGENT_PROTECTED_SCRIPT_PLAN_FILENAMES``）。
+        """保护 drafts/episode_N/ 内的历史规划和旧草稿，禁止 Agent 修改。
 
-        与 ``scripts/*.json`` / ``project.json`` 同一条理由收进写禁：这些文件各有多条写入路径
-        （迁移读改写、Web 端保存、重生成 / 晋升写盘、Agent 修改），除 Agent 外都持
-        ``ProjectManager.file_lock`` 的同一把 per-path 锁；Agent 的 Write/Edit 跑在沙箱里、
-        取不到这把锁，直改与并发的 Web 端保存之间就是一个丢失更新窗口。改走
-        ``open_draft`` → ``patch_draft`` → 晋升，写盘只发生在持锁的晋升侧。
-
-        按文件名匹配、不按项目变体解析：写禁在会话装配前就要成立，而项目的 content_mode /
-        generation_mode 运行时可变。多认一两个本项目用不到的 script_plan 文件名无害——那些文件在
-        该项目里本就没有合法写入者。
-
-        正式文件与 ``.invalid.json`` 草稿均拦截：草稿修改必须走 revisioned MCP 工具，才能与
-        Web/remote patch、promotion 和 generation 共用 per-path 锁与 OCC，避免直写绕过并发控制。
-
-        ``bases`` 与 target 的 raw/resolved 双形式口径同 ``_is_protected_project_json``。
-        集号不枚举、按 ``episode_*`` 目录名匹配：同上，集是运行时增删的。
+        历史文件只供读取和迁移；工厂待检 Markdown 在 drafts/short_drama/ 中通过 Write 暂存。
+        Bash 仍禁止写 drafts/ 整目录，避免绕过检查和事务。
         """
         target_s = cls._normalize_path_for_protected_compare(target)
         for base in bases:
@@ -867,11 +853,9 @@ class AgentAccessPolicy:
 #: - ``project_json``：「写入口收归」——``scripts/*.json`` 与 ``project.json`` 只能走 MCP
 #:   工具；两层投影同覆盖面（``scripts/`` 整子树 + ``project.json``）。
 #: - ``edit_timeline``：「写入口收归」——剪辑时间线只能经剪辑时间线工具追加修订；两层同覆盖面。
-#: - ``source``：「写入口收归」——源文只能经上传与编辑源文的工具写入，改动按对齐重映射分集账本；两层同覆盖面。
-#: - ``formal_script_plan``：「写入口持锁」——正式 script_plan 另有多条持同一把 per-path 锁的写入
-#:   路径，Write/Edit 取不到锁，直改即丢失更新窗口。两层刻意不对称：sandbox 按 ``drafts/``
-#:   整目录 deny（清单在会话装配期一次性构造，集是运行时增删的，逐文件枚举必然落空；Bash
-#:   本就没有合法写入者），hook 拒正式 script_plan 与四类 revisioned quarantine 草稿。
+#: - ``source``：正式工厂工件只经质量校验和原样事务入库；两层同覆盖面。
+#: - ``formal_script_plan``：保护历史规划和旧草稿；sandbox 拒绝 Bash 写 drafts/ 整目录，
+#:   hook 拒绝历史文件，允许 Write 暂存工厂待检 Markdown。
 AgentAccessPolicy.PROTECTED_WRITE_RULES = (
     ProtectedWriteRule(
         name="project_json",
@@ -898,9 +882,9 @@ AgentAccessPolicy.PROTECTED_WRITE_RULES = (
         name="source",
         matches=AgentAccessPolicy._is_protected_source,
         deny_message=(
-            "访问被拒绝：source/ 下的源文不可直接写入，改动要按对齐重映射分集账本；"
-            "新增或整份替换源文走 mcp__arcreel__upload_source，修改整本源文的文件或自带原文的集的原文走 "
-            "mcp__arcreel__edit_source_text。删除、调序整本源文的文件请用户在「分集」视图里操作。"
+            "访问被拒绝：source/ 下的正式工件不可直接写入。"
+            "待检原文用 Write 暂存到 drafts/short_drama/，完成机检与合规后"
+            "通过 mcp__arcreel__ingest_short_drama_artifacts 原样入库。"
         ),
         sandbox_subpaths=("source",),
     ),
@@ -908,14 +892,10 @@ AgentAccessPolicy.PROTECTED_WRITE_RULES = (
         name="formal_script_plan",
         matches=AgentAccessPolicy._is_protected_formal_script_plan,
         deny_message=(
-            "访问被拒绝：正式 script_plan 与待修复草稿（"
+            "访问被拒绝：历史 script_plan 与旧草稿（"
             + " / ".join(sorted(AGENT_PROTECTED_SCRIPT_PLAN_FILENAMES))
             + "）不可用 Write/Edit 直改。"
-            "这些文件与 Web 端保存、迁移读改写、重生成共享一把文件锁，而 Write/Edit 取不到这把锁，"
-            "直改会与并发的保存互相丢失更新。"
-            f'请改用 MCP 工具——mcp__arcreel__{OPEN_DRAFT_TOOL_NAME}({{"episode_id": N, "doc_type": "..."}}) '
-            "读取可编辑草稿，用 mcp__arcreel__patch_draft 提交修改，再用 "
-            f"mcp__arcreel__{PROMOTE_TOOL_NAME} 校验并晋升回正式文件。"
+            "这些文件只用于历史读取和迁移。新正文使用短剧工厂质量闭环与七类工件入库。"
         ),
         sandbox_subpaths=("drafts",),
     ),

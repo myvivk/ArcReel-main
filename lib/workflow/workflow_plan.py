@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from lib.generation.generation_result import GenerationAction, GenerationProblem
 from lib.project.asset_types import ASSET_SPECS
-from lib.script.draft_quarantine import QUARANTINE_KIND_PROMPT_AUTHORING
 from lib.workflow.workflow_rules import WorkflowStepRule, workflow_rule
 from lib.workflow.workflow_state import (
     INVALID_EDIT_TIMELINES_CODE,
@@ -19,8 +18,6 @@ from lib.workflow.workflow_state import (
     WorkflowStatus,
     workflow_finished,
 )
-
-PositiveStrictInt = Annotated[int, Field(strict=True, gt=0)]
 
 
 class WorkflowStepState(StrEnum):
@@ -45,18 +42,6 @@ class WorkflowPlanRequest(BaseModel):
         strict=True,
         description="要规划的集的集 ID（项目详情 episodes[].episode）；缺省时按播出顺序选定当前集",
     )
-    confirmed_request_durations: dict[str, PositiveStrictInt] = Field(
-        default_factory=dict,
-        description="已与用户确认的视频请求时长，{ 单元 id: 秒数 }；只作用于本次计划的视频准入判定",
-    )
-
-    @field_validator("confirmed_request_durations")
-    @classmethod
-    def _valid_confirmed_durations(cls, value: dict[str, int]) -> dict[str, int]:
-        for unit_id in value:
-            if not unit_id.strip():
-                raise ValueError("confirmed_request_durations keys must be non-empty unit ids")
-        return value
 
 
 class WorkflowProblem(BaseModel):
@@ -168,51 +153,23 @@ class WorkflowPlan(BaseModel):
 
 _ARTIFACT_BY_STEP: dict[str, str] = {
     "asset_sheets": "asset_sheets",
-    "script_plan_content": "script_plan",
-    "script_plan_review": "script_plan",
     "final_script": "script",
-    "storyboard": "storyboards",
     "shot_grid": "shot_grids",
     "video_prompt": "video_prompts",
     "video": "videos",
     "edit": "edit_timelines",
 }
 
-#: 草稿 AI 修复的任务类型；资源 ID 见 :func:`draft_repair_resource_id`。
-TEXT_DRAFT_REPAIR_TASK_TYPE = "text_draft_repair"
-_PROMPT_AUTHORING_DRAFT_DOC_TYPE = "reference_prompt_authoring"
-#: 分集规划的两个占用槽。Agent 的单批规划与 Web 逐窗串联的首窗占前一个；串联时，执行中的窗口
-#: 在请求模型前把下一窗排进另一个槽，两槽交替，停止规划即取消排队中的那一窗。
-EPISODE_PLANNING_SLOT = "episode-planning"
-EPISODE_PLANNING_NEXT_SLOT = "episode-planning-next"
-EPISODE_PLANNING_SLOTS = (EPISODE_PLANNING_SLOT, EPISODE_PLANNING_NEXT_SLOT)
-
-
-def draft_repair_resource_id(episode: int, doc_type: str) -> str:
-    """AI 修复任务的占用槽：一份草稿一个，同一集的脚本规划草稿与提示词编写草稿互不占用。"""
-    return f"episode-{episode}-{doc_type}"
-
-
 _TASK_STEP: dict[str, str] = {
-    "text_episode_plan": "episode_plan",
-    "text_drama_script_plan": "script_plan_content",
-    "text_narration_script_plan": "script_plan_content",
-    "text_reference_script_plan": "script_plan_content",
     "text_episode_script": "final_script",
     **dict.fromkeys(ASSET_SPECS, "asset_sheets"),
-    "storyboard": "storyboard",
     "shot_grid": "shot_grid",
-    "grid": "storyboard",
     "video": "video",
-    "reference_video": "video",
 }
 
 
 def _task_step(observation: WorkflowTaskObservation) -> str | None:
     """任务归入的步骤：草稿 AI 修复按草稿归入脚本规划或正式脚本（提示词编写草稿），其余按任务类型。"""
-    if observation.task_type == TEXT_DRAFT_REPAIR_TASK_TYPE:
-        prompt_authoring = observation.unit_id.endswith(f"-{_PROMPT_AUTHORING_DRAFT_DOC_TYPE}")
-        return "final_script" if prompt_authoring else "script_plan_content"
     if observation.task_type == "text_episode_script" and observation.fields == ["video_prompt"]:
         # 视频提示词与分镜提示词同任务类型：按 payload 的 fields 归行（D-19）。
         return "video_prompt"
@@ -223,25 +180,13 @@ def _task_step(observation: WorkflowTaskObservation) -> str | None:
 _ACTION_STEP: dict[WorkflowActionType, str] = {
     WorkflowActionType.COLLECT_PROJECT_INPUT: "project_input",
     WorkflowActionType.RETRY_PROJECT_MIGRATION: "project_input",
-    WorkflowActionType.DRAFT_SELLING_POINTS: "selling_points",
-    WorkflowActionType.CREATE_EPISODE: "episode_plan",
-    WorkflowActionType.PLAN_EPISODES: "episode_plan",
-    WorkflowActionType.RESET_EPISODE_PLANNING: "episode_plan",
-    WorkflowActionType.PREPARE_SCRIPT_PLAN: "script_plan_content",
-    WorkflowActionType.START_BLANK_SCRIPT: "script_plan_content",
-    WorkflowActionType.PROVIDE_EPISODE_SOURCE: "script_plan_content",
-    WorkflowActionType.CONFIRM_SCRIPT_PLAN: "script_plan_review",
-    WorkflowActionType.GENERATE_SCRIPT: "final_script",
-    WorkflowActionType.ADD_SCRIPT_ITEMS: "final_script",
+    WorkflowActionType.CREATE_EPISODE: "project_input",
     WorkflowActionType.AUTHOR_PROMPTS: "final_script",
     WorkflowActionType.PREPARE_EPISODE_ASSETS: "asset_sheets",
     WorkflowActionType.PLAN_SHORT_DRAMA_STORYBOARDS: "final_script",
     WorkflowActionType.GENERATE_ASSET_SHEETS: "asset_sheets",
-    WorkflowActionType.REPAIR_VIDEO_UNITS: "script_structure",
-    WorkflowActionType.GENERATE_STORYBOARDS: "storyboard",
     WorkflowActionType.GENERATE_SHOT_GRIDS: "shot_grid",
     WorkflowActionType.AUTHOR_VIDEO_PROMPTS: "video_prompt",
-    WorkflowActionType.GENERATE_GRID: "storyboard",
     WorkflowActionType.GENERATE_VIDEOS: "video",
     WorkflowActionType.CREATE_EDIT_TIMELINE: "edit",
 }
@@ -250,24 +195,14 @@ _ACTION_STEP: dict[WorkflowActionType, str] = {
 def _owner_step(status: WorkflowStatus) -> str:
     """建议下一步所属的步骤 id；没有动作时按陈述了问题的那类内容归属。"""
     action = status.next_action
-    if action.type is WorkflowActionType.RESOLVE_DRAFT:
-        return (
-            "final_script"
-            if action.args.get("draft_kind") == QUARANTINE_KIND_PROMPT_AUTHORING
-            else "script_plan_review"
-        )
     if action.type is not WorkflowActionType.NONE:
         return _ACTION_STEP.get(action.type, "project_input")
     if workflow_finished(status):
         return "edit"
     if status.blockers or status.target is None or status.content is None:
         return "project_input"
-    if status.content.episode_plan_stale or status.artifacts.get("script_plan", {}).get("state") == "blocked":
-        return "script_plan_content"
     if status.artifacts.get("script", {}).get("state") == "blocked":
         return "final_script"
-    if status.artifacts.get("storyboards", {}).get("state") == "blocked":
-        return "storyboard"
     if status.artifacts.get("videos", {}).get("state") == "blocked":
         return "video"
     if any(issue.code == INVALID_EDIT_TIMELINES_CODE for issue in status.issues):
@@ -284,17 +219,7 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
     formal = content.formal_script == "present"
     has_items = formal and bool(content.script_item_count)
     if step_id == "project_input":
-        if status.project.content_mode == "ad":
-            return content.ad_inputs == "present"
-        return content.whole_source == "present" or content.episode_count > 0
-    if step_id == "selling_points":
-        return not content.products_without_selling_points
-    if step_id == "episode_plan":
-        return content.episode_count > 0 and not content.source_remaining
-    if step_id == "script_plan_content":
-        return formal or artifacts.get("script_plan", {}).get("state") in {"current", "stale"}
-    if step_id == "script_plan_review":
-        return formal or status.gates.get("script_plan_review", {}).get("state") == "confirmed"
+        return content.episode_count > 0
     if step_id == "final_script":
         return has_items and not content.pending_authoring_ids
     if step_id == "asset_sheets":
@@ -305,9 +230,7 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
             and not content.unregistered_references
         )
     if step_id == "script_structure":
-        return has_items and not content.needs_replan_ids
-    if step_id == "storyboard":
-        return has_items and not artifacts.get("storyboards", {}).get("missing_ids")
+        return has_items
     if step_id == "shot_grid":
         return has_items and not artifacts.get("shot_grids", {}).get("missing_ids")
     if step_id == "video_prompt":
@@ -436,12 +359,6 @@ def build_workflow_plan(
     steps: list[WorkflowPlanStep] = []
 
     for step_rule in rules:
-        if (
-            status.content is not None
-            and status.content.script_from_short_drama
-            and step_rule.id in {"episode_plan", "script_plan_content", "script_plan_review", "storyboard"}
-        ):
-            step_rule = WorkflowStepRule(id=step_rule.id, applicable=False)
         artifact_key = _ARTIFACT_BY_STEP.get(step_rule.id)
         # 走完的工作流没有下一步可挂：完成的「剪辑」一步不带动作。
         owns = step_rule.id == owner and not complete
@@ -471,7 +388,7 @@ def build_workflow_plan(
         structure_step.problems = [workflow_problem(problem) for problem in structure_problems]
         structure_step.requested_ids = _problem_unit_ids(structure_problems)
         structure_step.action = _structure_action(structure_problems, script_revision=script_revision)
-        for media_step in ("storyboard", "video"):
+        for media_step in ("shot_grid", "video_prompt", "video"):
             if by_id[media_step].state is not WorkflowStepState.SKIPPED:
                 by_id[media_step].state = WorkflowStepState.PENDING
                 by_id[media_step].action = None

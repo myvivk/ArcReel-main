@@ -23,7 +23,7 @@ from lib.artifacts.visual_artifact_provenance import (
     build_reference_video_artifact_visual_basis,
     build_storyboard_video_artifact_visual_basis,
 )
-from lib.script.reference_video.request_projection import (
+from lib.project.legacy_reference_assets import (
     FilesystemReferenceAssets,
     clamp_reference_assets,
     hydrate_reference_assets,

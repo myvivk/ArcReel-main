@@ -37,14 +37,11 @@ export type ProjectStyle =
 /** 项目设置四个表单分页（基础、风格、模型、配音）共用的一个编辑单元。 */
 export interface ProjectSettingsForm {
   aspectRatio: string;
-  gridStoryboard: boolean;
   /** 口播语速估算（阅读单位 / 秒）；null 按项目语言的默认速度估算。 */
   speechRate: number | null;
   episodeTargetDuration: number | null;
   /** 全剧规划总集数（集）；自定义输入不是正整数时为 null，拦住保存。 */
   totalEpisodes: number | null;
-  /** 广告项目的目标总时长（秒）；自定义输入不是正整数时为 null，拦住保存。 */
-  adTargetDuration: number | null;
   style: ProjectStyle;
   /** 模型通道；`videoResolution` 按执行模型从 `videoResolutions` 现取，不单独保存。 */
   models: Omit<ModelConfigValue, "videoResolution"> & {
@@ -59,7 +56,7 @@ export interface ProjectSettingsForm {
 
 /** 属于各表单分页的字段，用于在侧栏标出有修改的分页。 */
 export const FORM_TAB_FIELDS = {
-  basics: ["aspectRatio", "gridStoryboard", "speechRate", "episodeTargetDuration", "totalEpisodes", "adTargetDuration"],
+  basics: ["aspectRatio", "speechRate", "episodeTargetDuration", "totalEpisodes"],
   style: ["style"],
   models: ["models"],
   voice: ["narration", "voiceBinding"],
@@ -87,10 +84,8 @@ function sameFields(a: ProjectSettingsForm, b: ProjectSettingsForm, fields: read
 
 const ALL_FIELDS = Object.keys({
   aspectRatio: 0,
-  gridStoryboard: 0,
   speechRate: 0,
   episodeTargetDuration: 0,
-  adTargetDuration: 0,
   totalEpisodes: 0,
   style: 0,
   models: 0,
@@ -176,18 +171,15 @@ export function deriveForm(
   }
 
   const rawSpeed = project.narration_speed;
-  const rawTarget = project.target_duration;
   const styleImage = str(project.style_image);
   const templateId = str(project.style_template_id);
 
   return {
     // 后端 get_aspect_ratio() 未设置时按 9:16 生成，这里显示实际生效的比例
     aspectRatio: str(project.aspect_ratio) || "9:16",
-    gridStoryboard: project.grid_storyboard === true,
     speechRate: finiteOrNull(project.speech_rate_units_per_second),
     episodeTargetDuration: finiteOrNull(project.episode_target_duration),
     totalEpisodes: finiteOrNull(project.total_episodes),
-    adTargetDuration: typeof rawTarget === "number" && Number.isInteger(rawTarget) && rawTarget > 0 ? rawTarget : null,
     style: styleImage
       ? {
           kind: "image",
@@ -221,18 +213,12 @@ export interface ProjectFacts {
   generationRoute: GenerationRoute;
 }
 
-/** 宫格是分镜图生视频内的装配选项；参考生视频与不支持宫格的广告项目既不呈现也不参与保存。 */
-export function gridToggleVisible(facts: ProjectFacts): boolean {
-  return facts.generationRoute === "storyboard" && facts.contentMode !== "ad";
-}
-
 type ProjectPatch = Partial<ProjectData> & { clear_style_image?: boolean };
 
 /** 表单值对应的全部 PATCH 键；风格键只在与已保存风格不同时出现。 */
 function fullProjectPatch(
   value: ProjectSettingsForm,
   saved: ProjectSettingsForm,
-  facts: ProjectFacts,
   globals: GlobalModelDefaults,
 ): ProjectPatch {
   const { models, narration } = value;
@@ -266,27 +252,16 @@ function fullProjectPatch(
     // 音色与后端 .strip() 对齐，保存时去首尾空白
     narration_voice: narration.narrationVoice.trim() || null,
     narration_speed: narration.narrationSpeed,
-    // 绑定方式只在参考生视频路线上有效，其余路线该键与项目无关，不写
-    ...(facts.generationRoute === "reference_video" ? { character_voice_binding: value.voiceBinding } : {}),
+    character_voice_binding: value.voiceBinding,
     // null 即清除项目级覆盖、回退语言默认
     speech_rate_units_per_second: value.speechRate,
     default_text_backend: models.textBackendDefault || null,
     text_backend_simple: models.textBackendSimple || null,
     text_backend_complex: models.textBackendComplex || null,
     aspect_ratio: value.aspectRatio || undefined,
-    // 生成方式创建后不可更改，不在 PATCH 面上；宫格只在开关可见时写，广告项目对 true 返回 400
-    ...(gridToggleVisible(facts) ? { grid_storyboard: value.gridStoryboard } : {}),
-    // 广告项目写目标总时长（正整数秒，不可清空），后端对 default_duration 与 episode_target_duration
-    // 出现本身返回 400；非广告项目反之，两者恒写，null 即清除
-    ...(facts.contentMode === "ad"
-      ? value.adTargetDuration !== null
-        ? { target_duration: value.adTargetDuration }
-        : {}
-      : {
-          default_duration: models.defaultDuration,
-          episode_target_duration: value.episodeTargetDuration,
-          total_episodes: value.totalEpisodes,
-        }),
+    default_duration: models.defaultDuration,
+    episode_target_duration: value.episodeTargetDuration,
+    total_episodes: value.totalEpisodes,
     model_settings: modelSettings,
     ...stylePatch,
   };
@@ -305,11 +280,10 @@ function sameModelSettings(a: Record<string, ModelSettingEntry>, b: Record<strin
 export function buildProjectPatch(
   value: ProjectSettingsForm,
   saved: ProjectSettingsForm,
-  facts: ProjectFacts,
   globals: GlobalModelDefaults,
 ): ProjectPatch {
-  const next = fullProjectPatch(value, saved, facts, globals);
-  const base = fullProjectPatch(saved, saved, facts, globals);
+  const next = fullProjectPatch(value, saved, globals);
+  const base = fullProjectPatch(saved, saved, globals);
   const patch: ProjectPatch = {};
   for (const key of Object.keys(next) as (keyof ProjectPatch)[]) {
     const same =

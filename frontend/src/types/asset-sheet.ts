@@ -2,7 +2,7 @@
 
 import type { CostBreakdown } from "./cost";
 
-export type AssetSheetType = "character" | "scene" | "prop" | "product";
+export type AssetSheetType = "character" | "scene" | "prop";
 
 /** 产物清单对一张资产图的判定：missing 即待生成（含登记了文件却读不到）。 */
 export type AssetSheetStatus = "current" | "stale" | "missing" | "blocked";

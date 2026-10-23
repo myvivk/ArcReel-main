@@ -127,8 +127,6 @@ def set_video_request_facts(
     传单个结果时所有桶同一份；传按任务类型桶（``"i2v"`` / ``"r2v"``）索引的映射时按桶作答，
     供两桶配置不同的消费方用例。
     """
-    from lib.script import script_generator
-    from lib.script.reference_video import request_projection
     from server.services.admission import cost_estimation
     from server.services.tasks import video_caps
 
@@ -142,7 +140,7 @@ def set_video_request_facts(
             fake = AsyncMock(side_effect=evaluate)
         else:
             fake = AsyncMock(return_value=facts)
-        for consumer in (script_generator, request_projection, cost_estimation, video_caps):
+        for consumer in (cost_estimation, video_caps):
             monkeypatch.setattr(consumer, "evaluate_video_request_facts", fake)
 
     return configure
@@ -786,10 +784,11 @@ def poll_clock():
 def timeline_project(tmp_path: Path):
     """参考生视频模式的项目 ``demo``：第 1 集含 E1U1、E1U2 两个视频单元，尚无视频；返回其 ProjectManager。"""
     from lib.project.project_manager import ProjectManager
+    from tests.legacy_project_shapes import seed_legacy_project_metadata
 
     manager = ProjectManager(tmp_path / "projects")
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     manager.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     manager.save_script(
         "demo",

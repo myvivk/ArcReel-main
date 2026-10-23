@@ -39,7 +39,7 @@ def capacity_table(limits: dict[str, dict[str, int]] | None = None, *, image: in
 
 
 def reference_checkpoint_json(task_id: str, *, provider_id: str = "ark") -> str:
-    from lib.script.reference_video.execution_checkpoint import ReferenceSubmissionCheckpoint
+    from lib.generation.execution_checkpoint import ReferenceSubmissionCheckpoint
 
     visual = ArtifactBasis.build(
         "artifact-visual/video-reference",
@@ -94,7 +94,7 @@ def reference_checkpoint_json(task_id: str, *, provider_id: str = "ark") -> str:
 
 
 def _storyboard_checkpoint_json(task_id: str, *, provider_id: str = "ark") -> str:
-    from lib.script.reference_video.execution_checkpoint import (
+    from lib.generation.execution_checkpoint import (
         StagedProviderMedia,
         StoryboardSubmissionCheckpoint,
     )

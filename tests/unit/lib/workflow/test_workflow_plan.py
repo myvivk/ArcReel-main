@@ -43,7 +43,6 @@ def _status(
             "project": WorkflowProject(
                 content_mode=content_mode,
                 generation_mode=generation_mode,
-                grid_storyboard=False,
             ),
             "target": WorkflowTarget(
                 episode=1,
@@ -54,9 +53,6 @@ def _status(
             "blockers": [],
             "content": WorkflowContent(
                 episode_count=1,
-                whole_source="not_applicable" if content_mode == "ad" else "present",
-                source_remaining=False,
-                ad_inputs="present" if content_mode == "ad" else "not_applicable",
                 episode_source="not_applicable" if content_mode == "ad" else "present",
                 formal_script="present",
                 script_item_count=1,

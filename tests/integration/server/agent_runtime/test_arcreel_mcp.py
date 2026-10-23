@@ -18,6 +18,7 @@ from server.agent_runtime.session_manager import SessionManager
 from server.agent_runtime.session_store import SessionMetaStore
 from server.agent_toolset.toolset import ARCREEL_MCP_TOOL_IDS
 from tests.fakes import FakeSDKClient, result_frame, system_frame
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 # ---------------------------------------------------------------------------
 # build_arcreel_mcp_server
@@ -123,7 +124,7 @@ def test_retired_tool_names_are_not_registered() -> None:
 async def test_timeline_revision_records_the_agent_author(tmp_path: Path, file_db_factory, resume: bool) -> None:
     projects = ProjectManager(tmp_path / "data")
     projects.create_project("demo")
-    projects.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(projects, "demo", "Demo", "Anime", "narration")
     projects.save_script(
         "demo", {"episode": 1, "title": "E1", "content_mode": "narration", "segments": []}, "episode_1.json"
     )

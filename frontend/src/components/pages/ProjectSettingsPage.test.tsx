@@ -329,13 +329,10 @@ describe("ProjectSettingsPage – 分页与一次保存", () => {
   });
 
   it("字段校验未通过时保存与「保存并离开」都不提交，指出所在分页并留在原处", async () => {
-    const updateSpy = mockProject({ content_mode: "ad", generation_mode: "storyboard", target_duration: 30 });
+    const updateSpy = mockProject({ content_mode: "drama", generation_mode: "storyboard", episode_target_duration: 90 });
     const { location } = renderAt("/app/projects/demo/settings");
 
-    const group = await screen.findByRole("radiogroup", { name: "目标总时长" });
-    await waitFor(() => expect(within(group).getByRole("radio", { name: "30 秒" })).toBeChecked());
-    // 自定义输入留空：目标总时长无效
-    fireEvent.click(within(group).getByRole("radio", { name: "自定义" }));
+    fireEvent.change(await screen.findByRole("spinbutton", { name: /单集目标时长/ }), { target: { value: "0" } });
     fireEvent.click(within(sidebar()).getByRole("link", { name: /^模型/ }));
     fireEvent.click(saveButton());
     expect(await screen.findByText(/「基础」中有字段未通过校验/)).toBeInTheDocument();
@@ -445,60 +442,6 @@ describe("ProjectSettingsPage – model_settings resolution", () => {
 
   beforeEach(() => mockConfig(FAKE_CONFIG_WITH_DEFAULTS));
 
-  it.each([false, true])("keeps bucket resolution edits consistent through save (shared model: %s)", async (sharedModel) => {
-    vi.spyOn(providerModels, "getProviderModels").mockResolvedValue([
-      ...["gemini", "ark"].map((id) => ({
-        id, display_name: id, description: "", status: "ready", media_types: ["video"],
-        capabilities: [], credential_count: 0,
-        models: { [id === "gemini" ? "veo-3" : "seedance"]: {
-          display_name: id, media_type: "video", capabilities: [], default: true,
-          supported_durations: [8], resolutions: ["720p", "1080p"],
-          audio_track: "controllable", reference_route_audio_track: "controllable", voice_consistency: "soft",
-        } },
-      })),
-    ] as Awaited<ReturnType<typeof providerModels.getProviderModels>>);
-    const updateSpy = mockProject({
-      generation_mode: "reference_video",
-      video_provider_i2v: "gemini/veo-3",
-      video_provider_r2v: sharedModel ? "gemini/veo-3" : "ark/seedance",
-      model_settings: {
-        "gemini/veo-3": { resolution: "720p" },
-        "ark/seedance": { resolution: "1080p" },
-      },
-    });
-    const user = userEvent.setup();
-    renderAt("/app/projects/demo/settings?tab=models");
-    const i2v = await screen.findByRole("combobox", { name: /图生视频.*分辨率/ });
-    const r2v = screen.getByRole("combobox", { name: /参考生视频.*分辨率/ });
-    const pick = async (trigger: HTMLElement, value: string) => {
-      await user.click(trigger);
-      await user.click(await screen.findByRole("option", { name: value }));
-    };
-    expect(i2v).toHaveTextContent("720p");
-    expect(r2v).toHaveTextContent(sharedModel ? "720p" : "1080p");
-    await pick(i2v, "1080p");
-    expect(i2v).toHaveTextContent("1080p");
-    expect(r2v).toHaveTextContent("1080p");
-    await pick(r2v, "720p");
-    expect(i2v).toHaveTextContent(sharedModel ? "720p" : "1080p");
-    expect(r2v).toHaveTextContent("720p");
-    // 共用模型时两次修改互相抵消，另改一处让保存可用
-    fireEvent.click(within(sidebar()).getByRole("link", { name: /^基础/ }));
-    fireEvent.click(await screen.findByRole("radio", { name: /横屏 16:9/ }));
-    fireEvent.click(saveButton());
-    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
-    // 共用模型时两次修改抵消，分辨率表与已保存的一致，不回写
-    expect(updateSpy.mock.calls[0][1].model_settings).toEqual(
-      sharedModel
-        ? undefined
-        : {
-            "gemini/veo-3": { resolution: "1080p" },
-            "ark/seedance": { resolution: "720p" },
-            "gemini/nano-banana": { resolution: null },
-          },
-    );
-  });
-
   it("loads existing model_settings resolution into video/image pickers", async () => {
     vi.spyOn(providerModels, "getProviderModels").mockResolvedValue(RESOLUTION_PROVIDERS);
     mockProject({
@@ -575,34 +518,6 @@ describe("ProjectSettingsPage – 基础", () => {
     expect(screen.getByRole("radio", { name: /横屏 16:9/ })).not.toBeChecked();
   });
 
-  it("shows the generation route read-only, with no control to change it", async () => {
-    mockProject({ generation_mode: "reference_video" });
-    renderAt("/app/projects/demo/settings");
-
-    expect(await screen.findByText(/跳过分镜图，直接用角色、场景、道具图作为参考生成视频/)).toBeInTheDocument();
-    expect(screen.getByText(/生成方式创建后不可更改/)).toBeInTheDocument();
-    expect(screen.queryByRole("radio", { name: /参考生视频|分镜图生视频/ })).not.toBeInTheDocument();
-    // 参考生视频下不呈现宫格开关
-    expect(screen.queryByRole("switch", { name: /多宫格分镜/ })).not.toBeInTheDocument();
-  });
-
-  it("saves the grid assembly toggle on the storyboard route", async () => {
-    const updateSpy = mockProject({ generation_mode: "storyboard", grid_storyboard: false });
-    renderAt("/app/projects/demo/settings");
-
-    const toggle = await screen.findByRole("switch", { name: /多宫格分镜/ });
-    expect(toggle).not.toBeChecked();
-    fireEvent.click(toggle);
-    expect(toggle).toBeChecked();
-
-    fireEvent.click(saveButton());
-    await waitFor(() => {
-      expect(updateSpy).toHaveBeenCalledWith("demo", expect.objectContaining({ grid_storyboard: true }));
-    });
-    // 生成模式不在 PATCH 面上
-    expect(updateSpy.mock.calls[0][1]).not.toHaveProperty("generation_mode");
-  });
-
   it("loads, edits and clears the episode target duration", async () => {
     const updateSpy = mockProject({ generation_mode: "storyboard", episode_target_duration: 90 });
     renderAt("/app/projects/demo/settings");
@@ -632,29 +547,6 @@ describe("ProjectSettingsPage – 基础", () => {
     fireEvent.click(saveButton());
     expect(await screen.findByText(/「基础」中有字段未通过校验/)).toBeInTheDocument();
     expect(updateSpy).not.toHaveBeenCalled();
-  });
-
-  it("hides the episode target duration and the grid toggle for ad projects", async () => {
-    mockProject({ content_mode: "ad", generation_mode: "storyboard" });
-    renderAt("/app/projects/demo/settings");
-
-    expect(await screen.findByText(/先为每个分镜生成分镜图/)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/单集目标时长/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: /多宫格分镜/ })).not.toBeInTheDocument();
-  });
-
-  it("loads and saves the target duration of ad projects", async () => {
-    const updateSpy = mockProject({ content_mode: "ad", generation_mode: "storyboard", target_duration: 30 });
-    renderAt("/app/projects/demo/settings");
-
-    const group = await screen.findByRole("radiogroup", { name: "目标总时长" });
-    await waitFor(() => expect(within(group).getByRole("radio", { name: "30 秒" })).toBeChecked());
-    fireEvent.click(within(group).getByRole("radio", { name: "60 秒" }));
-    fireEvent.click(saveButton());
-    await waitFor(() => {
-      expect(updateSpy).toHaveBeenCalledWith("demo", expect.objectContaining({ target_duration: 60 }));
-    });
-    expect(updateSpy.mock.calls[0][1]).not.toHaveProperty("episode_target_duration");
   });
 
   it("shows the reading unit of the project source language and saves the speech rate", async () => {
@@ -688,16 +580,16 @@ describe("ProjectSettingsPage – 配音", () => {
     });
   });
 
-  it("omits the character voice binding on the storyboard route", async () => {
+  it("saves the character voice binding on the factory route", async () => {
     const updateSpy = mockProject({ generation_mode: "storyboard", character_voice_binding: "reference_audio" });
     renderAt("/app/projects/demo/settings?tab=voice");
 
     fireEvent.click(await screen.findByRole("radio", { name: "TTS 配音" }));
-    expect(screen.queryByRole("radio", { name: /^提示词约束/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^参考音频/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: /^提示词约束/ }));
     fireEvent.click(saveButton());
-    // 参考音频通道只属于参考生视频路线：分镜图生视频下该键与项目无关，不写
     await waitFor(() => expect(updateSpy).toHaveBeenCalled());
-    expect(updateSpy.mock.calls[0][1]).not.toHaveProperty("character_voice_binding");
+    expect(updateSpy.mock.calls[0][1]).toHaveProperty("character_voice_binding", "prompt");
   });
 
   it("switching a TTS project to post-production writes only the delivery and keeps the snapshot", async () => {
@@ -723,7 +615,7 @@ describe("ProjectSettingsPage – 配音", () => {
   });
 
   it("prefills a project without a snapshot from the global defaults when switched to TTS", async () => {
-    const updateSpy = mockProject({ content_mode: "narration", narration_delivery: "post_production" });
+    const updateSpy = mockProject({ content_mode: "drama", narration_delivery: "post_production" });
     renderAt("/app/projects/demo/settings?tab=voice");
 
     fireEvent.click(await screen.findByRole("radio", { name: "TTS 配音" }));
@@ -742,13 +634,13 @@ describe("ProjectSettingsPage – 配音", () => {
 
   it("leaves a legacy post-production audio backend untouched when saving other settings", async () => {
     const updateSpy = mockProject({
-      content_mode: "narration",
+      content_mode: "drama",
       narration_delivery: "post_production",
       audio_backend: "dashscope",
     });
     renderAt("/app/projects/demo/settings");
 
-    fireEvent.click(await screen.findByRole("switch", { name: /多宫格分镜/ }));
+    fireEvent.click(await screen.findByRole("radio", { name: /横屏 16:9/ }));
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(updateSpy).toHaveBeenCalled());

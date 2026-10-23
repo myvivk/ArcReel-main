@@ -28,18 +28,20 @@ describe("EpisodePage 工厂原文", () => {
     });
     renderEpisode();
     const original = await screen.findByText(markdown, { collapseWhitespace: false });
-    expect(original.textContent).toBe(markdown);
+    expect(original).toHaveTextContent(markdown, { normalizeWhitespace: false });
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByText("分镜画布")).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "脚本规划" })).not.toBeInTheDocument();
   });
 
-  it("普通自带剧本没有工厂文件时仍显示本集原文确认", async () => {
+  it("没有工厂工件时提供工厂生成和导入，不进入原文确认", async () => {
     vi.spyOn(API, "getShortDramaSource").mockResolvedValue({
       episode: 1, path: "source/short_drama/episodes/episode_01.md", markdown: "", revision: null, exists: false,
     });
-    vi.spyOn(API, "getSourceContent").mockResolvedValue("普通自带剧本");
+    const readLegacy = vi.spyOn(API, "getSourceContent");
     renderEpisode();
-    expect(await screen.findByRole("textbox", { name: "本集原文" })).toHaveValue("普通自带剧本");
+    expect(await screen.findByRole("button", { name: "AI 原创剧本" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "本集原文" })).not.toBeInTheDocument();
+    expect(readLegacy).not.toHaveBeenCalled();
   });
 });

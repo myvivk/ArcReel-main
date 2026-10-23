@@ -23,7 +23,6 @@ from lib.infra.api_errors import ConflictError
 from lib.project.project_manager import ProjectManager
 from lib.project.project_migration_failure import MIGRATION_FAILURE_CODE, record_migration_failure
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script.draft_quarantine import QUARANTINE_KIND_DRAMA_SCRIPT_PLAN, read_quarantine
 from lib.workflow.workflow_plan import WorkflowPlanRequest, build_workflow_plan
 from lib.workflow.workflow_state import WorkflowStatus
 from server.agent_toolset.declaration import invoke_declaration
@@ -33,8 +32,9 @@ from server.auth import create_download_token, create_token
 from server.cors_config import resolve_cors_policy
 from server.remote_mcp import ArcApiKeyVerifier, RemoteMCPHost, build_remote_mcp_server, mount_remote_mcp
 from server.tool_runtime import Services, TextGenerationResult
-from tests.factories import install_current_video, make_test_clip, make_video_request_facts, register_project_sources
+from tests.factories import install_current_video, make_test_clip, make_video_request_facts
 from tests.fakes import refuse_resume_execution
+from tests.integration.lib.script.storyboard_support import factory_prompt_project, read_factory_script
 from tests.integration.server.agent_tool_support import ToolHarness
 
 
@@ -45,7 +45,7 @@ class _Planner:
             {
                 "project_revision": "sha256-v1:project",
                 "source_revision": None,
-                "project": {"content_mode": "ad", "generation_mode": "storyboard", "grid_storyboard": False},
+                "project": {"content_mode": "drama", "generation_mode": "storyboard"},
                 "target": {
                     "episode": request.episode_id,
                     "script": "scripts/episode_1.json",
@@ -54,16 +54,16 @@ class _Planner:
                 },
                 "content": None,
                 "blockers": [],
-                "gates": {"script_plan_review": {"state": "not_applicable", "revision": None}},
+                "gates": {},
                 "artifacts": {
                     "asset_sheets": {},
-                    "script_plan": {"state": "not_applicable"},
+                    "short_drama_source": {"state": "missing"},
                     "script": {"state": "missing"},
                     "storyboards": {"current_ids": [], "stale_ids": [], "missing_ids": []},
                     "videos": {"current_ids": [], "stale_ids": [], "missing_ids": []},
                     "audio": {"state": "not_applicable", "current_ids": [], "stale_ids": [], "missing_ids": []},
                 },
-                "next_action": {"type": "generate_script", "reason": "script missing"},
+                "next_action": {"type": "collect_project_input", "reason": "factory source missing"},
             }
         )
         return build_workflow_plan(status)
@@ -87,20 +87,11 @@ class _AvailableImageCapabilities(_Capabilities):
 def remote_projects(tmp_path: Path) -> ProjectManager:
     projects_root = tmp_path / "projects"
     manager = ProjectManager(tmp_path)
-    manager.create_project("demo", content_mode="drama")
+    project_dir = factory_prompt_project(tmp_path)
     manager.create_project_metadata("demo", "Demo", "", "drama")
-    project_dir = projects_root / "demo"
-    register_project_sources(manager, "demo", own_episodes=("第一集原文",))
-    (project_dir / "scripts").mkdir(exist_ok=True)
-    (project_dir / "scripts" / "episode_1.json").write_text('{"episode":1,"scenes":[]}', encoding="utf-8")
-    drafts = project_dir / "drafts" / "episode_1"
-    drafts.mkdir(parents=True)
-    (drafts / "script_plan_normalized_script.json").write_text(
-        '{"title":"第一集","scenes":[{"scene_id":"E1S01","duration_seconds":4,'
-        '"segment_break":false,"characters_in_scene":[],"scenes":[],"props":[],'
-        '"scene_description":"山门前。","utterances":[],"source_text":"第一集原文"}]}',
-        encoding="utf-8",
-    )
+    script = read_factory_script(project_dir)
+    script["scenes"][0].update(image_prompt=None, pending_authoring=True)
+    manager.save_script("demo", script, "episode_1.json")
     activate_artifact_target_state(project_dir, bump_schema=False)
     (projects_root / "empty").mkdir()
     outside = tmp_path / "outside"
@@ -352,12 +343,11 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
         tools = await session.list_tools()
         result = await session.call_tool("get_workflow_plan", {"project": " demo ", "episode_id": 1})
         capabilities = await session.call_tool("get_video_capabilities", {"project": "demo"})
-        patched = await session.call_tool("patch_project", {"project": "demo", "overview": {"synopsis": "远程更新"}})
+        patched = await session.call_tool("patch_project", {"project": "demo", "settings": {"narration_speed": 1.1}})
         project_content = await session.call_tool("get_project_content", {"project": "demo"})
         source_files = await session.call_tool("list_source_files", {"project": "demo"})
         source_text = await session.call_tool("get_source_text", {"project": "demo", "path": "source/episode_1.txt"})
         script = await session.call_tool("get_episode_script", {"project": "demo", "script": "episode_1.json"})
-        script_plan = await session.call_tool("get_script_plan_content", {"project": "demo", "episode_id": 1})
         project_files = await session.call_tool("list_project_files", {"project": "demo"})
         project_file = await session.call_tool("read_project_file", {"project": "demo", "path": "project.json"})
         missing = await session.call_tool("get_workflow_plan", {"episode_id": 1})
@@ -372,14 +362,11 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
 
     assert not result.isError
     migrated = {
-        "plan_episodes",
-        "reset_episode_planning",
         "patch_project",
         "patch_episode_meta",
         "rename_asset",
         "merge_asset",
         "retry_project_migration",
-        "complete_script_plan_rebuild",
     }
     readers = {
         "get_project_content",
@@ -387,19 +374,33 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
         "list_source_files",
         "get_source_text",
         "get_episode_script",
-        "get_script_plan_content",
         "list_project_files",
         "read_project_file",
     }
-    drafts = {"open_draft", "patch_draft", "promote_draft", "discard_draft"}
     text_and_script = {
         "generate_episode_script",
-        "generate_script_plan",
-        "confirm_script_review",
+        "generate_short_drama_factory",
+        "ingest_short_drama_artifacts",
         "patch_episode_script",
     }
     batches = {"get_generation_batch", "cancel_generation_batch"}
     retired = {
+        "generate_script_plan",
+        "confirm_script_review",
+        "get_script_plan_content",
+        "open_draft",
+        "patch_draft",
+        "promote_draft",
+        "discard_draft",
+        "upload_source",
+        "edit_source_text",
+        "plan_episodes",
+        "reset_episode_planning",
+        "generate_grid",
+        "split_grids",
+        "import_short_drama_script",
+        "import_short_drama_series",
+        "complete_script_plan_rebuild",
         "convert_script_plan",
         "normalize_drama_script",
         "split_narration_segments",
@@ -417,11 +418,10 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
     }
     listed = {tool.name: tool for tool in tools.tools}
     assert set(listed) == set(ARCREEL_MCP_TOOL_IDS)
-    assert migrated | readers | drafts | text_and_script | batches <= listed.keys()
+    assert migrated | readers | text_and_script | batches <= listed.keys()
     assert retired.isdisjoint(listed)
     assert all(
-        "project" in listed[name].inputSchema["required"]
-        for name in migrated | readers | drafts | text_and_script | batches
+        "project" in listed[name].inputSchema["required"] for name in migrated | readers | text_and_script | batches
     )
     patch_schema = listed["patch_episode_script"].inputSchema
     operations_schema = patch_schema["properties"]["operations"]
@@ -453,13 +453,12 @@ async def test_remote_mcp_returns_typed_workflow_plan_and_rejects_bad_project(
         }
     }
     assert patched.structuredContent is not None
-    assert patched.structuredContent["project_patch"]["operation"] == "overview"
+    assert patched.structuredContent["project_patch"]["operation"] == "settings"
     for content_result in (
         project_content,
         source_files,
         source_text,
         script,
-        script_plan,
         project_files,
         project_file,
     ):
@@ -510,39 +509,6 @@ async def test_remote_inspect_video_units_returns_contact_sheets_as_image_conten
     images = [block for block in result.content if isinstance(block, ImageContent)]
     assert [image.mimeType for image in images] == ["image/jpeg"]
     assert base64.b64decode(images[0].data).startswith(b"\xff\xd8")
-
-
-async def test_remote_grid_list_only_returns_preview_without_a_batch(
-    remote_server, remote_projects: ProjectManager
-) -> None:
-    project = remote_projects.load_project("demo")
-    project["grid_storyboard"] = True
-    # 预览渲染按集定位的宫格记录：剧本须已绑定集号
-    project["episodes"] = [{"episode": 1, "script_file": "episode_1.json"}]
-    remote_projects.save_project("demo", project)
-
-    app = _mounted(remote_server)
-    async with (
-        remote_server.session_manager.run(),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://localhost",
-            headers={"Authorization": "Bearer arc-valid"},
-            follow_redirects=True,
-        ) as client,
-        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
-        result = await session.call_tool(
-            "generate_grid",
-            {"project": "demo", "script": "episode_1.json", "list_only": True},
-        )
-
-    assert not result.isError
-    assert result.structuredContent is not None
-    assert set(result.structuredContent) == {"generate_grid"}
-    assert isinstance(result.structuredContent["generate_grid"], str)
 
 
 async def test_remote_media_runtime_validates_shared_schema_and_forwards_nested_instruction(
@@ -769,36 +735,22 @@ async def test_remote_mcp_entry_tools_share_one_projects_root(remote_server) -> 
             {
                 "name": "new-project",
                 "title": "New Project",
-                "content_mode": "narration",
-                "generation_mode": "storyboard",
             },
         )
         projects = await session.call_tool("list_projects", {})
-        uploaded = await session.call_tool(
-            "upload_source",
-            {"project": "new-project", "filename": "novel.txt", "content": "hello"},
-        )
+        readback = await session.call_tool("get_project_content", {"project": "new-project"})
 
     assert created.structuredContent is not None
     assert created.structuredContent["project"]["name"] == "new-project"
     assert projects.structuredContent is not None
     assert {project["name"] for project in projects.structuredContent["projects"]} == {"demo", "new-project"}
-    assert uploaded.structuredContent is not None
-    assert uploaded.structuredContent["source"]["path"] == "source/novel.txt"
+    assert not readback.isError
+    assert readback.structuredContent["project_content"]["project"]["content_mode"] == "drama"
 
 
 async def test_remote_mcp_text_generation_and_script_patch_return_structured_content(
     remote_server, remote_projects: ProjectManager, video_request_facts
 ) -> None:
-    remote_projects.create_project("ad-demo", content_mode="ad")
-    remote_projects.create_project_metadata(
-        "ad-demo",
-        "Ad Demo",
-        "",
-        "ad",
-        target_duration=30,
-        brief="展示产品卖点",
-    )
     progress_messages: list[str | None] = []
 
     async def record_progress(_progress: float, _total: float | None, message: str | None) -> None:
@@ -817,34 +769,14 @@ async def test_remote_mcp_text_generation_and_script_patch_return_structured_con
         ClientSession(read, write) as session,
     ):
         await session.initialize()
-        script_plan = await session.call_tool(
-            "generate_script_plan",
-            {
-                "project": "demo",
-                "episode_id": 1,
-                "source": "source/episode_1.txt",
-                "dry_run": True,
-            },
-            progress_callback=record_progress,
-        )
-        refused = await session.call_tool("confirm_script_review", {"project": "demo", "episode_id": 1})
-        refused_problem = refused.structuredContent["problem"]
-        confirmed = await session.call_tool(
-            "confirm_script_review",
-            {
-                "project": "demo",
-                "episode_id": 1,
-                "overwrite_revision": refused_problem["params"]["script_overwrite"]["revision"],
-            },
-        )
         script = await session.call_tool(
             "generate_episode_script",
-            {"project": "ad-demo", "episode_id": 1, "dry_run": True},
+            {"project": "demo", "episode_id": 1, "entry_ids": ["E1S01"], "dry_run": True},
             progress_callback=record_progress,
         )
         scoped = await session.call_tool(
             "generate_episode_script",
-            {"project": "ad-demo", "episode_id": 1, "dry_run": True, "scope": "all"},
+            {"project": "demo", "episode_id": 1, "dry_run": True, "scope": "all"},
         )
         patched = await session.call_tool(
             "patch_episode_script",
@@ -856,22 +788,12 @@ async def test_remote_mcp_text_generation_and_script_patch_return_structured_con
             },
         )
 
-    assert not script_plan.isError
-    assert set(script_plan.structuredContent) == {"text_generation"}
-    assert script_plan.structuredContent["text_generation"]["message"]
-    assert refused.isError
-    assert refused_problem["code"] == "script_overwrite_required"
-    assert refused_problem["params"]["script_overwrite"]["entries"] == []
-    # 回执正文就是服务端生成的丢失清单，与 params 里的文本同一份。
-    assert refused_problem["params"]["script_overwrite"]["text"] in refused_problem["detail"]
-    assert not confirmed.isError
-    assert confirmed.structuredContent["text_generation"]["message"]
     assert not script.isError
     assert set(script.structuredContent) == {"text_generation"}
     assert "DRY RUN" in script.structuredContent["text_generation"]["message"]
     assert scoped.isError
     assert scoped.structuredContent["problem"]["code"] == "invalid_request"
-    assert "entry_ids" in scoped.structuredContent["problem"]["detail"]
+    assert "scope" in scoped.structuredContent["problem"]["detail"]
     assert progress_messages == []
     assert patched.isError
     assert patched.structuredContent["script_patch"]["problems"][0]["code"] == "revision_conflict"
@@ -898,8 +820,10 @@ async def test_text_task_is_shared_by_remote_and_embedded_hosts_and_running_memb
             return result
 
     projects = ProjectManager(tmp_path)
-    projects.create_project("demo", content_mode="ad")
-    projects.create_project_metadata("demo", "Demo", "", "ad", target_duration=30, brief="卖点")
+    factory_prompt_project(tmp_path)
+    script = read_factory_script(projects.get_project_path("demo"))
+    script["scenes"][0].update(image_prompt=None, pending_authoring=True)
+    projects.save_script("demo", script, "episode_1.json")
     queue = RecordingQueue(projects)
     services = Services(projects=projects, workflow_planner=_Planner(), capabilities=_Capabilities(), queue=queue)
 
@@ -955,7 +879,8 @@ async def test_text_task_is_shared_by_remote_and_embedded_hosts_and_running_memb
         ):
             await session.initialize()
             remote = await session.call_tool("generate_episode_script", {"project": "demo", "episode_id": 1})
-            await started.wait()
+            assert not remote.isError, remote
+            await asyncio.wait_for(started.wait(), timeout=5)
             embedded_ctx = ToolHarness(
                 project_name="demo",
                 data_root=projects.data_root,
@@ -971,7 +896,7 @@ async def test_text_task_is_shared_by_remote_and_embedded_hosts_and_running_memb
                     embedded_ctx.services,
                 )
             )
-            await queue.deduped.wait()
+            await asyncio.wait_for(queue.deduped.wait(), timeout=5)
 
             assert not embedded.done()
             assert remote.structuredContent is not None
@@ -1009,48 +934,6 @@ async def test_text_task_is_shared_by_remote_and_embedded_hosts_and_running_memb
     finally:
         release.set()
         await worker.stop()
-
-
-async def test_remote_mcp_draft_preserves_explicit_null_updates(remote_server, remote_projects) -> None:
-    # 尚无正式剧本：脚本规划未确认，可取回编辑副本。
-    (remote_projects.get_project_path("demo") / "scripts" / "episode_1.json").unlink()
-    app = _mounted(remote_server)
-    async with (
-        remote_server.session_manager.run(),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://localhost",
-            headers={"Authorization": "Bearer arc-valid"},
-            follow_redirects=True,
-        ) as client,
-        streamable_http_client("http://localhost/mcp", http_client=client) as (read, write, _),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
-        args = {
-            "project": "demo",
-            "episode_id": 1,
-            "doc_type": "drama_script_plan",
-            "source": "source/episode_1.txt",
-        }
-        opened = await session.call_tool("open_draft", args)
-        (remote_projects.get_project_path("demo") / "drafts/episode_1/script_plan_normalized_script.json").unlink()
-        patched = await session.call_tool(
-            "patch_draft",
-            {
-                **args,
-                "content": opened.structuredContent["draft"]["content"],
-                "base_revision": opened.structuredContent["draft"]["revision"],
-                "accept_formal_revision": None,
-                "source": None,
-            },
-        )
-
-    draft = read_quarantine(remote_projects.get_project_path("demo"), 1, QUARANTINE_KIND_DRAMA_SCRIPT_PLAN)
-    assert not patched.isError
-    assert draft is not None
-    assert draft.meta["base_fingerprint"] is None
-    assert draft.meta["source"] is None
 
 
 async def test_remote_mcp_host_initializes_first_request_and_can_restart() -> None:

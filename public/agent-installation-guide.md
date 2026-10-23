@@ -1,6 +1,6 @@
 # ArcReel 外部 Agent 接入任务
 
-你正在帮助用户把当前 Agent 宿主连接到 ArcReel。完成以下步骤后再结束任务；项目创作流程由安装后的 skill 与 MCP 工具说明提供。
+你正在帮助用户把当前 Agent 宿主连接到 ArcReel。完成以下步骤后再结束任务；项目创作使用短剧工厂唯一链路，按当前 MCP 工具说明完成工厂生成、七类工件入库、资产、AI 分镜、K 帧确认、独立视频提示词、视频和剪辑导出。
 
 ## 1. 安装 ArcReel skills
 
@@ -25,6 +25,8 @@ MCP 端点：
 ## 3. 执行接线
 
 安装完成后立即使用 `setup-arcreel-skills` skill，按其指引配置 MCP 端点、Bearer 访问令牌并验证连通；`video-workflow` 会在后续创作请求中按需触发。
+
+旧版外部 skills 可能引用已移除的普通源文、原生规划、通用草稿或参考单元工具。接线后重新获取 MCP 工具清单，以服务器当前声明为准；内容交稿仅使用 `generate_short_drama_factory` 和 `ingest_short_drama_artifacts`，提示词编写使用 `generate_episode_script`，一次只生成 `image_prompt` 或 `video_prompt`。
 
 ## 4. 完成判据
 

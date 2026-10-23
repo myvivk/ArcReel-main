@@ -6,11 +6,11 @@ from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactManifestEntry, 
 from lib.episode.episode_management import create_episode
 from lib.i18n.zh import errors as zh_errors
 from lib.project.project_manager import ProjectManager
-from lib.script.blank_script import start_blank_script
 from tests.integration.server.routers.projects_router_support import (
     _FakePM,
     build_projects_client,
 )
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class TestProjectsRouter:
@@ -20,7 +20,7 @@ class TestProjectsRouter:
     def test_patch_project_episode_rebinding_forgets_unbound_resource_claims(self, tmp_path, monkeypatch):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         project_dir = pm.get_project_path("demo")
 
         def _script(resource_id: str) -> dict:
@@ -246,7 +246,7 @@ class TestProjectsRouter:
         """还没有剧本的集改标题记在账本条目上，之后从空白开始建出的剧本以它为标题。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         episode = create_episode(pm, "demo")
 
         with build_projects_client(monkeypatch, pm) as client:
@@ -254,5 +254,4 @@ class TestProjectsRouter:
 
         assert resp.status_code == 200, resp.text
         assert pm.load_project("demo")["episodes"][0]["title"] == "番外：雪夜"
-        filename = start_blank_script(pm, "demo", episode)
-        assert pm.load_script("demo", filename)["title"] == "番外：雪夜"
+        assert not (pm.get_project_path("demo") / "scripts" / f"episode_{episode}.json").exists()

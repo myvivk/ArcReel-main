@@ -34,7 +34,6 @@ from tests.factories import make_video_request_facts, wav_bytes
 from tests.integration.server.services.tasks.generation_tasks_support import (
     FakeGenerator,
     _FakePM,
-    ad_pm,
     async_return,
     fake_resolve_ctx,
     persist_active_fake_project,
@@ -55,10 +54,10 @@ class TestGenerationTasks:
         from tests.integration.lib.script.storyboard_support import confirmed_grid
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         grid = confirmed_grid(project_path, "E1S02")
-        target = fake_pm.script["segments"][1]
+        target = fake_pm.script["scenes"][1]
         target["video_prompt"] = {"action": "K0 起身，K1 行走，K2 转身，K3 停下"}
         target["generated_assets"] = {
             "storyboard_image": grid.composite_path,
@@ -73,7 +72,7 @@ class TestGenerationTasks:
         snapshot = project_path / "end_frames/scene_E1S01.png"
         snapshot.parent.mkdir()
         snapshot.write_bytes(b"prior-snapshot")
-        fake_pm.script["segments"][0]["end_frame_image"] = snapshot.relative_to(project_path).as_posix()
+        fake_pm.script["scenes"][0]["end_frame_image"] = snapshot.relative_to(project_path).as_posix()
         register_stale_visual_claim(project_path, ArtifactKey.episode_storyboard(1, "E1S02"), grid.composite_path)
         persist_active_fake_project(fake_pm)
         changed = {
@@ -102,7 +101,7 @@ class TestGenerationTasks:
         from lib.infra.ffmpeg import ffmpeg_executable
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         video = project_path / "videos/prior.mp4"
@@ -130,7 +129,7 @@ class TestGenerationTasks:
         snapshot = project_path / "end_frames/scene_E1S01.png"
         snapshot.parent.mkdir()
         snapshot.write_bytes(b"user-selected-snapshot")
-        prior = fake_pm.script["segments"][0]
+        prior = fake_pm.script["scenes"][0]
         prior["end_frame_image"] = snapshot.relative_to(project_path).as_posix()
         prior["generated_assets"]["video_clip"] = video.relative_to(project_path).as_posix()
         register_stale_visual_claim(project_path, ArtifactKey.episode_video(1, "E1S01"), "videos/prior.mp4")
@@ -161,10 +160,10 @@ class TestGenerationTasks:
         self, monkeypatch, tmp_path, task_id
     ):
         from lib.artifacts.version_manager import PaidVersionCommit
-        from lib.script.reference_video.execution_checkpoint import StoryboardSubmissionCheckpoint
+        from lib.generation.execution_checkpoint import StoryboardSubmissionCheckpoint
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_pm.project["content_mode"] = "drama"
         fake_pm.project["character_voice_binding"] = "reference_audio"
         fake_pm.project["characters"]["Bob"] = {"description": "Bob"}
@@ -176,6 +175,7 @@ class TestGenerationTasks:
         fake_pm.script = {
             "episode": 1,
             "content_mode": "drama",
+            "short_drama_meta": fake_pm.factory_metadata,
             "scenes": [
                 {
                     "scene_id": "E1S01",
@@ -250,7 +250,7 @@ class TestGenerationTasks:
 
     async def test_execute_video_task_rechecks_audio_switch_from_request_facts(self, monkeypatch, tmp_path):
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
         facts = make_video_request_facts(
@@ -282,7 +282,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_generates_thumbnail(self, monkeypatch, tmp_path):
         """视频生成后应自动提取首帧缩略图"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -313,7 +313,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_carries_backend_warnings_into_the_result(self, monkeypatch, tmp_path):
         """backend 执行期的提示要落到任务 result 上，用户才看得到——日志只有运维读得到。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         warning = {"key": "comfyui_multiple_outputs", "params": {"count": 2, "filename": "final.mp4"}}
 
@@ -342,13 +342,13 @@ class TestGenerationTasks:
         tmp_path,
         grid_cells,
     ):
-        from lib.script.reference_video.execution_checkpoint import StoryboardSubmissionCheckpoint
+        from lib.generation.execution_checkpoint import StoryboardSubmissionCheckpoint
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
-        item = fake_pm.script["segments"][0]
-        item["novel_text"] = "旁白正文"
+        item = fake_pm.script["scenes"][0]
+        item["utterances"] = [{"kind": "voiceover", "speaker": None, "text": "旁白正文"}]
         current_prompt = {"action": "current action", "camera_motion": "Static", "dialogue": []}
         item["video_prompt"] = current_prompt
         item["duration_seconds"] = 8
@@ -442,7 +442,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_lane_bucket_follows_project_route(self, monkeypatch, tmp_path):
         """lane 归桶按项目生成模式求值，与提交入口使用同一口径。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
         seen_lanes: list[dict] = []
@@ -464,13 +464,17 @@ class TestGenerationTasks:
         assert seen_lanes[-1]["video"].generation_type == "i2v"
 
         fake_pm.project["generation_mode"] = "reference_video"
-        await generation_tasks.execute_video_task("demo", "E1S01", payload)
-        assert seen_lanes[-1]["video"].generation_type == "r2v"
+        from lib.infra.api_errors import ConflictError
+
+        with pytest.raises(ConflictError) as exc:
+            await generation_tasks.execute_video_task("demo", "E1S01", payload)
+        assert exc.value.key == "short_drama_factory_only"
+        assert len(seen_lanes) == 1
 
     async def test_execute_video_task_rejects_unsupported_duration(self, monkeypatch, tmp_path):
         """执行层在解析出 ProviderModel 后，对越界 duration 以明确错误拒绝。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -493,7 +497,7 @@ class TestGenerationTasks:
 
     async def test_execute_video_task_rejects_duration_removed_by_current_resolution(self, monkeypatch, tmp_path):
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
         facts = make_video_request_facts(
@@ -525,7 +529,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_supported_duration_passes(self, monkeypatch, tmp_path):
         """合法 duration 通过守卫，正常进入后端生成。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -549,7 +553,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_refuses_a_script_outside_the_episode_ledger(self, monkeypatch, tmp_path):
         """剧本身份只认 project.json 的 episodes 账本：未绑定的剧本文件一律拒绝，不猜集号。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         (project_path / "scripts" / "unbound_script.json").write_text(
             json.dumps(fake_pm.script, ensure_ascii=False),
@@ -581,18 +585,18 @@ class TestGenerationTasks:
     ):
         """视频按剧本计划时长申请，只声明 video lane：项目的旁白交付方式与已有的更长旁白配音都不改变请求。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_pm.project["narration_delivery"] = narration_delivery
         seed_current_storyboard(fake_pm)
-        item = fake_pm.script["segments"][0]
+        item = fake_pm.script["scenes"][0]
         item["duration_seconds"] = 4
-        item["novel_text"] = "旁白。"
+        item["utterances"] = [{"kind": "voiceover", "speaker": None, "text": "旁白。"}]
         item["video_prompt"] = {}
         item["generated_assets"]["narration_audio"] = "audio/segment_E1S01.wav"
         audio = project_path / "audio" / "segment_E1S01.wav"
         audio.parent.mkdir()
         audio.write_bytes(wav_bytes(7.5))
-        preparation = admit_script_unit("segments", item).preparation
+        preparation = admit_script_unit("scenes", item).preparation
         ArtifactManifest(ProjectArtifactManifestAdapter(project_path)).register(
             ArtifactKey.episode_audio(1, "E1S01"),
             artifact_path="audio/segment_E1S01.wav",
@@ -623,7 +627,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_blocks_on_unresolvable_request_facts(self, monkeypatch, tmp_path):
         """排队期间配置变化让档位收成空集：提交供应商前以原问题码阻断，不回退到未收窄的全集。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
         failure = VideoRequestFactsFailure(
@@ -668,9 +672,9 @@ class TestGenerationTasks:
         文件名与 canonical 路径逐一比对。"""
         project_path = prepare_files(tmp_path)
         (project_path / "storyboards" / "scene_E1S01_first.png").write_bytes(b"png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01_first.png"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01_first.png"}
         register_stale_visual_claim(
             project_path,
             ArtifactKey.episode_storyboard(1, "E1S01"),
@@ -693,9 +697,9 @@ class TestGenerationTasks:
     async def test_execute_video_task_missing_storyboard_image_fails_hard(self, monkeypatch, tmp_path):
         """storyboard_image 字段指向的文件缺失时硬失败，不调用后端生成。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_missing.png"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_missing.png"}
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -714,9 +718,9 @@ class TestGenerationTasks:
     async def test_execute_video_task_schema8_requires_registered_storyboard(self, monkeypatch, tmp_path):
         """Schema 8 workers reject an existing storyboard whose Manifest claim is absent."""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
         persist_active_fake_project(fake_pm)
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
@@ -741,9 +745,9 @@ class TestGenerationTasks:
         """A restore that drops the selected claim cannot race a paid video submission."""
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        item = fake_pm.script["segments"][0]
-        item["novel_text"] = "旁白正文"
+        fake_pm = _FakePM(project_path, factory=True)
+        item = fake_pm.script["scenes"][0]
+        item["utterances"] = [{"kind": "voiceover", "speaker": None, "text": "旁白正文"}]
         item["video_prompt"] = {"action": "跑", "camera_motion": "Static", "dialogue": []}
         item["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
         persist_active_fake_project(fake_pm)
@@ -794,8 +798,8 @@ class TestGenerationTasks:
         from lib.artifacts.artifact_activation import activate_artifact_target_state
 
         project_path = prepare_files(tmp_path)
-        fake_pm = ad_pm(project_path, with_sheet=False)
-        item = fake_pm.script["shots"][0]
+        fake_pm = _FakePM(project_path, factory=True)
+        item = fake_pm.script["scenes"][0]
         item["video_prompt"] = {"action": "跑", "camera_motion": "Static", "dialogue": []}
         item["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
         fake_pm.project.update(
@@ -864,9 +868,9 @@ class TestGenerationTasks:
         from lib.script.storyboard_sequence import StoryboardImageBindingRequired
 
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = ["bad"]
+        fake_pm.script["scenes"][0]["generated_assets"] = ["bad"]
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -911,9 +915,9 @@ class TestGenerationTasks:
         end_frame_dir = project_path / "end_frames"
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": storyboard_value}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": storyboard_value}
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -937,10 +941,10 @@ class TestGenerationTasks:
         绝对路径本身。"""
         project_path = prepare_files(tmp_path)
         (project_path / "storyboards" / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
         absolute_value = str(project_path / "storyboards" / "scene_E1S01.png")
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": absolute_value}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": absolute_value}
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -962,9 +966,9 @@ class TestGenerationTasks:
         保留 base 的盘符），须按正斜杠归一化后单独判断根分隔符开头。"""
         project_path = prepare_files(tmp_path)
         (project_path / "storyboards" / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "\\Users\\Alice\\scene.png"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "\\Users\\Alice\\scene.png"}
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -986,9 +990,9 @@ class TestGenerationTasks:
         才失败且原因不可读。"""
         project_path = prepare_files(tmp_path)
         (project_path / "storyboards" / "subdir").mkdir(parents=True)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "storyboards/subdir"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "storyboards/subdir"}
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1007,7 +1011,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_end_frame_image_passed_to_generator(self, monkeypatch, tmp_path):
         """用户选定的本镜尾帧快照作为下一镜首帧，生成结束仍保留原快照。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
@@ -1015,7 +1019,7 @@ class TestGenerationTasks:
         end_frame_dir = project_path / "end_frames"
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1031,7 +1035,7 @@ class TestGenerationTasks:
         assert fake_generator.video_calls[0]["start_image"] == end_frame_dir / "scene_E1S01.png"
         assert fake_generator.video_calls[0]["end_image"] is None
         assert (end_frame_dir / "scene_E1S01.png").read_bytes() == b"png"
-        assert fake_pm.script["segments"][0]["end_frame_image"] == "end_frames/scene_E1S01.png"
+        assert fake_pm.script["scenes"][0]["end_frame_image"] == "end_frames/scene_E1S01.png"
 
     async def test_execute_video_task_end_frame_image_bare_filename_resolves_via_default_dir(
         self, monkeypatch, tmp_path
@@ -1040,7 +1044,7 @@ class TestGenerationTasks:
         data_validator._resolve_existing_path 的 default_dir 回退口径解析——否则通过导入校验
         （校验器对裸文件名会补目录重试）的值会在生成期无理由硬失败。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
@@ -1048,7 +1052,7 @@ class TestGenerationTasks:
         end_frame_dir = project_path / "end_frames"
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm.script["segments"][0]["end_frame_image"] = "scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1068,11 +1072,11 @@ class TestGenerationTasks:
     async def test_execute_video_task_without_end_frame_image_passes_none(self, monkeypatch, tmp_path, missing):
         """未设置尾帧的镜头行为不变：字段缺失或显式空字符串，end_image 均为 None。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
         if not missing:
-            fake_pm.script["segments"][0]["end_frame_image"] = ""
+            fake_pm.script["scenes"][0]["end_frame_image"] = ""
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1090,11 +1094,11 @@ class TestGenerationTasks:
     async def test_execute_video_task_missing_end_frame_snapshot_falls_back_to_current(self, monkeypatch, tmp_path):
         """上一镜快照缺失且无宫格或成片时，使用本镜分镜图。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1132,11 +1136,11 @@ class TestGenerationTasks:
         end_frame_dir = project_path / "end_frames"
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S02.png").write_bytes(b"png")  # 别的镜头的快照，供跨镜头误引用例检查
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["end_frame_image"] = end_frame_value
+        fake_pm.script["scenes"][0]["end_frame_image"] = end_frame_value
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1161,11 +1165,11 @@ class TestGenerationTasks:
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S02.png").write_bytes(b"png")
         (end_frame_dir / "scene_E1S01.png").symlink_to(end_frame_dir / "scene_E1S02.png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1190,11 +1194,11 @@ class TestGenerationTasks:
         real_dir.mkdir(parents=True, exist_ok=True)
         (real_dir / "scene_E1S01.png").write_bytes(b"png")
         (project_path / "end_frames").symlink_to(real_dir)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1222,11 +1226,11 @@ class TestGenerationTasks:
         end_frames_dir = project_path / "end_frames"
         end_frames_dir.mkdir(parents=True, exist_ok=True)
         (end_frames_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1250,12 +1254,12 @@ class TestGenerationTasks:
         last_frame=False）——否则替身按自己的条件抛异常，验的是替身而非接线是否真能触达
         gating。能力组合的各分支另见 tests/test_video_frame_slots.py。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
         (project_path / "storyboards/scene_E1S02.png").write_bytes(b"last-cell")
-        fake_pm.script["segments"][0]["generated_assets"]["shot_grid"] = {
+        fake_pm.script["scenes"][0]["generated_assets"]["shot_grid"] = {
             "cell_paths": ["storyboards/scene_E1S01.png", "storyboards/scene_E1S02.png"],
             "composite_path": "storyboards/scene_E1S01.png",
         }
@@ -1289,7 +1293,7 @@ class TestGenerationTasks:
     async def test_execute_video_task_reuses_end_frame_on_regeneration(self, monkeypatch, tmp_path):
         """视频重生成无需额外操作即自动沿用尾帧：字段是镜头持久属性，每次执行都从剧本重新加载。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         seed_continuation_target(fake_pm)
         fake_generator = FakeGenerator()
@@ -1297,7 +1301,7 @@ class TestGenerationTasks:
         end_frame_dir = project_path / "end_frames"
         end_frame_dir.mkdir(parents=True, exist_ok=True)
         (end_frame_dir / "scene_E1S01.png").write_bytes(b"png")
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator))
@@ -1323,13 +1327,14 @@ class TestGenerationTasks:
         """drama 口型台词从分镜级 dialogue-kind utterances 取（覆盖 payload 已不带的
         video_prompt.dialogue）；voiceover-kind 不进视频 YAML。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
 
         # 改用 drama 剧本：E1S01 携带有序 utterances（voiceover 在前、dialogue 在后）
         fake_pm.script = {
             "episode": 1,
             "content_mode": "drama",
+            "short_drama_meta": fake_pm.factory_metadata,
             "scenes": [
                 {
                     "scene_id": "E1S01",
@@ -1371,10 +1376,11 @@ class TestGenerationTasks:
         assert "王" in prompt_yaml
         assert "那是命运的开端。" not in prompt_yaml
 
-    def _drama_script(self):
+    def _drama_script(self, fake_pm):
         return {
             "episode": 1,
             "content_mode": "drama",
+            "short_drama_meta": fake_pm.factory_metadata,
             "scenes": [
                 {
                     "scene_id": "E1S01",
@@ -1392,20 +1398,14 @@ class TestGenerationTasks:
             ],
         }
 
-    def _legacy_drama_script(self):
-        """utterances 迁移前的存量 drama 剧本：scene 无 utterances，台词仍留在 video_prompt.dialogue。"""
-        script = self._drama_script()
-        del script["scenes"][0]["utterances"]
-        return script
-
     async def test_execute_video_task_injects_voice_profiles_for_audible_model(self, monkeypatch, tmp_path):
         """有音轨模型（voice_consistency != none）：dialogue speaker 命中的角色资产
         非空 voice_style 机械派生进 Voice_Profiles 顶部声明段。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
         fake_generator = FakeGenerator()
-        fake_pm.script = self._drama_script()
+        fake_pm.script = self._drama_script(fake_pm)
         seed_current_storyboard(fake_pm)
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
@@ -1434,10 +1434,10 @@ class TestGenerationTasks:
     async def test_execute_video_task_skips_voice_profiles_for_silent_model(self, monkeypatch, tmp_path):
         """C 类（真无声，voice_consistency == none）模型不注入 Voice_Profiles。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
         fake_generator = FakeGenerator()
-        fake_pm.script = self._drama_script()
+        fake_pm.script = self._drama_script(fake_pm)
         seed_current_storyboard(fake_pm)
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
@@ -1467,10 +1467,10 @@ class TestGenerationTasks:
         """本集关闭音频（requested_generate_audio=False）：即便模型有音轨也不注入 Voice_Profiles，
         与 C 类真无声模型同口径。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
         fake_generator = FakeGenerator()
-        fake_pm.script = self._drama_script()
+        fake_pm.script = self._drama_script(fake_pm)
         seed_current_storyboard(fake_pm)
 
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
@@ -1503,7 +1503,7 @@ class TestGenerationTasks:
         该声明段唯一来源是 build_drama_video_prompt 的机械派生，调用方不得越权注入、绕过
         C 类（真无声）门控。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -1530,142 +1530,10 @@ class TestGenerationTasks:
         assert "Voice_Profiles" not in prompt_yaml
         assert "越权" not in prompt_yaml
 
-    async def test_execute_video_task_injects_voice_profiles_from_legacy_dialogue(self, monkeypatch, tmp_path):
-        """utterances 迁移前的存量 drama 剧本（scene 无 utterances 字段，台词仍在
-        video_prompt.dialogue）：load_script 按原始 JSON 读盘不过 pydantic 迁移，改走 legacy
-        出口派生 Voice_Profiles，不因缺 utterances 静默丢失。"""
-        project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
-        fake_generator = FakeGenerator()
-        fake_pm.script = self._legacy_drama_script()
-        seed_current_storyboard(fake_pm)
-
-        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
-        monkeypatch.setattr(
-            generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator, voice_consistency="soft")
-        )
-        monkeypatch.setattr(generation_tasks, "extract_video_thumbnail", async_return(None))
-        monkeypatch.setattr(generation_tasks, "emit_project_change_batch", lambda *a, **kw: None)
-
-        await generation_tasks.execute_video_task(
-            "demo",
-            "E1S01",
-            {
-                "script_file": "episode_1.json",
-                "prompt": {
-                    "action": "起身",
-                    "camera_motion": "Static",
-                    "ambiance_audio": "风声",
-                    "dialogue": [{"speaker": "王", "line": "你来了。"}],
-                },
-                "duration_seconds": 8,
-            },
-        )
-
-        prompt_yaml = fake_generator.video_calls[0]["prompt"]
-        assert "Voice_Profiles" in prompt_yaml
-        assert "低沉沙哑" in prompt_yaml
-        assert "你来了。" in prompt_yaml
-
-    async def test_execute_video_task_skips_voice_profiles_from_legacy_dialogue_when_silent(
-        self, monkeypatch, tmp_path
-    ):
-        """legacy dialogue 出口同过无声门控：本集关闭音频时不注入 Voice_Profiles，台词照常下发。"""
-        project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
-        fake_generator = FakeGenerator()
-        fake_pm.script = self._legacy_drama_script()
-        seed_current_storyboard(fake_pm)
-
-        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
-        monkeypatch.setattr(
-            generation_tasks,
-            "resolve_generation_context",
-            fake_resolve_ctx(fake_generator, voice_consistency="soft", requested_generate_audio=False),
-        )
-        monkeypatch.setattr(generation_tasks, "extract_video_thumbnail", async_return(None))
-        monkeypatch.setattr(generation_tasks, "emit_project_change_batch", lambda *a, **kw: None)
-
-        await generation_tasks.execute_video_task(
-            "demo",
-            "E1S01",
-            {
-                "script_file": "episode_1.json",
-                "prompt": {
-                    "action": "起身",
-                    "camera_motion": "Static",
-                    "ambiance_audio": "风声",
-                    "dialogue": [{"speaker": "王", "line": "你来了。"}],
-                },
-                "duration_seconds": 8,
-            },
-        )
-
-        prompt_yaml = fake_generator.video_calls[0]["prompt"]
-        assert "Voice_Profiles" not in prompt_yaml
-        assert "低沉沙哑" not in prompt_yaml
-        assert "你来了。" in prompt_yaml
-
-    async def test_execute_video_task_content_mode_falls_back_to_project_when_episode_omits_it(
-        self, monkeypatch, tmp_path
-    ):
-        """存量 episode 剧本省略顶层 content_mode 时回退到 project.json 的 content_mode
-        （与 lib.project.data_validator 已校验通过的既定口径一致），不因回退缺失而被误判为
-        narration、静默跳过 dialogue 重建与 Voice_Profiles 注入。"""
-        project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.project["content_mode"] = "drama"
-        fake_pm.project["characters"]["王"] = {"voice_style": "低沉沙哑"}
-        fake_generator = FakeGenerator()
-        fake_pm.script = {
-            "episode": 1,
-            # 顶层无 content_mode：存量 episode 省略该字段，真相源退到 project.json。
-            "scenes": [
-                {
-                    "scene_id": "E1S01",
-                    "duration_seconds": 8,
-                    "segment_break": False,
-                    "characters_in_scene": ["王"],
-                    "scenes": [],
-                    "props": [],
-                    "image_prompt": "首镜头",
-                    "video_prompt": {"action": "起身", "camera_motion": "Static", "ambiance_audio": "风声"},
-                    "utterances": [
-                        {"kind": "dialogue", "speaker": "王", "text": "你来了。"},
-                    ],
-                }
-            ],
-        }
-        seed_current_storyboard(fake_pm)
-
-        monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
-        monkeypatch.setattr(
-            generation_tasks, "resolve_generation_context", fake_resolve_ctx(fake_generator, voice_consistency="soft")
-        )
-        monkeypatch.setattr(generation_tasks, "extract_video_thumbnail", async_return(None))
-        monkeypatch.setattr(generation_tasks, "emit_project_change_batch", lambda *a, **kw: None)
-
-        await generation_tasks.execute_video_task(
-            "demo",
-            "E1S01",
-            {
-                "script_file": "episode_1.json",
-                "prompt": {"action": "起身", "camera_motion": "Static", "ambiance_audio": "风声"},
-                "duration_seconds": 8,
-            },
-        )
-
-        prompt_yaml = fake_generator.video_calls[0]["prompt"]
-        assert "Voice_Profiles" in prompt_yaml
-        assert "低沉沙哑" in prompt_yaml
-        assert "你来了。" in prompt_yaml
-
     async def test_execute_video_task_default_duration_from_caps(self, monkeypatch, tmp_path):
         """无显式 duration 时，默认值由 caps 收口（取 supported_durations[0]），且必然合法。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -1693,7 +1561,7 @@ class TestGenerationTasks:
     ):
         """时长由端点固定、单元与项目都没写时长时，申请的秒数取共享的默认规划时长。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -1721,7 +1589,7 @@ class TestGenerationTasks:
         Veo + 4k 只接受 8 秒；取首项 4 秒会让默认设置必然撞上 backend 的执行期拒绝。
         """
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator()
 
@@ -1756,7 +1624,7 @@ class TestGenerationTasks:
     async def test_video_resolve_failure_fails_task_without_fallback(self, monkeypatch, tmp_path):
         """视频解析失败即任务失败：异常原样上抛留痕，无硬编码 provider/model 兜底，后端不被调用。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator()
 
         async def _boom(*args, **kwargs):

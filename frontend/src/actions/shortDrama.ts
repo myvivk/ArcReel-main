@@ -10,31 +10,6 @@ import { useTasksStore } from "@/stores/tasks-store";
 import { promptAuthoringResourceId } from "@/actions/generation";
 import { errMsg } from "@/utils/async";
 
-export interface ShortDramaEpisodeInput {
-  episode_id: number;
-  markdown: string;
-}
-
-export interface ShortDramaImportDetail {
-  episode: number;
-  ok: boolean;
-  scenes?: number;
-  error?: string;
-  /** 声明时长与落盘实得时长不一致时由后端回执。 */
-  declared_seconds?: number;
-  actual_seconds?: number;
-  duration_shortfall?: boolean;
-  registered_assets?: Record<string, string[]>;
-  asset_conflicts?: Array<Record<string, string>>;
-  assets_without_description?: Array<{ type: string; name: string; reason: string }>;
-}
-
-export interface ShortDramaImportResult {
-  imported: number;
-  failed: number;
-  details: ShortDramaImportDetail[];
-}
-
 export interface ShortDramaArtifactInput {
   path: string;
   content_base64: string;
@@ -62,96 +37,6 @@ export interface ShortDramaSource {
   exists: boolean;
   /** 本集源稿引用的资产里缺外观描述的清单；非空时分镜入口置灰，先去补齐。 */
   assets_missing_description?: Array<{ type: string; name: string; reason: string }>;
-}
-
-export interface ShortDramaImportOneResult {
-  episode: number;
-  scenes: number;
-  declared_seconds?: number;
-  actual_seconds?: number;
-  duration_shortfall?: boolean;
-  registered_assets?: Record<string, string[]>;
-  asset_conflicts?: Array<Record<string, string>>;
-  assets_without_description?: Array<{ type: string; name: string; reason: string }>;
-}
-
-/** 导入一集短剧工厂剧本，成功/失败均弹提示。 */
-export async function importShortDramaScript(
-  projectName: string,
-  episodeId: number,
-  markdown: string,
-): Promise<ShortDramaImportOneResult> {
-  try {
-    const res = await API.importShortDramaScript(projectName, episodeId, markdown);
-    if (res.assets_without_description?.length) {
-      useAppStore
-        .getState()
-        .pushToast(
-          i18n.t("dashboard:short_drama_imported_one_missing_descriptions", {
-            episode: res.episode,
-            assets: res.assets_without_description.map((asset) => asset.name).join("、"),
-          }),
-          "warning",
-        );
-    }
-    if (res.duration_shortfall) {
-      useAppStore
-        .getState()
-        .pushToast(
-          i18n.t("dashboard:short_drama_imported_one_shortfall", {
-            episode: res.episode,
-            declared: res.declared_seconds ?? 0,
-            actual: res.actual_seconds ?? 0,
-          }),
-          "warning",
-        );
-    } else {
-      useAppStore
-        .getState()
-        .pushToast(
-          i18n.t("dashboard:short_drama_imported_one", { episode: res.episode, scenes: res.scenes }),
-          "success",
-        );
-    }
-    return res;
-  } catch (err) {
-    useAppStore.getState().pushToast(errMsg(err), "error");
-    throw err;
-  }
-}
-
-/** 批量导入多集短剧工厂剧本，按导入/失败计数弹提示。 */
-export async function importShortDramaSeries(
-  projectName: string,
-  episodes: ShortDramaEpisodeInput[],
-  continueOnError = true,
-): Promise<ShortDramaImportResult> {
-  try {
-    const res = await API.importShortDramaSeries(projectName, episodes, continueOnError);
-    const missingDescriptions = res.details.flatMap((detail) =>
-      (detail.assets_without_description ?? []).map((asset) => ({ episode: detail.episode, name: asset.name })),
-    );
-    if (missingDescriptions.length) {
-      const summary = missingDescriptions.map((asset) => `第 ${asset.episode} 集：${asset.name}`).join("、");
-      useAppStore.getState().pushToast(
-        i18n.t("dashboard:short_drama_imported_batch_missing_descriptions", { assets: summary }),
-        "warning",
-      );
-    }
-    if (res.failed === 0) {
-      useAppStore
-        .getState()
-        .pushToast(i18n.t("dashboard:short_drama_imported_batch", { imported: res.imported, failed: res.failed }), "success");
-    } else {
-      useAppStore
-        .getState()
-        .pushToast(i18n.t("dashboard:short_drama_imported_batch", { imported: res.imported, failed: res.failed }), "warning");
-    }
-    return res;
-  } catch (err) {
-    useAppStore.getState().pushToast(errMsg(err), "error");
-    throw err;
-  }
 }
 
 /** 从已保存的 Markdown 源稿重建正式脚本；整体 AI 分镜，或只重生成所选分镜。 */

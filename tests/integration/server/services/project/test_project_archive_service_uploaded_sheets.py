@@ -17,6 +17,7 @@ from lib.workflow.workflow_state import WorkflowStateService
 from server.services.currency.upload_finalize import install_manual_asset_sheet_upload
 from server.services.project.project_archive import ARCHIVE_MANIFEST_NAME, ProjectArchiveService
 from tests.integration.server.derivative_sheet_support import solid_png_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 #: Alice 描述为空时上传；Bob 上传后改了描述；Carol 与 Dave 的资产图没有上传版本记录，Dave 描述为空；
 #: Eve 描述为空且没有资产图。
@@ -44,7 +45,7 @@ def _backfilled_project(pm: ProjectManager) -> Path:
     """建项目、上传资产图、放无记录的资产图，再退回 v7 走整条迁移链补录。"""
 
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     project_dir = pm.get_project_path("demo")
     pm.add_character("demo", "Bob", "银发少女")
     pm.add_character("demo", "Carol", "存量角色")
@@ -136,7 +137,7 @@ def test_current_package_carries_only_the_selected_upload_and_keeps_the_source_c
     sheet_path = f"{spec.subdir}/Hero.png"
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     _ADD_ASSET[asset_type](pm, "demo", "Hero", "银发少女")
     project_dir = pm.get_project_path("demo")
     (project_dir / sheet_path).parent.mkdir(parents=True, exist_ok=True)

@@ -16,10 +16,9 @@ ArcReel treats the Agent, text generation, image generation, video generation, a
 The Agent is responsible for:
 
 - Understanding user intent;
-- Analyzing novels and screenplays;
-- Identifying characters, scenes, and props while planning each episode's script;
-- Planning episodes;
-- Normalizing screenplays;
+- Factory creation and quality checks;
+- Preparing characters, scenes, and props from factory artifacts;
+- Authoring storyboard prompts and separate video prompts;
 - Orchestrating subsequent generation tasks.
 
 ArcReel's Agent Runtime is based on the Claude Agent SDK and supports Anthropic's official service as well as compatible configurations supported by the project.
@@ -221,15 +220,14 @@ Image capabilities are mainly used for:
 
 - Character design;
 - Scene and prop design;
-- Standardized merchandise reference images;
 - Single-shot storyboards;
-- Multi-grid storyboards;
+- Per-shot keyframe reference materials;
 - Style analysis and image editing.
 
 When choosing a provider, pay particular attention to:
 
 - Support for multiple reference images;
-- Character and merchandise identity preservation;
+- Character identity and scene consistency;
 - Rendering of text and logos;
 - Target aspect ratios and resolutions;
 - Image editing capabilities;

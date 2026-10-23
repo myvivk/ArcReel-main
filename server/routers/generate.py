@@ -19,8 +19,8 @@ from lib.artifacts.artifact_activation import (
     active_artifact_currency_resolver,
     artifact_is_usable,
     resolve_artifact_episode,
-    resolve_usable_storyboard_video_inputs,
 )
+from lib.artifacts.artifact_input_claims import resolve_usable_storyboard_video_slots
 from lib.artifacts.artifact_manifest import ArtifactKey
 from lib.config.resolver import ConfigResolver, video_bucket_for_generation_mode
 from lib.generation.generation_queue import get_generation_queue
@@ -31,7 +31,8 @@ from lib.infra.path_safety import safe_exists, safe_join
 from lib.project.asset_derivatives import DERIVATIVE_TASK_TYPE, DerivativeSheetSource, resolve_derivative_sheet_source
 from lib.project.asset_types import ASSET_SPECS, resolve_asset_key, validate_asset_name
 from lib.project.project_change_hints import build_change_label, emit_project_change_batch, project_change_source
-from lib.project.project_manager import get_project_manager, is_reference_video_project
+from lib.project.project_manager import get_project_manager
+from lib.script.factory_episode import require_factory_script
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.script_skeleton import resolve_script_kind
@@ -134,7 +135,8 @@ async def generate_storyboard(
         pm_local = get_project_manager()
         project = pm_local.load_project(project_name)
         script = pm_local.load_script(project_name, req.script_file)
-        _resolve_request_artifact_episode(project, script, req.script_file)
+        episode = _resolve_request_artifact_episode(project, script, req.script_file)
+        require_factory_script(pm_local.get_project_path(project_name), project, script, episode)
         items, id_field, _, _, _ = get_storyboard_items(script)
         resolved = find_storyboard_item(items, id_field, segment_id)
         if resolved is None:
@@ -193,19 +195,13 @@ async def generate_video(
 
     需要先有分镜图作为起始帧。生成由 GenerationWorker 异步执行。
 
-    仅服务分镜图生视频：参考生视频没有分镜图这一步，在此拒绝并指引换入口。
+    仅接受工厂源稿及来源修订一致的视觉派生状态。
     """
 
     def _sync() -> dict:
         pm_local = get_project_manager()
         project = pm_local.load_project(project_name)
         project_path = pm_local.get_project_path(project_name)
-
-        # 生成模式检查前置于分镜图存在性检查：参考生视频项目本无分镜图步骤，否则会拿到
-        # 「请先生成分镜图」的误导指引。磁盘中即使存在不适用于当前模式的分镜图也不参与判定；
-        # 生成模式以 project.json 为唯一真相源，确保请求执行与费用估算使用同一轴。
-        if is_reference_video_project(project):
-            raise ConflictError("video_route_is_reference_video")
 
         # 与 worker 一致：分镜图只认 generated_assets.storyboard_image 的显式绑定，
         # 不按同名文件推断。宫格项目指向 scene_{id}_first.png 时仍可正常解析。
@@ -215,6 +211,7 @@ async def generate_video(
         # handler 统一映射为脱敏响应（404 / 400）。
         script = pm_local.load_script(project_name, req.script_file)
         artifact_episode = _resolve_request_artifact_episode(project, script, req.script_file)
+        require_factory_script(project_path, project, script, artifact_episode)
         items, id_field, _, _, _ = get_storyboard_items(script)
         resolved = find_storyboard_item(items, id_field, segment_id)
         if resolved is None:
@@ -231,12 +228,13 @@ async def generate_video(
         # 字段值来自磁盘剧本 JSON，不可信任；路径校验和 schema 激活后的显式绑定要求
         # 与 worker / 当前基线重建共用同一解析器。
         try:
-            resolve_usable_storyboard_video_inputs(
+            resolve_usable_storyboard_video_slots(
                 project_path=project_path,
                 project=project,
                 episode=artifact_episode,
                 resource_id=segment_id,
-                item=resolved[0],
+                items=items,
+                id_field=id_field,
             )
         except EndFrameImageUnavailable:
             raise BadRequestError("invalid_end_frame_image_path", segment_id=segment_id) from None
@@ -361,7 +359,8 @@ async def generate_tts(
         pm_local = get_project_manager()
         _project = pm_local.load_project(project_name)
         script = pm_local.load_script(project_name, req.script_file)
-        _resolve_request_artifact_episode(_project, script, req.script_file)
+        episode = _resolve_request_artifact_episode(_project, script, req.script_file)
+        require_factory_script(pm_local.get_project_path(project_name), _project, script, episode)
         items, id_field, kind = resolve_items(script)
         resolved = find_storyboard_item(items, id_field, segment_id)
         if resolved is None:
@@ -412,6 +411,7 @@ async def generate_tts_batch(
         script = pm_local.load_script(project_name, req.script_file)
         items, id_field, kind = resolve_items(script)
         episode = _resolve_request_artifact_episode(_project, script, req.script_file)
+        require_factory_script(pm_local.get_project_path(project_name), _project, script, episode)
         currency = active_artifact_currency_resolver(pm_local.get_project_path(project_name), _project)
         missing: list[str] = []
         for item in items:
@@ -662,7 +662,7 @@ async def confirm_character_voice_sample(
     }
 
 
-# ==================== 资产图生成（character / scene / prop / product 共用） ====================
+# ==================== 资产图生成（character / scene / prop 共用） ====================
 
 
 # i18n key 命名差异：scene 用历史前缀 "project_scene_*"
@@ -670,7 +670,6 @@ _ASSET_GENERATE_I18N: dict[str, dict[str, str]] = {
     "character": {"not_found": "character_not_found", "submitted": "character_task_submitted"},
     "scene": {"not_found": "project_scene_not_found", "submitted": "scene_task_submitted"},
     "prop": {"not_found": "prop_not_found", "submitted": "prop_task_submitted"},
-    "product": {"not_found": "product_not_found", "submitted": "product_task_submitted"},
 }
 
 
@@ -682,7 +681,7 @@ async def _enqueue_asset_generation(
     user_id: str,
     _t: Translator,
 ) -> dict:
-    """项目级资产（character / scene / prop / product）资产图生成共用入队逻辑。
+    """项目级资产（character / scene / prop）资产图生成共用入队逻辑。
 
     请求体没有 prompt：描述只取项目里存储的条目，执行时按当次的项目状态重读。
     """
@@ -825,23 +824,6 @@ async def generate_prop(
         asset_type="prop",
         project_name=project_name,
         resource_name=prop_name,
-        user_id=user.id,
-        _t=_t,
-    )
-
-
-@router.post("/projects/{project_name}/generate/product/{product_name}")
-async def generate_product(
-    project_name: str,
-    product_name: str,
-    user: CurrentUser,
-    _t: Translator,
-):
-    """提交商品标准参考图（product sheet）生成任务到队列，立即返回 task_id。"""
-    return await _enqueue_asset_generation(
-        asset_type="product",
-        project_name=project_name,
-        resource_name=product_name,
         user_id=user.id,
         _t=_t,
     )

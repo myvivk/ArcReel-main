@@ -77,7 +77,6 @@ export function EpisodeAssetsView({
       character: {},
       scene: {},
       prop: {},
-      product: {},
     };
     for (const item of result?.assets ?? []) grouped[item.asset_type][item.asset_name] = item.asset;
     return grouped;

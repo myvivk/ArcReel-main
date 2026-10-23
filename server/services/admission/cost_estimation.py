@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lib.billing.cost_calculator import cost_calculator
 from lib.billing.pricing.strategies import PricingParams
+from lib.config.image_resolution import resolve_image_resolution
 from lib.config.resolver import (
     ConfigResolver,
     VideoGenerationType,
@@ -32,25 +33,12 @@ from lib.generation.video_request_facts import (
 )
 from lib.infra.schema_guards import is_int
 from lib.project.asset_types import ASSET_SPECS
-from lib.project.project_manager import grid_storyboard_enabled, is_reference_video_project
-from lib.script.grid.grid_resolution import resolve_image_resolution
-from lib.script.grid.layout import GRID_FALLBACK_RESOLUTION, large_grid_allowed, plan_grid_chunks
-from lib.script.reference_video.artifact_selection import CurrentReferenceAssets
-from lib.script.reference_video.request_projection import (
-    ProjectionProblem,
-    ReferenceRequestFactsLookup,
-    ReferenceRequestOptions,
-    ReferenceUnitRequestProjector,
-    ResolvedReferenceAsset,
-    configured_reference_request_facts,
-    resolve_reference_assets,
-    unit_reference_declarations,
-)
 from lib.script.script_editor import ScriptEditError
 from lib.script.script_models import get_generated_assets
-from lib.script.storyboard_sequence import get_storyboard_items, group_scenes_by_segment_break
+from lib.script.storyboard_sequence import get_storyboard_items
 from lib.speech.narration_config import USE_TTS, project_narration_delivery, project_tts_settings
-from lib.speech.speech_composition import video_unit_replan_problems
+from lib.speech.narration_delivery import canonical_narration_text
+from lib.speech.speech_composition import admit_script_unit
 
 logger = logging.getLogger(__name__)
 
@@ -260,12 +248,6 @@ def _split_cost_across(cost: CostBreakdown, parts: int) -> list[CostBreakdown]:
     return split
 
 
-class _AssumeResolvedAssetsAvailable:
-    def is_available(self, asset: ResolvedReferenceAsset) -> bool:
-        del asset
-        return True
-
-
 class CostEstimationService:
     def __init__(
         self,
@@ -286,32 +268,18 @@ class CostEstimationService:
         project_name: str,
     ) -> dict[str, Any]:
         episodes_meta = project_data.get("episodes", [])
-        is_reference_video = is_reference_video_project(project_data)
 
         # Resolve current model config（共享单一 session）。估价以 T2I 为准（T2I/I2I 是正交能力槽，
         # T2I 缺失不应回落 I2I —— 那会拿错误能力的价目算费用）。
         # image/video 的项目覆盖优先级由 ConfigResolver 统一解析，与执行路径共用同一套
         # payload>project>全局默认 链路，此处 payload 传 None（预估无历史任务 payload 可排空）。
-        request_facts_lookup = configured_reference_request_facts(project_data, self._resolver)
-        reference_facts: dict[VideoGenerationType, VideoRequestFacts] = {}
-        if is_reference_video:
-            for generation_type in _VIDEO_BUCKETS:
-                # 真正使用该 bucket 的 unit 会由 projector 返回结构化 blocker；未使用 bucket
-                # 的配置问题不应拖垮整份费用页。
-                evaluated = await request_facts_lookup(generation_type)
-                if isinstance(evaluated, VideoRequestFacts):
-                    reference_facts[generation_type] = evaluated
         async with self._resolver.session() as r:
-            storyboard_facts = (
-                await evaluate_video_request_facts(
-                    project_data,
-                    route="storyboard",
-                    generation_type="i2v",
-                    identity=CONFIGURED_VIDEO_IDENTITY,
-                    resolver=r,
-                )
-                if not is_reference_video
-                else None
+            storyboard_facts = await evaluate_video_request_facts(
+                project_data,
+                route="storyboard",
+                generation_type="i2v",
+                identity=CONFIGURED_VIDEO_IDENTITY,
+                resolver=r,
             )
             try:
                 resolved_image = await r.resolve_image_backend(project_data, None, generation_type="t2i")
@@ -327,7 +295,6 @@ class CostEstimationService:
             # 键不同（此处 registry ``model_id``，执行侧构造后的 backend 型号），两者分叉的供应
             # 商上估价档位可能与实际渲染档位不一致。
             image_resolution = await resolve_image_resolution(r, project_data)
-            grid_allow_large = large_grid_allowed(image_resolution)
 
             # 视频按任务类型桶解析（``docs/adr/0054``），与执行扣费同一个模型：图生视频 / 宫格算
             # i2v 桶的价；参考生视频逐 unit 水合当前资产后分桶。两个桶都在这里
@@ -335,7 +302,7 @@ class CostEstimationService:
             # generate_audio 随各自的模型身份求值。
             video_identity: dict[VideoGenerationType, tuple[str, str, str | None, bool]] = {}
             for generation_type in _VIDEO_BUCKETS:
-                bucket_facts = reference_facts.get(generation_type)
+                bucket_facts = None
                 if generation_type == "i2v" and isinstance(storyboard_facts, VideoRequestFacts):
                     bucket_facts = storyboard_facts
                 if bucket_facts is not None:
@@ -414,20 +381,8 @@ class CostEstimationService:
         # 展示身份。
         project_video = video_pricing[video_bucket_for_generation_mode(project_data.get("generation_mode"))]
 
-        grid_enabled = grid_storyboard_enabled(project_data)
-        # 规范化 aspect_ratio：可能是 str 或 dict，复用生成任务的解析逻辑
-        raw_ar = project_data.get("aspect_ratio")
-        if isinstance(raw_ar, str):
-            aspect_ratio = raw_ar
-        elif isinstance(raw_ar, dict):
-            aspect_ratio = raw_ar.get("storyboards", "9:16")
-        else:
-            # narration/ad 默认竖屏，drama（含未知值的历史兜底）默认横屏
-            aspect_ratio = "9:16" if project_data.get("content_mode", "narration") in {"narration", "ad"} else "16:9"
-
         # 预计算图片单价
         image_unit_cost: tuple[float, str] | None = None
-        grid_image_unit_cost: tuple[float, str] | None = None
         try:
             image_unit_cost = cost_calculator.calculate_cost(
                 image_provider,
@@ -442,22 +397,6 @@ class CostEstimationService:
             )
         except ValueError:
             logger.debug("无法计算 image 预估单价", exc_info=True)
-
-        if grid_enabled:
-            try:
-                grid_image_unit_cost = cost_calculator.calculate_cost(
-                    image_provider,
-                    PricingParams(
-                        call_type="image",
-                        model=image_model,
-                        resolution=image_resolution or GRID_FALLBACK_RESOLUTION,
-                    ),
-                    custom_price_input=image_price.price_input,
-                    custom_price_output=image_price.price_output,
-                    custom_currency=image_price.currency,
-                )
-            except ValueError:
-                grid_image_unit_cost = image_unit_cost
 
         episodes_result = []
         proj_est: dict[str, CostBreakdown] = {}
@@ -498,57 +437,21 @@ class CostEstimationService:
             if not script:
                 continue
 
-            raw_units = script.get("video_units")
-            video_units: list[Any] = raw_units if isinstance(raw_units, list) else []
-            estimate_by_unit = is_reference_video
-
-            if estimate_by_unit:
-                segments_result, ep_est, ep_act = await self._estimate_unit_reference_video_episode(
-                    project_name=project_name,
-                    project=project_data,
-                    script=script,
-                    script_file=script_file,
-                    units=video_units,
-                    request_facts_lookup=request_facts_lookup,
-                    video_prices=video_prices,
-                    actual_by_segment=actual_by_segment,
-                    claimed_actual=claimed_actual,
-                    unpriced=estimate_unpriced,
-                )
-                _accumulate_episode(ep_meta, segments_result, ep_est, ep_act)
-                continue
-
-            # 分镜路径固定用 i2v 桶；参考路径已在上方的 unit 投影分支完成定桶。
             episode_video = video_pricing["i2v"]
 
             try:
                 raw_segments, id_key, _, _, _ = get_storyboard_items(script)
+                historical_units = project_data.get("generation_mode") == "reference_video"
+                if historical_units and isinstance(script.get("video_units"), list):
+                    raw_segments, id_key = script["video_units"], "unit_id"
             except ScriptEditError as exc:
                 # 单集脏脚本(segments/scenes 键损坏)不应让整个项目费用估算 5xx;降级把该集
                 # 估算为 0(raw_segments=[]) + warning 让运维知道,UI 仍能展示其他正常集的估算。
                 logger.warning("费用估算跳过脏脚本 %s: %s", script_file, exc)
+                historical_units = project_data.get("generation_mode") == "reference_video"
                 raw_segments, id_key = [], "segment_id"
-
-            # 宫格装配：预计算每个 segment 的图片分摊费用。份额以条目在 ``raw_segments`` 中的
-            # 位置为身份，与下方实付均摊同口径（理由见该处）；分组由
-            # ``group_scenes_by_segment_break`` 按顺序切出、连续且不重不漏，故位置即组内序号
-            # 加上前序各组的长度。
-            grid_cost_per_index: dict[int, tuple[float, str]] = {}
-            if grid_enabled and grid_image_unit_cost:
-                group_offset = 0
-                for group in group_scenes_by_segment_break(raw_segments, id_key):
-                    n = len(group)
-                    # 宫格张数与实际入队同源（plan_grid_chunks）：超上限分组按切块后的
-                    # 张数计费，避免估算与执行漂移。
-                    plans = plan_grid_chunks(group, aspect_ratio, allow_large_grid=grid_allow_large)
-                    if plans:
-                        per_scene_cost = round(grid_image_unit_cost[0] * len(plans) / n, 6)
-                        for offset_in_group in range(n):
-                            grid_cost_per_index[group_offset + offset_in_group] = (
-                                per_scene_cost,
-                                grid_image_unit_cost[1],
-                            )
-                    group_offset += n
+                if historical_units and isinstance(script.get("video_units"), list):
+                    raw_segments, id_key = script["video_units"], "unit_id"
 
             # --- Grid actual cost apportionment ---
             # 均摊份额以条目在 raw_segments 中的位置为身份，而非条目 ID：ADR 0053 接受一张
@@ -580,16 +483,17 @@ class CostEstimationService:
                 est_video: CostBreakdown = {}
                 est_audio: CostBreakdown = {}
 
-                if grid_enabled and idx in grid_cost_per_index:
-                    cost_amount, cost_currency = grid_cost_per_index[idx]
-                    _add_cost(est_image, cost_amount, cost_currency)
-                elif image_unit_cost:
+                if image_unit_cost and not historical_units:
                     _add_cost(est_image, image_unit_cost[0], image_unit_cost[1])
-                if image_unpriced:
+                if image_unpriced and not historical_units:
                     estimate_unpriced["image", image_provider, image_model] += 1
 
                 # 剧本上的秒数可能被外部编辑成非整数：单条脏数据只让该分镜没有视频报价，不进计价。
-                if isinstance(storyboard_facts, VideoRequestFacts) and is_int(duration, minimum=1):
+                if (
+                    not historical_units
+                    and isinstance(storyboard_facts, VideoRequestFacts)
+                    and is_int(duration, minimum=1)
+                ):
                     if _price_missing(storyboard_facts.provider_id, episode_video.price):
                         estimate_unpriced["video", storyboard_facts.provider_id, storyboard_facts.model_id] += 1
                     try:
@@ -600,9 +504,12 @@ class CostEstimationService:
                     except ValueError:
                         logger.debug("无法计算 video 预估 for %s", seg_id, exc_info=True)
 
-                # 旁白配音按 novel_text 字符数估价（仅旁白/解说 segment 携带原文）
-                novel_text = seg.get("novel_text")
-                narration_chars = len(novel_text.strip()) if isinstance(novel_text, str) else 0
+                # 工厂旁白按规范发声准备取正文；历史旁白保留原字段的费用读取口径。
+                if id_key == "scene_id":
+                    narration_text = canonical_narration_text(admit_script_unit("scenes", seg).preparation)
+                else:
+                    narration_text = seg.get("novel_text")
+                narration_chars = len(narration_text.strip()) if isinstance(narration_text, str) else 0
                 if narration_chars:
                     if audio_unpriced:
                         estimate_unpriced["audio", audio_provider, audio_model] += 1
@@ -634,9 +541,12 @@ class CostEstimationService:
                                 "request_projection": {
                                     "allowed": False,
                                     "problems": [
-                                        ProjectionProblem.from_request_facts_failure(
-                                            storyboard_facts, locations=(("video_provider_i2v",),)
-                                        ).to_payload(unit_id=seg_id)
+                                        {
+                                            **storyboard_facts.problem_payload(),
+                                            "blocking": True,
+                                            "unit_id": seg_id,
+                                            "locations": [{"path": ["video_provider_i2v"], "line": None}],
+                                        }
                                     ],
                                 }
                             }
@@ -755,164 +665,6 @@ class CostEstimationService:
             },
             "missing_local_calls": missing_local_calls,
         }
-
-    async def _estimate_unit_reference_video_episode(
-        self,
-        *,
-        project_name: str,
-        project: dict[str, Any],
-        script: dict[str, Any],
-        script_file: str,
-        units: list[Any],
-        request_facts_lookup: ReferenceRequestFactsLookup,
-        video_prices: dict[tuple[str, str], Any],
-        actual_by_segment: ActualBySegment,
-        claimed_actual: set[tuple[str, str]],
-        unpriced: UnpricedCounts,
-    ) -> tuple[list[dict[str, Any]], dict[str, CostBreakdown], dict[str, CostBreakdown]]:
-        """reference_video 集的估值：unit 本身就是展示与计费颗粒度。
-
-        unit 本身就是最小可寻址单位，
-        前端画布与费用面板均按 ``unit_id`` 索引（见 ``ReferenceVideoCanvas`` 读
-        ``cost-store`` 的 ``_segmentIndex.get(unit.unit_id)``），故此处不需要
-        ``_split_cost_across`` 这一步。
-
-        取档先水合 unit 引用的当前可用图片（文件存在且产物清单认领，与准入、执行同判据；
-        有图 → r2v，无图退化 unit → i2v），再解析该桶模型的能力；声明引用与实际资产分裂时返回
-        结构化 blocker，不换桶伪报价。
-        请求时长基准是 ``unit.duration_seconds``，按它取档后用同桶模型计费，与执行请求的秒数对齐；
-        旁白交付方式不影响视频请求，也不影响这里的报价。
-
-        无图片/音频估值维度：该模式跳过分镜步骤（无分镜图），unit 正文是一整段、没有可供
-        独立音频计价的旁白/口播文案字段。实付按 ``actual_by_segment[unit_id]`` 三个维度原样透传——``lib/generation/media_generator.py``
-        对 ``resource_type == "reference_videos"`` 的记账以 unit_id 写入 usage 的 segment_id，
-        与本函数的输出 identity 一致。切换模式前按分镜 ID（``E1S1`` 等）记的历史支出不在此
-        呈现：unit 与分镜之间没有映射关系，无处归属。
-
-        正文为空或命中 ``video_unit_replan_problems`` 的 unit 不产生预估：这些 unit 会被
-        ``video_batch_admission.reference_unit_task_spec`` 拒绝，估值给出非零金额会展示一笔查无实据的
-        费用；判据与入队侧共用同一个正文与重规划问题模型，不能自行另起一套处理否则两处会漂移。但该 unit 仍要整条保留、纳入汇总——不可入队只影响能否产生新预估，不影响该
-        unit 是否曾经成功生成过（``actual_by_segment[unit_id]`` 记的是历史实付，与 unit 当前编辑状态
-        无关）：unit 曾成功生成、随后剧本被编辑成不可入队状态，其历史支出不能因此从段级/集级/项目级
-        合计里消失。
-        """
-        segments_result: list[dict[str, Any]] = []
-        ep_est: dict[str, CostBreakdown] = {}
-        ep_act: dict[str, CostBreakdown] = {}
-
-        if self._project_path is None:
-            availability = _AssumeResolvedAssetsAvailable()
-        else:
-            availability = CurrentReferenceAssets(self._project_path, project)
-        projector = ReferenceUnitRequestProjector(request_facts_lookup, availability)
-
-        for unit in units:
-            if not isinstance(unit, dict):
-                continue
-            # unit_id 必须原本就是字符串：入队执行时按该字符串与剧本原始（未转型）值比较定位
-            # unit（``execute_reference_video_task``），数字/布尔等裸写 truthy 值 str() 后能通过
-            # 这里的估算，但执行时永远因类型不等找不到 unit——估算不能展示一笔实际跑不起来的费用。
-            raw_unit_id = unit.get("unit_id")
-            if not isinstance(raw_unit_id, str) or not raw_unit_id:
-                continue
-            unit_id = raw_unit_id
-
-            # text 非字符串（如裸写 "text": true/1）同样不能让单条脏数据中断整次估算。
-            text = unit.get("text")
-            enqueueable = isinstance(text, str) and bool(text.strip()) and not video_unit_replan_problems(unit)
-
-            est_video: CostBreakdown = {}
-            projection_problems: list[dict[str, Any]] = []
-            projection = None
-            if enqueueable:
-                # Agent/外部编辑过的剧本可能写入非数值 duration_seconds（如 "bad"/列表/字典）；
-                # 单个 unit 的无效内容不应让整个项目估算失败，因此资产解析与 request projection
-                # 的 ValueError/TypeError 只跳过该 unit。能力解析错误由 projector 转为结构化 blocker，
-                # 正常保留在该 unit 的报价结果中。
-                try:
-                    if self._project_path is None:
-                        resolved_assets = [
-                            ResolvedReferenceAsset(
-                                path=Path(f"{reference.type}/{reference.name}.png"),
-                                reference=reference,
-                            )
-                            for reference in unit_reference_declarations(project, unit)
-                        ]
-                    else:
-                        resolved_assets = resolve_reference_assets(project, self._project_path, unit)
-                    projection = await projector.project_current(
-                        project=project,
-                        script=script,
-                        unit=unit,
-                        resolved_assets=resolved_assets,
-                        options=ReferenceRequestOptions(),
-                    )
-                except (ValueError, TypeError):
-                    logger.warning("费用估算跳过时长非法的 unit %s", unit_id, exc_info=True)
-                    projection = None
-                if projection is not None:
-                    projection_problems = projection.problem_payloads()
-                    blockers = [
-                        problem
-                        for problem in projection.blocking_problems
-                        if problem.code != "reference_duration_confirmation_required"
-                    ]
-                else:
-                    blockers = []
-                if projection is not None and projection.cost is not None and not blockers:
-                    cost = projection.cost
-                    price = video_prices.get((cost.provider_id, cost.model_id))
-                    if _price_missing(cost.provider_id, price):
-                        unpriced["video", cost.provider_id, cost.model_id] += 1
-                    if price is not None:
-                        try:
-                            priced_quote = quote_video_request_from_price(cost, price)
-                        except ValueError:
-                            logger.warning(
-                                "无法为 reference unit %s 计算精确费用 provider=%s model=%s duration=%s",
-                                unit_id,
-                                cost.provider_id,
-                                cost.model_id,
-                                cost.duration_seconds,
-                                exc_info=True,
-                            )
-                        else:
-                            _add_cost(est_video, priced_quote.amount, priced_quote.currency)
-
-            unit_actual = _claim_actual(actual_by_segment, claimed_actual, unit_id)
-            act_image: CostBreakdown = unit_actual.get("image", {})
-            act_video: CostBreakdown = unit_actual.get("video", {})
-            act_audio: CostBreakdown = unit_actual.get("audio", {})
-
-            segments_result.append(
-                {
-                    "segment_id": unit_id,
-                    "duration_seconds": unit.get("duration_seconds", 8),
-                    "request_projection": (
-                        {
-                            **projection.to_advisory_payload(),
-                            "capability": projection.hydrated_generation_type,
-                            "problems": projection_problems,
-                        }
-                        if enqueueable and projection is not None
-                        else {
-                            "provider_id": None,
-                            "model_id": None,
-                            "capability": None,
-                            "duration_input": None,
-                            "request_duration": None,
-                            "problems": projection_problems,
-                        }
-                    ),
-                    "estimate": {"image": {}, "video": est_video, "audio": {}},
-                    "actual": {"image": act_image, "video": act_video, "audio": act_audio},
-                }
-            )
-            ep_est["video"] = _merge_breakdowns(ep_est.get("video", {}), est_video)
-            for cost_type, amounts in (("image", act_image), ("video", act_video), ("audio", act_audio)):
-                ep_act[cost_type] = _merge_breakdowns(ep_act.get(cost_type, {}), amounts)
-
-        return segments_result, ep_est, ep_act
 
 
 ImageLane = Literal["t2i", "i2i"]

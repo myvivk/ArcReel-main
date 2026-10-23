@@ -14,6 +14,7 @@ from lib.edit_timeline import EditTimelineService
 from lib.project.project_manager import ProjectManager
 from lib.project.resource_paths import resource_relative_path
 from tests.factories import make_test_video, wav_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 @pytest.fixture
@@ -21,7 +22,7 @@ def pm(tmp_path: Path) -> ProjectManager:
     """参考生视频项目，第 1 集依次为台词单元 E1U1、画外音单元 E1U2、无人声单元 E1U3，编排时长各 4 秒。"""
     manager = ProjectManager(str(tmp_path / "projects"))
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     manager.upsert_assets("demo", "characters", {"角色A": {"description": "主角"}})
     manager.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     units: list[dict[str, Any]] = [

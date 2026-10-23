@@ -4,15 +4,12 @@ import json
 import os
 import re
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from threading import Event, Thread
-from typing import Any
 
 import pytest
 
 from lib.artifacts.artifact_activation import (
-    ARTIFACT_MANIFEST_SCHEMA_VERSION,
     ArtifactCurrencyResolver,
     ensure_imported_artifact_target_state,
     register_current_resource_artifact,
@@ -46,12 +43,12 @@ from lib.artifacts.visual_artifact_provenance import (
     build_storyboard_image_visual_basis,
     build_storyboard_video_artifact_visual_basis,
 )
+from lib.project.legacy_grid_record import LegacyGridRecord
 from lib.project.project_manager import ProjectManager
-from lib.project.project_migrations import CURRENT_SCHEMA_VERSION, MIGRATORS
+from lib.project.project_migrations import CURRENT_SCHEMA_VERSION
 from lib.project.project_migrations.runner import cleanup_stale_backups, migrate_project_dir
 from lib.project.project_migrations.v7_to_v8_artifact_manifest import migrate_v7_to_v8
 from lib.script.grid.layout import grid_aspect_ratio_for
-from lib.script.grid.models import GridGeneration, build_frame_chain
 from lib.speech.narration_delivery import TtsSynthesisSettings, build_narration_audio_basis_from_canonical_text
 from lib.speech.speech_artifact_provenance import (
     RenditionVariant,
@@ -66,6 +63,7 @@ from lib.speech.speech_presentation import (
     presentation_artifact_paths,
 )
 from lib.workflow.workflow_state import WorkflowStateService
+from tests.legacy_project_shapes import build_legacy_frame_chain
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -541,145 +539,6 @@ def test_formal_script_registration_failure_restores_script_and_project(tmp_path
         pm.save_script("demo", script, "episode_1.json", validate=False)
 
     assert (script_path.read_bytes(), project_path.read_bytes()) == before
-
-
-def test_formal_script_plan_registration_failure_restores_the_previous_file(tmp_path: Path, monkeypatch) -> None:
-    project_dir, _project_data, _script_plan, _script = _project(tmp_path)
-    migrate_v7_to_v8(project_dir)
-    formal_path = project_dir / "drafts" / "episode_1" / "script_plan_reference_units.json"
-
-    def _fail(*_args, **_kwargs):
-        raise RuntimeError("injected manifest failure")
-
-    monkeypatch.setattr("lib.artifacts.artifact_activation.register_current_artifact_if_provable", _fail)
-
-    from lib.script.script_review import write_script_plan_locked
-
-    with (
-        pytest.raises(RuntimeError, match="injected manifest failure"),
-        ProjectManager(tmp_path).file_lock(formal_path),
-    ):
-        write_script_plan_locked(project_dir, 1, {"units": [{"unit_id": "E1U1"}]})
-
-    assert not formal_path.exists()
-
-
-def test_formal_script_plan_write_serializes_with_schema_last_activation(tmp_path: Path) -> None:
-    from lib.artifacts import artifact_activation
-    from lib.script.script_review import formal_script_plan_lock, write_formal_script_plan_locked
-
-    project_dir, _project_data, script_plan, _script = _project(tmp_path)
-    formal_path = project_dir / "drafts" / "episode_1" / "script_plan_segments.json"
-    replacement = {"segments": [{"novel_text": "activation overlap replacement"}]}
-    activation_ready = Event()
-    release_activation = Event()
-    writer_done = Event()
-    failures: list[BaseException] = []
-
-    # 迁移链以一次清单激活收尾，它才是落当前版本的那一步；前面几步先走完，
-    # 等锁的写入方在它放行后看到的就是迁移完成的状态，与启动扫描先迁完再对外服务同口径。
-    for version in range(ARTIFACT_MANIFEST_SCHEMA_VERSION - 1, CURRENT_SCHEMA_VERSION - 1):
-        MIGRATORS[version](project_dir)
-
-    def _pause_before_schema(project_dir_arg: Path, project: Mapping[str, Any]) -> None:
-        activation_ready.set()
-        assert release_activation.wait(timeout=5)
-        artifact_activation._commit_schema_version(project_dir_arg, project, CURRENT_SCHEMA_VERSION)
-
-    def _activate() -> None:
-        try:
-            artifact_activation.activate_artifact_target_state(
-                project_dir,
-                bump_schema=True,
-                commit_schema=_pause_before_schema,
-                target_schema_version=CURRENT_SCHEMA_VERSION,
-            )
-        except Exception as exc:
-            failures.append(exc)
-
-    def _write() -> None:
-        try:
-            with formal_script_plan_lock(project_dir, 1, formal_path):
-                write_formal_script_plan_locked(project_dir, 1, formal_path, replacement)
-        except Exception as exc:
-            failures.append(exc)
-        finally:
-            writer_done.set()
-
-    activation_thread = Thread(target=_activate)
-    writer_thread = Thread(target=_write)
-    activation_thread.start()
-    assert activation_ready.wait(timeout=5)
-    writer_thread.start()
-    # 写入方必须还卡在锁上：它若在 activation 放行前就跑完，说明这把锁没拦住迁移期间的正式写入，
-    # 而末尾那几条内容断言在「先写后迁」的顺序下同样成立，丢弃这个返回值就判不出来。
-    assert not writer_done.wait(timeout=0.2)
-    release_activation.set()
-    activation_thread.join(timeout=5)
-    writer_thread.join(timeout=5)
-
-    assert not activation_thread.is_alive()
-    assert not writer_thread.is_alive()
-    assert failures == []
-    assert _read_json(formal_path) == replacement
-    migrate_project_dir(project_dir)
-    comparison = ArtifactCurrencyResolver(project_dir).compare(
-        ArtifactKey.episode_script_plan(1),
-        artifact_path="drafts/episode_1/script_plan_segments.json",
-    )
-    assert comparison.status is ArtifactStatus.CURRENT
-    assert script_plan != replacement
-
-
-def test_formal_script_plan_transaction_holds_the_project_lock_through_the_write(tmp_path: Path) -> None:
-    from lib.artifacts import artifact_activation
-    from lib.artifacts.formal_write import project_metadata_lock
-    from lib.script.script_review import formal_script_plan_write_transaction
-
-    project_dir, _project_data, _script_plan, _script = _project(tmp_path)
-    # 正式写事务要登记产物清单，只在已迁移到 v8 的项目上成立。
-    assert artifact_activation.activate_artifact_target_state(project_dir, bump_schema=True) is True
-    migrate_project_dir(project_dir)
-    formal_path = project_dir / "drafts" / "episode_1" / "script_plan_segments.json"
-    transaction_entered = Event()
-    release_transaction = Event()
-    competing_lock_acquired = Event()
-    failures: list[BaseException] = []
-
-    def _write() -> None:
-        try:
-            with (
-                ProjectManager(tmp_path).file_lock(formal_path),
-                formal_script_plan_write_transaction(project_dir, 1, formal_path),
-            ):
-                transaction_entered.set()
-                assert release_transaction.wait(timeout=5)
-        except Exception as exc:
-            failures.append(exc)
-
-    def _compete() -> None:
-        try:
-            with project_metadata_lock(project_dir):
-                competing_lock_acquired.set()
-        except Exception as exc:
-            failures.append(exc)
-
-    writer = Thread(target=_write)
-    competitor = Thread(target=_compete)
-    writer.start()
-    assert transaction_entered.wait(timeout=5)
-    competitor.start()
-    try:
-        assert not competing_lock_acquired.wait(timeout=0.1)
-    finally:
-        release_transaction.set()
-    writer.join(timeout=5)
-    competitor.join(timeout=5)
-
-    assert not writer.is_alive()
-    assert not competitor.is_alive()
-    assert competing_lock_acquired.is_set()
-    assert failures == []
 
 
 def test_v7_activation_holds_the_project_lock_while_backing_up_its_frozen_inputs(
@@ -1659,7 +1518,7 @@ def test_v7_activation_backfills_grid_composite_and_split_members(tmp_path: Path
         project_dir / "scripts" / "episode_1.json",
         {"episode": 1, "content_mode": "narration", "segments": items},
     )
-    grid = GridGeneration(
+    grid = LegacyGridRecord(
         id="grid_123456789abc",
         episode=1,
         script_file="episode_1.json",
@@ -1668,7 +1527,7 @@ def test_v7_activation_backfills_grid_composite_and_split_members(tmp_path: Path
         rows=2,
         cols=2,
         cell_count=4,
-        frame_chain=build_frame_chain(["E1S01", "E1S02"], 2, 2),
+        frame_chain=build_legacy_frame_chain(["E1S01", "E1S02"], 2, 2),
         status="completed",
         prompt="grid",
         provider="provider",

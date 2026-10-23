@@ -4,10 +4,8 @@ import { useLocation } from "wouter";
 import { AlertTriangle, Bot, ChevronDown, Loader2 } from "lucide-react";
 
 import { API } from "@/api";
-import { EPISODE_PLANNING_SLOTS, enqueueEpisodePlanning } from "@/actions/generation";
 import { ApiRequestError } from "@/api/errors";
-import { episodesViewPath } from "@/components/canvas/episodes/episodes-view-model";
-import { prefillAssistant } from "@/components/shared/DraftStatus";
+import { prefillAssistant } from "@/utils/assistant-prefill";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,10 +16,9 @@ import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
-import { isResourceBusy, useActiveResourceIds, useTasksStore } from "@/stores/tasks-store";
+import { useTasksStore } from "@/stores/tasks-store";
 import type { EpisodeMeta } from "@/types";
 import type { EpisodeNextStep, WorkflowStatus } from "@/types/workflow";
-import { errMsg } from "@/utils/async";
 import { cn } from "cn";
 import { episodeDisplayName } from "@/utils/episode-display";
 import { lastInstruction, rememberInstruction } from "@/utils/last-instruction";
@@ -70,7 +67,7 @@ function useProjectWorkflowStatus(projectName: string, enabled: boolean): Workfl
     if (!enabled) return;
     const controller = new AbortController();
     API.getWorkflowStatus(projectName, { signal: controller.signal })
-      .then(setStatus)
+      .then((value) => { if (!controller.signal.aborted) setStatus(value); })
       .catch(() => {
         // 状态求解失败只让右段暂不显示，不打断工作台；下一次快照变化会重试。
         if (!controller.signal.aborted) setStatus(null);
@@ -119,44 +116,22 @@ function GuideButtonView({
   button,
   primary,
   instruction,
-  projectName,
   onNavigate,
 }: {
   button: GuideButton;
   primary: boolean;
   instruction: string;
-  projectName: string;
   onNavigate: (to: string) => void;
 }) {
   const { t } = useTranslation();
-  const [submitting, setSubmitting] = useState(false);
-  const act: StepAct =
-    button.kind === "nav"
-      ? { key: button.label, label: button.label, kind: "nav", intent: { type: "route", path: button.to } }
-      : button.kind === "agent"
-        ? { key: button.label, label: button.label, kind: "agent", intent: { type: "agent", text: button.prefill } }
-        : { key: button.label, label: button.label, kind: "ai", intent: { type: "route", path: episodesViewPath() } };
-  const planEpisodes = async () => {
-    if (EPISODE_PLANNING_SLOTS.some((slot) => isResourceBusy("text_episode_plan", projectName, slot))) {
-      useAppStore.getState().pushToast(t("dashboard:episode_planning_busy"), "error");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await enqueueEpisodePlanning(projectName, instruction.trim() || null);
-      onNavigate(episodesViewPath());
-    } catch (err) {
-      useAppStore.getState().pushToast(errMsg(err), "error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const act: StepAct = button.kind === "nav"
+    ? { key: button.label, label: button.label, kind: "nav", intent: { type: "route", path: button.to } }
+    : { key: button.label, label: button.label, kind: "agent", intent: { type: "agent", text: button.prefill } };
   const onRun = () => {
     if (button.kind === "nav") onNavigate(button.to);
     else if (button.kind === "agent") prefillAssistant(withInstruction(t, button.prefill, instruction));
-    else void planEpisodes();
   };
-  return <StepActButton act={act} onRun={onRun} asLink={!primary} busy={submitting} />;
+  return <StepActButton act={act} onRun={onRun} asLink={!primary} />;
 }
 
 function NextPanel({
@@ -194,7 +169,6 @@ function NextPanel({
             button={button}
             primary
             instruction={guide.instruction ? instruction : ""}
-            projectName={projectName}
             onNavigate={onNavigate}
           />
         ))}
@@ -207,7 +181,6 @@ function NextPanel({
                 button={button}
                 primary={false}
                 instruction=""
-                projectName={projectName}
                 onNavigate={onNavigate}
               />
             ))}
@@ -236,7 +209,7 @@ function EpisodeList({
   useEffect(() => {
     const controller = new AbortController();
     API.getEpisodeNextSteps(projectName, { signal: controller.signal })
-      .then((res) => setSteps(new Map(res.episodes.map((step) => [step.episode, step]))))
+      .then((res) => { if (!controller.signal.aborted) setSteps(new Map(res.episodes.map((step) => [step.episode, step]))); })
       .catch(() => {
         if (!controller.signal.aborted) setSteps(new Map());
       });
@@ -247,7 +220,6 @@ function EpisodeList({
     if (episode.status === "completed") return t("dashboard:guide_episode_completed");
     const step = steps?.get(episode.episode);
     if (!step) return steps === null ? "…" : "";
-    if (step.plan_stale) return t("dashboard:guide_episode_plan_stale");
     if (step.next_action.type === "none") return t("workflow:action_none");
     return t("dashboard:guide_episode_next", { step: actionPhrase(t, step.next_action.type) });
   };
@@ -372,12 +344,7 @@ export function ProjectStatusBar({ projectName }: { projectName: string }) {
   const needsRepair = summary?.needs_repair === true;
   const workflowStatus = useProjectWorkflowStatus(projectName, !demoMode && !needsRepair && Boolean(summary));
   const episodes = useMemo(() => project?.episodes ?? [], [project?.episodes]);
-  const activePlanning = useActiveResourceIds("text_episode_plan", projectName);
-  const planningActive = EPISODE_PLANNING_SLOTS.some((slot) => activePlanning.has(slot));
-  const guide = useMemo(
-    () => (workflowStatus ? projectNextGuide(t, workflowStatus, episodes, { planningActive }) : null),
-    [t, workflowStatus, episodes, planningActive],
-  );
+  const guide = useMemo(() => workflowStatus ? projectNextGuide(t, workflowStatus, episodes) : null, [t, workflowStatus, episodes]);
 
   if (!project || !summary) return null;
   if (needsRepair) return <MigrationBar projectName={projectName} reason={summary.repair_reason} />;
@@ -391,36 +358,19 @@ export function ProjectStatusBar({ projectName }: { projectName: string }) {
   const total = summary.episodes_summary.total;
   const done = summary.episodes_summary.completed;
   const staleEpisodes = episodes.filter(episodeNeedsUpdate).length;
-  const isAd = project.content_mode === "ad";
-  // 剧情演绎空项目：欢迎页的「AI 原创剧本」是主行动、上传是次要链接，
-  // 顶栏的「下一步·上传原文」会与之抢主 CTA，这里让位隐藏（后续阶段照常出现）。
-  const emptyDramaWelcome =
-    !isAd &&
-    project.content_mode === "drama" &&
-    total === 0 &&
-    (project.whole_source_files?.length ?? 0) === 0 &&
-    !(
-      project.overview?.synopsis || project.overview?.genre || project.overview?.theme || project.overview?.world_setting
-    );
-  const progressText =
-    total === 0
-      ? t("guide_no_episodes")
-      : isAd
-        ? done >= total
-          ? t("guide_ad_completed")
-          : t("guide_ad_incomplete")
-        : t("guide_progress", { done, total });
+  const emptyDramaWelcome = total === 0;
+  const progressText = total === 0 ? t("guide_no_episodes") : t("guide_progress", { done, total });
   // 集页上：项目层下一步指向本集时让位给本集面板，不出现两个重复的按钮。
   const yieldToPanel = guide !== null && currentEpisode !== null && guide.episodeId === currentEpisode;
   // 每集都完成且源文没有剩余：右段只陈述「全部完成」，不带动作。广告的左段已写「短片已完成」。
-  const allComplete = guide === null && !isAd && workflowStatus?.content?.project_complete === true;
+  const allComplete = guide === null && workflowStatus?.content?.project_complete === true;
 
   return (
     <div className={SHELL_FLAT}>
       <Popover open={open === "episodes"} onOpenChange={openChange("episodes")}>
         <PopoverTrigger
           render={<button type="button" className={SEGMENT} />}
-          disabled={total === 0 || isAd}
+          disabled={total === 0}
         >
           <Ring done={done} total={total} />
           <span className="num text-subtle-foreground">{progressText}</span>

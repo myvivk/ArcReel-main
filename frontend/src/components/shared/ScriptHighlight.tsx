@@ -7,7 +7,7 @@ import {
   type MentionLookup,
   type ScriptLine,
   type Token,
-} from "@/hooks/useUnitPromptHighlight";
+} from "@/utils/script-highlight";
 
 /**
  * Read-only rendering of a unit body, laid out the way the parser reads it.

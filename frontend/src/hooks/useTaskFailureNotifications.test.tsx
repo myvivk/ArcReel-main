@@ -224,23 +224,4 @@ describe("useTaskFailureNotifications", () => {
     await waitFor(() => expect(useAppStore.getState().workspaceNotifications).toHaveLength(1));
     expect(useAppStore.getState().workspaceNotifications[0].target).toMatchObject({ id: "E1S04" });
   });
-
-  it("builds a reference_unit target for reference_video failures", async () => {
-    useTasksStore.setState({
-      tasks: [task({ task_id: "r1", task_type: "reference_video", resource_id: "E1U1", status: "running" })],
-    });
-    render(<Harness project="demo" />);
-    act(() => {
-      useTasksStore.setState({
-        tasks: [task({ task_id: "r1", task_type: "reference_video", resource_id: "E1U1", status: "failed" })],
-      });
-    });
-    await waitFor(() => {
-      expect(useAppStore.getState().workspaceNotifications[0]?.target).toEqual({
-        type: "reference_unit",
-        id: "E1U1",
-        route: "/episodes/1",
-      });
-    });
-  });
 });

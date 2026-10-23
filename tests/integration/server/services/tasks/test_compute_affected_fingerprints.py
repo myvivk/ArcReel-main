@@ -10,8 +10,8 @@ from tests.integration.server.services.tasks.generation_tasks_support import (
 class TestGenerationTasks:
     def test_grid_fingerprints_include_split_cells(self, monkeypatch, tmp_path):
         """宫格指纹应包含切割覆写的 canonical 分镜图（cache-bust），但拒绝越出项目目录的路径"""
-        from lib.script.grid.grid_manager import GridManager
-        from lib.script.grid.models import FrameCell, GridGeneration
+        from lib.project.legacy_grid_record import FrameCell, LegacyGridRecord
+        from tests.legacy_project_shapes import LegacyGridFixtureStore as LegacyGridStore
 
         project_path = tmp_path / "demo"
         (project_path / "storyboards").mkdir(parents=True)
@@ -22,7 +22,7 @@ class TestGenerationTasks:
         outside = tmp_path / "outside.png"
         outside.write_bytes(b"secret")
 
-        grid = GridGeneration(
+        grid = LegacyGridRecord(
             id="grid_0123456789ab",
             episode=1,
             script_file="ep01.json",
@@ -58,7 +58,7 @@ class TestGenerationTasks:
             grid_size="2K",
             created_at="2026-01-01T00:00:00Z",
         )
-        GridManager(project_path).save(grid)
+        LegacyGridStore(project_path).save(grid)
 
         fake_pm = _FakePM(project_path)
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)

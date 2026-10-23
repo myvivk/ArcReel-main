@@ -69,22 +69,6 @@ describe("buildTaskFailureTarget", () => {
     expect(target?.route).toBe("/episodes/1");
   });
 
-  it("maps grid to the episode (navigate-only, no highlight)", () => {
-    const target = buildTaskFailureTarget(
-      makeTask({ task_type: "grid", resource_id: "grid-abc", script_file: "ep1.json" }),
-      projectData,
-    );
-    expect(target).toEqual({ type: "grid", id: "grid-abc", route: "/episodes/1" });
-  });
-
-  it("maps reference_video to the episode reference unit", () => {
-    const target = buildTaskFailureTarget(
-      makeTask({ task_type: "reference_video", resource_id: "E1U1", script_file: "ep1.json" }),
-      projectData,
-    );
-    expect(target).toEqual({ type: "reference_unit", id: "E1U1", route: "/episodes/1" });
-  });
-
   it("returns null when the episode cannot be resolved from script_file", () => {
     expect(buildTaskFailureTarget(makeTask({ script_file: "unknown.json" }), projectData)).toBeNull();
     expect(buildTaskFailureTarget(makeTask({ script_file: null }), projectData)).toBeNull();
@@ -120,19 +104,6 @@ describe("buildTaskFailureTarget", () => {
     });
   });
 
-  it("routes product tasks and product image edits to the products page", () => {
-    const expected = { type: "product", id: "Bag", route: "/products", highlight_style: "flash" };
-    expect(buildTaskFailureTarget(makeTask({ task_type: "product", resource_id: "Bag" }), null)).toEqual(
-      expected,
-    );
-    expect(
-      buildTaskFailureTarget(
-        makeTask({ task_type: "image_edit", resource_type: "product", resource_id: "Bag" }),
-        null,
-      ),
-    ).toEqual(expected);
-  });
-
   it("keeps the segment target for a task rejected upstream", () => {
     // 拒因只进通知文案，不参与 target 解析。
     const task = makeTask({
@@ -156,24 +127,6 @@ describe("describeTaskFailure", () => {
     expect(describeTaskFailure(t, makeTask({ task_type: "storyboard", resource_id: "E1S01" }))).toBe(
       "storyboard_task_failed|未命名集 · S01|boom",
     );
-    expect(describeTaskFailure(t, makeTask({ task_type: "grid", resource_id: "g1" }))).toBe("grid_task_failed|g1|boom");
-    expect(describeTaskFailure(t, makeTask({ task_type: "product", resource_id: "Bag" }))).toBe(
-      "product_task_failed|Bag|boom",
-    );
-  });
-
-  it("uses the reference key with unitId for reference_video", () => {
-    expect(describeTaskFailure(t, makeTask({ task_type: "reference_video", resource_id: "E1U1" }))).toBe(
-      "reference_generation_task_failed|未命名集 · U1|boom",
-    );
-  });
-
-  it("names the episode for script plan failures", () => {
-    for (const taskType of ["text_drama_script_plan", "text_narration_script_plan", "text_reference_script_plan"]) {
-      expect(
-        describeTaskFailure(t, makeTask({ task_type: taskType, resource_id: "episode-2" }), projectData),
-      ).toBe("script_plan_task_failed|E2|boom");
-    }
   });
 
   it("falls back to a generic reason when error_message is null", () => {

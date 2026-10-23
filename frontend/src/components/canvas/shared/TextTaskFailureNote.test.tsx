@@ -24,11 +24,11 @@ function truncated(overrides: Partial<TaskItem>, custom: boolean): TaskItem {
   });
 }
 
-function renderNote(episode = 1, ad?: { hasScript: boolean }) {
+function renderNote(episode = 1) {
   const location = memoryLocation({ path: "/episodes/1", record: true });
   render(
     <Router hook={location.hook} searchHook={location.searchHook}>
-      <TextTaskFailureNote projectName="demo" episode={episode} isAd={ad !== undefined} hasScript={ad?.hasScript ?? true} />
+      <TextTaskFailureNote projectName="demo" episode={episode} />
     </Router>,
   );
   return location;
@@ -40,9 +40,7 @@ describe("TextTaskFailureNote", () => {
   });
 
   it.each([
-    ["text_narration_script_plan", "episode-1", "上一次 AI 规划脚本失败"],
     ["text_episode_script", "episode-1", "上一次编写提示词失败"],
-    ["text_draft_repair", "episode-1-narration_script_plan", "上一次 AI 修复失败"],
   ])("sends a truncated custom model of %s to its entry in settings", (taskType, resourceId, lead) => {
     useTasksStore.setState({ tasks: [truncated({ task_type: taskType, resource_id: resourceId }, true)] });
     const location = renderNote();
@@ -66,7 +64,7 @@ describe("TextTaskFailureNote", () => {
     useTasksStore.setState({
       tasks: [
         failed({
-          task_type: "text_reference_script_plan",
+          task_type: "text_episode_script",
           resource_id: "episode-1",
           error_message: summary,
           error_code: "video_capability_missing_r2v",
@@ -78,7 +76,7 @@ describe("TextTaskFailureNote", () => {
     renderNote();
 
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent(`上一次 AI 规划脚本失败：${summary}`);
+    expect(alert).toHaveTextContent(`上一次编写提示词失败：${summary}`);
     expect(alert).not.toHaveTextContent("video_capability_missing_r2v");
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
 
@@ -99,7 +97,7 @@ describe("TextTaskFailureNote", () => {
         }),
         failed({
           task_id: "new",
-          task_type: "text_drama_script_plan",
+          task_type: "text_episode_script",
           resource_id: "episode-1",
           queued_at: "2026-10-01T11:00:00Z",
           error_message: "源文读取失败",
@@ -108,7 +106,7 @@ describe("TextTaskFailureNote", () => {
     });
     renderNote();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("上一次 AI 规划脚本失败：源文读取失败");
+    expect(screen.getByRole("alert")).toHaveTextContent("上一次编写提示词失败：源文读取失败");
     expect(screen.queryByRole("button", { name: "详情" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -132,32 +130,4 @@ describe("TextTaskFailureNote", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it.each([
-    ["没有正式脚本时脚本文本任务一律是整份生成", { hasScript: false }, {}],
-    ["有正式脚本时按违约失败的标记认出整份生成", { hasScript: true }, { error_code: "ad_script_rejected" }],
-    ["有正式脚本时按整份重做的标记认出整份生成", { hasScript: true }, { payload: { regenerate: true } }],
-  ])("labels an ad whole-script generation failure: %s", (_name, ad, overrides) => {
-    useTasksStore.setState({
-      tasks: [
-        failed({
-          task_type: "text_episode_script",
-          resource_id: "episode-1",
-          error_message: "AI 生成的脚本不合规",
-          ...overrides,
-        }),
-      ],
-    });
-    renderNote(1, ad);
-
-    expect(screen.getByRole("alert")).toHaveTextContent("上一次 AI 生成脚本失败：AI 生成的脚本不合规");
-  });
-
-  it("keeps prompt authoring failures of an ad episode with a script as prompt authoring", () => {
-    useTasksStore.setState({
-      tasks: [failed({ task_type: "text_episode_script", resource_id: "episode-1", error_message: "模型超时" })],
-    });
-    renderNote(1, { hasScript: true });
-
-    expect(screen.getByRole("alert")).toHaveTextContent("上一次编写提示词失败：模型超时");
-  });
 });

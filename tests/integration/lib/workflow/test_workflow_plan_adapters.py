@@ -25,12 +25,13 @@ from server.routers import projects
 from server.services.project import workflow_planner
 from server.tool_runtime import ToolOutcome
 from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _project(tmp_path: Path) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Ad", "", "ad", target_duration=30)
+    seed_legacy_project_metadata(pm, "demo", "Ad", "", "ad", target_duration=30)
     return pm
 
 
@@ -39,7 +40,7 @@ def _status() -> WorkflowStatus:
         {
             "project_revision": "sha256-v1:project",
             "source_revision": None,
-            "project": WorkflowProject(content_mode="ad", generation_mode="storyboard", grid_storyboard=False),
+            "project": WorkflowProject(content_mode="ad", generation_mode="storyboard"),
             "target": WorkflowTarget(
                 episode=1,
                 script="scripts/episode_1.json",

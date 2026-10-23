@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
 import type { EpisodeScript, ProjectData } from "@/types";
-import type { GridGeneration } from "@/types/grid";
+import type { ShotGridPlan } from "@/types/shot-grid";
 import { EndFramePicker } from "./EndFramePicker";
 
 const PROJECT = "demo";
@@ -13,57 +13,26 @@ const SCRIPT = "episode_1.json";
 const script = {
   episode: 1,
   title: "第一集",
-  segments: [
+  scenes: [
     {
-      segment_id: "E1S01",
+      scene_id: "E1S01",
       novel_text: "",
       image_prompt: "",
       video_prompt: "",
       generated_assets: { storyboard_image: "storyboards/E1S01_v1.png" },
     },
     // 没有分镜图的分镜不进选项
-    { segment_id: "E1S02", novel_text: "", image_prompt: "", video_prompt: "" },
+    { scene_id: "E1S02", image_prompt: "", video_prompt: "" },
   ],
 } as unknown as EpisodeScript;
 
-function grid(scriptFile: string, cellPath: string): GridGeneration {
-  return {
-    id: "g1",
-    episode: 1,
-    script_file: scriptFile,
-    scene_ids: ["E1S01"],
-    grid_image_path: "grids/g1.png",
-    rows: 2,
-    cols: 2,
-    cell_count: 4,
-    frame_chain: [
-      {
-        index: 0,
-        row: 0,
-        col: 0,
-        frame_type: "first",
-        prev_scene_id: null,
-        next_scene_id: "E1S01",
-        image_path: cellPath,
-      },
-      {
-        index: 1,
-        row: 0,
-        col: 1,
-        frame_type: "placeholder",
-        prev_scene_id: null,
-        next_scene_id: null,
-        image_path: null,
-      },
+function grid(cellPath: string): ShotGridPlan {
+  return { id: "g1", episode: 1, script_file: SCRIPT, shot_id: "E1S01", rows: 2, cols: 2,
+    composite_path: "shot_grids/g1.png", status: "confirmed", created_at: "", updated_at: "", error_message: null,
+    cells: [
+      { index: 0, prompt: "远景", time_ratio: 0, continuity_notes: "", image_path: cellPath, confirmed: true },
+      { index: 1, prompt: "中景", time_ratio: 0.5, continuity_notes: "", image_path: null, confirmed: false },
     ],
-    status: "completed",
-    prompt: null,
-    provider: "gemini",
-    model: "nano-banana",
-    grid_size: "grid_4",
-    created_at: "2026-01-01T00:00:00Z",
-    error_message: null,
-    split_at: "2026-01-01T00:10:00Z",
   };
 }
 
@@ -72,7 +41,7 @@ function renderPicker(props: Partial<Parameters<typeof EndFramePicker>[0]> = {})
     <EndFramePicker
       projectName={PROJECT}
       scriptFile={SCRIPT}
-      contentMode="narration"
+      contentMode="drama"
       aspectRatio="9:16"
       onClose={vi.fn()}
       onPickProjectImage={vi.fn()}
@@ -83,11 +52,9 @@ function renderPicker(props: Partial<Parameters<typeof EndFramePicker>[0]> = {})
 }
 
 beforeEach(() => {
-  vi.spyOn(API, "listGrids").mockResolvedValue([
-    // 带 scripts/ 前缀也应归入本集（任务行与 episode 元数据前缀不一致）
-    grid(`scripts/${SCRIPT}`, "grids/g1_cell_0.png"),
-    grid("episode_2.json", "grids/g2_cell_0.png"),
-  ]);
+  vi.spyOn(API, "getShotGrid").mockImplementation(async (_project, _script, id) =>
+    id === "E1S01" ? grid("shot_grids/g1_cell_0.png") : null,
+  );
   useProjectsStore.setState({
     currentProjectName: PROJECT,
     currentScripts: { [SCRIPT]: script },
@@ -121,8 +88,8 @@ describe("EndFramePicker 项目内通道", () => {
   it("宫格切图只取本集、且跳过未切出图的格子", async () => {
     const { findByRole, queryByRole } = renderPicker();
 
-    expect(await findByRole("button", { name: /grid_4 第 1 格/ })).toBeInTheDocument();
-    expect(queryByRole("button", { name: /grid_4 第 2 格/ })).not.toBeInTheDocument();
+    expect(await findByRole("button", { name: /2×2 第 1 格/ })).toBeInTheDocument();
+    expect(queryByRole("button", { name: /2×2 第 2 格/ })).not.toBeInTheDocument();
   });
 
   it("选中后确认，把项目内相对路径交回父级", async () => {
@@ -191,7 +158,7 @@ describe("EndFramePicker 上传通道", () => {
       <EndFramePicker
         projectName={PROJECT}
         scriptFile={SCRIPT}
-        contentMode="narration"
+        contentMode="drama"
         aspectRatio="9:16"
         onClose={onClose}
         onPickProjectImage={vi.fn()}
@@ -203,7 +170,7 @@ describe("EndFramePicker 上传通道", () => {
   });
 
   it("宫格接口失败不阻断其余分组", async () => {
-    vi.spyOn(API, "listGrids").mockRejectedValue(new Error("boom"));
+    vi.spyOn(API, "getShotGrid").mockRejectedValue(new Error("boom"));
     const { findByText, queryByText } = renderPicker();
 
     await findByText("本集分镜图");

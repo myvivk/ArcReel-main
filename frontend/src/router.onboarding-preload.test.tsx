@@ -38,14 +38,15 @@ vi.mock("@/onboarding/OnboardingTour", () => ({
   OnboardingTour: () => null,
 }));
 
-/** 每个用例换一份全新的模块表，懒加载组件的请求缓存与模块求值都从头开始。 */
-async function renderProjectsWithTour(active: boolean) {
-  const [{ AppRoutes }, { useAuthStore }, { useConfigStatusStore }, { useOnboardingStore }] = await Promise.all([
-    import("@/router"),
-    import("@/stores/auth-store"),
-    import("@/stores/config-status-store"),
-    import("@/stores/onboarding-store"),
-  ]);
+let modules: [
+  typeof import("@/router"),
+  typeof import("@/stores/auth-store"),
+  typeof import("@/stores/config-status-store"),
+  typeof import("@/stores/onboarding-store"),
+];
+
+function renderProjectsWithTour(active: boolean) {
+  const [{ AppRoutes }, { useAuthStore }, { useConfigStatusStore }, { useOnboardingStore }] = modules;
   useAuthStore.setState({ isAuthenticated: true, isLoading: false });
   // 让 ConfigStatusLoader 的 fetch() 短路，避免触发未 mock 的接口
   useConfigStatusStore.setState({ initialized: true });
@@ -57,14 +58,21 @@ async function renderProjectsWithTour(active: boolean) {
       <AppRoutes />
     </Router>,
   );
-  expect(await screen.findByTestId("projects-page")).toBeInTheDocument();
+  return screen.findByTestId("projects-page");
 }
 
 describe("onboarding chunk preload", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     systemConfigPageLoaded.mockClear();
     preloaded.mockClear();
+    // 每个用例从空请求缓存开始；模块装载属于准备步骤，预取行为在渲染后观察。
+    modules = await Promise.all([
+      import("@/router"),
+      import("@/stores/auth-store"),
+      import("@/stores/config-status-store"),
+      import("@/stores/onboarding-store"),
+    ]);
   });
 
   it("fetches the settings page chunk while the tour is active, before the user opens settings", async () => {

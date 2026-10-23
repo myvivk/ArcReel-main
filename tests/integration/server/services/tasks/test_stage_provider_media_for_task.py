@@ -14,7 +14,7 @@ async def test_provider_media_staging_cleanup_survives_repeated_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from lib.script.reference_video.execution_checkpoint import ProviderMediaInput
+    from lib.generation.execution_checkpoint import ProviderMediaInput
     from server.services.tasks import reference_video_tasks as rvt
 
     project_path = tmp_path / "demo"

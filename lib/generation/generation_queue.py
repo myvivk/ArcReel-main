@@ -31,13 +31,13 @@ from lib.generation.render_lane import RENDER_MEDIA_TYPE, RENDER_PROVIDER_ID, is
 from lib.generation.task_terminal_events import TERMINAL_TASK_STATUSES, emit_task_terminal_events
 from lib.infra.async_thread import run_noninterruptible_async
 from lib.project.asset_derivatives import DERIVATIVE_TASK_TYPE
+from lib.project.asset_types import ASSET_SPECS
 from lib.project.project_manager import ProjectManager
 from lib.project.project_migration_guard import assert_project_migration_ok
 
 if TYPE_CHECKING:
     from lib.artifacts.artifact_activation import ArtifactCurrencyResolver
     from lib.config.resolver import ConfigResolver, ProviderModel, VideoGenerationType
-    from lib.script.reference_video.request_projection import ReferenceUnitRequestProjection
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,6 @@ def _normalized_script_file(script_file: str | None) -> str | None:
 
 
 _VIDEO_EXECUTION_IDENTITY_KEYS = frozenset({"video_provider_i2v", "video_provider_r2v"})
-_REFERENCE_VIDEO_ENQUEUE_PAYLOAD_KEYS = frozenset({"script_file", "reference_request_options"})
 
 
 #: 旧版本入队的文本任务在载荷里带着入队时的数据根；执行按当前配置解析，判同也不计它。
@@ -111,15 +110,6 @@ async def cleanup_fresh_generation_batch(
         failure.add_note(f"fresh batch cleanup also failed: {cleanup_failure}")
 
 
-def _reference_request_facts(task_type: str, payload: dict[str, Any] | None) -> dict[str, object] | None:
-    if task_type != "reference_video":
-        return None
-
-    from lib.script.reference_video.request_projection import ReferenceRequestOptions
-
-    return ReferenceRequestOptions.from_payload(payload or {}).to_payload()
-
-
 class DispatchProviderChanged(RuntimeError):
     """执行投影与 worker 已占用的 provider 槽不一致，需要回队重认领。"""
 
@@ -129,37 +119,10 @@ class DispatchProviderChanged(RuntimeError):
         super().__init__(f"dispatch provider changed: {claimed_provider_id} -> {actual_provider_id}")
 
 
-def reference_video_enqueue_payload(
-    payload: dict[str, Any] | None,
-    *,
-    script_file: str | None,
-) -> dict[str, Any]:
-    """把新入队的参考生视频载荷收窄为定位与请求选项。
-
-    prompt、references、style、duration 等可变请求事实不是任务快照；worker 开始时
-    从当前 project/script/unit 重新投影。提交后的执行身份保存在专用 checkpoint，
-    不经过该入队边界。
-    """
-
-    normalized = {key: value for key, value in (payload or {}).items() if key in _REFERENCE_VIDEO_ENQUEUE_PAYLOAD_KEYS}
-    if "reference_request_options" in normalized:
-        from lib.script.reference_video.request_projection import ReferenceRequestOptions
-
-        normalized["reference_request_options"] = ReferenceRequestOptions.from_payload(
-            {"reference_request_options": normalized["reference_request_options"]}
-        ).to_payload()
-    if script_file is not None:
-        normalized["script_file"] = script_file
-    return normalized
-
-
 def without_video_execution_identity(payload: dict[str, Any] | None) -> dict[str, Any]:
     """移除 payload 中的 enqueue-time 视频身份，使未提交任务按当前配置投影。"""
 
     return {key: value for key, value in (payload or {}).items() if key not in _VIDEO_EXECUTION_IDENTITY_KEYS}
-
-
-without_reference_video_execution_identity = without_video_execution_identity
 
 
 async def video_bucket_for_queued_task(
@@ -179,55 +142,7 @@ async def video_bucket_for_queued_task(
     """
     from lib.config.resolver import VIDEO_BUCKET_BY_TASK_TYPE
 
-    if task_type != "reference_video":
-        return VIDEO_BUCKET_BY_TASK_TYPE.get(task_type)
-    fallback = VIDEO_BUCKET_BY_TASK_TYPE["reference_video"]
-    projection = await reference_projection_for_queued_task(
-        project=project,
-        project_name=project_name,
-        payload=payload,
-        resource_id=resource_id,
-    )
-    return projection.hydrated_generation_type if projection is not None else fallback
-
-
-async def reference_projection_for_queued_task(
-    *,
-    project: dict | None,
-    project_name: str | None,
-    payload: dict[str, Any] | None,
-    resource_id: str | None,
-) -> ReferenceUnitRequestProjection | None:
-    """按任务定位信息读取当前 unit，并生成 claim/限流共用的 current-state 投影。"""
-
-    from lib.config.resolver import get_project_manager
-    from lib.script.reference_video.request_projection import (
-        ReferenceRequestOptions,
-        project_reference_unit_request,
-    )
-    from lib.script.reference_video.units import find_reference_unit
-
-    script_file = (payload or {}).get("script_file")
-    if project is None or not project_name or not script_file or not resource_id:
-        return None
-    try:
-        pm = get_project_manager()
-        script = await asyncio.to_thread(pm.load_script, project_name, str(script_file))
-        project_path = await asyncio.to_thread(pm.get_project_path, project_name)
-        unit = find_reference_unit(script, str(resource_id))
-        if unit is None:
-            return None
-        return await project_reference_unit_request(
-            project=project,
-            script=script,
-            unit=unit,
-            project_path=project_path,
-            # Claim/rate-limit routing only needs the hydrated visual generation type.
-            options=ReferenceRequestOptions(),
-        )
-    except Exception:
-        logger.debug("reference_video 当前请求投影失败，限流路由回退代表桶", exc_info=True)
-        return None
+    return VIDEO_BUCKET_BY_TASK_TYPE.get(task_type)
 
 
 async def resolve_video_execution_for_queued_task(
@@ -241,23 +156,6 @@ async def resolve_video_execution_for_queued_task(
 ) -> tuple[ProviderModel, VideoGenerationType | None]:
     """解析队列视频任务的当前身份与任务类型桶，供入队 advisory 和 worker 限流共用。"""
 
-    projection = (
-        await reference_projection_for_queued_task(
-            project=project,
-            project_name=project_name,
-            payload=payload,
-            resource_id=resource_id,
-        )
-        if task_type == "reference_video"
-        else None
-    )
-    if projection is not None and projection.request_facts is not None:
-        from lib.config.resolver import ProviderModel
-
-        return ProviderModel(
-            projection.provider_id or "", projection.model_id or ""
-        ), projection.hydrated_generation_type
-
     generation_type = await video_bucket_for_queued_task(
         project=project,
         project_name=project_name,
@@ -265,9 +163,7 @@ async def resolve_video_execution_for_queued_task(
         payload=payload,
         resource_id=resource_id,
     )
-    execution_payload = (
-        without_video_execution_identity(payload) if task_type in ("video", "reference_video") else payload
-    )
+    execution_payload = without_video_execution_identity(payload) if task_type == "video" else payload
     resolved = await resolver.resolve_video_backend(project, execution_payload or {}, generation_type=generation_type)
     return resolved, generation_type
 
@@ -292,7 +188,7 @@ async def _derive_execution_model_for_enqueue(
 
         return ProviderModel(RENDER_PROVIDER_ID, ""), None
     is_text = media_type == "text"
-    is_video = media_type == "video" or task_type in ("video", "reference_video")
+    is_video = media_type == "video" or task_type == "video"
     is_audio = media_type == "audio" or task_type == "tts"
     video_generation_type: VideoGenerationType | None = None
     try:
@@ -338,6 +234,20 @@ async def _derive_execution_model_for_enqueue(
 #: 为唯一输入，衍生资产图以本体资产图为唯一输入。入队派生与 worker 的限流路由据此按 i2i 槽
 #: 精确解析，其余图片任务取 t2i 作代表性 provider。
 I2I_ONLY_TASK_TYPES: frozenset[str] = frozenset({"image_edit", DERIVATIVE_TASK_TYPE})
+
+GENERATION_TASK_TYPES = frozenset(
+    {
+        *ASSET_SPECS,
+        DERIVATIVE_TASK_TYPE,
+        "storyboard",
+        "shot_grid",
+        "video",
+        "tts",
+        "voice_sample",
+        "image_edit",
+        "text_episode_script",
+    }
+)
 
 ACTIVE_TASK_STATUSES = ("queued", "running")
 TASK_WORKER_LEASE_TTL_SEC = 10.0
@@ -406,12 +316,11 @@ class GenerationQueue:
         # Every Web, Agent and batch generation entry reaches the queue through this
         # method, so a project whose migration failed is refused here once instead of
         # at each caller. Nothing is created and nothing is billed.
+        if task_type not in GENERATION_TASK_TYPES and not is_render_task_type(task_type):
+            raise ValueError(f"unsupported generation task type: {task_type}")
         await self.assert_project_migration_ok(project_name)
 
         script_file = _normalized_script_file(script_file)
-
-        if task_type == "reference_video":
-            payload = reference_video_enqueue_payload(payload, script_file=script_file)
 
         # caller 没传 provider_id → 入队时主动派生一次，让 claim 走 SQL 池过滤快路径；
         # 派生失败留 NULL，走 IS NULL 兜底，由 worker claim 后 _extract_provider 二次校验。
@@ -430,13 +339,10 @@ class GenerationQueue:
                 # Video provider/model is only an advisory claim projection until the worker materializes the
                 # current request and persists its pre-submit checkpoint. Enqueue payload never freezes identity.
 
-        requested_facts = _reference_request_facts(task_type, payload)
         text_request_facts = _text_request_facts(task_type, payload)
         render_request_facts = _render_request_facts(task_type, payload)
 
         def _guard_deduped(existing_payload: dict[str, Any], existing_task_id: str) -> None:
-            if requested_facts is not None and _reference_request_facts(task_type, existing_payload) != requested_facts:
-                raise ActiveTaskRequestConflict(resource_id=resource_id, existing_task_id=existing_task_id)
             if (
                 text_request_facts is not None
                 and _text_request_facts(task_type, existing_payload) != text_request_facts
@@ -473,7 +379,7 @@ class GenerationQueue:
         # Audio restoration observes active TTS/video consumers while holding the
         # same per-unit admission guard.  Keeping the guard here makes every Web,
         # Agent, and batch enqueue entry participate without duplicating checks.
-        if task_type in {"tts", "video", "reference_video"} and script_file:
+        if task_type in {"tts", "video"} and script_file:
             async with generation_admission_lock(
                 project_name=project_name,
                 script_file=script_file,

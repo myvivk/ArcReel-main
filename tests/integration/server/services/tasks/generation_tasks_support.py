@@ -128,7 +128,7 @@ def fake_resolve_ctx(
 
 
 class _FakePM:
-    def __init__(self, project_path: Path, *, register_script: bool = True):
+    def __init__(self, project_path: Path, *, register_script: bool = True, factory: bool = False):
         self.project_path = project_path
         self.project = {
             "schema_version": CURRENT_PROJECT_SCHEMA_VERSION,
@@ -199,6 +199,21 @@ class _FakePM:
                 },
             ],
         }
+        if factory:
+            import hashlib
+
+            self.project.update(content_mode="drama", generation_mode="storyboard")
+            source = project_path / "source/short_drama/episodes/episode_01.md"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("# 第1集\n\n祠堂门口，Alice 握着玉佩。\n", encoding="utf-8")
+            self.factory_metadata = {"source_revision": hashlib.sha256(source.read_bytes()).hexdigest()}
+            scenes = self.script.pop("segments")
+            for scene in scenes:
+                scene["scene_id"] = scene.pop("segment_id")
+                scene["characters_in_scene"] = scene.pop("characters_in_segment")
+                scene["utterances"] = []
+                scene["video_prompt"] = {"action": "走到祠堂门口"}
+            self.script.update(content_mode="drama", scenes=scenes, short_drama_meta=self.factory_metadata)
         self.updated_assets = []
         self.project_path.mkdir(parents=True, exist_ok=True)
         (self.project_path / "project.json").write_text(json.dumps(self.project, ensure_ascii=False), encoding="utf-8")
@@ -403,12 +418,12 @@ EIGHT_REFERENCE_CHARACTERS = ["配角1", "配角2", "配角3", "配角4", "配�
 
 def pm_with_eight_references(project_path: Path) -> _FakePM:
     """E1S02 装配出 8 张参考图：6 张角色 sheet + 1 张场景 + 1 张道具（无上一分镜图），正文指认首角色、道具与场景。"""
-    pm = _FakePM(project_path)
+    pm = _FakePM(project_path, factory=True)
     for name in EIGHT_REFERENCE_CHARACTERS:
         pm.project["characters"][name] = {"description": name, "character_sheet": f"characters/{name}.png"}
         (project_path / "characters" / f"{name}.png").write_bytes(b"png")
-    segment = pm.script["segments"][1]
-    segment["characters_in_segment"] = ["Alice", *EIGHT_REFERENCE_CHARACTERS]
+    segment = pm.script["scenes"][1]
+    segment["characters_in_scene"] = ["Alice", *EIGHT_REFERENCE_CHARACTERS]
     segment["image_prompt"] = {
         "scene": "@[Alice]握着@[玉佩]立在@[祠堂]门口",
         "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
@@ -454,41 +469,3 @@ def register_stale_visual_claim(project_path: Path, key: ArtifactKey, artifact_p
         artifact_path=artifact_path,
         basis=ArtifactBasis.build("test/visual-reference", kind_version=1, inputs={}),
     )
-
-
-def ad_pm(project_path: Path, *, with_sheet: bool) -> _FakePM:
-    """ad 项目 fixture：商品分镜 E1S02（引用保温杯）+ 氛围分镜 E1S01/E1S03。"""
-    pm = _FakePM(project_path)
-    pm.project["content_mode"] = "ad"
-    if with_sheet:
-        pm.project["products"]["保温杯"]["product_sheet"] = "products/保温杯.png"
-    pm.script = {
-        "episode": 1,
-        "content_mode": "ad",
-        "shots": [
-            {
-                "shot_id": "E1S01",
-                "section": "hook",
-                "duration_seconds": 4,
-                "voiceover_text": "开场",
-                "characters_in_shot": ["Alice"],
-                "scenes": ["祠堂"],
-                "props": [],
-                "products_in_shot": [],
-                "image_prompt": "氛围开场",
-            },
-            {
-                "shot_id": "E1S02",
-                "section": "product_reveal",
-                "duration_seconds": 4,
-                "voiceover_text": "商品亮相",
-                "characters_in_shot": ["Alice"],
-                "scenes": ["祠堂"],
-                "props": [],
-                "products_in_shot": ["保温杯"],
-                "image_prompt": "商品特写",
-            },
-        ],
-    }
-    register_asset_sheet_claims(pm)
-    return pm

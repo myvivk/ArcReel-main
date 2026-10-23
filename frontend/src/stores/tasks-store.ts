@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { API } from "@/api";
-import { useAppStore } from "@/stores/app-store";
 import type { TaskItem, TaskStats, TaskStatus } from "@/types";
 
 /** 单次刷新拉取的任务条数上限。 */
@@ -19,22 +18,16 @@ export type ResourceKind =
   | "character_derivative"
   | "scene"
   | "prop"
-  | "product"
   | "storyboard"
   | "video"
   | "tts"
-  | "reference_video"
-  | "grid"
   | "shot_grid"
-  | "text_episode_script"
-  | "text_episode_plan"
-  | "text_script_plan"
-  | "text_draft_repair";
+  | "text_episode_script";
 
 /** 可做指令式编辑的资源种类；`image_edit` 任务按此归入对应资源槽。 */
 export type ImageEditResourceKind = Extract<
   ResourceKind,
-  "character" | "character_derivative" | "scene" | "prop" | "product" | "storyboard"
+  "character" | "character_derivative" | "scene" | "prop" | "storyboard"
 >;
 
 /**
@@ -207,38 +200,6 @@ export const useTasksStore = create<TasksState>((set, get) => {
   let refreshQueued = false;
   // 排队轮调用方各自的 resolve：每个调用方只对自己实际服务的那一轮结果负责。
   let queuedResolvers: Array<() => void> = [];
-  // 已建立任务基线的作用域；null 表示下一轮是该作用域的第一轮，只建基线不做终态判定。
-  let baselineScopeKey: string | null = null;
-
-  /**
-   * 本轮拉取里是否有会写回 reference unit 的任务刚由非终态转成功。
-   *
-   * 参考生视频画布靠 `referenceVideoUnitsRevision` 重拉成片和旁白路径，而自增主通道是项目
-   * 事件 SSE：SSE 断线、静默失速或丢掉这一条事件时，任务状态还能靠轮询兜底恢复，unit
-   * 快照却一直不更新，直到画布重新挂载。这里让 reference_video / tts 的轮询成功也走同一次
-   * 失效，补上兜底路径的缺口；非参考生视频没有挂载该画布，多一次 revision 自增不触发请求。
-   *
-   * 判据是「这一轮成功、上一轮不成功」，其中「上一轮没见过」也算不成功——任务的入队与完成
-   * 整个落在两次轮询之间时（空闲档间隔较长，provider 命中缓存时可能秒回），它是首次以
-   * succeeded 出现的，要求上一轮见过就会漏掉这一类。下一轮它在旧快照里已是 succeeded，
-   * 因此不会重复失效。
-   *
-   * 作用域的第一轮只建基线、不判定：那一轮的旧快照要么是空的、要么属于上一个项目，把历史
-   * 成功任务全当成刚完成没有意义。基线由 `baselineScopeKey` 标记，切项目或停用后重置。
-   */
-  const hasNewlySucceededReferenceUnitAsset = (
-    prev: readonly TaskItem[],
-    next: readonly TaskItem[],
-  ): boolean => {
-    const prevStatus = new Map(prev.map((t) => [t.task_id, t.status]));
-    return next.some(
-      (t) =>
-        (t.task_type === "reference_video" || t.task_type === "tts") &&
-        t.status === "succeeded" &&
-        prevStatus.get(t.task_id) !== "succeeded",
-    );
-  };
-
   // 单轮拉取；自身不抛错，失败只把 connected 置 false 并留旧数据。
   const runTasksRefresh = async (): Promise<void> => {
     const scope = get().refreshScope;
@@ -258,20 +219,9 @@ export const useTasksStore = create<TasksState>((set, get) => {
         API.getTaskStats(projectName ?? null),
       ]);
       if (!scopeUnchanged()) return;
-      const scopeKey = projectName ?? "";
-      const unitsStale =
-        baselineScopeKey === scopeKey &&
-        hasNewlySucceededReferenceUnitAsset(get().tasks, tasksRes.items);
-      baselineScopeKey = scopeKey;
       get().setTasks(tasksRes.items);
       get().setStats(statsRes.stats);
       get().setConnected(true);
-      // 留在 try 内是有意的：失效只是一次 zustand set，没有抛出路径；而把它挪到 try 外会让
-      // 本函数不再满足「自身不抛错」——项目事件 SSE 那一路是裸 void 调用 refreshTasks，
-      // 抛出会变成未处理的 rejection，且在途合并里排队的调用方永远等不到结算。
-      if (unitsStale) {
-        useAppStore.getState().invalidateReferenceVideoUnits();
-      }
     } catch {
       if (!scopeUnchanged()) return;
       get().setConnected(false);
@@ -325,7 +275,6 @@ export const useTasksStore = create<TasksState>((set, get) => {
 
     setRefreshScope: (scope) => {
       // 切项目与停用都会清空/替换任务快照，旧基线不再可比：下一轮重新建基线。
-      baselineScopeKey = null;
       set({ refreshScope: scope });
     },
     refreshTasks: async () => {
@@ -460,13 +409,6 @@ export function isOccupyingStatus(status: TaskStatus): boolean {
   return status === "queued" || status === "running";
 }
 
-/** 脚本规划按项目模式分三种任务类型，一个项目只用其中一种。 */
-export const SCRIPT_PLAN_TASK_TYPES: ReadonlySet<string> = new Set([
-  "text_drama_script_plan",
-  "text_narration_script_plan",
-  "text_reference_script_plan",
-]);
-
 /**
  * 任务占用的「资源种类」。除 image_edit 外，task_type 本身即资源种类；image_edit 跨
  * character/scene/prop/product/storyboard 共用一个 task_type，真正的种类在 resource_type，
@@ -487,9 +429,6 @@ export function taskResourceKind(task: TaskItem): ResourceKind | "" {
   }
   if (task.task_type === "voice_sample") {
     return "character";
-  }
-  if (SCRIPT_PLAN_TASK_TYPES.has(task.task_type)) {
-    return "text_script_plan";
   }
   return task.task_type as ResourceKind;
 }
@@ -645,25 +584,6 @@ export function isScriptFileBusy(
   );
 }
 
-/** hook 版 {@link selectHasActiveTaskForScriptFile}；scriptFile/projectName 缺失时返回 false。 */
-export function useHasActiveTaskForScriptFile(
-  taskType: string,
-  scriptFile: string | undefined | null,
-  projectName: string | undefined | null,
-): boolean {
-  return useTasksStore((s) =>
-    scriptFile && projectName
-      ? selectHasActiveTaskForScriptFile(
-          s.tasks,
-          taskType,
-          scriptFile,
-          projectName,
-          s.optimisticActiveScriptFile,
-        )
-      : false,
-  );
-}
-
 // projectName 缺失时复用同一空集，保证 hook 引用稳定。
 const EMPTY_ACTIVE_IDS: Set<string> = new Set();
 
@@ -681,16 +601,6 @@ export function useActiveResourceIds(
         ? selectActiveResourceIds(s.tasks, taskType, projectName, s.optimisticActive)
         : EMPTY_ACTIVE_IDS,
     ),
-  );
-}
-
-/** hook 版 {@link selectLatestTaskByResource}，按 project + type 预筛。 */
-export function useLatestTasksByResource(
-  projectName: string,
-  taskType: string,
-): Map<string, TaskItem> {
-  return useTasksStore(
-    useShallow((s) => selectLatestTaskByResource(s.tasks, { projectName, taskType })),
   );
 }
 

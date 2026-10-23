@@ -5,7 +5,7 @@
 
 - ``shots[*].text`` 按数组顺序用换行拼回 ``text``。不重新注入任何分段前缀——正文里原本写着的
   ``镜头N：`` 字面因此成为普通正文，逐字保留，不删不改。仍挂在镜头上的存量时长先收编到
-  unit 级（``lib.script.reference_video.duration_migration``），此前那步只由加载链惰性完成，而
+  unit 级（``lib.project.legacy_reference_durations``），此前那步只由加载链惰性完成，而
   ``shots`` 在本迁移之后就不存在了。
 - 删除 ``references[]``：参考图改由执行期从正文的 ``@[名称]`` 按首次提及顺序解析。
 - 删除 ``migration_requires_content_replan``：它记录的是 v6→v7 折叠镜头结构留下的证据，镜头
@@ -34,9 +34,9 @@ from pydantic import BaseModel
 from lib.episode.episode_paths import episode_drafts_dir
 from lib.infra.json_io import atomic_write_json, load_json
 from lib.infra.path_safety import safe_join
+from lib.project.legacy_reference_durations import migrate_unit_durations
 from lib.project.project_migration_failure import ProjectMigrationError
 from lib.project.project_migrations.backups import ensure_versioned_backup
-from lib.script.reference_video.duration_migration import migrate_unit_durations
 from lib.script.script_models import ReferenceScriptPlanUnit, ReferenceVideoUnit
 
 _TARGET_VERSION = 9

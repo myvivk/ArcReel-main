@@ -1,19 +1,15 @@
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ScriptReviewGate } from "./ScriptReviewGate";
 import { PromptAuthoringButton } from "@/components/canvas/shared/PromptAuthoringButton";
 import { RetainedEditUnit } from "@/components/shared/edit-unit/RetainedEditUnit";
 import { ShotSplitView } from "./ShotSplitView";
 import { StoryboardBatchDialog } from "./StoryboardBatchDialog";
 import { EmptyScriptState } from "./EmptyScriptState";
 import type { InsertShotHandler } from "./ShotStructureActions";
-import { AdScriptButton, AdScriptProgress } from "@/components/canvas/shared/AdScriptDialog";
 import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
-import { ShortDramaVisualButton } from "@/components/canvas/shared/ShortDramaVisualDialog";
 import { ShortDramaStoryboardButton } from "@/components/canvas/shared/ShortDramaStoryboardButton";
 import { FactoryStoryboardStart } from "@/components/canvas/shared/FactoryStoryboardStart";
-import { NoScriptBlankState } from "@/components/canvas/shared/StartBlankScriptButton";
 import { BatchFillButton, useBatchGap } from "@/components/canvas/episode-page/BatchFillButton";
 import { EpisodeHeaderActions } from "@/components/canvas/episode-page/EpisodeHeaderActions";
 import type { EpisodeCanvasContext } from "@/components/canvas/episode-page/EpisodePage";
@@ -25,22 +21,17 @@ import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import type { DurationOutOfRangeReason } from "@/hooks/useModelCapabilities";
 import type {
   EpisodeScript,
-  NarrationEpisodeScript,
   DramaEpisodeScript,
-  AdEpisodeScript,
-  NarrationSegment,
   DramaScene,
-  AdShot,
   ProjectData,
   StoryboardBatchKind,
 } from "@/types";
 
-type Segment = NarrationSegment | DramaScene | AdShot;
+type Segment = DramaScene;
 
 interface TimelineCanvasProps extends EpisodeCanvasContext {
   projectName: string;
   episode: number;
-  hasDraft?: boolean;
   episodeScript: EpisodeScript | null;
   scriptFile?: string;
   projectData: ProjectData | null;
@@ -57,8 +48,6 @@ interface TimelineCanvasProps extends EpisodeCanvasContext {
   onGenerateNarration?: (segmentId: string, scriptFile?: string) => void;
   onGenerateEpisodeNarration?: (scriptFile?: string) => void;
   durationOptions?: number[];
-  /** 内容确认页的剧本规划档位；时长由端点固定时与 `durationOptions` 不同。 */
-  planDurationOptions?: number[];
   /** 档位为空是因为这一维由端点固定（workflow 自己定片长），不是型号没登记时长。 */
   durationEndpointFixed?: boolean;
   videoModelUnresolved?: boolean;
@@ -90,16 +79,12 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     projectName,
     episode,
     view,
-    onViewChange,
-    hasDraft,
     hasShortDramaSource,
     episodeScript,
     scriptFile,
     projectData,
     durationOptions,
-    planDurationOptions,
     durationEndpointFixed,
-    videoModelUnresolved,
     lastFrame,
     capabilitiesLoading,
     durationWarningReason,
@@ -116,35 +101,22 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   } = demoReadOnly ? { ...props, ...DEMO_READ_ONLY_PROPS } : props;
 
   const { t } = useTranslation("dashboard");
-  const contentMode = projectData?.content_mode ?? "narration";
-  // 分镜编辑子视图按剧本形状显式分派：narration（segments）/ drama（scenes）/ ad（shots）。
-  // 未知/脏 content_mode 沿用历史兜底落 drama 视图。
-  const editorContentMode: "narration" | "drama" | "ad" =
-    contentMode === "narration" ? "narration" : contentMode === "ad" ? "ad" : "drama";
+  const editorContentMode = "drama" as const;
 
   const hasScript = Boolean(episodeScript);
   const [batchKind, setBatchKind] = useState<StoryboardBatchKind | null>(null);
-  const storyboardGap = useBatchGap(projectName, episode, "storyboards", "storyboard");
   const shotGridGap = useBatchGap(projectName, episode, "shot-grids");
   const videoGap = useBatchGap(projectName, episode, "videos", "video");
   const narrationGap = useBatchGap(projectName, episode, "narration", "tts");
 
   const aspectRatio = previewAspect(projectData);
 
-  // 仅三种已注册模式显式取数；未知/脏 content_mode 返回空列表（不渲染可编辑视图）——
-  // 否则会以 drama 形状渲染、保存却按真实 content_mode 分派到错误端点。
   const segments = useMemo<Segment[]>(
     () =>
-      !episodeScript || !projectData
-        ? []
-        : contentMode === "narration"
-          ? ((episodeScript as NarrationEpisodeScript).segments ?? [])
-          : contentMode === "ad"
-            ? ((episodeScript as AdEpisodeScript).shots ?? [])
-            : contentMode === "drama"
-              ? ((episodeScript as DramaEpisodeScript).scenes ?? [])
-              : [],
-    [contentMode, episodeScript, projectData],
+      episodeScript?.content_mode === "drama" && "scenes" in episodeScript
+        ? episodeScript.scenes
+        : [],
+    [episodeScript],
   );
 
   // 任务派生 loading：活跃 + 最新行胜出下沉到 store selector（各 task_type 一组活跃 resource）
@@ -174,12 +146,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     [ttsBusyIds, currentSegmentIds],
   );
 
-  // 广告/短片没有脚本规划：没有正式脚本时直接从空白开始。
-  if (projectData && !episodeScript && !hasDraft && editorContentMode === "ad" && !demoReadOnly) {
-    return <NoScriptBlankState projectName={projectName} episode={episode} className="h-full text-sm" />;
-  }
-
-  if (!projectData || (!episodeScript && !hasDraft)) {
+  if (!projectData || !episodeScript) {
     // 工厂集默认落在剧本页；切到分镜页时这里是「还没分镜」，不是「没选剧集」。
     if (projectData && editorContentMode === "drama" && hasShortDramaSource && !demoReadOnly) {
       return (
@@ -221,34 +188,34 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     ? (segId: string) => onGenerateNarration(segId, scriptFile)
     : undefined;
   const importedShortDrama =
-    editorContentMode === "drama" &&
-    (hasShortDramaSource || (episodeScript as DramaEpisodeScript | null)?.short_drama_meta != null);
-  // 短剧导入的分镜提示词来自哪条路径：快速切分与「AI 回落」都只给骨架，得让用户看见并知道怎么重写。
-  const storyboardOptions = (episodeScript as DramaEpisodeScript | null)?.short_drama_meta
-    ?.ai_storyboard_options as { mode?: string; fallback?: string } | undefined;
-  const storyboardPlanningNotice = !importedShortDrama
-    ? null
-    : storyboardOptions?.mode === "smart_fallback"
-      ? t("short_drama_storyboard_fallback_notice", { reason: storyboardOptions.fallback ?? "" })
-      : storyboardOptions?.mode === "fast"
-        ? t("short_drama_storyboard_fast_notice")
-        : null;
+    Boolean(hasShortDramaSource && (episodeScript as DramaEpisodeScript).short_drama_meta);
+
+  if (!importedShortDrama && !demoReadOnly) {
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
+        <p className="text-sm text-muted-foreground">{t("timeline_no_editable_segments")}</p>
+        <div className="flex flex-wrap gap-2">
+          <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+          <ShortDramaImportButton projectName={projectName} episode={episode} />
+        </div>
+        <pre className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
+          {JSON.stringify(episodeScript, null, 2)}
+        </pre>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       {view === "board" && hasScript && (
         <EpisodeHeaderActions>
-          {editorContentMode === "ad" && !demoReadOnly && (
-            <AdScriptButton projectName={projectName} episode={episode} regenerate />
-          )}
-          {editorContentMode === "drama" && !demoReadOnly && !importedShortDrama && (
+          {!demoReadOnly && (
             <>
               <ShortDramaGenerateButton projectName={projectName} episode={episode} />
               <ShortDramaImportButton projectName={projectName} episode={episode} />
-              <ShortDramaVisualButton projectName={projectName} episode={episode} />
             </>
           )}
-          {editorContentMode === "drama" && !demoReadOnly && importedShortDrama && (
+          {!demoReadOnly && importedShortDrama && (
             <ShortDramaStoryboardButton
               projectName={projectName}
               episode={episode}
@@ -257,14 +224,6 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
-          {!importedShortDrama && (
-            <BatchFillButton
-              kind="storyboards"
-              count={storyboardGap}
-              disabled={demoReadOnly}
-              onClick={() => setBatchKind("storyboards")}
-            />
-          )}
           <BatchFillButton
             kind="shot-grids"
             count={shotGridGap}
@@ -277,7 +236,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             disabled={demoReadOnly}
             onClick={() => setBatchKind("videos")}
           />
-          {contentMode === "narration" && onGenerateEpisodeNarration && (
+          {onGenerateEpisodeNarration && (
             <BatchFillButton
               kind="narration"
               count={narrationGap}
@@ -286,12 +245,6 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             />
           )}
         </EpisodeHeaderActions>
-      )}
-
-      {view === "board" && storyboardPlanningNotice && (
-        <p className="mx-4 mt-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-xs text-warn">
-          {storyboardPlanningNotice}
-        </p>
       )}
 
       {batchKind && (
@@ -303,27 +256,9 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
         />
       )}
 
-      {editorContentMode === "ad" && hasScript && (
-        <AdScriptProgress projectName={projectName} episode={episode} noScript={false} className="mx-4 mt-3" />
-      )}
-
       {/* 主体 */}
       <div className="flex min-h-0 flex-1 flex-col" data-onboarding={ONBOARDING_ANCHORS.workbenchTimeline}>
-        <RetainedEditUnit identity={episodeScript && segments.length > 0 ? "shots" : "empty"} message={t("shot_externally_removed")} value={view === "plan" && hasDraft && editorContentMode !== "ad" ? (
-          <div className="relative h-full overflow-y-auto p-4">
-            <ScriptReviewGate
-              key={`${projectName}:${episode}`}
-              projectName={projectName}
-              episode={episode}
-              contentMode={editorContentMode}
-              videoModelUnresolved={videoModelUnresolved}
-              durationOptions={planDurationOptions}
-              durationEndpointFixed={durationEndpointFixed}
-              durationWarningReason={durationWarningReason}
-              onOpenTimeline={hasScript ? () => onViewChange("board") : undefined}
-            />
-          </div>
-        ) : episodeScript && segments.length > 0 ? (
+        <RetainedEditUnit identity={segments.length > 0 ? "shots" : "empty"} message={t("shot_externally_removed")} value={segments.length > 0 ? (
           <ShotSplitView
             segments={segments}
             contentMode={editorContentMode}
@@ -349,7 +284,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
             capabilitiesLoading={capabilitiesLoading}
             durationWarningReason={durationWarningReason}
           />
-        ) : episodeScript && contentMode === editorContentMode ? (
+        ) : episodeScript.content_mode === editorContentMode ? (
           <EmptyScriptState contentMode={editorContentMode} onInsert={handleInsertShot} />
         ) : (
           // 兜底：分镜视图下无可编辑分镜（未知 content_mode），

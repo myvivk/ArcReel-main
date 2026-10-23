@@ -161,99 +161,6 @@ describe("useProjectEventsSSE", () => {
     expect(useAppStore.getState().assistantToolActivitySuppressed).toBe(true);
   });
 
-  it("navigates product changes to the products page", async () => {
-    const stream = mockProjectEventStream();
-
-    renderHarness("/");
-
-    act(() => {
-      stream.options?.onChanges?.({
-        project_name: "demo",
-        batch_id: "batch-product",
-        fingerprint: "fp-product",
-        generated_at: "2026-03-01T00:00:00Z",
-        source: "filesystem",
-        changes: [
-          {
-            entity_type: "product",
-            action: "created",
-            entity_id: "咖啡",
-            label: "backend fallback",
-            label_key: "named_entity_product",
-            label_params: { id: "咖啡" },
-            focus: { pane: "products", anchor_type: "product", anchor_id: "咖啡" },
-            important: true,
-          },
-        ],
-      });
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("location")).toHaveTextContent("/products");
-    });
-    expect(useAppStore.getState().workspaceNotifications[0]).toEqual(
-      expect.objectContaining({
-        text: "AI 刚新增了 商品「咖啡」，点击查看",
-        target: expect.objectContaining({ type: "product", id: "咖啡", route: "/products" }),
-      }),
-    );
-  });
-
-  it("navigates reference video units to the reference canvas via reference_unit target", async () => {
-    const stream = mockProjectEventStream();
-
-    renderHarness("/episodes/1");
-
-    act(() => {
-      stream.options?.onChanges?.(
-        {
-          project_name: "demo",
-          batch_id: "batch-ref",
-          fingerprint: "fp-ref",
-          generated_at: "2026-03-01T00:00:00Z",
-          source: "worker",
-          changes: [
-            {
-              entity_type: "reference_unit",
-              action: "created",
-              entity_id: "E1U01",
-              label: "视频单元「E1U01」",
-              episode: 1,
-              focus: {
-                pane: "episode",
-                episode: 1,
-                anchor_type: "reference_unit",
-                anchor_id: "E1U01",
-              },
-              important: true,
-            },
-          ],
-        },
-      );
-    });
-
-    await waitFor(() => {
-      expect(API.getProject).toHaveBeenCalledWith("demo", { signal: expect.any(AbortSignal) });
-      expect(useAppStore.getState().scrollTarget).toEqual(
-        expect.objectContaining({
-          type: "reference_unit",
-          id: "E1U01",
-          route: "/episodes/1",
-        }),
-      );
-    });
-    expect(useAppStore.getState().workspaceNotifications[0]).toEqual(
-      expect.objectContaining({
-        text: "AI 刚新增了 视频单元「E1U01」，点击查看",
-        target: expect.objectContaining({
-          type: "reference_unit",
-          id: "E1U01",
-          route: "/episodes/1",
-        }),
-      }),
-    );
-  });
-
   it("defers focus when the user is editing", async () => {
     const stream = mockProjectEventStream();
 
@@ -294,23 +201,6 @@ describe("useProjectEventsSSE", () => {
     });
     expect(screen.getByTestId("location")).toHaveTextContent("/");
     expect(useAppStore.getState().scrollTarget).toBeNull();
-  });
-
-  it("invalidates episode draft views when a reconnect snapshot shows missed changes", () => {
-    // 草稿面板各自取数、只随 draft 事件重拉；断线期间错过的草稿变化要在重连快照时作废。
-    useProjectsStore.setState({
-      currentProjectData: { ...makeGetProjectResult("Demo").project, episodes: [{ episode: 4, title: "雨夜" }] },
-    } as never);
-    const stream = mockProjectEventStream();
-    renderHarness("/");
-    const revision = () => useAppStore.getState().getEntityRevision("draft:episode_4_script_plan");
-
-    act(() => stream.options?.onSnapshot?.({ project_name: "demo", fingerprint: "fp-a" } as never));
-    const before = revision();
-    act(() => stream.options?.onSnapshot?.({ project_name: "demo", fingerprint: "fp-b" } as never));
-
-    expect(revision()).toBeGreaterThan(before);
-    expect(useAppStore.getState().getEntityRevision("draft:episode_4_prompt_authoring")).toBeGreaterThan(0);
   });
 
   it("forwards an assistant session resuming on its own to the assistant store", () => {
@@ -1069,93 +959,6 @@ describe("useProjectEventsSSE", () => {
       expect(screen.getByTestId("location")).toHaveTextContent("/");
     });
 
-    it("参考生视频任务成功让分组失效，画布据此重拉成片", async () => {
-      const stream = mockProjectEventStream();
-      vi.spyOn(useTasksStore.getState(), "refreshTasks").mockResolvedValue(undefined);
-
-      renderHarness("/");
-      emit(stream, [taskChange({ task_type: "reference_video" })]);
-
-      expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(1);
-    });
-
-    it.each(["created" as const, "updated" as const, "deleted" as const])(
-      "reference_unit:%s 让独立分组缓存失效",
-      async (action) => {
-        const stream = mockProjectEventStream();
-
-        renderHarness("/");
-        emit(stream, [
-          {
-            entity_type: "reference_unit",
-            action,
-            entity_id: "E1U1",
-            label: "视频单元「E1U1」",
-            episode: 1,
-            focus: null,
-            important: false,
-          },
-        ]);
-
-        expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(1);
-      },
-    );
-
-    it.each(["character", "scene", "prop", "product"] as const)(
-      "资产 %s 变更让分组缓存失效：单元可用参考图与所落的桶要重拉",
-      async (entityType) => {
-        const stream = mockProjectEventStream();
-
-        renderHarness("/");
-        emit(stream, [
-          {
-            entity_type: entityType,
-            action: "updated",
-            entity_id: "阿离",
-            label: "资产「阿离」",
-            focus: null,
-            important: false,
-          },
-        ]);
-
-        expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(1);
-      },
-    );
-
-    it("同批 unit 变更与生成成功只让分组缓存失效一次", async () => {
-      const stream = mockProjectEventStream();
-      vi.spyOn(useTasksStore.getState(), "refreshTasks").mockResolvedValue(undefined);
-
-      renderHarness("/");
-      emit(stream, [
-        {
-          entity_type: "reference_unit",
-          action: "updated",
-          entity_id: "E1U1",
-          label: "视频单元「E1U1」",
-          episode: 1,
-          focus: null,
-          important: false,
-        },
-        taskChange({ task_type: "reference_video" }),
-      ]);
-
-      expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(1);
-    });
-
-    it("参考生视频任务失败/取消不重拉分组（成片未变）", async () => {
-      const stream = mockProjectEventStream();
-      vi.spyOn(useTasksStore.getState(), "refreshTasks").mockResolvedValue(undefined);
-
-      renderHarness("/");
-      emit(stream, [
-        taskChange({ action: "task_failed", task_type: "reference_video" }),
-        taskChange({ entity_id: "task-2", action: "task_cancelled", task_type: "reference_video" }),
-      ]);
-
-      expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(0);
-    });
-
     it.each(["task_failed" as const, "task_cancelled" as const])(
       "voice_sample 任务落 %s 终态时仍刷新成本（合成成功后计费，校验/取消发生在计费之后）",
       async (action) => {
@@ -1182,16 +985,6 @@ describe("useProjectEventsSSE", () => {
       ]);
 
       expect(debouncedFetchSpy).not.toHaveBeenCalled();
-    });
-
-    it("其它类型任务成功不触发参考生视频画布重拉", async () => {
-      const stream = mockProjectEventStream();
-      vi.spyOn(useTasksStore.getState(), "refreshTasks").mockResolvedValue(undefined);
-
-      renderHarness("/");
-      emit(stream, [taskChange({ task_type: "video" })]);
-
-      expect(useAppStore.getState().referenceVideoUnitsRevision).toBe(0);
     });
 
     it("任务终态不写入实体版本表（entity_id 是一次性 task_id，无人消费）", async () => {

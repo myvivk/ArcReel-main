@@ -7,24 +7,17 @@ import { RetainedEditUnit } from "@/components/shared/edit-unit/RetainedEditUnit
 import { EPISODE_VIEW_PARAM } from "@/app-routes";
 import { EditTimelineEmptyState } from "@/components/canvas/edit-render/EditTimelineEmptyState";
 import { RenderButton } from "@/components/canvas/edit-render/RenderButton";
-import { EpisodeSourceReview } from "@/components/canvas/EpisodeSourceReview";
-import { AdScriptHost } from "@/components/canvas/shared/AdScriptDialog";
 import { ShortDramaImportHost } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { ShortDramaGenerateHost } from "@/components/canvas/shared/ShortDramaGenerateDialog";
-import { ShortDramaVisualHost } from "@/components/canvas/shared/ShortDramaVisualDialog";
 import { PromptAuthoringHost } from "@/components/canvas/shared/PromptAuthoringDialog";
-import { ScriptPlanHost } from "@/components/canvas/shared/ScriptPlanDialog";
 import { TextTaskFailureNote } from "@/components/canvas/shared/TextTaskFailureNote";
 import { LazyBoundary } from "@/components/shared/LazyBoundary";
 import { WorkflowPanel } from "@/components/workflow/WorkflowPanel";
 import { DemoEpisodePlaceholder } from "@/onboarding/DemoEpisodePlaceholder";
 import { useCostStore } from "@/stores/cost-store";
-import { useEpisodeSurfaceRequest } from "@/stores/episode-surface-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
-import { useWorkflowStore, workflowPlanKey } from "@/stores/workflow-store";
-import type { EpisodeMeta, ProjectData } from "@/types";
+import type { ProjectData } from "@/types";
 import type { EpisodeScript } from "@/types/script";
-import { gridStoryboardEnabled, normalizeRoute } from "@/utils/generation-mode";
 import { lazyNamed } from "@/utils/lazy-component";
 import { previewAspect } from "@/utils/preview-aspect";
 
@@ -36,14 +29,12 @@ import {
   type EpisodeView,
   type EpisodeViewFacts,
 } from "./episode-view";
-import { DramaScriptContentView } from "./DramaScriptContentView";
 import { FactoryEpisodeSourceView } from "./FactoryEpisodeSourceView";
 import { useFactoryEpisodeSource } from "./useFactoryEpisodeSource";
 import { EpisodeHead } from "./EpisodeHead";
 import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeaderActions";
 import { EpisodePageHeader, episodeViewTabId } from "./EpisodePageHeader";
 import { EpisodeViewFactsProvider } from "./EpisodeViewScope";
-import { StorySettingView } from "./StorySettingView";
 import { EpisodeAssetsView } from "./EpisodeAssetsView";
 
 // 剪辑视图（时间线播放器与轨道）只在切到「剪辑」时用到，按需拉取
@@ -59,32 +50,6 @@ export interface EpisodeCanvasContext {
   onViewChange: (view: EpisodeView, options?: EpisodeViewChangeOptions) => void;
   /** 本集已有短剧工厂源稿（可能还没转写成分镜）：画布据此给「AI 分镜」空态。 */
   hasShortDramaSource?: boolean;
-}
-
-/** 本集已有中间稿：分段稿或生成好的剧本草稿。 */
-function hasEpisodeDraft(meta: EpisodeMeta | undefined): boolean {
-  return meta?.script_status === "segmented" || meta?.script_status === "generated";
-}
-
-/** 本集已有分镜图或视频产物：改剧本内容会让它们过期，界面据此提示。 */
-function hasEpisodeArtifacts(meta: EpisodeMeta | undefined): boolean {
-  return (meta?.storyboards?.available ?? 0) + (meta?.videos?.available ?? 0) > 0;
-}
-
-/**
- * 脚本规划视图呈现集原文：已选集，但正式剧本与中间稿都没有。
- * 广告/短片恒单集、演示项目没有源文可切，走各自画布。
- */
-export function showsEpisodeSource(
-  projectData: ProjectData | null,
-  episode: number,
-  script: EpisodeScript | null,
-  demo: boolean,
-  hasFactorySource = false,
-): boolean {
-  const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
-  if (hasFactorySource) return false;
-  return meta !== undefined && !script && !hasEpisodeDraft(meta) && projectData?.content_mode !== "ad" && !demo;
 }
 
 /**
@@ -127,35 +92,15 @@ function EpisodePageContent({
   const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
 
   const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
-  const isAd = projectData?.content_mode === "ad";
-  const route = normalizeRoute(projectData?.generation_mode);
   const hasScript = Boolean(script);
-  const hasDraft = hasEpisodeDraft(meta);
-  const grid = gridStoryboardEnabled(projectData);
-  const sourceReview = showsEpisodeSource(projectData, episode, script, demo, factorySource.exists);
-  const shortDrama = script?.content_mode === "drama" && script.short_drama_meta != null;
   const hasShortDramaSource = factorySource.exists;
-  // 起步区据此给剧情演绎模式追加「AI 原创剧本」入口；演示态不可写入，不追加。
-  const scriptContentMode = demo ? undefined : projectData?.content_mode === "drama" ? "drama" : undefined;
-  const hasArtifacts = useMemo(() => hasEpisodeArtifacts(meta), [meta]);
-  // 规划产物态取工作流计划（页头的制作进度面板驱动刷新）：短剧导入的集据此藏掉规划页签。
-  const planState = useWorkflowStore((s) =>
-    s.planKey === workflowPlanKey(projectName, episode) ? s.plan?.status.artifacts.script_plan?.state : undefined,
-  );
   const facts = useMemo<EpisodeViewFacts>(
     () => ({
-      isAd,
-      route,
-      grid,
       hasScript,
-      hasDraft,
-      sourceReview,
       demo,
-      shortDrama,
       hasShortDramaSource,
-      scriptPlanState: planState ?? null,
     }),
-    [isAd, route, grid, hasScript, hasDraft, sourceReview, demo, shortDrama, hasShortDramaSource, planState],
+    [hasScript, demo, hasShortDramaSource],
   );
   const tabs = useMemo(() => episodeViewTabs(facts), [facts]);
   const view = resolveEpisodeView(searchParams.get(EPISODE_VIEW_PARAM), facts);
@@ -186,9 +131,6 @@ function EpisodePageContent({
     [view, changeView, onViewUnit, confirmLeave],
   );
 
-  useEpisodeSurfaceRequest(projectName, episode, "script_plan", () => changeView("plan"));
-  useEpisodeSurfaceRequest(projectName, episode, "prompt_authoring_draft", () => changeView("board"));
-
   // 页头的预估费用读费用估算；演示项目由费用表自己清空。
   const debouncedFetch = useCostStore((s) => s.debouncedFetch);
   useEffect(() => {
@@ -203,7 +145,7 @@ function EpisodePageContent({
   const ttsNarration = projectData?.narration_delivery === "use_tts";
   let body: ReactNode;
   if ((factorySource.loading || factorySource.error) && (!script || view === "source")) {
-    body = <FactoryEpisodeSourceView source={factorySource} />;
+    body = <FactoryEpisodeSourceView source={factorySource} projectName={projectName} episode={episode} />;
   } else if (view === "edit") {
     body = (
       <LazyBoundary variant="pane">
@@ -235,36 +177,12 @@ function EpisodePageContent({
         />
       </LazyBoundary>
     );
-  } else if (view === "setting") {
-    body = (
-      <EpisodeViewFactsProvider value={facts}>
-        <StorySettingView projectName={projectName} overview={projectData?.overview} readOnly={demo} />
-      </EpisodeViewFactsProvider>
-    );
   } else if (view === "assets") {
     body = <EpisodeAssetsView key={`${projectName}:${episode}`} projectName={projectName} episode={episode} projectData={projectData} />;
   } else if (view === "source") {
-    // 工厂集只读展示 Markdown 原文；其他集保留原有的源文工作区。
-    body =
-      hasShortDramaSource ? (
-        <FactoryEpisodeSourceView source={factorySource} />
-      ) : shortDrama && script?.content_mode === "drama" ? (
-        <DramaScriptContentView
-          script={script}
-          projectName={projectName}
-          episode={episode}
-          readOnly={demo}
-          hasArtifacts={hasArtifacts}
-        />
-      ) : (
-        <EpisodeViewFactsProvider value={facts}>
-          <EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} contentMode={scriptContentMode} sourceOnly />
-        </EpisodeViewFactsProvider>
-      );
+    body = <FactoryEpisodeSourceView source={factorySource} projectName={projectName} episode={episode} />;
   } else if (demo && !script) {
     body = <DemoEpisodePlaceholder />;
-  } else if (sourceReview) {
-    body = <EpisodeViewFactsProvider value={facts}><EpisodeSourceReview projectName={projectName} episode={episode} episodes={projectData?.episodes ?? []} contentMode={scriptContentMode} /></EpisodeViewFactsProvider>;
   } else {
     body = (
       <EpisodeViewFactsProvider value={facts}>
@@ -284,10 +202,10 @@ function EpisodePageContent({
               projectName={projectName}
               episode={episode}
               meta={meta}
-              route={route}
+              route="storyboard"
               canEditTitle={Boolean(meta) && !demo}
               onSaveTitle={onSaveTitle}
-              canDelete={!isAd && !demo}
+              canDelete={!demo}
             />
           }
           progress={
@@ -305,23 +223,15 @@ function EpisodePageContent({
           tabs={tabs}
           view={view}
           onViewChange={changeView}
-          boardLabel={t(route === "reference_video" ? "episode_view_units" : "episode_view_board")}
-          // 工厂 Markdown 是本集剧本原文。
-          sourceLabel={shortDrama || hasShortDramaSource ? t("episode_view_script") : undefined}
+          boardLabel={t("episode_view_board")}
+          sourceLabel={t("episode_view_script")}
           onActionsSlot={setActionsSlot}
         />
         {!demo && (
           <>
-            <TextTaskFailureNote projectName={projectName} episode={episode} isAd={isAd} hasScript={hasScript} />
-            <ScriptPlanHost
-              projectName={projectName}
-              episode={episode}
-              savedInstructions={meta?.script_plan_instructions}
-            />
-            {isAd && <AdScriptHost projectName={projectName} episode={episode} />}
+            <TextTaskFailureNote projectName={projectName} episode={episode} />
             <ShortDramaImportHost projectName={projectName} episode={episode} />
             <ShortDramaGenerateHost projectName={projectName} episode={episode} />
-            <ShortDramaVisualHost projectName={projectName} episode={episode} />
             <PromptAuthoringHost
               projectName={projectName}
               episode={episode}
@@ -345,9 +255,8 @@ export function EpisodePage(props: Omit<Parameters<typeof EpisodePageContent>[0]
   const factorySource = useFactoryEpisodeSource(
     props.projectName, props.episode, !props.demo && Boolean(meta) && props.projectData?.content_mode === "drama",
   );
-  const source = showsEpisodeSource(props.projectData, props.episode, props.script, props.demo, factorySource.exists);
-  const identity = `${props.projectName}:${props.episode}:${!meta ? "missing" : source ? "source" : props.script ? "script" : "draft"}`;
-  const message = !meta ? "episode_externally_removed" : props.script || hasEpisodeDraft(meta) ? "episode_source_replaced" : "episode_script_removed";
+  const identity = `${props.projectName}:${props.episode}:${!meta ? "missing" : props.script ? "script" : "source"}`;
+  const message = !meta ? "episode_externally_removed" : props.script ? "episode_source_replaced" : "episode_script_removed";
   return (
     <RetainedEditUnit identity={identity} value={{ ...props, factorySource }} message={t(message)}>
       {(shown) => <EpisodePageContent {...shown} />}

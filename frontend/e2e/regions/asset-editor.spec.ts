@@ -4,12 +4,11 @@ import { clearAgentOverlay, waitForEntrance } from "../support/region-helpers.ts
 import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
-// 资产详情 Sheet：点浏览卡打开的右侧编辑器，四类资产共用。头部改名与上一个、下一个，正文按类型
+// 资产详情 Sheet：点浏览卡打开的右侧编辑器，三类资产共用。头部改名与上一个、下一个，正文按类型
 // 开关字段区块，底部是未保存修改的内联提示条；「添加」在同一个 Sheet 里打开空白表单。
 // 角色的「衍生」区块逐条列出衍生，每条的外观变化在行内保存。
 
 const CHARACTERS_PATH = "/app/projects/demo/characters";
-const PRODUCTS_PATH = "/app/projects/demo/products";
 
 const LONG_NAME = "旧城茶馆二楼临窗座位上总在午后出现的说书先生";
 const LONG_DESCRIPTION = Array.from(
@@ -38,16 +37,6 @@ const CHARACTERS: Record<string, Asset> = {
   },
   沈砚: { description: "沉默寡言的账房先生，戴一副圆框眼镜。", character_sheet: svg(30) },
   阿岚: { description: "茶馆跑堂的少年，手脚麻利，爱打听消息。" },
-};
-
-const PRODUCTS: Record<string, Asset> = {
-  竹叶青茶: {
-    description: "明前绿茶，扁平挺直的芽叶，冲泡后汤色清亮。",
-    brand: "旧城茶馆",
-    selling_points: ["明前头采", "高山茶园", "独立小罐装"],
-    product_sheet: svg(110),
-    reference_images: [svg(100, 800, 800), svg(120, 800, 800), svg(90, 800, 800)],
-  },
 };
 
 function projectWith(fields: Record<string, unknown>) {
@@ -122,12 +111,6 @@ const DERIVATIVES_API: ApiOverrides = {
   "GET /api/v1/projects/demo/characters/林夕/derivatives": derivativeSheets(MANY_DERIVATIVES, ["外观 3"]),
 };
 
-const PRODUCT_API: ApiOverrides = {
-  ...BASE,
-  "GET /api/v1/projects/demo": projectWith({ products: PRODUCTS }),
-  "GET /api/v1/projects/demo/asset-sheets/status": statusRows("product", Object.keys(PRODUCTS)),
-};
-
 // 压力变体：名字与描述很长、别名很多，项目用参考音频绑定声音。
 const LONG_API: ApiOverrides = {
   ...BASE,
@@ -170,7 +153,7 @@ const STALE_IMPACT_FAILED_API: ApiOverrides = {
 };
 
 async function galleryReady(page: Page) {
-  await expect(page.getByRole("list", { name: /角色|商品/ }).getByRole("article").first()).toBeVisible();
+  await expect(page.getByRole("list", { name: "角色" }).getByRole("article").first()).toBeVisible();
 }
 
 async function openSheet(page: Page, name: string): Promise<Locator> {
@@ -299,17 +282,6 @@ defineRegionScenarios("资产详情 Sheet", [
       await expect(form.getByRole("button", { name: "创建" })).toBeInViewport({ ratio: 1 });
     },
     screenshot: { name: "asset-editor-create", target: (page) => page.getByRole("dialog", { name: "添加角色" }) },
-  },
-  {
-    name: "商品详情：商品原图、品牌与卖点",
-    path: PRODUCTS_PATH,
-    api: PRODUCT_API,
-    ready: galleryReady,
-    act: async (page) => {
-      const sheet = await openSheet(page, "竹叶青茶");
-      await expect(sheet.getByRole("button", { name: /^查看大图：「竹叶青茶」的商品原图/ })).toHaveCount(3);
-      await expect(sheet.getByRole("textbox", { name: "卖点" })).toHaveValue("明前头采\n高山茶园\n独立小罐装");
-    },
   },
   {
     name: "名字与描述很长、别名很多：只有正文滚动，提示条留在底部",

@@ -6,7 +6,7 @@ import pytest
 
 from lib.i18n import SUPPORTED_LOCALES
 from lib.i18n import _ as i18n_message
-from lib.script.script_review import (
+from lib.script.script_revision import (
     FormalScriptOverwrite,
     OverwrittenScriptEntry,
     overwrite_with_text,

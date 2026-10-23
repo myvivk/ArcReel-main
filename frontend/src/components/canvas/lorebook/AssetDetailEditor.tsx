@@ -8,13 +8,12 @@ import { UnsavedChangesBar } from "@/components/shared/edit-unit/UnsavedChangesB
 import { useEditUnit } from "@/components/shared/edit-unit/useEditUnit";
 import { PromptPreviewButton } from "@/components/shared/PromptPreviewButton";
 import { TruncatedText } from "@/components/shared/TruncatedText";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SheetBody, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { useProjectsStore } from "@/stores/projects-store";
 import { DEFAULT_CHARACTER_VOICE_BINDING } from "@/types";
-import type { AssetSheetStatusRow, AssetSheetType, Character, Product } from "@/types";
+import type { AssetSheetStatusRow, AssetSheetType, Character } from "@/types";
 import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { ASSET_TYPE_ICON } from "./AssetBrowseCard";
 import { rejectIfAssetBusy, useAssetBusyNames } from "./assetBusyGuard";
@@ -26,7 +25,6 @@ import {
   assetFieldsEqual,
   assetFieldsOf,
   assetFieldsPatch,
-  normalizeAssetFields,
   updateAssetFields,
   type AssetFields,
 } from "./asset-editor-model";
@@ -43,7 +41,6 @@ const DESCRIPTION_PLACEHOLDER = {
   character: "dashboard:character_desc_placeholder",
   scene: "dashboard:scene_desc_placeholder",
   prop: "dashboard:prop_desc_placeholder",
-  product: "dashboard:product_desc_placeholder",
 } as const satisfies Record<AssetSheetType, string>;
 
 function EditorSection({
@@ -107,8 +104,6 @@ export function AssetDetailEditor({
 }: AssetDetailEditorProps) {
   const { t } = useTranslation(["assets", "dashboard", "common"]);
   const descriptionId = useId();
-  const brandId = useId();
-  const sellingPointsId = useId();
   const [viewingSheet, setViewingSheet] = useState(false);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const [filling, setFilling] = useState(false);
@@ -124,7 +119,7 @@ export function AssetDetailEditor({
     async (value: AssetFields, saved: AssetFields) => {
       await updateAssetFields(projectName, assetType, name, assetFieldsPatch(assetType, value, saved));
       await refreshAfterWrite(projectName, t);
-      return normalizeAssetFields(value);
+      return value;
     },
     [projectName, assetType, name, t],
   );
@@ -201,13 +196,8 @@ export function AssetDetailEditor({
       : t("dashboard:generate_design");
   const describable = hasUsableDescription(value.description);
   const character = assetType === "character" ? (asset as Character) : null;
-  const product = assetType === "product" ? (asset as Product) : null;
   const aliases = "aliases" in asset ? (asset.aliases ?? []) : [];
-  const originals = character
-    ? character.reference_image
-      ? [character.reference_image]
-      : []
-    : (product?.reference_images ?? []);
+  const originals = character?.reference_image ? [character.reference_image] : [];
 
   return (
     <AssetWriteProvider value={writes.track}>
@@ -290,12 +280,12 @@ export function AssetDetailEditor({
 
           {readOnly && originals.length === 0
             ? null
-            : (character || product) && (
-                <EditorSection title={product ? t("dashboard:product_reference_images") : t("assets:original_section")}>
+            : character && (
+                <EditorSection title={t("assets:original_section")}>
                   <AssetOriginalsField
                     projectName={projectName}
                     name={name}
-                    assetType={product ? "product" : "character"}
+                    assetType="character"
                     paths={originals}
                     readOnly={readOnly}
                     busy={busy}
@@ -329,30 +319,6 @@ export function AssetDetailEditor({
             />
           </EditorSection>
 
-          {product && (
-            <>
-              <EditorSection title={t("dashboard:product_brand_label")} htmlFor={brandId}>
-                <Input
-                  id={brandId}
-                  value={value.brand}
-                  readOnly={readOnly}
-                  onChange={(e) => setField("brand", e.target.value)}
-                  placeholder={t("dashboard:product_brand_placeholder")}
-                />
-              </EditorSection>
-              <EditorSection title={t("dashboard:product_selling_points_label")} htmlFor={sellingPointsId}>
-                <Textarea
-                  id={sellingPointsId}
-                  value={value.sellingPoints}
-                  readOnly={readOnly}
-                  onChange={(e) => setField("sellingPoints", e.target.value)}
-                  rows={3}
-                  placeholder={t("dashboard:product_selling_points_placeholder")}
-                />
-              </EditorSection>
-            </>
-          )}
-
           {character && (
             <EditorSection title={t("dashboard:voice_section")}>
               <CharacterVoiceField
@@ -368,7 +334,7 @@ export function AssetDetailEditor({
             </EditorSection>
           )}
 
-          {assetType !== "product" && !(readOnly && aliases.length === 0) && (
+          {!(readOnly && aliases.length === 0) && (
             <EditorSection title={t("assets:aliases_label")}>
               <AssetAliasesField
                 projectName={projectName}

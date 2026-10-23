@@ -12,7 +12,12 @@ import pytest
 from PIL import Image
 
 from lib.artifacts.artifact_activation import active_artifact_currency_resolver
-from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactStatus, ProjectArtifactManifestAdapter
+from lib.artifacts.artifact_manifest import (
+    ArtifactKey,
+    ArtifactManifest,
+    ArtifactStatus,
+    ProjectArtifactManifestAdapter,
+)
 from lib.artifacts.visual_artifact_provenance import VisualReference, build_storyboard_image_visual_basis
 from lib.backends.image_backends.grok import GrokImageBackend
 from lib.backends.image_backends.vidu import ViduImageBackend
@@ -75,7 +80,7 @@ def _expected_basis(project_path: Path, pm: _FakePM):
     )
     return build_storyboard_image_visual_basis(
         resource_id=ITEM_ID,
-        image_prompt=pm.script["segments"][1]["image_prompt"],
+        image_prompt=pm.script["scenes"][1]["image_prompt"],
         style="Anime",
         style_description="cinematic",
         aspect_ratio="9:16",
@@ -115,7 +120,7 @@ class TestStoryboardReferenceClamping:
         assert entry is not None
         assert entry.basis_digest == _expected_basis(project_path, pm).digest
         assert call["prompt"] == CLAMPED_PROMPT
-        # 丢弃了输入的参考图必须让用户与 Agent 感知：任务结果带与参考生视频路线同形的 warning
+        # 丢弃输入的参考图时，任务结果向用户与 Agent 提供数量提示
         assert result["warnings"] == [
             {"key": "ref_too_many_images", "params": {"count": 8, "model": FAKE_BACKEND_MODEL, "max_count": 7}}
         ]
@@ -130,7 +135,7 @@ class TestStoryboardReferenceClamping:
         await _run_storyboard(generator)
 
         # 替身 PM 不把分镜图指针写回磁盘剧本：按正式提交后的形态持久化，规划器才有条目可重建
-        pm.script["segments"][1]["generated_assets"] = {"storyboard_image": f"storyboards/scene_{ITEM_ID}.png"}
+        pm.script["scenes"][1]["generated_assets"] = {"storyboard_image": f"storyboards/scene_{ITEM_ID}.png"}
         persist_active_fake_project(pm, register_script=False)
         resolver = active_artifact_currency_resolver(project_path, pm.load_project("demo"))
         comparison = resolver.compare(
@@ -173,7 +178,7 @@ class TestStoryboardReferenceClamping:
         _patch_execution(monkeypatch, pm, generator, limit=7)
         hook_claim_recheck(
             monkeypatch,
-            before=lambda: ProjectArtifactManifestAdapter(project_path).delete_entry(
+            before=lambda: ArtifactManifest(ProjectArtifactManifestAdapter(project_path)).forget(
                 ArtifactKey.asset_sheet("prop", "玉佩")
             ),
         )
@@ -191,7 +196,7 @@ class TestStoryboardReferenceClamping:
         _patch_execution(monkeypatch, pm, generator, limit=7)
         hook_claim_recheck(
             monkeypatch,
-            before=lambda: ProjectArtifactManifestAdapter(project_path).delete_entry(
+            before=lambda: ArtifactManifest(ProjectArtifactManifestAdapter(project_path)).forget(
                 ArtifactKey.asset_sheet("scene", "祠堂")
             ),
         )

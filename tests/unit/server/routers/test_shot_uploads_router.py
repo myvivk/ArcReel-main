@@ -15,11 +15,12 @@ from lib.project.project_change_hints import get_project_change_source
 from lib.project.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
-from server.routers import reference_videos, shot_uploads
+from server.routers import shot_uploads
 from server.routers import versions as versions_router
 from server.services.currency import upload_finalize
-from server.services.tasks import formal_image_commit, generation_tasks, reference_video_tasks
+from server.services.tasks import formal_image_commit, generation_tasks
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _img_bytes(fmt="JPEG", size=(8, 8)):
@@ -32,7 +33,7 @@ def _img_bytes(fmt="JPEG", size=(8, 8)):
 def _seed_shot_project(tmp_path) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script(
         "demo",
         {
@@ -430,200 +431,3 @@ class TestSaveUploadedVideoStream:
 
 
 # ==================== 参考单元视频上传 ====================
-
-
-def _seed_reference_project(tmp_path) -> ProjectManager:
-    pm = ProjectManager(tmp_path / "projects")
-    pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
-    project = pm.load_project("demo")
-    project["generation_mode"] = "reference_video"
-    project["episodes"] = [{"episode": 1, "title": "E1", "script_file": "scripts/episode_1.json"}]
-    pm.save_project("demo", project)
-    pm.save_script(
-        "demo",
-        {
-            "episode": 1,
-            "title": "E1",
-            "content_mode": "narration",
-            "generation_mode": "reference_video",
-            "video_units": [
-                {
-                    "unit_id": "E1U1",
-                    "shots": [{"text": "t"}],
-                    "references": [],
-                    "duration_seconds": 4,
-                    "generated_assets": {
-                        "video_clip": None,
-                        "video_uri": "https://stale",
-                        "status": "pending",
-                    },
-                }
-            ],
-        },
-        "episode_1.json",
-        validate=False,
-    )
-    return pm
-
-
-def _ref_client(monkeypatch, tmp_path):
-    pm = _seed_reference_project(tmp_path)
-    monkeypatch.setattr(reference_videos, "get_project_manager", lambda: pm)
-    monkeypatch.setattr(reference_video_tasks, "get_project_manager", lambda: pm)
-    monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: pm)
-
-    async def _fake_thumbnail(video_path: Path, thumbnail_path: Path):
-        thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
-        thumbnail_path.write_bytes(b"jpg")  # noqa: ASYNC240 -- 测试内本地小文件读写/断言，不在生产事件循环上
-        return thumbnail_path
-
-    monkeypatch.setattr(upload_finalize, "extract_video_thumbnail", _fake_thumbnail)
-
-    app = FastAPI()
-    register_error_handlers(app)
-    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
-    app.include_router(reference_videos.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
-    return TestClient(app), pm
-
-
-def _upload_unit(client, unit_id="E1U1", filename="clip.mp4", content=b"\x00" * 256, episode=1):
-    return client.post(
-        f"/api/v1/projects/demo/reference-videos/episodes/{episode}/units/{unit_id}/upload-video",
-        files={"file": (filename, BytesIO(content), "application/octet-stream")},
-    )
-
-
-class TestReferenceUnitVideoUpload:
-    def test_claim_registration_failure_restores_every_formal_video_file(self, tmp_path, monkeypatch):
-        client, pm = _ref_client(monkeypatch, tmp_path)
-        project_path = pm.get_project_path("demo")
-        video = project_path / "reference_videos" / "E1U1.mp4"
-        video.parent.mkdir(parents=True, exist_ok=True)
-        video.write_bytes(b"old-video")
-        thumbnail = project_path / "reference_videos" / "thumbnails" / "E1U1.jpg"
-        thumbnail.parent.mkdir(parents=True, exist_ok=True)
-        thumbnail.write_bytes(b"old-thumbnail")
-        with pm.locked_script("demo", "episode_1.json", validate=False) as script:
-            reference_video_tasks.apply_unit_video_assets(
-                script,
-                "E1U1",
-                video_uri=None,
-                thumb_rel="reference_videos/thumbnails/E1U1.jpg",
-            )
-        manager = VersionManager(project_path)
-        manager.add_version("reference_videos", "E1U1", "old", source_file=video)
-        script_path = project_path / "scripts" / "episode_1.json"
-        project_file = project_path / "project.json"
-        before = {
-            video: video.read_bytes(),
-            thumbnail: thumbnail.read_bytes(),
-            script_path: script_path.read_bytes(),
-            project_file: project_file.read_bytes(),
-            manager.versions_file: manager.versions_file.read_bytes(),
-        }
-        version_dir = project_path / "versions" / "reference_videos"
-        before_version_copies = {path.name: path.read_bytes() for path in version_dir.glob("*") if path.is_file()}
-
-        def _fail_claim_registration(*_args, **_kwargs):
-            raise RuntimeError("claim registration failed")
-
-        monkeypatch.setattr(upload_finalize, "register_current_resource_artifact", _fail_claim_registration)
-
-        with client:
-            response = _upload_unit(client, content=b"new-video")
-
-        assert response.status_code == 500
-        assert all(path.read_bytes() == content for path, content in before.items())
-        assert {
-            path.name: path.read_bytes() for path in version_dir.glob("*") if path.is_file()
-        } == before_version_copies
-        assert not list(video.parent.glob(".*.tmp*"))
-        assert not list(thumbnail.parent.glob(".*.tmp*"))
-
-    def test_upload_finalizes_unit(self, tmp_path, monkeypatch):
-        client, pm = _ref_client(monkeypatch, tmp_path)
-        with client:
-            resp = _upload_unit(client)
-            assert resp.status_code == 200, resp.text
-            body = resp.json()
-            assert body["path"] == "reference_videos/E1U1.mp4"
-            assert body["version"] == 1
-            assert "reference_videos/E1U1.mp4" in body["asset_fingerprints"]
-
-        ga = pm.load_script("demo", "episode_1.json")["video_units"][0]["generated_assets"]
-        assert ga["video_clip"] == "reference_videos/E1U1.mp4"
-        # 上传替换后旧 provider URI 不再对应本地文件，finalize 应清空
-        assert "video_uri" not in ga
-        assert ga["video_thumbnail"] == "reference_videos/thumbnails/E1U1.jpg"
-        assert ga["status"] == "completed"
-
-        vm = VersionManager(pm.get_project_path("demo"))
-        info = vm.get_versions("reference_videos", "E1U1")
-        assert info["current_version"] == 1
-        assert info["versions"][0]["source"] == "manual_upload"
-
-    def test_unit_not_found_404(self, tmp_path, monkeypatch):
-        client, _ = _ref_client(monkeypatch, tmp_path)
-        with client:
-            resp = _upload_unit(client, unit_id="E1U9")
-            assert resp.status_code == 404
-
-    def test_non_reference_mode_409(self, tmp_path, monkeypatch):
-        client, pm = _ref_client(monkeypatch, tmp_path)
-        project = pm.load_project("demo")
-        project["generation_mode"] = "storyboard"
-        pm.save_project("demo", project)
-        with client:
-            resp = _upload_unit(client)
-            assert resp.status_code == 409
-
-    def test_bad_extension_rejected(self, tmp_path, monkeypatch):
-        client, _ = _ref_client(monkeypatch, tmp_path)
-        with client:
-            resp = _upload_unit(client, filename="clip.avi")
-            assert resp.status_code == 400
-
-    def test_missing_project_404(self, tmp_path, monkeypatch):
-        """项目不存在 → 404，不退化成 500。
-
-        _load_episode_script 抛出的 NotFoundError 不是 HTTPException 子类，
-        端点的 except 阶梯必须同时放行 ApiError，否则被兜底分支吞成 500。
-        """
-        client, _ = _ref_client(monkeypatch, tmp_path)
-        with client:
-            resp = client.post(
-                "/api/v1/projects/nope/reference-videos/episodes/1/units/E1U1/upload-video",
-                files={"file": ("clip.mp4", BytesIO(b"\x00" * 256), "application/octet-stream")},
-            )
-            assert resp.status_code == 404
-            assert resp.json()["detail"] == zh_errors.MESSAGES["project_not_found"].format(name="nope")
-
-    def test_stale_script_binding_404(self, tmp_path, monkeypatch):
-        """project.json 指向的剧本文件已丢失（stale 绑定）→ 404 而非 500。"""
-        client, pm = _ref_client(monkeypatch, tmp_path)
-        project = pm.load_project("demo")
-        project["episodes"][0]["script_file"] = "scripts/gone.json"
-        pm.save_project("demo", project)
-        with client:
-            resp = _upload_unit(client)
-            assert resp.status_code == 404
-            assert resp.json()["detail"] == zh_errors.MESSAGES["script_not_found"].format(name="scripts/gone.json")
-
-    def test_emit_uses_webui_source(self, tmp_path, monkeypatch):
-        """emit 在 project_change_source("webui") 上下文内被调用（SSE source 由 contextvar 决定）。"""
-        client, _ = _ref_client(monkeypatch, tmp_path)
-        calls: list[dict] = []
-
-        def _fake_emit(**kw):
-            calls.append({**kw, "resolved_source": get_project_change_source()})
-            return {}
-
-        monkeypatch.setattr(reference_videos, "emit_generation_success_batch", _fake_emit)
-        with client:
-            resp = _upload_unit(client)
-            assert resp.status_code == 200
-
-        assert len(calls) == 1
-        assert calls[0]["resolved_source"] == "webui"
-        assert calls[0]["task_type"] == "reference_video"

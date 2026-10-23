@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import itertools
 import json
 import re
@@ -25,7 +24,7 @@ from lib.infra.async_thread import run_sync_transaction
 from lib.infra.content_digest import canonical_json_digest
 from lib.infra.json_io import atomic_write_json
 from lib.infra.text_utils import strip_json_code_fences
-from lib.project.asset_types import register_missing_assets, resolve_asset_key
+from lib.project.asset_types import resolve_asset_key
 from lib.project.project_manager import ProjectManager, ScriptWriteConflict
 from lib.script.script_models import DramaEpisodeScript
 from lib.script.short_drama_import import (
@@ -33,16 +32,13 @@ from lib.script.short_drama_import import (
     ParsedEpisode,
     beat_catalog,
     convert_planned_scenes,
-    convert_to_drama_script,
     parse_short_drama_episode,
-    referenced_asset_descriptions,
-    referenced_asset_names,
     scene_beat_groups,
 )
 from lib.script.short_drama_source import (
     ShortDramaSourceConflict,
     load_short_drama_source,
-    replace_short_drama_source,
+    short_drama_source_relative_path,
 )
 
 
@@ -507,15 +503,12 @@ class ShortDramaImportResult:
     scenes: int
     source_path: str
     source_revision: str
-    registered_assets: dict[str, list[str]]
-    asset_conflicts: list[dict[str, str]]
-    assets_without_description: list[dict[str, str]]
     declared_seconds: int | None = None
     actual_seconds: int | None = None
     duration_shortfall: bool | None = None
     planning_strength: int = 2
     planning_cached: bool = False
-    ai_authoring: bool = False
+    ai_authoring: bool = True
     #: 本次按分镜重写（部分重生成）的分镜数；整体分镜为 None。
     regenerated_scenes: int | None = None
 
@@ -531,12 +524,6 @@ class ShortDramaImportResult:
         }
         if self.regenerated_scenes is not None:
             result["regenerated_scenes"] = self.regenerated_scenes
-        if self.registered_assets:
-            result["registered_assets"] = self.registered_assets
-        if self.asset_conflicts:
-            result["asset_conflicts"] = self.asset_conflicts
-        if self.assets_without_description:
-            result["assets_without_description"] = self.assets_without_description
         if self.declared_seconds is not None:
             result.update(
                 declared_seconds=self.declared_seconds,
@@ -547,8 +534,8 @@ class ShortDramaImportResult:
 
 
 def _require_episode(project: dict[str, Any], episode: int) -> None:
-    if project.get("content_mode") != "drama":
-        raise ShortDramaWorkflowError("invalid_request", "短剧工厂导入仅适用于剧情演绎（drama）项目")
+    if project.get("content_mode") != "drama" or project.get("generation_mode", "storyboard") != "storyboard":
+        raise ShortDramaWorkflowError("invalid_request", "AI 分镜仅适用于短剧工厂制作路线")
     episodes = project.get("episodes")
     if not isinstance(episodes, list) or not any(
         isinstance(entry, dict) and entry.get("episode") == episode for entry in episodes
@@ -695,19 +682,13 @@ async def import_short_drama_episode(
     episode: int,
     markdown: str,
     projects: ProjectManager,
-    save_source: bool = True,
-    expected_source_revision: str | None = None,
-    confirm_artifacts: bool = True,
+    expected_source_revision: str,
+    confirm_artifacts: bool = False,
     planning_strength: int = 2,
-    ai_planning: bool = False,
     force_regenerate: bool = False,
     regenerate_scene_ids: Sequence[str] = (),
 ) -> ShortDramaImportResult:
-    """解析源稿并提交视觉制作状态；Web 与兼容导入入口共用此命令。
-
-    ``ai_planning`` 是显式的选择加入开关：只有分镜页「AI 分镜」才置 True 走文本模型，
-    旧单集/批量导入的兼容路径保持机械切分、不调用模型。工厂交稿直接保存 Markdown 工件，
-    不调用此命令。
+    """从已入库的工厂源稿生成 AI 分镜，不写入正文或登记资产。
 
     ``regenerate_scene_ids`` 非空时走「按分镜重写」：beat 分组与未选中分镜一律不动，
     只让 AI 重写选中分镜的画面描述与提示词——已生成的媒体与手动编辑因此不会丢。
@@ -721,11 +702,10 @@ async def import_short_drama_episode(
     _require_episode(project, episode)
 
     current_source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
-    if not save_source:
-        if current_source is None:
-            raise ShortDramaWorkflowError("short_drama_source_missing", "本集没有已保存的 Markdown 源稿")
-        if current_source.revision != expected_source_revision or current_source.markdown != markdown:
-            raise ShortDramaWorkflowError("short_drama_source_conflict", "Markdown 源稿已更新，请刷新后重试")
+    if current_source is None or current_source.path != short_drama_source_relative_path(episode):
+        raise ShortDramaWorkflowError("short_drama_source_missing", "请先通过工件入库提交本集 Markdown 源稿")
+    if current_source.revision != expected_source_revision or current_source.markdown != markdown:
+        raise ShortDramaWorkflowError("short_drama_source_conflict", "Markdown 源稿已更新，请刷新后重试")
 
     if not confirm_artifacts:
         entry = next(item for item in project["episodes"] if item.get("episode") == episode)
@@ -750,25 +730,21 @@ async def import_short_drama_episode(
             raise ShortDramaWorkflowError("invalid_request", "planning_strength 必须是 1 到 3 的整数")
         parsed = parse_short_drama_episode(markdown)
         beats = beat_catalog(parsed)
-        if ai_planning:
-            if not beats:
-                raise ShortDramaWorkflowError("short_drama_ai_planning_failed", "源稿没有可分镜的动作或台词")
-            missing_assets = assets_missing_description(project, markdown)
-            if missing_assets:
-                raise ShortDramaWorkflowError(
-                    "short_drama_assets_not_ready",
-                    "请先完成资产步骤，以下资产尚未登记或缺少描述："
-                    + "、".join(item["name"] for item in missing_assets),
-                )
+        if not beats:
+            raise ShortDramaWorkflowError("short_drama_ai_planning_failed", "源稿没有可分镜的动作或台词")
+        missing_assets = assets_missing_description(project, markdown)
+        if missing_assets:
+            raise ShortDramaWorkflowError(
+                "short_drama_assets_not_ready",
+                "请先完成资产步骤，以下资产尚未登记或缺少描述：" + "、".join(item["name"] for item in missing_assets),
+            )
         assets = _asset_context(project, parsed)
         existing = await asyncio.to_thread(_load_current_script, projects, project_name, episode)
         existing_meta = existing.get("short_drama_meta") if existing else None
         options = existing_meta.get("ai_storyboard_options") if isinstance(existing_meta, dict) else None
         preserve_current = (
-            ai_planning
-            and not force_regenerate
+            not force_regenerate
             and not regenerate_scene_ids
-            and current_source is not None
             and isinstance(existing_meta, dict)
             and isinstance(options, dict)
             and existing_meta.get("source_revision") == current_source.revision
@@ -791,51 +767,37 @@ async def import_short_drama_episode(
                 regenerate_scene_ids=regenerate_scene_ids,
             )
         else:
-            if ai_planning and beats:
-                source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
-                revision_key = (
-                    source.revision if source is not None else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-                )
-                cache_path = (
-                    projects.get_project_path(project_name)
-                    / "drafts"
-                    / f"short_drama_plan_{_PLAN_CACHE_VERSION}_e{episode}_{revision_key}_s{planning_strength}.json"
-                )
-                if not force_regenerate:
-                    plan = await asyncio.to_thread(_read_cached_plan, cache_path, beats, assets)
-                    cached = plan is not None
-                if plan is None:
-                    try:
-                        plan = await _request_plan(
-                            project_name=project_name,
-                            beats=beats,
-                            assets=assets,
-                            planning_strength=planning_strength,
-                        )
-                    except _PlanRejected as exc:
-                        # 无机械回落：返修穷尽仍不合格就报错，绝不把骨架提示词当 AI 分镜交付。
-                        raise ShortDramaWorkflowError("short_drama_ai_planning_failed", str(exc)) from exc
-                    except Exception as exc:
-                        raise ShortDramaWorkflowError(
-                            "short_drama_ai_planning_failed", f"AI 分镜规划失败: {exc}"
-                        ) from exc
-                    else:
-                        await run_sync_transaction(_write_cached_plan, cache_path, plan)
+            cache_path = (
+                projects.get_project_path(project_name)
+                / "drafts"
+                / f"short_drama_plan_{_PLAN_CACHE_VERSION}_e{episode}_{current_source.revision}_s{planning_strength}.json"
+            )
+            if not force_regenerate:
+                plan = await asyncio.to_thread(_read_cached_plan, cache_path, beats, assets)
+                cached = plan is not None
             if plan is None:
-                if ai_planning:
-                    raise ShortDramaWorkflowError("short_drama_ai_planning_failed", "AI 分镜未返回可用规划")
-                script = convert_to_drama_script(parsed, episode, scene_window=STORY_SCENE_WINDOW_SECONDS)
-            else:
-                script = convert_planned_scenes(
-                    parsed,
-                    episode,
-                    [scene.beat_ids for scene in plan.scenes],
-                    [scene.duration_seconds for scene in plan.scenes],
-                    [scene.scene_description for scene in plan.scenes],
-                    [scene.image_prompt for scene in plan.scenes],
-                )
-                for scene, planned in zip(script["scenes"], plan.scenes, strict=True):
-                    scene["segment_break"] = planned.segment_break
+                try:
+                    plan = await _request_plan(
+                        project_name=project_name,
+                        beats=beats,
+                        assets=assets,
+                        planning_strength=planning_strength,
+                    )
+                except _PlanRejected as exc:
+                    raise ShortDramaWorkflowError("short_drama_ai_planning_failed", str(exc)) from exc
+                except Exception as exc:
+                    raise ShortDramaWorkflowError("short_drama_ai_planning_failed", f"AI 分镜规划失败: {exc}") from exc
+                await run_sync_transaction(_write_cached_plan, cache_path, plan)
+            script = convert_planned_scenes(
+                parsed,
+                episode,
+                [scene.beat_ids for scene in plan.scenes],
+                [scene.duration_seconds for scene in plan.scenes],
+                [scene.scene_description for scene in plan.scenes],
+                [scene.image_prompt for scene in plan.scenes],
+            )
+            for scene, planned in zip(script["scenes"], plan.scenes, strict=True):
+                scene["segment_break"] = planned.segment_break
         core = {key: value for key, value in script.items() if key != "short_drama_meta"}
         DramaEpisodeScript.model_validate(core)
     except ShortDramaWorkflowError:
@@ -843,81 +805,33 @@ async def import_short_drama_episode(
     except Exception as exc:
         raise ShortDramaWorkflowError("short_drama_parse_failed", f"Markdown 解析失败: {exc}") from exc
 
-    if save_source:
-        source = await run_sync_transaction(
-            replace_short_drama_source,
-            projects,
-            project_name,
-            episode,
-            markdown,
-        )
-    else:
-        source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
-        if source is None:
-            raise ShortDramaWorkflowError("short_drama_source_missing", "本集没有已保存的 Markdown 源稿")
-        if source.revision != expected_source_revision:
-            raise ShortDramaWorkflowError(
-                "short_drama_source_conflict",
-                "Markdown 源稿已被其他修改更新，请刷新后重试",
-            )
-        if source.markdown != markdown:
-            raise ShortDramaWorkflowError(
-                "short_drama_source_conflict",
-                "本次导入内容与已保存的 Markdown 源稿不一致",
-            )
+    source = await asyncio.to_thread(load_short_drama_source, projects, project_name, episode)
+    if source is None or source.revision != expected_source_revision or source.markdown != markdown:
+        raise ShortDramaWorkflowError("short_drama_source_conflict", "Markdown 源稿已更新，请刷新后重试")
 
     meta = script.setdefault("short_drama_meta", {})
     meta["source_path"] = source.path
     meta["source_revision"] = source.revision
     meta["ai_storyboard_options"] = {
-        # 两态可分辨：AI 分镜成功（smart，含按分镜重写）/ 兼容导入的机械骨架（fast，非用户可选）。
-        "mode": "fast" if not ai_planning else "smart",
+        "mode": "smart",
         "strength": planning_strength,
         "force_regenerate": force_regenerate,
     }
     if regenerate_scene_ids:
         meta["ai_storyboard_options"]["regenerated_scene_ids"] = list(regenerate_scene_ids)
-    names = referenced_asset_names(script)
-    descriptions = referenced_asset_descriptions(parsed)
-    registered: dict[str, list[str]] = {}
-    conflicts: list[dict[str, str]] = []
-    assets_without_description: list[dict[str, str]] = []
 
     def _update_project(current_project: dict[str, Any]) -> None:
+        _require_episode(current_project, episode)
         current_source = load_short_drama_source(projects, project_name, episode)
         if current_source is None or current_source.revision != source.revision:
             raise ShortDramaSourceConflict("short drama source changed during script commit")
-        if ai_planning:
-            # 资产在模型调用期间可能被删除或清空，提交时在项目锁内再次复核。
-            missing = assets_missing_description(current_project, markdown)
-            if missing:
-                raise ShortDramaWorkflowError(
-                    "short_drama_assets_not_ready",
-                    "请先完成资产步骤：" + "、".join(item["name"] for item in missing),
-                )
-            return
-        new_assets, new_conflicts = register_missing_assets(
-            current_project,
-            names,
-            descriptions_by_type=descriptions,
-        )
-        registered.update(new_assets)
-        conflicts.extend(new_conflicts)
-        for asset_type, bucket_name in (
-            ("character", "characters"),
-            ("scene", "scenes"),
-            ("prop", "props"),
-        ):
-            for name in names.get(asset_type, []):
-                entry = (current_project.get(bucket_name) or {}).get(name) or {}
-                if not str(entry.get("description") or "").strip():
-                    assets_without_description.append(
-                        {
-                            "type": asset_type,
-                            "name": name,
-                            "reason": "source_missing" if name in new_assets.get(asset_type, []) else "existing_blank",
-                        }
-                    )
+        # 模型调用期间资产可能被删除或清空，提交时在项目锁内复核。
+        missing = assets_missing_description(current_project, markdown)
+        if missing:
+            raise ShortDramaWorkflowError(
+                "short_drama_assets_not_ready",
+                "请先完成资产步骤：" + "、".join(item["name"] for item in missing),
+            )
 
     try:
         await run_sync_transaction(
@@ -950,15 +864,11 @@ async def import_short_drama_episode(
         scenes=len(script["scenes"]),
         source_path=source.path,
         source_revision=source.revision,
-        registered_assets=registered,
-        asset_conflicts=conflicts,
-        assets_without_description=assets_without_description,
         declared_seconds=declared if declared and actual != declared else None,
         actual_seconds=actual if declared and actual != declared else None,
         duration_shortfall=actual < declared if declared and actual != declared else None,
         planning_strength=planning_strength,
         planning_cached=cached,
-        ai_authoring=ai_planning and (plan is not None or regenerated is not None or cached),
         regenerated_scenes=regenerated,
     )
 

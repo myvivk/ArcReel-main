@@ -18,7 +18,6 @@ const DESCRIPTION_PLACEHOLDER = {
   character: "dashboard:character_desc_placeholder",
   scene: "dashboard:scene_desc_placeholder",
   prop: "dashboard:prop_desc_placeholder",
-  product: "dashboard:product_desc_placeholder",
 } as const satisfies Record<AssetSheetType, string>;
 
 /**
@@ -44,8 +43,6 @@ export function AssetCreateForm({
   const nameId = useId();
   const descriptionId = useId();
   const voiceStyleId = useId();
-  const brandId = useId();
-  const sellingPointsId = useId();
 
   const save = useCallback(
     async (fields: NewAssetFields) => {
@@ -115,31 +112,6 @@ export function AssetCreateForm({
                 placeholder={t("dashboard:voice_style_example")}
               />
             </div>
-          )}
-          {assetType === "product" && (
-            <>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={brandId}>{t("dashboard:product_brand_label")}</Label>
-                <Input
-                  id={brandId}
-                  value={value.brand}
-                  onChange={(e) => setField("brand", e.target.value)}
-                  disabled={submitting}
-                  placeholder={t("dashboard:product_brand_placeholder")}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={sellingPointsId}>{t("dashboard:product_selling_points_label")}</Label>
-                <Textarea
-                  id={sellingPointsId}
-                  value={value.sellingPoints}
-                  onChange={(e) => setField("sellingPoints", e.target.value)}
-                  disabled={submitting}
-                  rows={3}
-                  placeholder={t("dashboard:product_selling_points_placeholder")}
-                />
-              </div>
-            </>
           )}
           <p className="text-sm text-muted-foreground">{t(`assets:create_more_hint.${assetType}`)}</p>
         </div>

@@ -30,6 +30,7 @@ from server.routers import end_frames
 from server.services.currency import upload_finalize
 from server.services.project import end_frame as end_frame_service
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 END_FRAME_REL = "end_frames/scene_E1S01.png"
 
@@ -75,7 +76,7 @@ def _img_bytes(fmt="JPEG", size=(8, 8), color=(255, 0, 0)):
 def _seed_project(tmp_path, hooks: _ScriptIOHooks) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects", script_reader=hooks.reader, script_writer=hooks.writer)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script(
         "demo",
         {

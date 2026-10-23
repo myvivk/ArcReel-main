@@ -20,6 +20,7 @@ from server.services.tasks import formal_image_commit, generation_tasks
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.integration.server.derivative_sheet_support import solid_png_bytes
 from tests.integration.server.services.tasks.generation_tasks_support import fake_resolve_ctx
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _KEY = ArtifactKey.asset_sheet("character", "Alice")
 
@@ -27,7 +28,7 @@ _KEY = ArtifactKey.asset_sheet("character", "Alice")
 def _client(monkeypatch, tmp_path: Path, *, description: str) -> tuple[TestClient, ProjectManager, Path]:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.add_character("demo", "Alice", description)
     monkeypatch.setattr(files, "get_project_manager", lambda: pm)
 

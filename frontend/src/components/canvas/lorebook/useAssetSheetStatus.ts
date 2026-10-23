@@ -18,8 +18,7 @@ export function useAssetSheetStatus(projectName: string, enabled = true): AssetS
     useActiveResourceIds("character", projectName).size +
     useActiveResourceIds("character_derivative", projectName).size +
     useActiveResourceIds("scene", projectName).size +
-    useActiveResourceIds("prop", projectName).size +
-    useActiveResourceIds("product", projectName).size;
+    useActiveResourceIds("prop", projectName).size;
 
   useEffect(() => {
     if (!enabled || !projectName) return;

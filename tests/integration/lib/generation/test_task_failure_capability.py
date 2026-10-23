@@ -38,7 +38,6 @@ from lib.generation.video_request_facts import VideoRequestFactsError, VideoRequ
 from lib.i18n import MESSAGES
 from lib.i18n import _ as i18n_translate
 from lib.references.reference_compression import ReferencePayloadFloorError
-from lib.script.reference_video.request_projection import ProjectionProblem, ReferenceProjectionBlockedError
 from tests.factories import make_display_names
 
 # AST 守卫扫的是真实源码树、渲染断言用的是真实 i18n 目录，不 mock 任何被测入口。
@@ -432,41 +431,6 @@ def test_projection_failure_codes_are_machine_encodable_in_all_locales(code: str
         assert code in MESSAGES[locale], f"{locale} 缺少 {code}"
 
 
-@pytest.mark.parametrize(
-    ("problem", "expected_params"),
-    [
-        (
-            ProjectionProblem(
-                code="reference_supported_durations_invalid",
-                blocking=True,
-                params=(("provider", "fake"), ("model", "bad-model")),
-            ),
-            {"provider": "fake", "model": "bad-model"},
-        ),
-        (
-            ProjectionProblem(
-                code="reference_asset_missing",
-                blocking=True,
-                params=(
-                    ("missing", (("character", "张三"),)),
-                    ("missing_text", "character: 张三"),
-                ),
-            ),
-            {
-                "missing": (("character", "张三"),),
-                "missing_text": "character: 张三",
-            },
-        ),
-    ],
-)
-def test_projection_failure_preserves_canonical_code_and_params_for_localized_tasks(
-    problem: ProjectionProblem, expected_params: dict[str, object]
-):
-    stored = encode_task_failure_message(ReferenceProjectionBlockedError(problem))
-    assert json.loads(stored.split("] ", 1)[1]) == json.loads(json.dumps(expected_params, ensure_ascii=False))
-    for locale in ("zh", "en", "vi"):
-        expected = MESSAGES[locale][problem.code].format(**make_display_names(locale).apply(expected_params))
-        assert render_failure(stored, _translator(locale), make_display_names(locale)) == expected
 
 
 @pytest.mark.parametrize("code", sorted(VIDEO_REQUEST_FACTS_FAILURE_CODES))

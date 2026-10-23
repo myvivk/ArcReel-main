@@ -11,14 +11,13 @@ import type {
   ProjectDeletedPayload,
   ProjectEventSnapshotPayload,
 } from "@/types";
-import type { GenerationRoute } from "@/utils/generation-mode";
 import type { SseStreamError } from "@/utils/sse-stream";
 
 /** 项目内四类资产（与后端 ASSET_SPECS 的 asset_type 对齐）。 */
-export type ProjectAssetType = "character" | "scene" | "prop" | "product";
+export type ProjectAssetType = "character" | "scene" | "prop";
 
 /** 可以合并的资产类型：带别名的类型，商品不开放（与后端 MERGEABLE_ASSET_TYPES 对齐）。 */
-export type MergeableAssetType = Exclude<ProjectAssetType, "product">;
+export type MergeableAssetType = ProjectAssetType;
 
 /** 资产级联重命名的影响报告（dry_run 预览与执行同一结构）。 */
 export interface AssetRenameResult {
@@ -195,21 +194,15 @@ export interface AgentProfileStatus {
 export interface CreateProjectPayload {
   title: string;
   name?: string;
-  content_mode?: "narration" | "drama" | "ad";
+  content_mode?: "drama";
   aspect_ratio?: "9:16" | "16:9";
-  /** 生成模式，创建时必填二选一、无默认值（后端缺失即 422）。 */
-  generation_mode: GenerationRoute;
-  /** 多宫格分镜装配开关，可随创建写入；仅分镜图生视频有意义。 */
-  grid_storyboard?: boolean;
+  generation_mode?: "storyboard";
   /** 口播语速估算（阅读单位 / 秒）；留空即按项目语言的默认速度估算。 */
   speech_rate_units_per_second?: number | null;
   default_duration?: number | null;
-  /** 单集目标时长（秒）；未设即不传。ad 项目服务端拒绝该字段。 */
+  /** 单集目标时长（秒）；未设即不传。 */
   episode_target_duration?: number | null;
-  /** 仅 ad：目标总时长（秒），UI 四档 15/30/60/90。 */
-  target_duration?: number;
-  /** 仅 ad：创作诉求短文本（可空）。 */
-  brief?: string | null;
+  total_episodes?: number | null;
   style_template_id?: string | null;
   video_backend?: string | null;
   image_backend?: string | null;

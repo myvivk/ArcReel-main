@@ -17,6 +17,7 @@ from lib.project.resource_paths import (
 )
 from server.routers import versions as versions_router
 from server.services.project.project_archive import CURRENT_EXPORT_VERSION_RETENTION, ProjectArchiveService
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _DERIVATIVE_ID = "Hero/Armor"
 _PRODUCT_ID = "Cup"
@@ -35,7 +36,7 @@ def _project(pm: ProjectManager) -> Path:
     """启用宫格、带商品与角色衍生登记的项目；各资源的正式文件由用例自行写入。"""
 
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project("demo", lambda project: project.update(generation_mode="storyboard", grid_storyboard=True))
     pm.add_product("demo", _PRODUCT_ID, "白色马克杯")
     pm.update_product_sheet("demo", _PRODUCT_ID, resource_relative_path("products", _PRODUCT_ID))

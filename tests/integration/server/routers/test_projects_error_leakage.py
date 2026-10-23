@@ -1,7 +1,5 @@
 """projects 路由的未预期异常不泄漏内部细节。"""
 
-from lib.db.models.custom_provider import CustomProvider, CustomProviderModel
-from lib.i18n.zh import errors as zh_errors
 from server.routers import projects
 from tests.integration.server.routers.projects_router_support import (
     _FakePM,
@@ -59,7 +57,7 @@ class TestUnexpectedErrorsDoNotLeak:
         with client:
             resp = client.post(
                 "/api/v1/projects",
-                json={"generation_mode": "storyboard", "name": "demo", "title": "T", "content_mode": "narration"},
+                json={"generation_mode": "storyboard", "name": "demo", "title": "T", "content_mode": "drama"},
             )
             assert resp.status_code == 500
             assert sentinel not in self._body(resp)
@@ -112,18 +110,6 @@ class TestUnexpectedErrorsDoNotLeak:
             assert resp.status_code == 500
             assert sentinel not in self._body(resp)
 
-    def test_update_shot_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
-        sentinel = "LEAKED_SECRET_update_shot"
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
-        with client:
-            resp = client.patch(
-                "/api/v1/projects/ready/script-shots/shot-1",
-                json={"script_file": "scripts/episode_1.json", "updates": {"note": "x"}},
-            )
-            assert resp.status_code == 500
-            assert sentinel not in self._body(resp)
-
     def test_move_script_item_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
         sentinel = "LEAKED_SECRET_move_script_item"
         client = build_projects_client(monkeypatch, _FakePM(tmp_path))
@@ -136,18 +122,6 @@ class TestUnexpectedErrorsDoNotLeak:
             assert resp.status_code == 500
             assert sentinel not in self._body(resp)
 
-    def test_update_segment_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
-        sentinel = "LEAKED_SECRET_update_segment"
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
-        with client:
-            resp = client.patch(
-                "/api/v1/projects/ready/segments/E1S01",
-                json={"script_file": "scripts/narration.json", "duration_seconds": 5},
-            )
-            assert resp.status_code == 500
-            assert sentinel not in self._body(resp)
-
     def test_update_episode_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
         sentinel = "LEAKED_SECRET_update_episode"
         client = build_projects_client(monkeypatch, _FakePM(tmp_path))
@@ -155,119 +129,6 @@ class TestUnexpectedErrorsDoNotLeak:
         monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
         with client:
             resp = client.patch("/api/v1/projects/ready/episodes/1", json={"title": "新标题"})
-            assert resp.status_code == 500
-            assert sentinel not in self._body(resp)
-
-    def test_set_project_source_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
-        sentinel = "LEAKED_SECRET_set_source"
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
-        with client:
-            # content 走 multipart form；get_project_manager() 在 try 内最早被调用
-            resp = client.post(
-                "/api/v1/projects/ready/source",
-                data={"content": "正文", "generate_overview": "false"},
-            )
-            assert resp.status_code == 500
-            assert sentinel not in self._body(resp)
-
-    def test_set_project_source_overview_error_does_not_leak_path(self, tmp_path, monkeypatch):
-        # 概览生成是上传的可选后续：失败时上传仍成功（200），错误只降级回传 overview_error。
-        # 底层异常文本可能携带服务器绝对路径，该分支不得把裸 str(e) 透传给客户端。
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            resp = client.post(
-                "/api/v1/projects/leaky/source",
-                data={"content": "正文", "generate_overview": "true"},
-            )
-            assert resp.status_code == 200
-            payload = resp.json()
-            assert payload["success"] is True
-            assert payload["overview"] is None
-            # 上传成功后合法回传的 filename 是 novel.txt，不在泄漏范畴；
-            # 泄漏关注的是异常文本携带的服务器绝对路径片段。
-            assert "/Users" not in resp.text
-            assert "/var" not in resp.text
-            assert "/secret/" not in resp.text
-            # 回传的是翻译后的通用文案，而非裸异常串
-            assert payload["overview_error"] == zh_errors.MESSAGES["overview_generation_failed"]
-
-    def test_generate_overview_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
-        sentinel = "LEAKED_SECRET_generate_overview"
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
-        with client:
-            resp = client.post("/api/v1/projects/ready/generate-overview")
-            assert resp.status_code == 500
-            assert sentinel not in self._body(resp)
-
-    def test_generate_overview_corrupted_project_maps_to_500_not_provider_error(self, tmp_path, monkeypatch):
-        # JSONDecodeError 是 ValueError 子类：损坏的 project.json 不能被 except ValueError
-        # 误判为「未配置文本供应商」，须先于其拦截并映射为通用 500
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            resp = client.post("/api/v1/projects/corrupted/generate-overview")
-            assert resp.status_code == 500
-            assert "配置文本供应商" not in self._body(resp)
-
-    def test_generate_overview_schema_failure_maps_to_ai_response_invalid(self, tmp_path, monkeypatch):
-        # pydantic ValidationError 也是 ValueError 子类：模型输出不合 schema 时须命中
-        # 「AI 响应无效」专属分支，不能被通用 ValueError 处理误判为「未配置文本供应商」
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            resp = client.post("/api/v1/projects/bad-schema/generate-overview")
-            assert resp.status_code == 400
-            assert resp.json()["detail"] == zh_errors.MESSAGES["overview_ai_response_invalid"]
-
-    async def test_generate_overview_truncated_maps_to_truncation_problem(
-        self, tmp_path, monkeypatch, db_factory, set_error_handler_sessions
-    ):
-        # 输出被截断是可操作的终局错误（缩小范围或换模型），不能落进兜底的通用 500；
-        # diagnostic 复用 text_output_truncated 问题票的形状，前端据此给出登记输出长度或换模型的出路
-        async with db_factory() as session:
-            for provider_id, name in ((3, "My Text Model"), (4, "Other Text Model")):
-                session.add(
-                    CustomProvider(
-                        id=provider_id,
-                        display_name=f"Provider {provider_id}",
-                        discovery_format="openai",
-                        base_url="https://example.test",
-                        api_key="test",
-                    )
-                )
-                await session.flush()
-                session.add(
-                    CustomProviderModel(
-                        provider_id=provider_id, model_id="my-llm", display_name=name, endpoint="openai-chat"
-                    )
-                )
-            await session.commit()
-        set_error_handler_sessions(db_factory)
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            resp = client.post("/api/v1/projects/truncated/generate-overview")
-            assert resp.status_code == 422
-            body = resp.json()
-            assert body["detail"] == zh_errors.MESSAGES["text_output_truncated"].format(model="My Text Model")
-            assert body["diagnostic"]["code"] == "text_output_truncated"
-            assert body["diagnostic"]["params"] == {"provider_id": "custom-3", "model": "my-llm", "custom_model": True}
-
-    def test_generate_overview_invalid_project_name_maps_to_400_not_provider_error(self, tmp_path, monkeypatch):
-        # get_project_path 抛出的非法项目名 ValueError（路径穿越等）不能被 generate_overview()
-        # 内部供应商解析链路的 except ValueError 误判为「未配置文本供应商」
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        with client:
-            resp = client.post("/api/v1/projects/illegal-name/generate-overview")
-            assert resp.status_code == 400
-            assert "配置文本供应商" not in self._body(resp)
-            assert "illegal-name" in self._body(resp)
-
-    def test_update_overview_unexpected_error_maps_to_500(self, tmp_path, monkeypatch):
-        sentinel = "LEAKED_SECRET_update_overview"
-        client = build_projects_client(monkeypatch, _FakePM(tmp_path))
-        monkeypatch.setattr(projects, "get_project_manager", _raise(sentinel))
-        with client:
-            resp = client.patch("/api/v1/projects/ready/overview", json={"synopsis": "新简介"})
             assert resp.status_code == 500
             assert sentinel not in self._body(resp)
 

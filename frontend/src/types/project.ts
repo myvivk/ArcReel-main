@@ -322,12 +322,6 @@ export interface DurationConstraints {
   excluded: Record<string, DurationExclusionReason>;
 }
 
-export interface VideoCapabilityProblem {
-  code: string;
-  params: Record<string, unknown>;
-  action: string;
-}
-
 /**
  * 三级解析（项目 > 系统设置 > 系统默认）后的视频模型能力。
  * 后端：server/routers/projects.py 的 /projects/{name}/video-capabilities，

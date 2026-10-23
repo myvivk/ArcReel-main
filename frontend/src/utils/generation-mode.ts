@@ -20,17 +20,6 @@ export function normalizeRoute(value: unknown): GenerationRoute {
 }
 
 /**
- * 宫格是否生效 — mirrors lib/project/project_manager.py:grid_storyboard_enabled()。
- * 参考生视频上残留的 `grid_storyboard=true` 不激活宫格。
- */
-export function gridStoryboardEnabled(
-  project: { generation_mode?: GenerationRoute | null; grid_storyboard?: boolean } | null | undefined,
-): boolean {
-  if (!project) return false;
-  return normalizeRoute(project.generation_mode) === "storyboard" && project.grid_storyboard === true;
-}
-
-/**
  * 条目数的文案 key — 名词按生成模式定，与创作类型无关：分镜图生视频报「分镜数」、
  * 参考生视频报「视频单元数」。所有展示条目数的位置读同一份映射，不各自写三元判断。
  *

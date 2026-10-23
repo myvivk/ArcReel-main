@@ -5,7 +5,6 @@ import {
   WORKSPACE_ROUTE_CHARACTERS,
   WORKSPACE_ROUTE_SCENES,
   WORKSPACE_ROUTE_PROPS,
-  WORKSPACE_ROUTE_PRODUCTS,
   WORKSPACE_ROUTE_EPISODES,
 } from "@/app-routes";
 import { useTranslation } from "react-i18next";
@@ -23,7 +22,6 @@ import { EpisodesView } from "./episodes/EpisodesView";
 import { CharactersPage } from "./lorebook/CharactersPage";
 import { ScenesPage } from "./lorebook/ScenesPage";
 import { PropsPage } from "./lorebook/PropsPage";
-import { ProductsPage } from "./lorebook/ProductsPage";
 import { EpisodePage } from "./episode-page/EpisodePage";
 import { LazyBoundary } from "@/components/shared/LazyBoundary";
 import { lazyNamed } from "@/utils/lazy-component";
@@ -31,9 +29,7 @@ import { API } from "@/api";
 import {
   enqueueCharacter,
   enqueueEpisodeNarration,
-  enqueueGrid,
   enqueueNarration,
-  enqueueProduct,
   enqueueProp,
   enqueueScene,
   enqueueStoryboard,
@@ -43,13 +39,8 @@ import {
   durationOutOfRangeReason,
   useModelCapabilities,
 } from "@/hooks/useModelCapabilities";
-import { gridStoryboardEnabled, normalizeRoute } from "@/utils/generation-mode";
 import type { EpisodeScript } from "@/types/script";
 
-// 参考生视频与多宫格画布只服务对应生成模式的项目，按需拉取；最常见的逐镜分镜画布
-// （TimelineCanvas）与资产、分集页面保持随工作区加载。
-const ReferenceVideoCanvas = lazyNamed(() => import("./reference/ReferenceVideoCanvas"), "ReferenceVideoCanvas");
-const GridImageToVideoCanvas = lazyNamed(() => import("./grid/GridImageToVideoCanvas"), "GridImageToVideoCanvas");
 const StoryPlanningCanvas = lazyNamed(() => import("./story/StoryPlanningCanvas"), "StoryPlanningCanvas");
 
 /** 集级路由 path，与渲染该集的 `<Route>` 共用一份。 */
@@ -71,13 +62,8 @@ function resolveSegmentPrompt(
   if (!resolvedFile) return null;
   const script = scripts[resolvedFile];
   if (!script) return null;
-  if ("video_units" in script) return null;
-  const seg =
-    script.content_mode === "narration"
-      ? script.segments.find((s) => s.segment_id === segmentId)
-      : script.content_mode === "ad"
-        ? script.shots.find((s) => s.shot_id === segmentId)
-        : script.scenes.find((s) => s.scene_id === segmentId);
+  if (script.content_mode !== "drama" || !("scenes" in script) || !script.short_drama_meta) return null;
+  const seg = script.scenes.find((s) => s.scene_id === segmentId);
   return {
     resolvedFile,
     prompt: seg?.[field] ?? "",
@@ -119,7 +105,6 @@ export function StudioCanvasRouter() {
   const generatingCharacterNames = useActiveResourceIds("character", currentProjectName);
   const generatingSceneNames = useActiveResourceIds("scene", currentProjectName);
   const generatingPropNames = useActiveResourceIds("prop", currentProjectName);
-  const generatingProductNames = useActiveResourceIds("product", currentProjectName);
 
   // 刷新项目数据；返回本地 store 是否已同步成功，供调用方决定是否推进依赖新顺序的 UI 状态。
   // 在途合并 + 失败留旧收敛于 projects-store 的 refreshProject，此处仅表达意图。
@@ -156,16 +141,9 @@ export function StudioCanvasRouter() {
     scriptFile?: string,
   ): Promise<boolean> => {
     if (!currentProjectName) throw new Error(tRef.current("common:no_project_selected"));
-    const mode = currentProjectData?.content_mode ?? "narration";
-    if (mode === "ad") {
-      await API.updateShot(currentProjectName, segmentId, scriptFile ?? "", patch);
-    } else if (mode === "drama") {
-      await API.updateScene(currentProjectName, segmentId, scriptFile ?? "", patch);
-    } else {
-      await API.updateSegment(currentProjectName, segmentId, { script_file: scriptFile, ...patch });
-    }
+    await API.updateScene(currentProjectName, segmentId, scriptFile ?? "", patch);
     return refreshProject();
-  }, [currentProjectName, currentProjectData, refreshProject]);
+  }, [currentProjectName, refreshProject]);
 
   // 分镜改序（各形态通用）：把分镜移到 afterId 之后，null 移到最前。
   // 返回是否移动成功，供编辑器把选中态跟随到分镜的新位置。
@@ -321,12 +299,10 @@ export function StudioCanvasRouter() {
   // 重生复用本组件已有的入队回调。面板不自建播放器，也不自建入队路径。
   const handleViewWorkflowUnit = useCallback((unitId: string) => {
     useAppStore.getState().triggerScrollTo({
-      type: normalizeRoute(currentProjectData?.generation_mode) === "reference_video"
-        ? "reference_unit"
-        : "segment",
+      type: "segment",
       id: unitId,
     });
-  }, [currentProjectData?.generation_mode]);
+  }, []);
 
   // 剧本文件由调用方按当前剧集给出：多集项目里 currentScripts 装着全部剧集，
   // 取第一个键会把重生打到别集的剧本上，用户看到的是另一集被重做。
@@ -382,24 +358,6 @@ export function StudioCanvasRouter() {
     }
   }, [currentProjectName]);
 
-  const handleGenerateProduct = useCallback(async (name: string) => {
-    if (!currentProjectName) return;
-    try {
-      await enqueueProduct(currentProjectName, name);
-    } catch (err) {
-      useAppStore.getState().pushToast(tRef.current("submit_failed", { message: errMsg(err) }), "error");
-    }
-  }, [currentProjectName]);
-
-  const handleGenerateGrid = useCallback(async (episode: number, scriptFile: string, sceneIds?: string[]) => {
-    if (!currentProjectName) return;
-    try {
-      await enqueueGrid(currentProjectName, episode, scriptFile, sceneIds);
-    } catch (err) {
-      useAppStore.getState().pushToast(tRef.current("grid_generation_failed", { message: errMsg(err) }), "error");
-    }
-  }, [currentProjectName]);
-
   // 版本恢复与媒体上传之后的刷新；resolve 为是否已同步，调用方据此决定是否报告成功。
   const handleRestoreAsset = refreshAfterAction;
 
@@ -412,9 +370,6 @@ export function StudioCanvasRouter() {
   const handleGeneratePropVoid = useCallback((...args: Parameters<typeof handleGenerateProp>) => {
     void handleGenerateProp(...args).catch(console.error);
   }, [handleGenerateProp]);
-  const handleGenerateProductVoid = useCallback((...args: Parameters<typeof handleGenerateProduct>) => {
-    void handleGenerateProduct(...args).catch(console.error);
-  }, [handleGenerateProduct]);
 
   // `currentProjectName` 在详情到达前就已落地（见 router.tsx 首屏加载的注释），
   // 仅查它会在深链（/characters 等）直接打开或详情较慢时把空集合渲染成可交互的
@@ -439,7 +394,7 @@ export function StudioCanvasRouter() {
 
       <Route path={`/${WORKSPACE_ROUTE_EPISODES}`}>
         {/* 演示项目后端不存在，广告/短片恒单集、不经分集；侧栏已隐藏入口，这里兜底直接输入 URL 的情形 */}
-        {demoMode || currentProjectData?.content_mode === "ad" ? (
+        {demoMode ? (
           <Redirect to="/" />
         ) : (
           <EpisodesView key={currentProjectName} projectName={currentProjectName} />
@@ -493,39 +448,21 @@ export function StudioCanvasRouter() {
         />
       </Route>
 
-      <Route path={`/${WORKSPACE_ROUTE_PRODUCTS}`}>
-        <ProductsPage
-          key={currentProjectName}
-          projectName={currentProjectName}
-          products={currentProjectData?.products ?? {}}
-          readOnly={demoMode}
-          onGenerateProduct={handleGenerateProductVoid}
-          onRestoreProductVersion={handleRestoreAsset}
-          onRefreshProject={refreshAfterAction}
-          generatingProductNames={generatingProductNames}
-        />
-      </Route>
-
       <Route path={EPISODE_ROUTE_PATH}>
         {(params) => {
           const epNum = parseInt(params.episodeId, 10);
           const episode = currentProjectData?.episodes?.find((e) => e.episode === epNum);
           const scriptFile = episode?.script_file?.replace(/^scripts\//, "");
           const script = scriptFile ? (currentScripts[scriptFile] ?? null) : null;
-          const route = normalizeRoute(currentProjectData?.generation_mode);
           // 服务端已按项目生成模式（是否走参考图路径）与已保存分辨率收窄。
           // reference_video 的参考图约束按 unit 而非按集生效：每个 unit 落哪个桶、可选哪些档位
           // 由服务端按可用参考图逐单元判定，随单元列表到达（reference-video-store），不从这里下发。
           const durationOptions = capabilities.supportedDurations ?? undefined;
           // 内容确认页按剧本规划档位选时长：端点固定时 supportedDurations 为空，规划仍有借用档位。
-          const planDurationOptions = capabilities.planningDurations ?? undefined;
           const durationWarningReason = (seconds: number) =>
             durationOutOfRangeReason(seconds, capabilities);
           // 档位空集的两种成因说给用户听的不是同一句：型号没登记时长 vs 这份 workflow 自己定片长。
           const durationEndpointFixed = capabilities.durationEndpointFixed;
-          const hasDraft =
-            episode?.script_status === "segmented" || episode?.script_status === "generated";
-          const isAd = currentProjectData?.content_mode === "ad";
           return (
             <EpisodePage
               projectName={currentProjectName}
@@ -539,62 +476,13 @@ export function StudioCanvasRouter() {
               // 本组件的逐单元回调对 video_units 剧本解不出提示词、按下去毫无反应。
               // 该生成模式只给「查看」跳转，重生入口在跳过去的那张单元卡上。
               onRegenerate={
-                route === "reference_video" || !scriptFile
+                !scriptFile
                   ? undefined
                   : (stepId, unitIds) => void handleWorkflowRegenerate(stepId, unitIds, scriptFile)
               }
               renderCanvas={({ view, onViewChange, hasShortDramaSource }) => (
                 // 懒加载画布的 chunk 未到达或加载失败时只在画布区域显示占位，页头与视图切换保持可见
                 <LazyBoundary variant="pane">
-                  {route === "reference_video" ? (
-                    <ReferenceVideoCanvas
-                      // 同一 epNum 跨项目不 remount 会让 optimisticUnitIds / prevTaskStatusRef
-                      // 残留上个项目的状态（例如 "E1U1" 长驻 set 里），切到同名 unit 的新项目
-                      // 时 "optimistic && !hasQueueRow" 会误判 busy。改 key 到 project::episode
-                      // 让实例天然按项目隔离，避免显式 pruning 逻辑。
-                      key={`${currentProjectName}::${epNum}`}
-                      projectName={currentProjectName}
-                      episode={epNum}
-                      view={view}
-                      onViewChange={onViewChange}
-                      hasScript={Boolean(script)}
-                      showPreprocess={!isAd}
-                      freeDuration={isAd}
-                      videoModelUnresolved={capabilities.videoModelUnresolved}
-                      planDurationOptions={planDurationOptions}
-                    />
-                  ) : gridStoryboardEnabled(currentProjectData) ? (
-                    <GridImageToVideoCanvas
-                      key={`${currentProjectName}::${epNum}`}
-                      projectName={currentProjectName}
-                      episode={epNum}
-                      view={view}
-                      onViewChange={onViewChange}
-                      hasDraft={hasDraft}
-                      hasShortDramaSource={hasShortDramaSource}
-                      episodeScript={script}
-                      scriptFile={scriptFile ?? undefined}
-                      projectData={currentProjectData}
-                      durationOptions={durationOptions}
-                      planDurationOptions={planDurationOptions}
-                      durationWarningReason={durationWarningReason}
-                      durationEndpointFixed={durationEndpointFixed}
-                      videoModelUnresolved={capabilities.videoModelUnresolved}
-                      lastFrame={capabilities.lastFrame}
-                      capabilitiesLoading={capabilities.loading}
-                      onUpdatePrompt={handleUpdatePrompt}
-                      onGenerateStoryboard={voidPromise(handleGenerateStoryboard)}
-                      onGenerateVideo={handleGenerateVideo}
-                      onGenerateNarration={narrationGenerationEnabled ? voidPromise(handleGenerateNarration) : undefined}
-                      onGenerateEpisodeNarration={narrationGenerationEnabled ? voidPromise(handleGenerateEpisodeNarration) : undefined}
-                      onGenerateGrid={handleGenerateGrid}
-                      onRestoreStoryboard={handleRestoreAsset}
-                      onRestoreVideo={handleRestoreAsset}
-                      onMoveShot={handleMoveShot}
-                      onInsertShot={handleInsertShot}
-                      onRemoveShot={handleRemoveShot}
-                    />
-                  ) : (
                     <TimelineCanvas
                       // 和 ReferenceVideoCanvas (上方) 同理：同 epNum 跨项目不 remount
                       // 会让 TimelineCanvas 内部的 useState / useRef（选中 scene、草稿缓冲、
@@ -604,13 +492,11 @@ export function StudioCanvasRouter() {
                       episode={epNum}
                       view={view}
                       onViewChange={onViewChange}
-                      hasDraft={hasDraft}
                       hasShortDramaSource={hasShortDramaSource}
                       episodeScript={script}
                       scriptFile={scriptFile ?? undefined}
                       projectData={currentProjectData}
                       durationOptions={durationOptions}
-                      planDurationOptions={planDurationOptions}
                       durationWarningReason={durationWarningReason}
                       durationEndpointFixed={durationEndpointFixed}
                       videoModelUnresolved={capabilities.videoModelUnresolved}
@@ -627,7 +513,6 @@ export function StudioCanvasRouter() {
                       onRestoreStoryboard={handleRestoreAsset}
                       onRestoreVideo={handleRestoreAsset}
                     />
-                  )}
                 </LazyBoundary>
               )}
             />

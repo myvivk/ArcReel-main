@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,25 +20,15 @@ from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactManifestError, 
 from lib.edit_timeline.errors import EditTimelineError
 from lib.edit_timeline.store import EditTimelineStore
 from lib.episode.episode_ledger import (
-    SourceDoc,
-    normalize_source_text,
     parse_positive_episode_num,
 )
-from lib.episode.episode_paths import episode_source_relpath
-from lib.episode.episode_replan import replan_candidate
-from lib.episode.episode_sources import (
-    legacy_cut_episode_ids,
-    source_fingerprints_diverged,
-    source_remaining,
-    stored_source_remaining,
-    whole_source_files,
-)
+from lib.infra.api_errors import ConflictError
 from lib.infra.content_digest import prefixed_canonical_json_digest
 from lib.project.asset_derivatives import derivative_artifact_key, derivative_table, split_derivative_artifact_id
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key
 from lib.project.data_validator import DataValidator
 from lib.project.episode_asset_references import episode_referenced_assets
-from lib.project.project_manager import ProjectManager, is_reference_video_project
+from lib.project.project_manager import ProjectManager
 from lib.project.project_migration_failure import (
     MIGRATION_FAILURE_CODE,
     MIGRATION_FAILURE_FILENAME,
@@ -49,39 +38,24 @@ from lib.project.project_migration_failure import (
 from lib.project.project_migration_report import MigrationReport, load_migration_report
 from lib.project.source_revision import SourceRevisionResult, SourceScope, compute_source_revision
 from lib.project.story_plan_docs import episode_plan_asset_names, marker_asset_names
-from lib.references.reference_admission import admit_references, admit_storyboard_items
+from lib.references.reference_admission import admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
-from lib.script import script_review
-from lib.script.draft_quarantine import (
-    QUARANTINE_KIND_PROMPT_AUTHORING,
-    quarantine_exists,
-    quarantine_path,
-    read_quarantine,
-)
+from lib.script.factory_episode import require_factory_script
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
 from lib.script.grid.video_prompt_targets import plan_video_prompt_targets
-from lib.script.reference_video.text_parser import derive_references_from_text
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
-from lib.script.short_drama_source import read_short_drama_source_markdown
-from lib.speech.narration_config import USE_TTS, project_narration_delivery
+from lib.script.short_drama_source import read_short_drama_source_markdown, short_drama_source_relative_path
 from lib.workflow.operation_admission import (
     AdmissionReason,
     AdmissionState,
     OperationAdmission,
-    ad_inputs_present,
-    admit_ad_script,
     admit_author_prompts,
     admit_author_video_prompts,
     admit_edit_timeline,
-    admit_plan_episodes,
-    admit_script_plan,
     admit_shot_grids,
-    episode_source_present,
     pending_authoring_entry_ids,
-    whole_source_present,
 )
-from lib.workflow.workflow_rules import workflow_rule
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +74,6 @@ class WorkflowProject(BaseModel):
 
     content_mode: str
     generation_mode: str
-    grid_storyboard: bool
 
 
 class WorkflowTarget(BaseModel):
@@ -133,16 +106,6 @@ class WorkflowActionType(StrEnum):
     NONE = "none"
     COLLECT_PROJECT_INPUT = "collect_project_input"
     CREATE_EPISODE = "create_episode"
-    DRAFT_SELLING_POINTS = "draft_selling_points"
-    PLAN_EPISODES = "plan_episodes"
-    RESET_EPISODE_PLANNING = "reset_episode_planning"
-    RESOLVE_DRAFT = "resolve_draft"
-    PREPARE_SCRIPT_PLAN = "prepare_script_plan"
-    START_BLANK_SCRIPT = "start_blank_script"
-    PROVIDE_EPISODE_SOURCE = "provide_episode_source"
-    CONFIRM_SCRIPT_PLAN = "confirm_script_plan"
-    GENERATE_SCRIPT = "generate_script"
-    ADD_SCRIPT_ITEMS = "add_script_items"
     AUTHOR_PROMPTS = "author_prompts"
     PREPARE_EPISODE_ASSETS = "prepare_episode_assets"
     PLAN_SHORT_DRAMA_STORYBOARDS = "plan_short_drama_storyboards"
@@ -150,8 +113,6 @@ class WorkflowActionType(StrEnum):
     GENERATE_STORYBOARDS = "generate_storyboards"
     GENERATE_SHOT_GRIDS = "generate_shot_grids"
     AUTHOR_VIDEO_PROMPTS = "author_video_prompts"
-    GENERATE_GRID = "generate_grid"
-    REPAIR_VIDEO_UNITS = "repair_video_units"
     GENERATE_VIDEOS = "generate_videos"
     CREATE_EDIT_TIMELINE = "create_edit_timeline"
 
@@ -192,16 +153,6 @@ class WorkflowOperation(BaseModel):
     reason: AdmissionReason | None = None
 
 
-class WorkflowDraft(BaseModel):
-    """目标集上在场的一份草稿。``needs_repair`` 区分待修复草稿与 Agent 的可编辑草稿。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str
-    path: str
-    needs_repair: bool
-
-
 class WorkflowContent(BaseModel):
     """内容现状：各类内容此刻是什么样，不含「该做哪一步」的判断。
 
@@ -216,20 +167,12 @@ class WorkflowContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episode_count: int
-    whole_source: Literal["present", "absent", "not_applicable"]
-    source_remaining: bool
-    ad_inputs: Literal["present", "absent", "not_applicable"]
-    products_without_selling_points: list[str] = Field(default_factory=list)
     episode_source: Literal["present", "absent", "not_applicable"] | None = None
-    episode_plan_stale: bool = False
-    expected_stale_script_plan_revision: str | None = None
-    drafts: list[WorkflowDraft] = Field(default_factory=list)
     formal_script: Literal["present", "absent", "invalid"] | None = None
     script_item_count: int | None = None
     #: 本集有非空工厂 Markdown 源稿，或视觉状态带工厂来源标记；源稿优先于视觉状态。
     script_from_short_drama: bool = False
     pending_authoring_ids: list[str] = Field(default_factory=list)
-    needs_replan_ids: list[str] = Field(default_factory=list)
     #: 本集引用、但没有资产图的角色 / 场景 / 道具（含衍生），与生成入口同一判定（ADR 0073）。
     referenced_assets_without_sheet: list[str] = Field(default_factory=list)
     #: 本集引用、但没有登记的名字；生成入口会据此拒绝。
@@ -364,9 +307,7 @@ class ProjectSummary(BaseModel):
     项目元数据、各集脚本、产物清单与剪辑时间线的文件名：源文正文与源文修订号（sha256）不参与，否则列出
     N 个项目就要读 N 份小说。剪辑时间线不解析内容，文件损坏只在制作状态里报 issue。
 
-    「源文是否还有未规划的原文」只能由源文得出，本投影读取写账本的命令记在 ``project.json`` 里的结论
-    （``source_remaining``），与制作状态的「继续分集规划」同一判定；源文在 ArcReel 之外被改动、账本
-    尚未更新时两处可能短暂不一致。产物口径本身两处一致：可用与 stale 都取自同一份产物清单。
+    产物口径本身两处一致：可用与 stale 都取自同一份产物清单。
 
     产物判定有两种口径（``ProjectSummaryCurrency``）：``verified`` 逐件与规范状态比对，能
     区分 current 与 stale；``registered`` 只看清单登记与文件在场，产物比对不产生 stale。
@@ -384,8 +325,6 @@ class ProjectSummary(BaseModel):
     assets: dict[str, ArtifactCount]
     episodes_summary: EpisodesSummary
     episodes: list[EpisodeSummary]
-    #: 整本源文还有未规划的原文：已有的集全部完成也不算项目完成，下一步是继续分集规划。
-    source_remaining: bool
 
 
 class EpisodeNextStep(BaseModel):
@@ -394,22 +333,17 @@ class EpisodeNextStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episode: int
-    #: 该集的集规划已失效（原文已重新规划），下一步为 ``none``，等待重建。
-    plan_stale: bool
     next_action: WorkflowNextAction
 
 
 @dataclass(frozen=True)
 class _SharedWorkflowFacts:
     source: SourceRevisionResult | None
-    planning_sources: tuple[SourceDoc, ...]
-    source_remaining: bool
     sheets: dict[str, dict[str, Any]]
     episodes: list[tuple[int, dict[str, Any]]]
     currency: ArtifactCurrencyResolver | None
     blockers: tuple[WorkflowBlocker, ...]
     issues: tuple[WorkflowBlocker, ...]
-    whole_source: bool
 
 
 def _project_revision(project: Mapping[str, Any]) -> str:
@@ -431,24 +365,6 @@ def _action(
         requires_confirmation=requires_confirmation,
         reason=reason,
     )
-
-
-def planning_docs(project: Mapping[str, Any], source: SourceRevisionResult | None) -> tuple[SourceDoc, ...]:
-    """把修订号计算那一次读取的原文转成整本源文：按项目登记的文件清单顺序，账本坐标系里的规范化全文。
-
-    源文在一次状态查询里只读一遍：``compute_source_revision`` 已经把每份源文读进内存，
-    分集排布所需的归一化全文由那一次读取派生，不再回磁盘重读。
-    """
-
-    if source is None or source.blockers:
-        return ()
-    by_rel = {unicodedata.normalize("NFC", f"source/{document.name}"): document for document in source.documents}
-    docs: list[SourceDoc] = []
-    for rel in whole_source_files(project):
-        document = by_rel.get(unicodedata.normalize("NFC", rel))
-        if document is not None:
-            docs.append(SourceDoc(rel_path=rel, text=normalize_source_text(document.text)))
-    return tuple(docs)
 
 
 def _empty_collection() -> dict[str, list[str]]:
@@ -919,7 +835,7 @@ class WorkflowStateService:
             return WorkflowStatus(
                 project_revision="",
                 source_revision=None,
-                project=WorkflowProject(content_mode="unknown", generation_mode="unknown", grid_storyboard=False),
+                project=WorkflowProject(content_mode="unknown", generation_mode="unknown"),
                 target=None,
                 blockers=[WorkflowBlocker(code="project_data_unavailable", path="project.json", reason=str(exc))],
                 content=None,
@@ -960,7 +876,6 @@ class WorkflowStateService:
             steps.append(
                 EpisodeNextStep(
                     episode=pair[0],
-                    plan_stale=status.content is not None and status.content.episode_plan_stale,
                     next_action=status.next_action,
                 )
             )
@@ -1018,7 +933,6 @@ class WorkflowStateService:
             assets=assets,
             episodes_summary=_episodes_summary(episode_summaries),
             episodes=episode_summaries,
-            source_remaining=stored_source_remaining(project),
         )
 
     def _asset_counts(
@@ -1131,32 +1045,13 @@ class WorkflowStateService:
         entry: dict[str, Any],
         resolver: ArtifactComparer | None,
     ) -> EpisodeScriptStatus:
-        """由 script_plan 与正式脚本的产物态派生该集的脚本进度。
-
-        集规划状态为 stale 且脚本规划尚未重建的集（重新规划后原文范围已失效）回到 none：它的
-        下游要重做。判定与顶栏同用 ``_stale_episode_plan``，重建完成后按常规产物态派生。
-        """
-
-        if project.get("content_mode") != "ad" and self._stale_episode_plan(project_path, project, number, entry)[0]:
-            return "none"
+        """正式视觉脚本可用即已生成。"""
         script_file = entry.get("script_file")
         if resolver is not None and isinstance(script_file, str) and script_file:
             state = self._artifact_state(resolver, ArtifactKey.episode_script(number), script_file, [])
             if state in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}:
                 return "generated"
-        script_plan = script_review.script_plan_path(project_path, project, number)
-        if script_plan is None:
-            return "none"
-        if script_review.script_plan_quarantined(project_path, project, number):
-            # 草稿在场即已分段：首轮拆分失败时正式文件从未写过，报 none 会把用户
-            # 路由回源文审阅页，见不到草稿详情与修复入口。
-            return "segmented"
-        if resolver is None:
-            return "none"
-        state = self._artifact_state(
-            resolver, ArtifactKey.episode_script_plan(number), script_plan.relative_to(project_path).as_posix(), []
-        )
-        return "segmented" if state in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value} else "none"
+        return "none"
 
     @classmethod
     def _migration_blocked_summary(
@@ -1197,7 +1092,6 @@ class WorkflowStateService:
             },
             episodes_summary=_episodes_summary(summaries),
             episodes=summaries,
-            source_remaining=stored_source_remaining(project),
         )
 
     def _shared_facts(self, project_path: Path, project: dict[str, Any]) -> _SharedWorkflowFacts:
@@ -1210,41 +1104,14 @@ class WorkflowStateService:
         generation_mode = project.get("generation_mode")
         blockers: list[WorkflowBlocker] = []
         issues: list[WorkflowBlocker] = []
-        if not isinstance(mode, str) or mode not in {"narration", "drama", "ad"}:
+        if not isinstance(mode, str) or mode != "drama":
             blockers.append(
                 WorkflowBlocker(code="invalid_content_mode", path="content_mode", reason="unsupported mode")
             )
-        if not isinstance(generation_mode, str) or generation_mode not in {"storyboard", "reference_video"}:
+        if not isinstance(generation_mode, str) or generation_mode != "storyboard":
             blockers.append(
                 WorkflowBlocker(code="invalid_generation_mode", path="generation_mode", reason="unsupported route")
             )
-        grid_storyboard = project.get("grid_storyboard")
-        if grid_storyboard is not None and not isinstance(grid_storyboard, bool):
-            issues.append(
-                WorkflowBlocker(
-                    code="invalid_grid_storyboard",
-                    path="grid_storyboard",
-                    reason="grid_storyboard must be a boolean",
-                )
-            )
-        if mode == "ad":
-            target_duration = project.get("target_duration")
-            if not isinstance(target_duration, int) or isinstance(target_duration, bool) or target_duration <= 0:
-                issues.append(
-                    WorkflowBlocker(
-                        code="invalid_target_duration",
-                        path="target_duration",
-                        reason="ad target_duration must be a positive integer",
-                    )
-                )
-            if grid_storyboard is True:
-                issues.append(
-                    WorkflowBlocker(
-                        code="invalid_grid_storyboard",
-                        path="grid_storyboard",
-                        reason="ad workflow does not support grid storyboards",
-                    )
-                )
         # ``get_status`` refuses an unmigrated project before reaching here, so the
         # only way to arrive without a resolver is a damaged sidecar — a blocker,
         # never permission to classify artifacts by filesystem existence instead.
@@ -1269,19 +1136,15 @@ class WorkflowStateService:
                 )
             )
         source = self._source_revision(project_path, project, str(mode), issues)
-        planning_sources = planning_docs(project, source) if mode != "ad" else ()
         sheets = self._asset_sheets(project_path, project, issues, currency)
         episodes = self._episodes(project, issues)
         return _SharedWorkflowFacts(
             source=source,
-            planning_sources=planning_sources,
-            source_remaining=source_remaining(project, list(planning_sources)),
             sheets=sheets,
             episodes=episodes,
             currency=currency,
             blockers=tuple(blockers),
             issues=tuple(issues),
-            whole_source=whole_source_present(planning_sources),
         )
 
     def _get_status(
@@ -1292,11 +1155,8 @@ class WorkflowStateService:
         episode: int | None,
         shared: _SharedWorkflowFacts,
     ) -> WorkflowStatus:
-        mode = project.get("content_mode")
         if episode is not None and (isinstance(episode, bool) or episode < 1):
             raise WorkflowRequestError("episode must be a positive integer")
-        if mode == "ad" and episode not in {None, 1}:
-            raise WorkflowRequestError("ad workflow only has episode 1")
         if shared.blockers:
             return self._response(
                 project,
@@ -1308,9 +1168,6 @@ class WorkflowStateService:
                 artifacts=self._base_artifacts(project, shared),
                 next_action=_action(WorkflowActionType.NONE, "workflow is blocked"),
             )
-        if mode == "ad":
-            selected = next((pair for pair in shared.episodes if pair[0] == 1), (1, {}))
-            return self._episode_status(project_name, project, project_path, shared, selected)
         if episode is None:
             return self._next_episode_status(project_name, project, project_path, shared)
         selected = next((pair for pair in shared.episodes if pair[0] == episode), None)
@@ -1341,78 +1198,31 @@ class WorkflowStateService:
         if not shared.episodes:
             return self._project_status(project, shared)
         first: WorkflowStatus | None = None
-        first_stale: WorkflowStatus | None = None
-        any_complete = False
         for pair in shared.episodes:
             status = self._episode_status(project_name, project, project_path, shared, pair)
             first = first or status
-            if status.content is not None and status.content.episode_plan_stale:
-                first_stale = first_stale or status
-                continue
             if status.content is None or not status.content.episode_complete:
                 return status
-            any_complete = True
         assert first is not None
-        if shared.source_remaining:
-            next_action = self._planning_action(project, shared, "source text remains unplanned")
-        elif first_stale is not None:
-            reason = "remaining episodes await replanning" if any_complete else "every episode awaits replanning"
-            return first_stale.model_copy(
-                update={"next_action": _action(WorkflowActionType.NONE, reason), "next_alternatives": []}
-            )
-        else:
-            content = first.content.model_copy(update={"project_complete": True}) if first.content else None
-            return first.model_copy(
-                update={
-                    "content": content,
-                    "next_action": _action(WorkflowActionType.NONE, ALL_EPISODES_COMPLETE_REASON),
-                    "next_alternatives": [],
-                }
-            )
-        return first.model_copy(update={"next_action": next_action, "next_alternatives": []})
-
-    def _planning_action(
-        self, project: dict[str, Any], shared: _SharedWorkflowFacts, reason: str
-    ) -> WorkflowNextAction:
-        """继续分集规划的动作：规划器会拒绝接续时（切出集缺位置记录、源文已改动）改为从头重置。"""
-        if legacy_cut_episode_ids(project):
-            return _action(
-                WorkflowActionType.RESET_EPISODE_PLANNING,
-                "episode ledger lacks source range records",
-            )
-        if source_fingerprints_diverged(project, list(shared.planning_sources)):
-            return _action(
-                WorkflowActionType.RESET_EPISODE_PLANNING,
-                "source files changed after episode planning",
-            )
-        return _action(WorkflowActionType.PLAN_EPISODES, reason)
+        content = first.content.model_copy(update={"project_complete": True}) if first.content else None
+        return first.model_copy(
+            update={
+                "content": content,
+                "next_action": _action(WorkflowActionType.NONE, ALL_EPISODES_COMPLETE_REASON),
+                "next_alternatives": [],
+            }
+        )
 
     @staticmethod
     def _project_content(project: Mapping[str, Any], shared: _SharedWorkflowFacts) -> WorkflowContent:
-        is_ad = project.get("content_mode") == "ad"
-        products = project.get("products")
         return WorkflowContent(
             episode_count=len(shared.episodes),
-            whole_source="not_applicable" if is_ad else ("present" if shared.whole_source else "absent"),
-            source_remaining=shared.source_remaining,
-            ad_inputs=("present" if ad_inputs_present(project) else "absent") if is_ad else "not_applicable",
-            products_without_selling_points=(
-                [
-                    name
-                    for name, item in products.items()
-                    if isinstance(item, Mapping) and not item.get("selling_points")
-                ]
-                if is_ad and isinstance(products, Mapping)
-                else []
-            ),
         )
 
     @staticmethod
     def _base_artifacts(project: Mapping[str, Any], shared: _SharedWorkflowFacts) -> dict[str, dict[str, Any]]:
-        is_ad = project.get("content_mode") == "ad"
         return {
             "asset_sheets": shared.sheets,
-            "script_plan": {"state": "not_applicable" if is_ad else "missing"},
             "script": {"state": "missing"},
             "storyboards": _empty_collection(),
             "shot_grids": _empty_collection(),
@@ -1422,27 +1232,19 @@ class WorkflowStateService:
         }
 
     def _project_status(self, project: dict[str, Any], shared: _SharedWorkflowFacts) -> WorkflowStatus:
-        """没有集的项目：有整本源文则 AI 分集规划，否则上传原文；两者都可以改为新建一集。"""
-        if shared.whole_source:
-            next_action = self._planning_action(project, shared, "episode ledger has no episodes")
-        else:
-            next_action = _action(WorkflowActionType.COLLECT_PROJECT_INPUT, "no episodes and no source text yet")
+        """没有集的项目进入工厂创作或完整工件导入。"""
         return self._response(
             project,
             shared,
             target=None,
             content=self._project_content(project, shared),
-            operations={
-                WorkflowActionType.PLAN_EPISODES: admit_plan_episodes(
-                    project.get("content_mode"),
-                    whole_source=shared.whole_source,
-                    replan_pending=replan_candidate(project) is not None,
-                )
-            },
+            operations={},
             gates={},
             artifacts=self._base_artifacts(project, shared),
-            next_action=next_action,
-            next_alternatives=[_action(WorkflowActionType.CREATE_EPISODE, "an episode can also be created by hand")],
+            next_action=_action(
+                WorkflowActionType.COLLECT_PROJECT_INPUT, "start the short-drama factory or import its artifacts"
+            ),
+            next_alternatives=[_action(WorkflowActionType.CREATE_EPISODE, "create a factory episode ledger entry")],
         )
 
     def _edit_timeline_ids(
@@ -1497,93 +1299,14 @@ class WorkflowStateService:
             episode=number,
             script=script_path,
             script_filename=script_filename,
-            source=episode_source_relpath(number),
+            source=short_drama_source_relative_path(number),
         )
-
-    @staticmethod
-    def _episode_drafts(project_path: Path, project: dict[str, Any], number: int) -> list[WorkflowDraft]:
-        """目标集上在场的草稿：脚本规划草稿，以及参考生视频的提示词编写草稿。"""
-        kinds: list[str] = []
-        script_plan_kind = script_review.script_plan_quarantine_kind(project)
-        if script_plan_kind is not None:
-            kinds.append(script_plan_kind)
-        if is_reference_video_project(project):
-            kinds.append(QUARANTINE_KIND_PROMPT_AUTHORING)
-        drafts: list[WorkflowDraft] = []
-        for kind in kinds:
-            if not quarantine_exists(project_path, number, kind):
-                continue
-            draft = read_quarantine(project_path, number, kind)
-            drafts.append(
-                WorkflowDraft(
-                    kind=kind,
-                    path=quarantine_path(project_path, number, kind).relative_to(project_path).as_posix(),
-                    # 信封读不出的草稿同样要先修好才能处置。
-                    needs_repair=draft is None or bool(draft.violations),
-                )
-            )
-        return drafts
-
-    @staticmethod
-    def _stale_episode_plan(
-        project_path: Path, project: dict[str, Any], number: int, entry: Mapping[str, Any]
-    ) -> tuple[bool, str | None]:
-        """集规划状态为 stale 且脚本规划尚未重建：返回 ``(是否 stale, 重建基线 revision)``。
-
-        重建完成（正式 script_plan 已不是 stale 时的那一份，或已显式记下重建完成）后按常规内容陈述。
-        """
-        if entry.get("ledger_status") != "stale":
-            return False, None
-        if script_review.STALE_SCRIPT_PLAN_REVISION_FIELD not in entry:
-            return True, None
-        stale_revision = entry.get(script_review.STALE_SCRIPT_PLAN_REVISION_FIELD)
-        rebuilt_revision = entry.get(script_review.STALE_SCRIPT_PLAN_REBUILT_REVISION_FIELD)
-        path = script_review.script_plan_path(project_path, project, number)
-        live_revision = script_review.content_fingerprint(path) if path is not None else None
-        if live_revision is None or (live_revision == stale_revision and rebuilt_revision != live_revision):
-            return True, stale_revision if isinstance(stale_revision, str) else None
-        return False, None
-
-    def _script_plan_artifact(
-        self,
-        project_path: Path,
-        project: dict[str, Any],
-        number: int,
-        currency: ArtifactCurrencyResolver | None,
-        issues: list[WorkflowBlocker],
-    ) -> dict[str, Any]:
-        path = script_review.script_plan_path(project_path, project, number)
-        revision = script_review.content_fingerprint(path) if path is not None else None
-        state = ArtifactStatus.CURRENT.value if revision is not None else ArtifactStatus.MISSING.value
-        if currency is not None and path is not None:
-            state = self._artifact_state(
-                currency,
-                ArtifactKey.episode_script_plan(number),
-                path.relative_to(project_path).as_posix(),
-                issues,
-            )
-        return {
-            "state": state,
-            "path": str(path.relative_to(project_path)) if path is not None else None,
-            "revision": revision,
-        }
 
     @staticmethod
     def _reference_admission(project: dict[str, Any], items: list[dict[str, Any]], kind: str | None) -> Any:
         """本集条目的引用准入，与生成入口同一判定（ADR 0073）：正文单元从正文派生，分镜条目读引用字段。"""
         catalog = build_reference_catalog(project)
-        if kind != "video_units":
-            return admit_storyboard_items(catalog, items)
-        references: list[tuple[str, str]] = []
-        unregistered: list[str] = []
-        for item in items:
-            text = item.get("text")
-            if not isinstance(text, str) or not text:
-                continue
-            resources, missing = derive_references_from_text(text, project)
-            references.extend((resource.type, resource.name) for resource in resources)
-            unregistered.extend(missing)
-        return admit_references(catalog, references=references, unregistered=unregistered)
+        return admit_storyboard_items(catalog, items)
 
     def _referenced_sheet_facts(
         self,
@@ -1667,20 +1390,12 @@ class WorkflowStateService:
         """一集的内容现状、各 AI 操作的准入与建议的下一步（顺序见 ``docs/adr/0091`` 与 Spec）。"""
         number, entry = selected
         mode = project.get("content_mode")
-        is_ad = mode == "ad"
-        generation_mode = project.get("generation_mode")
-        grid = project.get("grid_storyboard") is True and generation_mode == "storyboard"
+        generation_mode = "storyboard"
         issues = list(shared.issues)
         artifacts = self._base_artifacts(project, shared)
-        gates: dict[str, dict[str, Any]] = {
-            "script_plan_review": {"state": "not_applicable" if is_ad else "pending", "revision": None}
-        }
+        gates: dict[str, dict[str, Any]] = {}
         content = self._project_content(project, shared)
-        operations: dict[str, OperationAdmission] = {
-            WorkflowActionType.PLAN_EPISODES: admit_plan_episodes(
-                mode, whole_source=shared.whole_source, replan_pending=replan_candidate(project) is not None
-            ),
-        }
+        operations: dict[str, OperationAdmission] = {}
 
         def respond(
             target: WorkflowTarget | None,
@@ -1704,60 +1419,32 @@ class WorkflowStateService:
         if target is None:
             return respond(None, _action(WorkflowActionType.NONE, "episode script binding is invalid"))
 
-        factory_markdown = read_short_drama_source_markdown(project_path, number) if mode == "drama" else ""
+        factory_markdown = (
+            read_short_drama_source_markdown(project_path, number)
+            if (project_path / short_drama_source_relative_path(number)).is_file()
+            else ""
+        )
         factory_source = bool(factory_markdown.strip())
         content.script_from_short_drama = factory_source
-        episode_source = not is_ad and episode_source_present(project_path, number, entry)
-        content.episode_source = (
-            "not_applicable" if is_ad or factory_source else ("present" if episode_source else "absent")
-        )
-        content.drafts = [] if factory_source else self._episode_drafts(project_path, project, number)
-        stale, stale_revision = (
-            (False, None) if is_ad or factory_source else self._stale_episode_plan(project_path, project, number, entry)
-        )
-        content.episode_plan_stale = stale
-        content.expected_stale_script_plan_revision = stale_revision
-
-        script_plan_state: str | None = None
-        review_pending = False
-        if factory_source:
-            artifacts["script_plan"] = {"state": "not_applicable"}
-            gates["script_plan_review"] = {"state": "not_applicable", "revision": None}
-        elif not is_ad:
-            artifacts["script_plan"] = self._script_plan_artifact(
-                project_path, project, number, shared.currency, issues
-            )
-            if script_review.script_plan_quarantined(project_path, project, number):
-                artifacts["script_plan"]["state"] = "blocked"
-            elif stale:
-                artifacts["script_plan"]["state"] = "stale"
-            script_plan_state = artifacts["script_plan"]["state"]
-            review = script_review.review_status(project_path, project, number)
-            gates["script_plan_review"] = {
-                "state": "confirmed" if review == "confirmed" else "pending",
-                "revision": artifacts["script_plan"].get("revision"),
-            }
-            # 已有正式脚本在用时，重跑的规划未确认只陈述为待确认，不进下一步；集规划 stale 的集
-            # 旧脚本已不可用，重建的规划仍须确认。
-            formal_in_use = entry.get("ledger_status") != "stale" and script_review.prompt_authoring_generated(
-                project_path, project, number
-            )
-            review_pending = (
-                script_plan_state in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}
-                and review != "confirmed"
-                and not formal_in_use
-            )
+        content.episode_source = "present" if factory_source else "absent"
 
         script_artifact, items, kind, _script_data = self._load_script_artifacts(
             project_path, project_name, project, target, issues, shared.currency
         )
+        visual_source_current = False
+        if _script_data is not None:
+            try:
+                require_factory_script(project_path, project, _script_data, number)
+            except ConflictError:
+                pass
+            else:
+                visual_source_current = True
         artifacts["script"] = script_artifact
         formal_present = script_artifact["state"] in {ArtifactStatus.CURRENT.value, ArtifactStatus.STALE.value}
         content.formal_script = (
             "present" if formal_present else "invalid" if script_artifact["state"] == "blocked" else "absent"
         )
         pending_ids: list[str] = []
-        replan_ids: list[str] = []
         without_sheet: list[str] = []
         missing_sheets: list[str] = []
         if formal_present:
@@ -1772,12 +1459,6 @@ class WorkflowStateService:
                 if factory_source and kind in SKELETONS
                 else pending_authoring_entry_ids(items, kind)
             )
-            id_field = SKELETONS[kind].id_field if kind in SKELETONS else None
-            replan_ids = [
-                str(item.get(id_field))
-                for item in items
-                if kind == "video_units" and id_field is not None and item.get("needs_replan") is True
-            ]
             admission = self._reference_admission(project, items, kind)
             without_sheet = [name for _asset_type, name in admission.without_sheet]
             content.referenced_assets_without_sheet = without_sheet
@@ -1821,34 +1502,7 @@ class WorkflowStateService:
                 resolver=shared.currency,
                 issues=issues,
             )
-            # 旁白配音只作为信息报告，不参与下一步：缺 TTS 不拦剪辑，补 TTS 由用户显式发起（见
-            # generate_narration_audio）；后期配音项目不需要 TTS，不报缺口。读不出的配音状态只落在集合的
-            # state 上，不进 issues。
-            artifacts["audio"] = (
-                self._media_collection(
-                    project_path,
-                    items,
-                    kind,
-                    "narration_audio",
-                    episode=number,
-                    resolver=shared.currency,
-                    issues=[],
-                )
-                if mode == "narration"
-                and generation_mode == "storyboard"
-                and project_narration_delivery(project) == USE_TTS
-                else _not_applicable_collection()
-            )
-        elif not is_ad:
-            artifacts["storyboards"] = (
-                _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
-            )
-            artifacts["shot_grids"] = (
-                _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
-            )
-            artifacts["video_prompts"] = (
-                _empty_collection() if generation_mode == "storyboard" else _not_applicable_collection()
-            )
+            artifacts["audio"] = _not_applicable_collection()
         if formal_present or factory_source:
             missing_sheets, content.referenced_asset_sheets_stale, content.referenced_assets_without_description = (
                 self._referenced_sheet_facts(
@@ -1878,7 +1532,6 @@ class WorkflowStateService:
                 dict.fromkeys([*missing_sheets, *content.referenced_assets_without_description])
             )
         content.pending_authoring_ids = pending_ids
-        content.needs_replan_ids = replan_ids
         # 剪辑时间线只陈述这一类内容：视频是否齐全不影响列出已有的几条。
         timeline_ids = self._edit_timeline_ids(project_name, number, artifacts, issues) if formal_present else []
         videos = artifacts["videos"]
@@ -1891,18 +1544,10 @@ class WorkflowStateService:
             and is_episode_complete(ArtifactCount.of(videos, total=len(items)), has_edit_timeline=bool(timeline_ids))
         )
 
-        operations[WorkflowActionType.PREPARE_SCRIPT_PLAN] = admit_script_plan(
-            mode, episode_source=episode_source, formal_script=formal_present, factory_source=factory_source
-        )
-        operations[WorkflowActionType.GENERATE_SCRIPT] = admit_ad_script(
-            mode,
-            formal_script=formal_present,
-            ad_inputs=ad_inputs_present(project),
-        )
         operations[WorkflowActionType.AUTHOR_PROMPTS] = admit_author_prompts(
             formal_script=formal_present,
             pending_ids=pending_ids,
-            draft_pending=any(draft.kind == QUARANTINE_KIND_PROMPT_AUTHORING for draft in content.drafts),
+            draft_pending=False,
         )
         operations[WorkflowActionType.GENERATE_SHOT_GRIDS] = admit_shot_grids(
             mode,
@@ -1918,7 +1563,6 @@ class WorkflowStateService:
         )
 
         episode_args = {"episode_id": number}
-        blank = _action(WorkflowActionType.START_BLANK_SCRIPT, "write the formal script by hand", args=episode_args)
         if factory_source:
             if content.unregistered_references or content.referenced_assets_without_description or missing_sheets:
                 return respond(
@@ -1938,7 +1582,7 @@ class WorkflowStateService:
                         ),
                     ),
                 )
-            if not formal_present or not items or pending_ids:
+            if not formal_present or not visual_source_current or not items or pending_ids:
                 return respond(
                     target,
                     _action(
@@ -1947,133 +1591,19 @@ class WorkflowStateService:
                         args=episode_args,
                     ),
                 )
-        if stale:
-            return respond(
-                target,
-                _action(WorkflowActionType.NONE, "the episode plan is stale; its script plan awaits a rebuild"),
-            )
-        if content.drafts:
-            draft = content.drafts[0]
+        if not factory_source:
             return respond(
                 target,
                 _action(
-                    WorkflowActionType.RESOLVE_DRAFT,
-                    "a draft awaits repair" if draft.needs_repair else "an editable draft awaits completion",
-                    args={**episode_args, "draft_kind": draft.kind, "needs_repair": draft.needs_repair},
+                    WorkflowActionType.COLLECT_PROJECT_INPUT,
+                    "this episode needs factory Markdown artifacts",
+                    args=episode_args,
                 ),
             )
         if content.formal_script == "invalid":
             return respond(target, _action(WorkflowActionType.NONE, "the formal script is invalid"))
-        if not formal_present:
-            if is_ad:
-                if operations[WorkflowActionType.GENERATE_SCRIPT].admitted:
-                    return respond(
-                        target,
-                        _action(WorkflowActionType.GENERATE_SCRIPT, "the ad has no script yet", args=episode_args),
-                        [blank],
-                    )
-                return respond(
-                    target,
-                    _action(WorkflowActionType.COLLECT_PROJECT_INPUT, "the ad needs a creative brief or products"),
-                    [blank],
-                )
-            if script_plan_state == ArtifactStatus.MISSING.value:
-                if episode_source:
-                    preprocessor = workflow_rule(str(mode), str(generation_mode)).preprocessor
-                    return respond(
-                        target,
-                        _action(
-                            WorkflowActionType.PREPARE_SCRIPT_PLAN,
-                            "the episode has neither a script plan nor a formal script",
-                            args={**episode_args, "preprocessor": preprocessor},
-                        ),
-                        [blank],
-                    )
-                return respond(
-                    target,
-                    _action(
-                        WorkflowActionType.START_BLANK_SCRIPT,
-                        "the episode has no episode source to plan from",
-                        args=episode_args,
-                    ),
-                    [
-                        _action(
-                            WorkflowActionType.PROVIDE_EPISODE_SOURCE,
-                            "episode source enables AI script planning",
-                            args=episode_args,
-                        )
-                    ],
-                )
-            if script_plan_state == ArtifactStatus.BLOCKED.value:
-                return respond(target, _action(WorkflowActionType.NONE, "formal script_plan currency is blocked"))
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.CONFIRM_SCRIPT_PLAN,
-                    "formal script_plan awaits content review"
-                    if review_pending
-                    else "confirming the script_plan materializes the missing final script",
-                    args=episode_args,
-                    requires_confirmation=True,
-                ),
-            )
-        if review_pending:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.CONFIRM_SCRIPT_PLAN,
-                    "formal script_plan awaits content review",
-                    args=episode_args,
-                    requires_confirmation=True,
-                ),
-            )
-        if not items:
-            return respond(
-                target,
-                _action(WorkflowActionType.ADD_SCRIPT_ITEMS, "the formal script is empty", args=episode_args),
-            )
-        if pending_ids:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.AUTHOR_PROMPTS,
-                    "script entries still need prompts",
-                    args=episode_args,
-                    ids=pending_ids,
-                ),
-            )
-        if replan_ids:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.REPAIR_VIDEO_UNITS,
-                    "video units need replanning before generation",
-                    args=episode_args,
-                    ids=replan_ids,
-                ),
-            )
-        if missing_sheets:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.GENERATE_ASSET_SHEETS,
-                    "assets referenced by this episode need sheets",
-                    args=episode_args,
-                    ids=missing_sheets,
-                ),
-            )
         if artifacts["storyboards"].get("state") == "blocked" or artifacts["videos"].get("state") == "blocked":
             return respond(target, _action(WorkflowActionType.NONE, "media artifact currency is blocked"))
-        if generation_mode == "storyboard" and not factory_source and artifacts["storyboards"]["missing_ids"]:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.GENERATE_GRID if grid else WorkflowActionType.GENERATE_STORYBOARDS,
-                    "storyboard images are missing",
-                    args=episode_args,
-                    ids=artifacts["storyboards"]["missing_ids"],
-                ),
-            )
         if generation_mode == "storyboard" and artifacts["shot_grids"]["missing_ids"]:
             return respond(
                 target,
@@ -2134,7 +1664,6 @@ class WorkflowStateService:
             project=WorkflowProject(
                 content_mode=str(project.get("content_mode")),
                 generation_mode=str(project.get("generation_mode")),
-                grid_storyboard=project.get("grid_storyboard") is True,
             ),
             target=target,
             blockers=list(shared.blockers),
@@ -2166,7 +1695,6 @@ class WorkflowStateService:
             project=WorkflowProject(
                 content_mode=str(project.get("content_mode")),
                 generation_mode=str(project.get("generation_mode")),
-                grid_storyboard=project.get("grid_storyboard") is True,
             ),
             target=None,
             blockers=[migration_blocker(failure)],
@@ -2174,7 +1702,6 @@ class WorkflowStateService:
             gates={},
             artifacts={
                 "asset_sheets": {},
-                "script_plan": {"state": "missing"},
                 "script": {"state": "missing"},
                 "storyboards": _empty_collection(),
                 "shot_grids": _empty_collection(),
@@ -2222,6 +1749,5 @@ __all__ = [
     "is_episode_complete",
     "migration_blocker",
     "migration_next_action",
-    "planning_docs",
     "workflow_finished",
 ]

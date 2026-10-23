@@ -85,7 +85,7 @@ def generation_tool(
 LIST_PENDING_ASSETS = ToolDeclaration(
     name="list_pending_assets",
     description=(
-        "列出项目中尚无资产图的角色、场景、道具与商品（名称与描述摘要）；type 省略则汇总全部类型。只读，无副作用。"
+        "列出工厂项目中尚无资产图的角色、场景与道具（名称与描述摘要）；type 省略则汇总全部类型。只读，无副作用。"
         "项目数据升级失败时返回 project_migration_failed problem；按其明细修复后调用 retry_project_migration。"
     ),
     request_model=ListPendingAssetsRequest,
@@ -97,7 +97,7 @@ LIST_PENDING_ASSETS = ToolDeclaration(
 GENERATE_ASSETS = generation_tool(
     name="generate_assets",
     description=(
-        "批量生成角色 / 场景 / 道具 / 商品的资产图（付费生成，图片写入项目）。"
+        "批量生成角色 / 场景 / 道具的资产图（付费生成，图片写入项目）。"
         "多个类型的资产纳入同一批次；只补缺图时，已失效但可用的旧图会被复用，不会自动重生。"
         "缺少 description 的资产逐个记为 blocked。"
         "终态结果的 generation_result 按 requested / succeeded / failed / blocked 逐 ID 给出结局，"
@@ -110,7 +110,7 @@ GENERATE_ASSETS = generation_tool(
 GENERATE_STORYBOARDS = generation_tool(
     name="generate_storyboards",
     description=(
-        "为说书（narration）或剧情演绎剧本生成分镜图（付费生成，图片写入项目 storyboards/）。"
+        "为来源一致的工厂 AI 分镜生成独立视觉图（付费生成，图片写入项目 storyboards/），不代替 K 帧确认。"
         "只补缺图时，已失效但可用的旧图不会被自动重生。"
         "引用了未登记名称或所引用主体尚无资产图的分镜、缺少 image_prompt 的分镜逐个记为 blocked；"
         "生成失败的分镜另记录到 storyboards/generation_failures.json。"
@@ -141,7 +141,7 @@ EDIT_IMAGES = generation_tool(
 GENERATE_NARRATION_AUDIO = generation_tool(
     name="generate_narration_audio",
     description=(
-        "为任意生成模式中由 narrator 拥有发声内容的单元显式生成旁白配音（TTS；付费生成，音频写入项目 audio/）。"
+        "为工厂分镜中由 narrator 拥有发声内容的单元显式生成旁白配音（TTS；付费生成，音频写入项目 audio/）。"
         "只补缺配音时，已失效但可用的旧配音不会被自动重生。"
         "显式点名的单元若发声不属于叙述旁白、未通过发声准入或没有可合成的旁白文本，逐个记为 blocked。"
         "终态结果的 generation_result 按 requested / succeeded / failed / blocked 逐 ID 给出结局，"

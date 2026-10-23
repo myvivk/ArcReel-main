@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from lib.project.project_migrations.v6_to_v7_ad_reference_video_units import migrate_v6_to_v7
-from lib.script.reference_video.text_parser import extract_mentions
+from lib.references.text_parser import extract_mentions
 
 
 def _write_json(path: Path, payload: object) -> None:

@@ -126,11 +126,9 @@ function installStubs(name = "demo-proj") {
 const nextButton = () => screen.getByRole("button", { name: /^(下一步|Next)$/ });
 const clickNext = () => fireEvent.click(nextButton());
 
-/** 填好第一步的必填项：标题、创作类型、生成方式。 */
-function fillBasics({ mode = "旁白/解说", route = "分镜图生视频" }: { mode?: string; route?: string } = {}) {
+/** 工厂创建只需填写标题，制作路线固定。 */
+function fillBasics() {
   fireEvent.change(screen.getByRole("textbox", { name: "项目标题" }), { target: { value: "demo" } });
-  fireEvent.click(screen.getByRole("radio", { name: new RegExp(mode) }));
-  fireEvent.click(screen.getByRole("radio", { name: new RegExp(route) }));
 }
 
 /** 从第一步走到第三步，停在「创建项目」可点的状态。 */
@@ -152,20 +150,13 @@ async function createWithDefaults() {
 describe("CreateProjectModal", () => {
   beforeEach(() => installStubs());
 
-  it("has no default content mode or generation route and lists what step 1 still needs", () => {
+  it("requires a title and exposes only the factory creation route", () => {
     render(<CreateProjectModal />);
-    for (const radio of screen.getAllByRole("radio")) {
-      if (/竖屏/.test(radio.closest("label")?.textContent ?? "")) continue;
-      expect(radio).not.toBeChecked();
-    }
     expect(nextButton()).toBeDisabled();
-    expect(nextButton()).toHaveAccessibleDescription("还需要：项目标题、创作类型、生成方式");
+    expect(nextButton()).toHaveAccessibleDescription("还需要：项目标题");
+    expect(screen.queryByRole("radio", { name: /旁白\/解说|广告\/短片|参考生视频/ })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("textbox", { name: "项目标题" }), { target: { value: "demo" } });
-    fireEvent.click(screen.getByRole("radio", { name: /剧情演绎/ }));
-    expect(nextButton()).toHaveAccessibleDescription("还需要：生成方式");
-
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
     expect(nextButton()).toBeEnabled();
     expect(nextButton()).not.toHaveAccessibleDescription();
   });
@@ -185,10 +176,9 @@ describe("CreateProjectModal", () => {
     expect(payload).toEqual(
       expect.objectContaining({
         title: "demo",
-        content_mode: "narration",
+        content_mode: "drama",
         aspect_ratio: "9:16",
         generation_mode: "storyboard",
-        grid_storyboard: false,
         style_template_id: "live_premium_drama",
         video_backend: null,
         default_image_backend: null,
@@ -292,46 +282,17 @@ describe("CreateProjectModal", () => {
       duration_constraints: { resolution: null, uses_reference_images: true, allowed: [8], excluded: {} },
     } as never);
     render(<CreateProjectModal />);
-    fillBasics({ route: "参考生视频" });
+    fillBasics();
     clickNext();
     // 项目尚不存在：按全局默认解析出的候选模型走无项目端点，并带上参考图路径
     await waitFor(() =>
       expect(API.getModelVideoCapabilities).toHaveBeenCalledWith(
         "gemini-aistudio/veo-3",
-        expect.objectContaining({ usesReferenceImages: true, resolution: null }),
+        expect.objectContaining({ usesReferenceImages: false, resolution: null }),
       ),
     );
     expect(await screen.findByRole("radio", { name: "8 秒" })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "4 秒" })).not.toBeInTheDocument();
-  });
-
-  it("submits grid_storyboard only while the storyboard route keeps it on", async () => {
-    render(<CreateProjectModal />);
-    fillBasics();
-    fireEvent.click(screen.getByRole("switch", { name: "多宫格分镜" }));
-    // 切到参考生视频清空开关，切回来时保持关闭
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
-    expect(screen.queryByRole("switch", { name: "多宫格分镜" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: /分镜图生视频/ }));
-    expect(screen.getByRole("switch", { name: "多宫格分镜" })).not.toBeChecked();
-    fireEvent.click(screen.getByRole("switch", { name: "多宫格分镜" }));
-
-    fireEvent.click(await walkToStyle());
-    await waitFor(() =>
-      expect(API.createProject).toHaveBeenCalledWith(
-        expect.objectContaining({ generation_mode: "storyboard", grid_storyboard: true }),
-      ),
-    );
-  });
-
-  it("hides the grid toggle for ad projects and clears it when switching to ad", () => {
-    render(<CreateProjectModal />);
-    fillBasics();
-    fireEvent.click(screen.getByRole("switch", { name: "多宫格分镜" }));
-    fireEvent.click(screen.getByRole("radio", { name: /广告\/短片/ }));
-    expect(screen.queryByRole("switch", { name: "多宫格分镜" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: /旁白\/解说/ }));
-    expect(screen.getByRole("switch", { name: "多宫格分镜" })).not.toBeChecked();
   });
 
   it("submits the speech rate and episode target duration filled on step 2", async () => {
@@ -366,65 +327,8 @@ describe("CreateProjectModal", () => {
     clickNext();
     fireEvent.click(await screen.findByRole("button", { name: "上一步" }));
     expect(screen.getByRole("textbox", { name: "项目标题" })).toHaveValue("demo");
-    expect(screen.getByRole("radio", { name: /旁白\/解说/ })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /旁白\/解说/ })).not.toBeInTheDocument();
     expect(nextButton()).toBeEnabled();
-  });
-
-  it("revalidates duration and resolution when step 1 switches the executing video model", async () => {
-    // 全局给两条视频路径指定了不同模型时，改生成模式即换执行模型：时长与分辨率都是按前一个
-    // 模型选的，不清掉会被写到新模型名下
-    vi.spyOn(API, "getSystemConfig").mockResolvedValue({
-      ...mockSysConfig,
-      settings: {
-        ...mockSysConfig.settings,
-        default_video_backend_i2v: "gemini-aistudio/veo-3",
-        default_video_backend_r2v: "ark/seedance",
-      },
-    } as never);
-    vi.spyOn(API, "getProviders").mockResolvedValue({
-      providers: [
-        {
-          id: "gemini-aistudio", display_name: "Gemini AI Studio", description: "", status: "ready" as const,
-          media_types: ["video", "image", "text"], capabilities: [], credential_count: 0,
-          models: {
-            "veo-3": {
-              display_name: "veo-3", media_type: "video", capabilities: [], default: false,
-              supported_durations: [4, 6, 8],
-              resolutions: ["720p", "1080p"],
-            },
-          },
-        },
-        {
-          id: "ark", display_name: "Ark", description: "", status: "ready" as const,
-          media_types: ["video"], capabilities: [], credential_count: 0,
-          models: {
-            seedance: {
-              display_name: "seedance", media_type: "video", capabilities: [], default: false,
-              supported_durations: [5, 10],
-              resolutions: ["720p"],
-            },
-          },
-        },
-      ],
-    } as never);
-
-    render(<CreateProjectModal />);
-    fillBasics();
-    clickNext();
-    // 第二步按 i2v 执行模型（veo-3）列时长与分辨率
-    fireEvent.click(await screen.findByRole("radio", { name: "4 秒" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /分辨率/ }), { target: { value: "1080p" } });
-    fireEvent.click(screen.getByRole("button", { name: "上一步" }));
-    fireEvent.click(screen.getByRole("radio", { name: /参考生视频/ }));
-    fireEvent.click(await walkToStyle());
-    // 执行模型换成 seedance：4 秒不在其支持集内、1080p 也不是它的分辨率，两者都不跟进载荷
-    await waitFor(() =>
-      expect(API.createProject).toHaveBeenCalledWith(
-        expect.objectContaining({ generation_mode: "reference_video", default_duration: null }),
-      ),
-    );
-    const payload = vi.mocked(API.createProject).mock.calls[0][0] as { model_settings?: Record<string, unknown> };
-    expect(payload.model_settings).toBeUndefined();
   });
 
   it("shows an error toast and stays on step 3 when createProject fails", async () => {
@@ -468,43 +372,6 @@ describe("CreateProjectModal", () => {
   });
 });
 
-describe("CreateProjectModal ad mode", () => {
-  beforeEach(() => installStubs("ad-proj"));
-
-  it("submits the chosen target duration and no default duration", async () => {
-    render(<CreateProjectModal />);
-    fillBasics({ mode: "广告\\/短片" });
-    clickNext();
-    fireEvent.click(await screen.findByRole("radio", { name: "30 秒" }));
-    expect(screen.queryByLabelText(/单集目标时长/)).not.toBeInTheDocument();
-    await waitFor(() => expect(nextButton()).toBeEnabled());
-    clickNext();
-    fireEvent.click(await screen.findByRole("button", { name: "创建项目" }));
-    await waitFor(() => expect(API.createProject).toHaveBeenCalled());
-
-    const payload = vi.mocked(API.createProject).mock.calls[0][0];
-    expect(payload).toEqual(expect.objectContaining({ content_mode: "ad", target_duration: 30 }));
-    expect(payload).not.toHaveProperty("default_duration");
-    expect(navigateMock).toHaveBeenCalledWith("/app/projects/ad-proj");
-  });
-
-  it("blocks step 2 until a custom target duration is a positive whole number", async () => {
-    render(<CreateProjectModal />);
-    fillBasics({ mode: "广告\\/短片" });
-    clickNext();
-    fireEvent.click(await screen.findByRole("radio", { name: "自定义" }));
-    expect(nextButton()).toHaveAccessibleDescription("请修正：目标总时长");
-    fireEvent.change(screen.getByRole("spinbutton", { name: "自定义目标总时长（秒）" }), { target: { value: "45" } });
-    await waitFor(() => expect(nextButton()).toBeEnabled());
-    clickNext();
-    fireEvent.click(await screen.findByRole("button", { name: "创建项目" }));
-    await waitFor(() =>
-      expect(API.createProject).toHaveBeenCalledWith(expect.objectContaining({ target_duration: 45 })),
-    );
-  });
-});
-
-// 供应商名由后端按 Accept-Language 成文，替身按当前语言返回对应译名。
 function sysConfigFor(lang: string) {
   return {
     ...mockSysConfig,

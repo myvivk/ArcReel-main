@@ -61,10 +61,11 @@ from lib.generation.generation_result import (
 from lib.generation.video_request_facts import VideoRequestCostFacts, VideoRequestFacts, VideoRequestFactsFailure
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.schema_guards import is_int
-from lib.project.project_manager import ProjectManager, find_episode, is_reference_video_project
+from lib.project.project_manager import ProjectManager, find_episode
 from lib.prompts.prompt_builders import render_storyboard_image_prompt
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
+from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
     parse_scene_shots,
     shot_scene_text,
@@ -73,7 +74,7 @@ from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from lib.script.grid.shot_prompt_builder import shot_grid_cells
 from lib.script.script_models import get_generated_assets, resolve_content_mode
-from lib.script.script_skeleton import ensure_route_skeleton, resolve_script_kind
+from lib.script.script_skeleton import resolve_script_kind
 from lib.script.storyboard_sequence import (
     StoryboardImageUnavailable,
     build_storyboard_dependency_plan,
@@ -130,10 +131,6 @@ class StoryboardBatchEpisodeNotFound(LookupError):
         super().__init__(f"episode {episode_id} has no formal script in this project")
 
 
-class StoryboardBatchRouteMismatch(ValueError):
-    """参考生视频项目没有分镜图这一步，分镜批量不适用。"""
-
-
 @dataclass(frozen=True, slots=True)
 class EpisodeStoryboardScript:
     """集范围批量读取的项目现状：项目、这一集的正式脚本及其产物集号。"""
@@ -153,13 +150,10 @@ def load_episode_storyboard_script(
 
     Raises:
         StoryboardBatchEpisodeNotFound: 集不存在，或还没有正式脚本。
-        StoryboardBatchRouteMismatch: 项目走参考生视频。
-        SkeletonRouteMismatchError: 剧本骨架与项目生成模式失配。
+        ConflictError: 不是工厂项目，或派生状态与工厂源稿修订不一致。
     """
 
     project = projects.load_project(project_name)
-    if is_reference_video_project(project):
-        raise StoryboardBatchRouteMismatch("参考生视频项目没有分镜图步骤")
     entry = find_episode(project, episode_id)
     recorded = entry.get("script_file") if entry is not None else None
     if not isinstance(recorded, str) or not recorded:
@@ -170,8 +164,8 @@ def load_episode_storyboard_script(
         script = projects.load_script(project_name, script_file)
     except FileNotFoundError as exc:
         raise StoryboardBatchEpisodeNotFound(episode_id) from exc
-    ensure_route_skeleton(script, resolve_content_mode(script, project), project.get("generation_mode"))
     episode = resolve_artifact_episode(project=project, script=script, script_filename=script_file) or episode_id
+    require_factory_script(projects.get_project_path(project_name), project, script, episode)
     return EpisodeStoryboardScript(
         project=project,
         project_path=projects.get_project_path(project_name),
@@ -969,7 +963,6 @@ __all__ = [
     "EpisodeStoryboardScript",
     "ShotGridBatchPlan",
     "StoryboardBatchEpisodeNotFound",
-    "StoryboardBatchRouteMismatch",
     "StoryboardImageBatchPlan",
     "StoryboardVideoBatchPlan",
     "estimate_storyboard_video_batch_cost",

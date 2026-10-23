@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from lib.script.reference_video.text_parser import (
+from lib.references.text_parser import (
     find_malformed_mention,
     speech_line_description,
     split_speech_line,

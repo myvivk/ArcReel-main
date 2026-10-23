@@ -13,13 +13,14 @@ from lib.bgm.library import TARGET_LOUDNESS_LUFS, bgm_key
 from lib.bgm.service import BgmError, BgmLibraryService
 from lib.project.project_manager import ProjectManager
 from tests.factories import wav_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 @pytest.fixture
 def blank_pm(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(str(tmp_path / "projects"))
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     return manager
 
 

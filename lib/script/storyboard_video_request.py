@@ -15,10 +15,10 @@ from lib.infra.path_safety import safe_join
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key
 from lib.prompts.prompt_utils import utterances_to_dialogue
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.reference_video.prompt_render import resolve_reference_audio_paths
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.storyboard_sequence import StoryboardVideoSlots, find_storyboard_item, resolve_storyboard_image_ref
 from lib.speech.character_voice import character_voice_binding
+from lib.speech.reference_audio import resolve_reference_audio_paths
+from lib.speech.voice_settings import VoiceRenderSettings
 
 
 def storyboard_asset_links(project: Mapping[str, Any], item: Mapping[str, Any], project_name: str) -> str:

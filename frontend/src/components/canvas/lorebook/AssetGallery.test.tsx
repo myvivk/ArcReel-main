@@ -146,17 +146,6 @@ describe("AssetGallery", () => {
     expect(screen.getByRole("button", { name: "切换到此版本" })).toBeDisabled();
   });
 
-  it("keeps library actions out of product cards", async () => {
-    const user = userEvent.setup();
-    renderGallery({ assetType: "product", title: "商品", libraryPreview: undefined });
-
-    const menu = await openMenu(user, "庭院");
-
-    expect(within(menu).queryByRole("menuitem", { name: "加入资产库" })).not.toBeInTheDocument();
-    expect(within(menu).queryByRole("menuitem", { name: "并入…" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "从资产库选择" })).not.toBeInTheDocument();
-  });
-
   it("offers only the image viewer when read-only", async () => {
     const user = userEvent.setup();
     renderGallery({ readOnly: true });

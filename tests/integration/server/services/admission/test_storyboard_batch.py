@@ -15,10 +15,12 @@ from lib.generation.batch_admission import BatchAdmissionDecision
 from lib.generation.generation_queue import GenerationQueue
 from lib.generation.generation_result import GenerationSelectionMode
 from lib.generation.video_request_facts import VideoRequestCostFacts
+from lib.infra.api_errors import ConflictError
 from lib.project.project_manager import ProjectManager
 from lib.script.grid.keyframe_parser import parse_scene_shots
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
+from lib.script.short_drama_source import replace_short_drama_source
 from server.services.admission.cost_estimation import quote_video_request_from_price
 from server.services.admission.storyboard_batch import (
     SHOT_GRID_BATCH_COLS,
@@ -27,7 +29,6 @@ from server.services.admission.storyboard_batch import (
     BatchSkip,
     BatchSkipReason,
     StoryboardBatchEpisodeNotFound,
-    StoryboardBatchRouteMismatch,
     estimate_storyboard_video_batch_cost,
     load_shot_grid_batch_plan,
     load_storyboard_image_batch_plan,
@@ -63,7 +64,7 @@ def _sequence(*texts: str) -> str:
 def board_projects(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(tmp_path / "projects")
     manager.create_project(PROJECT)
-    manager.create_project_metadata(PROJECT, "Demo", content_mode="narration")
+    manager.create_project_metadata(PROJECT, "Demo", content_mode="drama")
     return manager
 
 
@@ -74,10 +75,10 @@ async def board_queue(session_factory, board_projects: ProjectManager) -> Genera
     return generation_queue
 
 
-def _segment(segment_id: str, **overrides: object) -> dict:
+def _segment(scene_id: str, **overrides: object) -> dict:
     segment: dict = {
-        "segment_id": segment_id,
-        "novel_text": "黄昏时分，风吹过村口。",
+        "scene_id": scene_id,
+        "source_text": "黄昏时分，风吹过村口。",
         "image_prompt": "村口黄昏",
         "video_prompt": {"action": "镜头平移", "camera_motion": "Pan", "ambiance_audio": "风声"},
         "duration_seconds": 4,
@@ -90,7 +91,9 @@ def _segment(segment_id: str, **overrides: object) -> dict:
 def _write_episode(board_projects: ProjectManager, segments: list[dict]) -> None:
     scripts = board_projects.get_project_path(PROJECT) / "scripts"
     scripts.mkdir(exist_ok=True)
-    script = {"episode": 1, "title": "第一集", "content_mode": "narration", "segments": segments}
+    script = {"episode": 1, "title": "第一集", "content_mode": "drama", "scenes": segments}
+    saved = replace_short_drama_source(board_projects, PROJECT, 1, "# 第1集\n黄昏时分，风吹过村口。\n")
+    script["short_drama_meta"] = {"source_revision": saved.revision}
     (scripts / "episode_1.json").write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
     board_projects.add_episode(PROJECT, 1, "第一集", "scripts/episode_1.json")
 
@@ -114,36 +117,36 @@ def _claim_stale(board_projects: ProjectManager, key: ArtifactKey, relative_path
     )
 
 
-def _with_storyboard(board_projects: ProjectManager, segment_id: str) -> dict:
+def _with_storyboard(board_projects: ProjectManager, scene_id: str) -> dict:
     """带一张现行分镜图的分镜：图先落盘并登记，剧本随后写入。"""
 
-    relative_path = f"storyboards/scene_{segment_id}.png"
+    relative_path = f"storyboards/scene_{scene_id}.png"
     _write_media(board_projects, relative_path)
-    return _segment(segment_id, generated_assets={"storyboard_image": relative_path})
+    return _segment(scene_id, generated_assets={"storyboard_image": relative_path})
 
 
-def _claim_storyboards(board_projects: ProjectManager, *segment_ids: str) -> None:
-    for segment_id in segment_ids:
-        _claim_current(board_projects, ArtifactKey.episode_storyboard(1, segment_id))
+def _claim_storyboards(board_projects: ProjectManager, *scene_ids: str) -> None:
+    for scene_id in scene_ids:
+        _claim_current(board_projects, ArtifactKey.episode_storyboard(1, scene_id))
 
 
 class TestStoryboardImagePrompt:
     def test_structured_prompt_carries_one_style_line(self) -> None:
         segment = {
-            "segment_id": "E1S01",
+            "scene_id": "E1S01",
             "image_prompt": {
                 "scene": "村口黄昏",
                 "composition": {"shot_type": "Medium Shot", "lighting": "暖光", "ambiance": "薄雾"},
             },
         }
-        out = storyboard_image_prompt(segment, "真人电视剧风格", "Soft light", "segment_id")
+        out = storyboard_image_prompt(segment, "真人电视剧风格", "Soft light", "scene_id")
 
         assert out.count("Style:") == 1
         assert out.startswith("Style: 真人电视剧风格\nVisual style: Soft light")
 
     def test_unstructured_prompt_keeps_one_style_line(self) -> None:
-        segment = {"segment_id": "E1S02", "image_prompt": "村口黄昏的长镜头"}
-        out = storyboard_image_prompt(segment, "真人电视剧风格", "", "segment_id")
+        segment = {"scene_id": "E1S02", "image_prompt": "村口黄昏的长镜头"}
+        out = storyboard_image_prompt(segment, "真人电视剧风格", "", "scene_id")
 
         assert out.count("Style:") == 1
         assert "\n\n村口黄昏的长镜头\n\n" in out
@@ -151,7 +154,7 @@ class TestStoryboardImagePrompt:
 
     def test_missing_prompt_is_refused(self) -> None:
         with pytest.raises(ValueError, match="E1S03"):
-            storyboard_image_prompt({"segment_id": "E1S03", "image_prompt": None}, "", "", "segment_id")
+            storyboard_image_prompt({"scene_id": "E1S03", "image_prompt": None}, "", "", "scene_id")
 
 
 async def test_image_batch_targets_segments_without_a_usable_storyboard(
@@ -166,7 +169,7 @@ async def test_image_batch_targets_segments_without_a_usable_storyboard(
             stale,
             _segment("E1S03"),
             _segment("E1S04", image_prompt=None),
-            _segment("E1S05", characters_in_segment=["无名氏"]),
+            _segment("E1S05", characters_in_scene=["无名氏"]),
             _segment("E1S06", segment_break=True),
         ],
     )
@@ -227,7 +230,7 @@ async def test_image_batch_rejects_an_unknown_episode_and_a_reference_project(
         )
 
     board_projects.update_project(PROJECT, lambda project: project.update({"generation_mode": "reference_video"}))
-    with pytest.raises(StoryboardBatchRouteMismatch):
+    with pytest.raises(ConflictError, match="short_drama_factory_only"):
         await load_storyboard_image_batch_plan(
             board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
         )
@@ -322,7 +325,7 @@ async def test_video_batch_is_refused_whole_when_one_target_fails_admission(
     _claim_storyboards(board_projects, "E1S01", "E1S02")
     # 分镜图生成之后才补的引用：Alice 还没有资产图，这一条的视频不能提交。
     with board_projects.locked_script(PROJECT, "episode_1.json") as script:
-        script["segments"][1]["characters_in_segment"] = ["Alice"]
+        script["scenes"][1]["characters_in_scene"] = ["Alice"]
 
     plan = await load_storyboard_video_batch_plan(
         board_projects,
@@ -470,7 +473,7 @@ async def test_admission_reprojects_previous_frame_and_count_for_a_selected_subs
     spec = next(spec for spec in plan.specs if spec.resource_id == "E1S02")
     assert spec.payload["storyboard_reference_count"] == 2
     _write_media(board_projects, "end_frames/scene_E1S01.png")
-    prior, current = board_projects.load_script(PROJECT, "episode_1.json")["segments"]
+    prior, current = board_projects.load_script(PROJECT, "episode_1.json")["scenes"]
     prior["end_frame_image"] = "end_frames/scene_E1S01.png"
     admission = await admit_storyboard_video_request(
         project_name=PROJECT,
@@ -479,7 +482,7 @@ async def test_admission_reprojects_previous_frame_and_count_for_a_selected_subs
         script_file="episode_1.json",
         items=[current],
         storyboard_items=[prior, current],
-        id_field="segment_id",
+        id_field="scene_id",
         specs=[spec],
         operation="generate_videos",
         selection=GenerationSelectionMode.EXPLICIT,
@@ -487,7 +490,7 @@ async def test_admission_reprojects_previous_frame_and_count_for_a_selected_subs
         user_id=DEFAULT_USER_ID,
         queue=board_queue,
         video_request_facts=facts,
-        content_mode="narration",
+        content_mode="drama",
     )
     assert admission.decision is BatchAdmissionDecision.BLOCKED
     assert admission.unit_ids == ("E1S02",)
@@ -535,12 +538,7 @@ async def test_reference_audio_limit_blocks_every_target_before_queueing(
     ]
     for scene in scenes:
         _write_media(board_projects, scene["generated_assets"]["storyboard_image"])
-    scripts = project_path / "scripts"
-    scripts.mkdir(exist_ok=True)
-    (scripts / "episode_1.json").write_text(
-        json.dumps({"episode": 1, "content_mode": "drama", "scenes": scenes}, ensure_ascii=False), encoding="utf-8"
-    )
-    board_projects.add_episode(PROJECT, 1, "第一集", "scripts/episode_1.json")
+    _write_episode(board_projects, scenes)
     _claim_storyboards(board_projects, "E1S01", "E1S02")
     plan = await load_storyboard_video_batch_plan(
         board_projects,
@@ -572,10 +570,10 @@ async def test_reference_audio_limit_blocks_every_target_before_queueing(
     )
 
 
-def _save_grid(board_projects: ProjectManager, segment_id: str, **overrides: object) -> ShotGrid:
+def _save_grid(board_projects: ProjectManager, scene_id: str, **overrides: object) -> ShotGrid:
     """落一条宫格记录：默认 2×2 草稿，逐格文本从 scene 现解析出来的两段。"""
 
-    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=segment_id, rows=2, cols=2)
+    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=scene_id, rows=2, cols=2)
     grid.prompt = _sequence("小明推开院门", "小明望向远方")
     for key, value in overrides.items():
         setattr(grid, key, value)
@@ -590,7 +588,7 @@ async def test_shot_grid_batch_targets_shots_without_a_confirmed_grid(
     confirmed = _segment("E1S02", image_prompt=_scene(("全景", "小明走进院子")))
     no_scene = _segment("E1S03", image_prompt={"scene": ""})
     not_sequence = _segment("E1S04", image_prompt={"scene": "小明站在院门口，只有一句话"})
-    unregistered = _segment("E1S05", image_prompt=_scene(("中景", "小明抬起头")), characters_in_segment=["无名氏"])
+    unregistered = _segment("E1S05", image_prompt=_scene(("中景", "小明抬起头")), characters_in_scene=["无名氏"])
     chained = _segment("E1S06", image_prompt=_scene(("近景", "小明伸出手")))
     _write_episode(board_projects, [first, confirmed, no_scene, not_sequence, unregistered, chained])
     _save_grid(board_projects, "E1S02", status="confirmed")
@@ -715,7 +713,7 @@ async def test_shot_grid_batch_rejects_an_unknown_episode_and_a_reference_projec
         )
 
     board_projects.update_project(PROJECT, lambda project: project.update({"generation_mode": "reference_video"}))
-    with pytest.raises(StoryboardBatchRouteMismatch):
+    with pytest.raises(ConflictError, match="short_drama_factory_only"):
         await load_shot_grid_batch_plan(
             board_projects, board_queue, project_name=PROJECT, episode_id=1, user_id=DEFAULT_USER_ID
         )

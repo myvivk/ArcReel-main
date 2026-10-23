@@ -29,6 +29,7 @@ from lib.generation.generation_queue import get_generation_queue
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.path_safety import safe_join
 from lib.project.project_manager import get_project_manager
+from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
     ShotFrame,
     format_grid_prompt,
@@ -179,6 +180,9 @@ async def author_shot_grid_prompt(
 
     project_manager = get_project_manager()
     script = project_manager.load_script(project_name, req.script_file)
+    require_factory_script(
+        project_manager.get_project_path(project_name), project_manager.load_project(project_name), script, req.episode
+    )
     items, id_field, char_field, scene_field, prop_field = get_storyboard_items(script)
     shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
     if script.get("episode") != req.episode or shot is None:
@@ -273,6 +277,9 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest, t: Translator):
 
     project_manager = get_project_manager()
     script = project_manager.load_script(project_name, req.script_file)
+    require_factory_script(
+        project_manager.get_project_path(project_name), project_manager.load_project(project_name), script, req.episode
+    )
     items, id_field, _, _, _ = get_storyboard_items(script)
     shot = next((item for item in items if str(item.get(id_field, "")) == req.shot_id), None)
     if script.get("episode") != req.episode or shot is None:
@@ -340,6 +347,8 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
     grid = manager.find(script_file=script_file, shot_id=shot_id)
     if grid is None:
         raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
+    script = project_manager.load_script(project_name, script_file)
+    require_factory_script(project_path, project_manager.load_project(project_name), script, grid.episode)
     if grid.status == "generating":
         return {"task_id": grid.task_id, "status": grid.status}
 

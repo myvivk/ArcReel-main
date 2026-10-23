@@ -1047,7 +1047,6 @@ class AssistantService:
     _SKILL_ICONS: ClassVar[dict[str, str]] = {
         "video-workflow": "clapperboard",
         "generate-storyboard": "images",
-        "generate-grid": "grid-2x2",
         "generate-video": "film",
         "generate-narration-audio": "audio-lines",
         "generate-assets": "users",

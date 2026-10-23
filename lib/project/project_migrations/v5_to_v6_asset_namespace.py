@@ -22,7 +22,7 @@ from lib.project.asset_types import (
     validate_asset_name,
 )
 from lib.project.project_migrations.staged_swap import new_rollback_dir, new_staging_dir
-from lib.script.reference_video.text_parser import line_speech_marks, rewrite_mentions
+from lib.references.text_parser import line_speech_marks, rewrite_mentions
 
 logger = logging.getLogger(__name__)
 

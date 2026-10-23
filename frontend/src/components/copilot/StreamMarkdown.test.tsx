@@ -241,9 +241,9 @@ describe("StreamMarkdown 应用内链接", () => {
     const { container } = await renderLoaded("[E1U3 的问题](/app/projects/demo/episodes/2?unit=E1U3&t=4.5)");
     fireEvent.click(container.querySelector("a")!);
     expect(window.location.pathname + window.location.search).toBe("/app/projects/demo/episodes/2");
-    expect(useAppStore.getState().scrollTarget).toMatchObject({ type: "reference_unit", id: "E1U3" });
+    expect(useAppStore.getState().scrollTarget).toMatchObject({ type: "segment", id: "E1U3" });
     expect(useAppStore.getState().playbackStart).toMatchObject({
-      resource_type: "reference_videos",
+      resource_type: "videos",
       resource_id: "E1U3",
       seconds: 4.5,
     });

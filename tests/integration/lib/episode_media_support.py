@@ -9,12 +9,12 @@ from lib.episode.episode_sources import discover_sources
 from lib.infra.json_io import atomic_write_json
 from lib.project.project_manager import ProjectManager
 from tests.integration.lib.workflow.test_workflow_state import (
-    _complete_episode_media,
     _register_produced_artifacts,
     _valid_narration_segment,
     _write_episode_source,
     _write_registered_script,
     _write_source,
+    complete_episode_media,
 )
 
 
@@ -47,7 +47,7 @@ def episodes_with_media(pm: ProjectManager, project_path: Path, count: int) -> N
                 "segments": [
                     _valid_narration_segment(
                         segment_id=resource_id,
-                        generated_assets=_complete_episode_media(project_path, resource_id),
+                        generated_assets=complete_episode_media(project_path, resource_id),
                     )
                 ],
             },

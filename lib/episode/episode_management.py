@@ -11,11 +11,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from lib.episode.episode_ids import allocate_episode_ids
-from lib.episode.episode_ledger import normalize_source_text, parse_positive_episode_num
+from lib.episode.episode_ledger import parse_positive_episode_num
 from lib.episode.episode_paths import episode_script_relpath
-from lib.episode.episode_source_commands import write_episode_source_file
 from lib.episode.episode_sources import SOURCE_ORIGIN_FIELD, SourceOrigin, cut_episode_placements, discover_sources
-from lib.episode.source_kinds import SourceKind, record_episode_kind
 
 if TYPE_CHECKING:
     from lib.project.project_manager import ProjectManager
@@ -54,26 +52,13 @@ def create_episode(
     after: int | None = None,
     title: str = "",
     hook: str = "",
-    source_text: str | None = None,
-    source_kind: SourceKind | None = None,
 ) -> int:
-    """新建一集，返回新集 ID。``after`` 是插在哪一集之后，None 时放在播出顺序末尾。
-
-    ``source_text`` 去掉首尾空白后非空时写成集原文，这一集是自带原文的集，剧情演绎项目记 ``source_kind``
-    （缺省为小说）；否则是无原文的集，没有类型。
-    """
-    text = normalize_source_text(source_text) if source_text is not None else ""
-    project_dir = pm.get_project_path(project_name)
-    with pm.locked_source_registration(project_name) as (_source_dir, project, undo):
-        if project.get("content_mode") == "ad":
-            raise EpisodeManagementError("ad_episode_locked", "广告/短片项目只有一集，不能新建或删除集")
+    """创建尚未交稿的工厂集账本，正文仅由工厂工件入库提供。"""
+    with pm.locked_source_registration(project_name) as (_source_dir, project, _undo):
         entries = _ledger(project)
         insert_at = len(entries) if after is None else _index_of(entries, after) + 1
         (episode,) = allocate_episode_ids(project, 1)
         origin = SourceOrigin.NONE
-        if text.strip():
-            write_episode_source_file(project_dir, episode, text, archive_existing=True, undo=undo)
-            origin = SourceOrigin.OWN
         entry: dict[str, Any] = {
             "episode": episode,
             "title": title.strip(),
@@ -82,8 +67,6 @@ def create_episode(
         }
         if hook.strip():
             entry["hook"] = hook.strip()
-        if origin is SourceOrigin.OWN:
-            record_episode_kind(project, entry, source_kind)
         project["episodes"] = [*entries[:insert_at], entry, *entries[insert_at:]]
     return episode
 

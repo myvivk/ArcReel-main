@@ -3,7 +3,7 @@ import unicodedata
 import pytest
 
 from lib.project.asset_types import DERIVATIVES_FIELD
-from lib.script.reference_video.text_parser import (
+from lib.references.text_parser import (
     extract_mentions,
     leading_mention_before_colon,
     line_speech_marks,

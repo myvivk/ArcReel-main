@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ImagePlus, Loader2, Upload } from "lucide-react";
+import { Loader2, Upload } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/app-store";
@@ -14,7 +14,7 @@ import { useTrackWrite } from "./useAssetWrites";
 
 const IMAGE_ACCEPT = ".png,.jpg,.jpeg,.webp";
 
-type OriginalsAssetType = "character" | "product";
+type OriginalsAssetType = "character";
 
 interface AssetOriginalsFieldProps {
   projectName: string;
@@ -46,19 +46,14 @@ export function AssetOriginalsField({
   const track = useTrackWrite();
   // 订阅指纹表本身：只取 getAssetFingerprint 函数时指纹更新不会触发重渲染，地址停在旧版本
   const fingerprints = useProjectsStore((s) => s.assetFingerprints);
-  const multiple = assetType === "product";
   const urls = paths.map((path) => API.getFileUrl(projectName, path, fingerprints[path] ?? null));
   // 列表只显示缩略图（多张 64px 方块，单张 112px 高），点开查看时才拉原图
   const thumbUrls = paths.map((path) =>
-    API.getFileUrl(projectName, path, fingerprints[path] ?? null, { width: multiple ? 160 : 640 }),
+    API.getFileUrl(projectName, path, fingerprints[path] ?? null, { width: 640 }),
   );
-  const altOf = (index: number) =>
-    multiple ? t("assets:original_alt_indexed", { name, index: index + 1 }) : t("assets:original_alt", { name });
-  const uploadLabel = multiple
-    ? t("dashboard:product_upload_refs")
-    : paths.length > 0
-      ? t("assets:original_replace")
-      : t("assets:original_upload");
+  const altOf = () =>
+    t("assets:original_alt", { name });
+  const uploadLabel = paths.length > 0 ? t("assets:original_replace") : t("assets:original_upload");
 
   const upload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -71,7 +66,7 @@ export function AssetOriginalsField({
       await track(
         (async () => {
           for (const file of files) {
-            await API.uploadFile(projectName, multiple ? "product_ref" : "character_ref", file, name);
+            await API.uploadFile(projectName, "character_ref", file, name);
             uploaded += 1;
           }
         })(),
@@ -90,8 +85,6 @@ export function AssetOriginalsField({
   const disabled = busy || uploading;
   const uploadIcon = uploading ? (
     <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
-  ) : multiple ? (
-    <ImagePlus aria-hidden data-icon="inline-start" />
   ) : (
     <Upload aria-hidden data-icon="inline-start" />
   );
@@ -105,13 +98,13 @@ export function AssetOriginalsField({
               <button
                 type="button"
                 onClick={() => setViewing(index)}
-                aria-label={t("assets:view_image", { name: altOf(index) })}
+                aria-label={t("assets:view_image", { name: altOf() })}
                 className="focus-ring block overflow-hidden rounded-md border border-border"
               >
                 <img
                   src={url}
-                  alt={altOf(index)}
-                  className={multiple ? "size-16 object-cover" : "h-28 w-auto max-w-full object-cover"}
+                  alt={altOf()}
+                  className="h-28 w-auto max-w-full object-cover"
                 />
               </button>
             </li>
@@ -141,7 +134,6 @@ export function AssetOriginalsField({
           ref={inputRef}
           type="file"
           accept={IMAGE_ACCEPT}
-          multiple={multiple}
           aria-label={uploadLabel}
           onChange={(e) => void upload(e)}
           className="hidden"
@@ -149,8 +141,8 @@ export function AssetOriginalsField({
       )}
       <AssetImageDialog
         src={viewing !== null ? (urls[viewing] ?? null) : null}
-        title={viewing !== null ? altOf(viewing) : ""}
-        alt={viewing !== null ? altOf(viewing) : ""}
+        title={viewing !== null ? altOf() : ""}
+        alt={viewing !== null ? altOf() : ""}
         onClose={() => setViewing(null)}
       />
     </div>

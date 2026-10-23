@@ -267,7 +267,7 @@ class VideoLaneResult:
         ``lib.config.resolver.derive_voice_consistency``）。声音特征描述随该判据一并不注入：
         它虽是提示词文本而非音频负载，但描述的是听得到的音色，无声成片里注入只会让模型把配额
         花在用不上的约束上。台词不看这一位——无声视频里台词文本照常下发，供应商可用作口型参考。
-        参考生视频的同名判据见 ``lib.script.reference_video.voice_settings.VoiceRenderSettings.is_silent``。
+        参考生视频的同名判据见 ``lib.speech.voice_settings.VoiceRenderSettings.is_silent``。
         """
         facts = self.request_facts
         if isinstance(facts, VideoRequestFactsFailure):

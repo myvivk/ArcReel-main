@@ -13,6 +13,7 @@ from server.error_handlers import register_error_handlers
 from server.routers import characters, scenes
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.fakes import FakeProjectAssetMutationMixin
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class _FakePM(FakeProjectAssetMutationMixin):
@@ -248,7 +249,7 @@ class TestCharacterDerivativesPersistence:
     def test_derivative_lands_in_project_json_and_passes_validation(self, tmp_path, monkeypatch):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "阿岚", "少女")
 
         with _client(monkeypatch, pm) as client:
@@ -283,7 +284,7 @@ class TestCharacterDerivativesPersistence:
         """改名是一次级联事务：脚本里的 ``@[角色/旧衍生名]`` 随之改写（docs/adr/0072）。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "阿岚", "少女")
         pm.save_script(
             "demo",

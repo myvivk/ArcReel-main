@@ -35,6 +35,7 @@ from server.services.currency import typed_media_restore
 from server.services.currency.artifact_version_restore import TypedMediaRestoreTarget
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.factories import add_typed_video_version
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 # 产物清单是读取已生成产物的唯一口径，还原路径要落到真实的 v8 项目目录才有意义。
 _MINIMAL_PROJECT = {
@@ -235,7 +236,7 @@ def _typed_audio_project(tmp_path: Path) -> tuple[object, Path, VersionManager]:
 
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script(
         "demo",
         {
@@ -302,7 +303,7 @@ class TestVersionsRouter:
 
         pm = ProjectManager(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_episode("demo", 1, "E1", "scripts/episode_1.json")
         pm.save_script(
             "demo",
@@ -585,7 +586,7 @@ class TestVersionsRouter:
 
         pm = ProjectManager(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.save_script(
             "demo",
             {
@@ -743,7 +744,7 @@ class TestVersionsRouter:
         resource_id = "E1S01"
         pm = ProjectManager(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.save_script(
             "demo",
             {"episode": 1, "segments": [{"segment_id": resource_id, "generated_assets": {}}]},
@@ -847,10 +848,10 @@ class TestVersionsRouter:
     def test_grid_restore_resets_split_state_without_touching_scripts(self, tmp_path, monkeypatch):
         """grids 还原放行：只换回联合图并复位宫格记录的切分态；不同步任何剧本、
         frame_chain 原样保留，分镜图不被触碰。"""
-        from lib.script.grid.grid_manager import GridManager
-        from lib.script.grid.models import GridGeneration
+        from lib.project.legacy_grid_record import LegacyGridRecord
+        from lib.project.legacy_grid_store import LegacyGridStore
 
-        grid = GridGeneration.create(
+        grid = LegacyGridRecord.create(
             episode=1,
             script_file="episode_1.json",
             scene_ids=["a", "b"],
@@ -865,7 +866,7 @@ class TestVersionsRouter:
         grid.error_message = "boom"
         grid.split_at = "2026-01-01T00:00:00+00:00"
         frame_chain_before = [c.to_dict() for c in grid.frame_chain]
-        GridManager(tmp_path).save(grid)
+        LegacyGridStore(tmp_path).save(grid)
         (tmp_path / "grids" / f"{grid.id}.png").write_bytes(b"restored-bytes")
 
         fake_pm = _GridPM(tmp_path)
@@ -886,7 +887,7 @@ class TestVersionsRouter:
             # 还原后联合图文件的 mtime 指纹供前端 cache-bust
             assert f"grids/{grid.id}.png" in body["asset_fingerprints"]
 
-        saved = GridManager(tmp_path).get(grid.id)
+        saved = LegacyGridStore(tmp_path).get(grid.id)
         assert saved is not None
         assert saved.status == "completed"
         assert saved.error_message is None
@@ -986,10 +987,10 @@ class TestVersionsRouter:
 
         还原同样会换掉联合图并复位宫格记录，闸门漏在这里就成了改写残留 grid 的绕行路径。
         """
-        from lib.script.grid.grid_manager import GridManager
-        from lib.script.grid.models import GridGeneration
+        from lib.project.legacy_grid_record import LegacyGridRecord
+        from lib.project.legacy_grid_store import LegacyGridStore
 
-        grid = GridGeneration.create(
+        grid = LegacyGridRecord.create(
             episode=1,
             script_file="episode_1.json",
             scene_ids=["a", "b"],
@@ -1001,7 +1002,7 @@ class TestVersionsRouter:
             video_aspect_ratio="9:16",
         )
         grid.split_at = "2026-01-01T00:00:00+00:00"
-        GridManager(tmp_path).save(grid)
+        LegacyGridStore(tmp_path).save(grid)
         (tmp_path / "grids" / f"{grid.id}.png").write_bytes(b"original-bytes")
 
         grid_pm = _GridPM(tmp_path, project=project)
@@ -1021,7 +1022,7 @@ class TestVersionsRouter:
         assert expected_detail in resp.json()["detail"]
         # 拒绝即止：联合图未被替换，宫格记录的切分态原样保留
         assert (tmp_path / "grids" / f"{grid.id}.png").read_bytes() == b"original-bytes"
-        saved = GridManager(tmp_path).get(grid.id)
+        saved = LegacyGridStore(tmp_path).get(grid.id)
         assert saved is not None
         assert saved.split_at == "2026-01-01T00:00:00+00:00"
 
@@ -1036,10 +1037,10 @@ class TestVersionsRouter:
         """生成在途时还原不把记录复位成 completed：记录一旦谎报空闲，
         切分/上传的在途闸门就会放行，用户可对着即将被 worker 覆写的联合图落格。
         切分态仍无条件作废——联合图内容确已换成历史版本。"""
-        from lib.script.grid.grid_manager import GridManager
-        from lib.script.grid.models import GridGeneration
+        from lib.project.legacy_grid_record import LegacyGridRecord
+        from lib.project.legacy_grid_store import LegacyGridStore
 
-        grid = GridGeneration.create(
+        grid = LegacyGridRecord.create(
             episode=1,
             script_file="episode_1.json",
             scene_ids=["a", "b"],
@@ -1052,7 +1053,7 @@ class TestVersionsRouter:
         )
         grid.status = "generating"
         grid.split_at = "2026-01-01T00:00:00+00:00"
-        GridManager(tmp_path).save(grid)
+        LegacyGridStore(tmp_path).save(grid)
         (tmp_path / "grids" / f"{grid.id}.png").write_bytes(b"restored-bytes")
 
         grid_pm = _GridPM(tmp_path)
@@ -1069,7 +1070,7 @@ class TestVersionsRouter:
             resp = client.post(f"/api/v1/projects/demo/versions/grids/{grid.id}/restore/1")
             assert resp.status_code == 200, resp.text
 
-        saved = GridManager(tmp_path).get(grid.id)
+        saved = LegacyGridStore(tmp_path).get(grid.id)
         assert saved is not None
         assert saved.status == "generating"
         assert saved.split_at is None
@@ -1080,7 +1081,7 @@ class TestVersionsRouter:
 
         real_pm = ProjectManager(tmp_path)
         real_pm.create_project("demo")
-        real_pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(real_pm, "demo", "Demo", "Anime", "narration")
         real_pm.save_script(
             "demo",
             {
@@ -1138,7 +1139,9 @@ class TestVersionsRouter:
 
         real_pm = ProjectManager(tmp_path)
         real_pm.create_project("demo")
-        real_pm.create_project_metadata("demo", "Demo", "Anime", "ad", extras={"generation_mode": "reference_video"})
+        seed_legacy_project_metadata(
+            real_pm, "demo", "Demo", "Anime", "ad", extras={"generation_mode": "reference_video"}
+        )
         real_pm.save_script(
             "demo",
             {
@@ -1185,7 +1188,7 @@ class TestVersionsRouter:
 
         real_pm = ProjectManager(tmp_path)
         real_pm.create_project("demo")
-        real_pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(real_pm, "demo", "Demo", "Anime", "narration")
         real_pm.save_script(
             "demo",
             {
@@ -1267,7 +1270,7 @@ class TestVersionsRouter:
     @staticmethod
     def _restore_sync_project(pm, scripts: dict[str, dict]) -> Path:
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         project = pm.load_project("demo")
         project["episodes"] = [
             {"episode": payload["episode"], "script_file": f"scripts/{name}"} for name, payload in scripts.items()
@@ -1383,7 +1386,7 @@ class TestVersionsRouter:
 
         pm = ProjectManager(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         project_path = pm.get_project_path("demo")
         orphan = project_path / "storyboards" / "scene_ORPHAN.png"
         orphan.parent.mkdir(parents=True, exist_ok=True)
@@ -1421,7 +1424,7 @@ class TestVersionsRouter:
 
         pm = _WriteFailPM(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.save_script(
             "demo",
             {
@@ -1480,7 +1483,7 @@ class TestVersionsRouter:
 
         pm = _TransientIOFailPM(tmp_path)
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         project = pm.load_project("demo")
         project["episodes"] = [
             {"episode": episode, "script_file": f"scripts/episode_{episode}.json"} for episode in (1, 2)

@@ -9,10 +9,7 @@ export interface PromptAuthoringEntry {
 
 /** 各条目形态的数组键、id 字段与视觉层字段；参考生视频单元的正文即视觉层。 */
 const ENTRY_SHAPES: readonly { key: string; idField: string; fields: readonly string[] }[] = [
-  { key: "video_units", idField: "unit_id", fields: ["text"] },
-  { key: "segments", idField: "segment_id", fields: ["image_prompt", "video_prompt"] },
   { key: "scenes", idField: "scene_id", fields: ["image_prompt", "video_prompt"] },
-  { key: "shots", idField: "shot_id", fields: ["image_prompt", "video_prompt"] },
 ];
 
 function filled(value: unknown): boolean {

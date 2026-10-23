@@ -1,6 +1,6 @@
 """引用目录：项目内「已登记引用名」的单一构造入口。
 
-正文的引用语法 ``@[名称]``（见 :mod:`lib.script.reference_video.text_parser`）与分镜路线的
+正文的引用语法 ``@[名称]``（见 :mod:`lib.references.text_parser`）与分镜路线的
 ``characters_in_*`` / ``scenes`` / ``props`` / ``products_in_shot`` 字段写的都是「已登记的
 引用名」——资产名，或角色的 ``本体名/衍生名``（见 ``docs/adr/0072``）。数据校验、草稿校验、
 正文引用归属与参考图投影都要回答同一组问题——这个名字登记了吗、它归属哪一类资产、承载它的

@@ -15,12 +15,12 @@ from pathlib import Path
 from lib.artifacts.artifact_manifest import ArtifactBasis
 from lib.infra.content_digest import sha256_file
 from lib.project.asset_types import ASSET_TYPES, normalize_asset_name
+from lib.project.legacy_grid_prompt import project_grid_image_prompt
+from lib.project.legacy_reference_assets import ResolvedReferenceAsset
 from lib.project.project_schema import parse_project_schema_version
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_utils import project_storyboard_image_prompt
-from lib.script.grid.prompt_builder import project_grid_image_prompt
-from lib.script.reference_video.request_projection import ResolvedReferenceAsset
-from lib.script.reference_video.text_parser import strip_speech_marks
+from lib.references.text_parser import strip_speech_marks
 
 
 @dataclass(frozen=True, slots=True)

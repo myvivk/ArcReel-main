@@ -284,6 +284,7 @@ MESSAGES = {
     "ad_script_task_active": "本集已有进行中的脚本生成任务，请等待完成后再提交",
     "ad_script_refused": "AI 生成脚本未能提交：{reason}",
     "short_drama_import_refused": "短剧工厂剧本导入失败：{reason}",
+    "short_drama_factory_only": "请先通过短剧工厂生成或导入完整工件，再进行制作",
     "short_drama_source_missing": "本集没有已保存的 Markdown 源稿",
     "short_drama_source_conflict": "Markdown 源稿已被其他修改更新，请刷新后重试",
     "short_drama_script_conflict": "分镜已被其他修改更新，请刷新后重试",

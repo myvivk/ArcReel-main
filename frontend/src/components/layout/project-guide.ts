@@ -14,8 +14,7 @@ import { episodeDisplayName, episodePosition, type EpisodeLedger } from "@/utils
  */
 export type GuideButton =
   | { kind: "nav"; label: string; to: string }
-  | { kind: "agent"; label: string; prefill: string }
-  | { kind: "ai"; label: string; action: "plan_episodes" };
+  | { kind: "agent"; label: string; prefill: string };
 
 export interface ProjectNextGuide {
   /** 状态条右段「下一步」后面的短语。 */
@@ -40,151 +39,30 @@ function episodeIdArg(action: WorkflowNextAction): number | null {
   return typeof value === "number" ? value : null;
 }
 
-function alternativeButton(t: TFunction, action: WorkflowNextAction): GuideButton | null {
-  if (action.type === "create_episode") {
-    return { kind: "nav", label: t("dashboard:guide_alt_create_episode"), to: episodesViewPath({ create: true }) };
-  }
-  if (action.type === "none") return null;
-  return {
-    kind: "agent",
-    label: t("dashboard:guide_alt_agent", { step: actionPhrase(t, action.type) }),
-    prefill: t("dashboard:guide_prefill_generic", { step: actionPhrase(t, action.type) }),
-  };
-}
-
-/**
- * 项目层的下一步。没有下一步（`none`）或项目数据升级失败（由状态条的迁移形态接管）时返回 null。
- * 有分集规划在排队或执行时（`planningActive`），下一步让位给「分集规划进行中」。
- */
-export function projectNextGuide(
-  t: TFunction,
-  status: WorkflowStatus,
-  episodes: EpisodeLedger,
-  { planningActive = false }: { planningActive?: boolean } = {},
-): ProjectNextGuide | null {
+export function projectNextGuide(t: TFunction, status: WorkflowStatus, episodes: EpisodeLedger): ProjectNextGuide | null {
   const action = status.next_action;
-  if (action.type === "retry_project_migration") return null;
-  if (planningActive && status.project.content_mode !== "ad") {
-    return {
-      title: t("dashboard:guide_planning_running_title"),
-      detail: t("dashboard:guide_planning_running_detail"),
-      instruction: false,
-      primary: [{ kind: "nav", label: t("dashboard:guide_view_planning_progress"), to: episodesViewPath() }],
-      alternatives: [],
-      episodeId: null,
-    };
-  }
-  if (action.type === "none") return null;
-  // 落在某一集的备选（从空白开始、补充集原文等）在集页面板就地给出入口，顶栏不改写成「交给 Agent」
-  const alternatives = status.next_alternatives
-    .filter((alternative) => episodeIdArg(alternative) === null)
-    .map((alternative) => alternativeButton(t, alternative))
-    .filter((button): button is GuideButton => button !== null);
-  const agent = (prefill: string): GuideButton => ({
-    kind: "agent",
-    label: t("dashboard:guide_hand_to_agent"),
-    prefill,
-  });
-
-  if (status.project.content_mode === "ad") {
-    // 短片只有一集：跳到账本里唯一的那一集，不假定它的集 ID。
-    const adEpisodeId = episodeIdArg(action) ?? episodes[0]?.episode ?? null;
-    if (action.type === "collect_project_input") {
-      // 缺创作灵感和商品时生成脚本不可做，先去概览页填写，与集页面板的提醒同一去处
-      return {
-        title: t("workflow:next_title_generate_script"),
-        detail: t("workflow:hint_fill_brief"),
-        instruction: false,
-        primary: [{ kind: "nav", label: t("workflow:act_fill_brief"), to: "/" }],
-        alternatives: [],
-        episodeId: adEpisodeId,
-      };
-    }
-    return {
-      title: actionPhrase(t, action.type),
-      detail: t("dashboard:guide_ad_detail"),
-      instruction: false,
-      primary:
-        adEpisodeId === null
-          ? []
-          : [{ kind: "nav", label: t("dashboard:guide_go_ad"), to: `/episodes/${adEpisodeId}` }],
-      alternatives: [],
-      episodeId: adEpisodeId,
-    };
-  }
-
+  const allowed = new Set<WorkflowNextAction["type"]>([
+    "collect_project_input", "create_episode", "prepare_episode_assets", "plan_short_drama_storyboards",
+    "author_prompts", "generate_asset_sheets", "generate_shot_grids", "author_video_prompts", "generate_videos", "create_edit_timeline",
+    "patch_episode_script", "wait_for_task", "retry", "fix_input", "generate_dependency", "configure_provider", "repair_artifact_state", "retry_artifact_download",
+  ]);
+  if (!allowed.has(action.type)) return null;
   const episodeId = episodeIdArg(action);
   if (episodeId !== null) {
     const position = episodePosition(episodes, episodeId);
     const name = episodeDisplayName(episodes, episodeId, t);
     return {
-      title:
-        position === null
-          ? t("dashboard:guide_continue_named_episode", { name })
-          : t("dashboard:guide_continue_episode", { position }),
-      detail: t("dashboard:guide_episode_detail", { name, step: actionPhrase(t, action.type) }),
-      instruction: false,
-      primary: [
-        {
-          kind: "nav",
-          label:
-            position === null
-              ? t("dashboard:guide_go_named_episode", { name })
-              : t("dashboard:guide_go_episode", { position }),
-          to: `/episodes/${episodeId}`,
-        },
-      ],
-      alternatives,
-      episodeId,
+      title: position === null ? t("dashboard:guide_continue_named_episode", { name }) : t("dashboard:guide_continue_episode", { position }),
+      detail: t("dashboard:guide_episode_detail", { name, step: actionPhrase(t, action.type) }), instruction: false,
+      primary: [{ kind: "nav", label: position === null ? t("dashboard:guide_go_named_episode", { name }) : t("dashboard:guide_go_episode", { position }), to: "/episodes/" + episodeId }],
+      alternatives: [], episodeId,
     };
   }
-
-  const planned = (status.content?.episode_count ?? 0) > 0;
-  switch (action.type) {
-    case "plan_episodes":
-      return {
-        title: planned ? t("dashboard:guide_plan_continue_title") : t("dashboard:guide_plan_title"),
-        detail: planned ? t("dashboard:guide_plan_continue_detail") : t("dashboard:guide_plan_detail"),
-        instruction: true,
-        primary: [
-          agent(planned ? t("dashboard:guide_prefill_plan_continue") : t("dashboard:guide_prefill_plan")),
-          {
-            kind: "ai",
-            label: planned ? t("dashboard:episode_planning_continue") : t("dashboard:episode_planning_start"),
-            action: "plan_episodes",
-          },
-        ],
-        alternatives,
-        episodeId: null,
-      };
-    case "reset_episode_planning":
-      return {
-        title: t("dashboard:guide_replan_title"),
-        detail: t("dashboard:guide_replan_detail"),
-        instruction: false,
-        primary: [agent(t("dashboard:guide_prefill_replan"))],
-        alternatives,
-        episodeId: null,
-      };
-    case "collect_project_input":
-      return {
-        title: t("dashboard:guide_upload_title"),
-        detail: t("dashboard:guide_upload_detail"),
-        instruction: false,
-        primary: [{ kind: "nav", label: t("dashboard:guide_upload_title"), to: episodesViewPath({ upload: "whole_source" }) }],
-        alternatives,
-        episodeId: null,
-      };
-    default:
-      return {
-        title: actionPhrase(t, action.type),
-        detail: t("workflow:next_step", { step: actionPhrase(t, action.type) }),
-        instruction: false,
-        primary: [agent(t("dashboard:guide_prefill_generic", { step: actionPhrase(t, action.type) }))],
-        alternatives,
-        episodeId: null,
-      };
-  }
+  return {
+    title: actionPhrase(t, action.type), detail: t("workflow:next_step", { step: actionPhrase(t, action.type) }), instruction: false,
+    primary: [{ kind: "nav", label: actionPhrase(t, action.type), to: action.type === "create_episode" ? episodesViewPath({ create: true }) : "/" }],
+    alternatives: [], episodeId: null,
+  };
 }
 
 /** 交给 Agent 的消息：附加指令非空时另起一行附上。 */

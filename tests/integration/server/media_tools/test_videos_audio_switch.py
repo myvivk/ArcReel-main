@@ -17,14 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from lib.config.resolver import ConfigResolver
 from lib.config.service import ConfigService
-from lib.generation.generation_queue_client import TaskSpec
-from lib.generation.generation_result import GenerationSelectionMode
 from lib.i18n import SUPPORTED_LOCALES, _, render_message
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script.reference_video.request_projection import ReferenceRequestOptions
-from lib.script.reference_video.text_parser import extract_mentions
 from server.services.admission import video_batch_admission as admission_mod
-from server.services.admission.video_batch_admission import admit_reference_video_batch
 from server.services.tasks.video_caps import AudioSwitchConflict, assert_audio_switch_supported
 from server.tool_runtime import ToolOutcome
 from tests.factories import make_display_names, make_video_request_facts
@@ -56,17 +51,6 @@ async def _seed_settings(factory: async_sessionmaker[AsyncSession], **settings: 
         for key, value in settings.items():
             await svc.set_setting(key, value)
         await session.commit()
-
-
-def _unit_spec(unit: dict[str, Any]) -> TaskSpec:
-    """可入队 unit 的替身 spec：只用于让逐桶去重判定「这条要入队」。"""
-    return TaskSpec.from_request(
-        task_type="video",
-        media_type="video",
-        resource_id=str(unit["unit_id"]),
-        prompt="镜头",
-        script_file="episode_1.json",
-    )
 
 
 class TestAssertAudioSwitchSupported:
@@ -112,85 +96,6 @@ class TestStoryboardRouteGate:
         monkeypatch.setattr(admission_mod, "resolve_project_is_silent", _not_silent)
         project = {"generation_mode": "storyboard", "characters": {"张三": {"description": "主角"}}}
         assert await admission_mod.resolve_voice_context(project, "drama") == project["characters"]
-
-
-class TestReferenceRouteGate:
-    """参考生视频：按本批真正要入队的 unit 调用公共 request projection。"""
-
-    @staticmethod
-    def _stub_current_state(monkeypatch) -> None:
-        async def _no_active(**_kwargs):
-            return []
-
-        monkeypatch.setattr(admission_mod, "get_active_tasks_for_resources", _no_active)
-
-    async def test_projects_each_pending_unit_and_skips_done_units(self, tmp_path, monkeypatch):
-        seen: list[str] = []
-
-        class _Projection:
-            unit_id = "test"
-            blocking_problems: tuple[object, ...] = ()
-            cost = None
-            planned_duration = 8
-            request_duration = None
-
-            def to_advisory_payload(self):
-                return {"allowed": True, "unit_id": "test", "problems": []}
-
-        async def _record(*, unit, **_kwargs):
-            # 替身只需产出可预期的分桶信号：本用例的 project 为空，未登记名经生产侧的
-            # unit_reference_declarations 会被全部滤掉，故此处按正文提及直接判。
-            seen.append("r2v" if extract_mentions(str(unit.get("text") or "")) else "i2v")
-            return _Projection()
-
-        self._stub_current_state(monkeypatch)
-        monkeypatch.setattr(admission_mod, "project_reference_unit_request", _record)
-        units = [
-            {"unit_id": "E1U1", "text": "@[张三] 推门"},
-            {"unit_id": "E1U2", "text": "@[李四] 举杯"},
-            {"unit_id": "E1U3", "text": "空镜：长街"},
-        ]
-        await admit_reference_video_batch(
-            project_name="demo",
-            project={},
-            project_path=tmp_path,
-            script={"video_units": units},
-            script_file="episode_1.json",
-            units=units,
-            request_options=ReferenceRequestOptions(),
-            operation="generate_video",
-            selection=GenerationSelectionMode.MISSING_ONLY,
-            spec_check=_unit_spec,
-        )
-        assert seen == ["r2v", "r2v", "i2v"]
-
-    async def test_units_that_cannot_be_enqueued_do_not_trigger_projection(self, tmp_path, monkeypatch):
-        """不可入队的 unit 不该触发解析：它本就不会被生成，判定停在更早的拒绝上。"""
-        called = False
-
-        async def _record(**_kwargs):
-            nonlocal called
-            called = True
-
-        def _reject(_unit):
-            raise ValueError("正文为空")
-
-        self._stub_current_state(monkeypatch)
-        monkeypatch.setattr(admission_mod, "project_reference_unit_request", _record)
-        admission = await admit_reference_video_batch(
-            project_name="demo",
-            project={},
-            project_path=tmp_path,
-            script={"video_units": []},
-            script_file="episode_1.json",
-            units=[{"unit_id": "E1U1", "text": ""}],
-            request_options=ReferenceRequestOptions(),
-            operation="generate_video",
-            selection=GenerationSelectionMode.MISSING_ONLY,
-            spec_check=_reject,
-        )
-        assert called is False
-        assert not admission.admitted
 
 
 class _EpisodePM:

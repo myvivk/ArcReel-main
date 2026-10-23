@@ -19,13 +19,14 @@ from lib.project.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.media_tools.storyboards import GenerateStoryboardsRequest, generate_storyboards
-from server.routers import asset_sheets, reference_videos, shot_uploads
+from server.routers import asset_sheets, shot_uploads
 from server.routers import versions as versions_router
 from server.services.currency import upload_finalize
 from server.services.project.workflow_planner import WorkflowPlanner
-from server.services.tasks import generation_tasks, reference_video_tasks
+from server.services.tasks import generation_tasks
 from server.tool_runtime import CallerContext, ProjectScope, Services, ToolRequest
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _STORYBOARD = "storyboards/scene_E1S01.png"
 _VIDEO = "videos/scene_E1S01.mp4"
@@ -72,7 +73,7 @@ def _client(
 ) -> tuple[TestClient, ProjectManager, Path]:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.add_character("demo", "Alice", "银发少女")
     pm.save_script(
         "demo",
@@ -246,60 +247,3 @@ def test_restoring_an_uploaded_storyboard_claims_it_by_the_upload_again(tmp_path
     assert (project_dir / _STORYBOARD).read_bytes() == first
     _edit_segment(pm, image_prompt="黄昏的街角")
     assert _status(project_dir, _STORYBOARD_KEY, _STORYBOARD) is ArtifactStatus.CURRENT
-
-
-def _reference_client(monkeypatch, tmp_path: Path) -> tuple[TestClient, ProjectManager, Path]:
-    pm = ProjectManager(tmp_path / "projects")
-    pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
-    project = pm.load_project("demo")
-    project["generation_mode"] = "reference_video"
-    project["episodes"] = [{"episode": 1, "title": "E1", "script_file": "scripts/episode_1.json"}]
-    pm.save_project("demo", project)
-    pm.save_script(
-        "demo",
-        {
-            "episode": 1,
-            "title": "E1",
-            "content_mode": "narration",
-            "generation_mode": "reference_video",
-            "video_units": [
-                {
-                    "unit_id": "E1U1",
-                    "shots": [{"duration": 4, "text": "t"}],
-                    "references": [],
-                    "duration_seconds": 4,
-                    "generated_assets": {"video_clip": None, "video_uri": None, "status": "pending"},
-                }
-            ],
-        },
-        "episode_1.json",
-        validate=False,
-    )
-    for module in (reference_videos, reference_video_tasks, generation_tasks):
-        monkeypatch.setattr(module, "get_project_manager", lambda: pm)
-    monkeypatch.setattr(upload_finalize, "extract_video_thumbnail", _fake_thumbnail)
-
-    app = FastAPI()
-    register_error_handlers(app)
-    app.dependency_overrides[get_current_user] = lambda: CurrentUserInfo(id="default", sub="testuser", role="admin")
-    app.include_router(reference_videos.router, prefix="/api/v1", dependencies=AUTH_DEPENDENCIES)
-    return TestClient(app), pm, pm.get_project_path("demo")
-
-
-def test_uploaded_reference_video_is_registered_current_and_unit_edits_do_not_stale_it(tmp_path, monkeypatch):
-    client, pm, project_dir = _reference_client(monkeypatch, tmp_path)
-    with client:
-        response = client.post(
-            "/api/v1/projects/demo/reference-videos/episodes/1/units/E1U1/upload-video",
-            files={"file": ("clip.mp4", BytesIO(b"\x00" * 256), "application/octet-stream")},
-        )
-        assert response.status_code == 200, response.text
-
-    key = ArtifactKey.episode_video(1, "E1U1")
-    path = "reference_videos/E1U1.mp4"
-    assert _status(project_dir, key, path) is ArtifactStatus.CURRENT
-
-    with pm.locked_script("demo", "episode_1.json", validate=False) as script:
-        script["video_units"][0]["shots"] = [{"duration": 4, "text": "改写后的镜头"}]
-    assert _status(project_dir, key, path) is ArtifactStatus.CURRENT

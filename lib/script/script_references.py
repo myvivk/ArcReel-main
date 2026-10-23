@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from lib.project.asset_types import ASSET_SPECS, DERIVATIVES_FIELD, asset_name_comparison_key
 from lib.references.reference_catalog import derivative_reference
-from lib.script.reference_video.text_parser import mention_names
+from lib.references.text_parser import mention_names
 from lib.script.script_models import NEW_ASSETS_FIELD
 
 #: 承载单元正文的列表字段。参考生视频的 mention 落在 ``video_units[].text``（草稿里是

@@ -25,11 +25,12 @@ from tests.integration.server.derivative_sheet_support import (
 )
 from tests.integration.server.routers.projects_router_support import build_projects_client
 from tests.integration.server.services.tasks.generation_tasks_support import fake_resolve_ctx
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _create_demo(manager: ProjectManager) -> None:
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     manager.add_character("demo", "阿岚", "少女")
 
 

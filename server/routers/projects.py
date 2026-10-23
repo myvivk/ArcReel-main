@@ -22,18 +22,14 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi import Path as FastAPIPath
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
-from pydantic import ValidationError as PydanticValidationError
 
 # fastapi 只 re-export 复数的 BackgroundTasks，单数版本只能取 starlette。
 from starlette.background import BackgroundTask
 
 logger = logging.getLogger(__name__)
 
-from lib.agent.profile_manifest import ContentMode
-from lib.backends.text_backends.base import TextOutputTruncatedError
 from lib.config.resolver import (
     ConfigResolver,
     VideoBucketCapabilityError,
@@ -41,12 +37,6 @@ from lib.config.resolver import (
     video_bucket_for_generation_mode,
 )
 from lib.db import async_session_factory
-from lib.episode.episode_ledger import is_derived_episode_name
-from lib.episode.episode_source_commands import (
-    EpisodeSourceError,
-    register_whole_source_file,
-    set_episode_source_text,
-)
 from lib.episode.episode_target_duration import (
     EPISODE_TARGET_DURATION_FIELD,
     MAX_EPISODE_TARGET_DURATION,
@@ -59,18 +49,15 @@ from lib.episode.episode_total import (
     TOTAL_EPISODES_FIELD,
     is_valid_total_episodes,
 )
-from lib.episode.source_kinds import SourceKind
 from lib.generation.video_request_facts import ResolutionOverride, VideoRequestFactsError, planning_durations
 from lib.i18n import render_generation_input_error, render_message
-from lib.infra.api_errors import ApiError, BadRequestError, ConflictError, NotFoundError, UnprocessableError
+from lib.infra.api_errors import ApiError, BadRequestError, NotFoundError, UnprocessableError
 from lib.infra.async_thread import EventLoopBridge, run_sync_transaction
-from lib.infra.json_io import domain_error_on_value_error
 from lib.project.asset_fingerprints import compute_asset_fingerprints
 from lib.project.asset_types import asset_name_comparison_key
 from lib.project.project_change_hints import project_change_source
-from lib.project.project_manager import EmptySourceError, EpisodeScriptReboundError, get_project_manager
+from lib.project.project_manager import EpisodeScriptReboundError, get_project_manager
 from lib.prompts.style_templates import is_known_template, resolve_template_prompt
-from lib.script.blank_script import BlankScriptError, start_blank_script
 from lib.script.script_batch_edit import ScriptBatchEditCommand, ScriptBatchEditor, blank_item_after, script_revision
 from lib.script.script_editor import resolve_items
 from lib.script.script_references import annotate_derivative_references
@@ -98,7 +85,6 @@ from lib.workflow.workflow_state import (
 from server.auth import CurrentUser, create_download_token, verify_download_token
 from server.dependencies import require_project_migration_ok
 from server.i18n import DisplayNamesCatalog, Translator
-from server.routers._episode_source_errors import episode_source_http_error
 from server.routers._script_edits import (
     execute_current_script_edit,
     require_script_edit_result,
@@ -125,7 +111,6 @@ from server.services.tasks.video_caps import (
     capability_request_facts,
     duration_constraints_payload,
 )
-from server.tool_runtime import truncation_problem
 
 router = APIRouter()
 
@@ -281,27 +266,19 @@ def _validated_speech_rate(value: float, _t: Translator) -> float:
 
 
 class CreateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     title: str | None = None
     style: str | None = ""  # 保留但不再是用户入口
-    content_mode: ContentMode | None = "narration"
+    content_mode: Literal["drama"] = "drama"
     aspect_ratio: str | None = "9:16"
     default_duration: int | None = None
     # 单集目标时长（秒）：可选软偏好，非 ad 项目适用；区间校验在 _validated_episode_target_duration。
     episode_target_duration: int | None = None
     # 全剧规划总集数（集）：可选，非 ad 项目适用；区间校验在 _validated_total_episodes。
     total_episodes: int | None = None
-    # 仅 content_mode=ad：目标总时长（秒）。UI 给四档（15/30/60/90，默认 60），
-    # 数据层不硬枚举，任意正整数合法。
-    target_duration: int | None = Field(default=None, gt=0)
-    # 仅 content_mode=ad：创作诉求短文本（可空，不走 source_loader）
-    brief: str | None = None
-    # 生成模式：创建时必须显式选择 storyboard 或 reference_video；缺失或旧 grid 值由
-    # Pydantic 校验返回 422。创建后不可更改（PATCH 模型结构上无此字段）。
-    generation_mode: Literal["storyboard", "reference_video"]
-    # 宫格分镜开关：只改变分镜图的生产方式，不是独立生成模式；仅 storyboard 生成模式有意义，
-    # 创建后可经项目 PATCH 随时切换。ad 项目拒绝开启。
-    grid_storyboard: bool = False
+    generation_mode: Literal["storyboard"] = "storyboard"
     # 口播语速估算（阅读单位 / 秒）项目级覆盖：空 = 回退 lib.speech.speech_rate 的语言默认。
     # 与 TTS 的 narration_speed（供应商配音倍率）无关，两者不联动。
     speech_rate_units_per_second: SpeechRateOverride = None
@@ -338,6 +315,8 @@ class EpisodePatch(BaseModel):
 
 
 class UpdateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     style: str | None = None
     aspect_ratio: str | None = None
@@ -346,12 +325,6 @@ class UpdateProjectRequest(BaseModel):
     episode_target_duration: int | None = None
     # 全剧规划总集数（集）：显式 null 清除；ad 项目对字段出现本身即拒绝
     total_episodes: int | None = None
-    # 仅 ad 项目：目标总时长（秒），任意正整数合法，不可清空
-    target_duration: int | None = Field(default=None, gt=0)
-    # 仅 ad 项目：创作诉求短文本；显式 null 清为空字符串
-    brief: str | None = None
-    # 生成模式创建即定、不可变，PATCH 结构上无 generation_mode 字段；宫格开关随时可切
-    grid_storyboard: bool | None = None
     video_backend: str | None = None
     video_provider_i2v: str | None = None
     video_provider_r2v: str | None = None
@@ -693,22 +666,6 @@ async def create_project(
                     )
                 style_prompt = resolve_template_prompt(req.style_template_id)
 
-            # 模式专属字段互斥：target_duration/brief 仅 ad 可用；
-            # ad 不暴露 default_duration、不开放宫格分镜
-            content_mode = req.content_mode or "narration"
-            if content_mode == "ad":
-                if req.default_duration is not None:
-                    raise HTTPException(status_code=400, detail=_t("ad_no_default_duration"))
-                if req.episode_target_duration is not None:
-                    raise HTTPException(status_code=400, detail=_t("ad_no_episode_target_duration"))
-                if req.grid_storyboard:
-                    raise HTTPException(status_code=400, detail=_t("ad_grid_not_supported"))
-            else:
-                if req.target_duration is not None:
-                    raise HTTPException(status_code=400, detail=_t("ad_only_field", field="target_duration"))
-                if req.brief is not None:
-                    raise HTTPException(status_code=400, detail=_t("ad_only_field", field="brief"))
-
             # 与 update 路径对称：校验所有 backend 字段
             for field_name in _PROJECT_BACKEND_FIELDS:
                 value = getattr(req, field_name)
@@ -732,16 +689,12 @@ async def create_project(
             total_episodes = None if req.total_episodes is None else _validated_total_episodes(req.total_episodes, _t)
 
             try:
-                manager.create_project(project_name, content_mode=req.content_mode or "narration")
+                manager.create_project(project_name, content_mode="drama")
             except FileExistsError as exc:
                 raise HTTPException(status_code=400, detail=_t("project_exists", name=project_name)) from exc
             extras = {field: value for field in _PROJECT_BACKEND_FIELDS if (value := getattr(req, field))}
             if req.model_settings is not None:
                 extras["model_settings"] = req.model_settings
-            # 生成模式与宫格开关并入 extras 一次性写入，避免 create 后再 load-save 的额外 RMW；
-            # 两字段恒写显式值（grid_storyboard 默认 false 也落盘），新项目即 v5 完整形态
-            extras["generation_mode"] = req.generation_mode
-            extras["grid_storyboard"] = req.grid_storyboard
             if speech_rate is not None:
                 extras[SPEECH_RATE_FIELD] = speech_rate
             with project_change_source("webui"):
@@ -756,8 +709,6 @@ async def create_project(
                     total_episodes=total_episodes,
                     style_template_id=req.style_template_id,
                     extras=extras or None,
-                    target_duration=req.target_duration,
-                    brief=req.brief,
                     narration=narration_fields,
                 )
             return {"success": True, "name": project_name, "project": project}
@@ -1065,11 +1016,6 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                         project[SPEECH_RATE_FIELD] = _validated_speech_rate(req.speech_rate_units_per_second, _t)
                 if "aspect_ratio" in req.model_fields_set and req.aspect_ratio is not None:
                     project["aspect_ratio"] = req.aspect_ratio
-                if "grid_storyboard" in req.model_fields_set:
-                    if is_ad and req.grid_storyboard:
-                        raise HTTPException(status_code=400, detail=_t("ad_grid_not_supported"))
-                    # null 与 false 同义：宫格关闭态落盘为显式 false，与创建路径同形态
-                    project["grid_storyboard"] = bool(req.grid_storyboard)
                 if "default_duration" in req.model_fields_set:
                     # ad 项目对字段出现本身即拒绝（含 null）：与创建路径"禁写字段"契约一致，
                     # 避免 null 走删除分支静默返回 200
@@ -1097,17 +1043,6 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                         project.pop(TOTAL_EPISODES_FIELD, None)
                     else:
                         project[TOTAL_EPISODES_FIELD] = _validated_total_episodes(req.total_episodes, _t)
-                if "target_duration" in req.model_fields_set:
-                    if not is_ad:
-                        raise HTTPException(status_code=400, detail=_t("ad_only_field", field="target_duration"))
-                    if req.target_duration is None:
-                        raise HTTPException(status_code=400, detail=_t("ad_target_duration_required"))
-                    project["target_duration"] = req.target_duration
-                if "brief" in req.model_fields_set:
-                    if not is_ad:
-                        raise HTTPException(status_code=400, detail=_t("ad_only_field", field="brief"))
-                    project["brief"] = req.brief if req.brief is not None else ""
-
                 if "style_template_id" in req.model_fields_set:
                     if req.style_template_id is None:
                         # 取消模版选择：同时清掉展开的 style prompt，避免遗留孤儿文本
@@ -1386,30 +1321,6 @@ async def insert_script_item(
         raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
 
-@router.post(
-    "/projects/{name}/episodes/{episode}/blank-script",
-    dependencies=[Depends(require_project_migration_ok)],
-)
-async def start_episode_blank_script(name: str, episode: int):
-    """从空白开始：本集没有正式脚本时建出空的正式脚本，弃置未确认的脚本规划。"""
-
-    def _sync():
-        with project_change_source("webui"):
-            return start_blank_script(get_project_manager(), name, episode)
-
-    try:
-        script_file = await asyncio.to_thread(_sync)
-    except FileNotFoundError as exc:
-        raise NotFoundError("project_not_found", name=name) from exc
-    except BlankScriptError as exc:
-        if exc.code == "episode_not_found":
-            raise NotFoundError("episode_not_found", episode=episode) from exc
-        if exc.code == "draft_agent_owned":
-            raise ConflictError("draft_agent_owned") from exc
-        raise ConflictError("blank_script_formal_exists").with_diagnostic(str(exc)) from exc
-    return {"success": True, "script_file": script_file}
-
-
 @router.delete(
     "/projects/{name}/script-items/{item_id}",
     dependencies=[Depends(require_project_migration_ok)],
@@ -1585,11 +1496,6 @@ async def update_scene(
         raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
 
-class UpdateShotRequest(BaseModel):
-    script_file: str
-    updates: dict
-
-
 # ad 分镜 PATCH 白名单：shot_id（定位键）与 generated_assets（运行时状态）不可改写。
 _SHOT_UPDATABLE_FIELDS = (
     "section",
@@ -1605,196 +1511,8 @@ _SHOT_UPDATABLE_FIELDS = (
 )
 
 
-def _require_ad_script(script: dict, _t: Translator) -> list[dict]:
-    """断言剧本是 ad 形状（content_mode=ad 且含 shots 键），返回 shots 列表。
-
-    与 update_segment 的 narration 守卫同模式：其他模式的脚本即使残留 shots 键也拒绝，
-    避免被当 ad 改写。
-    """
-    if script.get("content_mode") != "ad" or "shots" not in script:
-        raise HTTPException(status_code=400, detail=_t("ad_mode_required"))
-    shots = script.get("shots")
-    # 非法形状 fail loud，ValueError 由路由统一转 422。
-    if not isinstance(shots, list):
-        raise ValueError("ad script field 'shots' must be a list")
-    if not all(isinstance(s, dict) for s in shots):
-        raise ValueError("ad script field 'shots' contains non-object elements")
-    # shot_id 缺失/脏类型同样拦下：否则 PATCH 按 id 定位会误报 404。
-    if not all(isinstance(s.get("shot_id"), str) and s["shot_id"] for s in shots):
-        raise ValueError("ad script field 'shots' contains elements missing valid 'shot_id'")
-    # shot_id 是单个分镜的身份键：重复值会让 PATCH 静默更新首个命中项
-    shot_ids = [s["shot_id"] for s in shots]
-    if len(set(shot_ids)) != len(shot_ids):
-        raise ValueError("ad script field 'shots' contains duplicate 'shot_id' values")
-    return shots
-
-
-@router.patch("/projects/{name}/script-shots/{shot_id}", dependencies=[Depends(require_project_migration_ok)])
-async def update_shot(
-    name: str,
-    shot_id: str,
-    req: UpdateShotRequest,
-    _t: Translator,
-    make_script_batch_editor: ScriptBatchEditorFactoryDep,
-):
-    """更新广告/短片剧本中的单个分镜（按 shot_id 定位）。
-
-    路径风格与 ``script-scenes`` 对齐；口播文案 / section / 时长 / 引用列表等
-    白名单字段可改，结构合法性由写盘统一入口的「不更坏」校验兜底。
-    """
-    try:
-
-        def _sync():
-            manager = get_project_manager()
-            current = manager.load_script(name, req.script_file)
-            shots = _require_ad_script(current, _t)
-            matched = next((shot for shot in shots if shot.get("shot_id") == shot_id), None)
-            if matched is None:
-                raise HTTPException(status_code=404, detail=_t("shot_not_found", id=shot_id))
-            fields = {
-                key: value
-                for key, value in req.updates.items()
-                if key in _SHOT_UPDATABLE_FIELDS and (value is not None or key == "note")
-            }
-            if not fields:
-                return {"success": True, "shot": matched}
-            with project_change_source("webui"):
-                result = execute_current_script_edit(
-                    manager,
-                    name,
-                    req.script_file,
-                    [{"op": "update", "id": shot_id, "fields": fields}],
-                    editor=make_script_batch_editor(manager),
-                )
-            require_script_edit_result(
-                result,
-                operation_not_found=True,
-            )
-            saved = manager.load_script(name, req.script_file)
-            matched = next(shot for shot in saved["shots"] if shot.get("shot_id") == shot_id)
-            return {"success": True, "shot": matched, "edit_result": result.model_dump(mode="json")}
-
-        return await asyncio.to_thread(_sync)
-    except FileNotFoundError as exc:
-        raise NotFoundError("script_not_found", name=req.script_file) from exc
-    except ValueError as exc:
-        # 结构校验失败、集号错配、非法文件名都抛 ValueError（ScriptStructureValidationError
-        # 即其子类）：统一转 422 客户端错误，避免落到下面的 500 兜底。
-        raise UnprocessableError("script_validation_failed").with_diagnostic(str(exc)) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-
-
-class UpdateSegmentRequest(BaseModel):
-    script_file: str
-    duration_seconds: int | None = None
-    segment_break: bool | None = None
-    novel_text: str | None = None
-    image_prompt: dict | str | None = None
-    video_prompt: dict | str | None = None
-    note: str | None = None
-    characters_in_segment: list[str] | None = None
-    scenes: list[str] | None = None
-    props: list[str] | None = None
-
-
-class UpdateOverviewRequest(BaseModel):
-    synopsis: str | None = None
-    genre: str | None = None
-    theme: str | None = None
-    world_setting: str | None = None
-
-
 class UpdateEpisodeRequest(BaseModel):
     title: str
-
-
-class UpdateEpisodeSourceRequest(BaseModel):
-    text: str
-    #: 剧情演绎项目这一集原文的源文件类型；缺省时保留已有类型，没有记录时记为小说。其他创作类型忽略。
-    source_kind: SourceKind | None = None
-    #: 已确认改类型会让本集已有的脚本规划判 stale。
-    confirm: bool = False
-
-
-@router.patch("/projects/{name}/segments/{segment_id}", dependencies=[Depends(require_project_migration_ok)])
-async def update_segment(
-    name: str,
-    segment_id: str,
-    req: UpdateSegmentRequest,
-    _t: Translator,
-    make_script_batch_editor: ScriptBatchEditorFactoryDep,
-):
-    """更新旁白/解说分镜"""
-    try:
-
-        def _sync():
-            manager = get_project_manager()
-            current = manager.load_script(name, req.script_file)
-            if current.get("content_mode") != "narration" or "segments" not in current:
-                raise HTTPException(status_code=400, detail=_t("narration_mode_required"))
-            segments = current.get("segments")
-            if not isinstance(segments, list):
-                raise ValueError("narration script field 'segments' must be a list")
-            matched = next(
-                (
-                    segment
-                    for segment in segments
-                    if isinstance(segment, dict) and segment.get("segment_id") == segment_id
-                ),
-                None,
-            )
-            if matched is None:
-                raise HTTPException(status_code=404, detail=_t("segment_not_found", id=segment_id))
-            fields: dict[str, Any] = {}
-            for field in (
-                "duration_seconds",
-                "segment_break",
-                "novel_text",
-                "image_prompt",
-                "video_prompt",
-            ):
-                value = getattr(req, field)
-                if value is not None:
-                    fields[field] = value
-            if "note" in req.model_fields_set:
-                fields["note"] = req.note
-            for field in ("characters_in_segment", "scenes", "props"):
-                if field in req.model_fields_set:
-                    fields[field] = [asset_name_comparison_key(value) for value in (getattr(req, field) or [])]
-            if not fields:
-                return {"success": True, "segment": matched}
-            with project_change_source("webui"):
-                result = execute_current_script_edit(
-                    manager,
-                    name,
-                    req.script_file,
-                    [{"op": "update", "id": segment_id, "fields": fields}],
-                    editor=make_script_batch_editor(manager),
-                )
-            require_script_edit_result(
-                result,
-                operation_not_found=True,
-            )
-            saved = manager.load_script(name, req.script_file)
-            matched = next(segment for segment in saved["segments"] if segment.get("segment_id") == segment_id)
-            return {"success": True, "segment": matched, "edit_result": result.model_dump(mode="json")}
-
-        return await asyncio.to_thread(_sync)
-    except FileNotFoundError as exc:
-        raise NotFoundError("script_not_found", name=req.script_file) from exc
-    except ValueError as exc:
-        # 结构校验失败、集号错配、非法文件名都抛 ValueError（ScriptStructureValidationError
-        # 即其子类）：统一转 422 客户端错误，避免落到下面的 500 兜底。
-        raise UnprocessableError("script_validation_failed").with_diagnostic(str(exc)) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
 
 @router.patch("/projects/{name}/episodes/{episode}", dependencies=[Depends(require_project_migration_ok)])
@@ -1867,237 +1585,7 @@ async def update_episode(name: str, episode: int, req: UpdateEpisodeRequest, _t:
         raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
 
 
-@router.put("/projects/{name}/episodes/{episode}/source", dependencies=[Depends(require_project_migration_ok)])
-async def update_episode_source(name: str, episode: int, req: UpdateEpisodeSourceRequest, _t: Translator):
-    """集页填写或改写本集原文：无原文的集填上后转为自带原文的集。切出集的原文由分集规划派生，这里拒绝。
-
-    改类型会让本集已有的脚本规划判 stale 而 ``confirm`` 为 false 时，原文与类型都不写入，返回
-    ``needs_confirmation`` 与受影响的集 ID（``affected_episodes``）。
-    """
-
-    def _sync() -> dict[str, Any]:
-        manager = get_project_manager()
-        if not manager.project_exists(name):
-            raise NotFoundError("project_not_found", name=name)
-        with project_change_source("webui"):
-            written = set_episode_source_text(
-                manager, name, episode, req.text, source_kind=req.source_kind, confirm=req.confirm
-            )
-        return {
-            "success": True,
-            "episode": episode,
-            "source_origin": written.origin.value,
-            "applied": written.applied,
-            "needs_confirmation": not written.applied,
-            "affected_episodes": written.affected_episodes,
-        }
-
-    try:
-        return await asyncio.to_thread(_sync)
-    except EpisodeSourceError as exc:
-        raise episode_source_http_error(exc, _t, episode=episode) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-
-
 # ==================== 源文件管理 ====================
 
 
-@router.post("/projects/{name}/source", dependencies=[Depends(require_project_migration_ok)])
-async def set_project_source(
-    name: Annotated[str, FastAPIPath(pattern=r"^[a-zA-Z0-9_-]+$")],
-    _t: Translator,
-    generate_overview: Annotated[bool, Form()] = True,
-    content: Annotated[str | None, Form()] = None,
-    file: Annotated[UploadFile | None, File()] = None,
-):
-    """上传小说源文件或直接提交文本内容，可选触发 AI 概述生成。
-
-    两种输入方式（互斥，均使用 multipart/form-data）：
-    - file：上传 .txt/.md 文件，文件名取自上传文件
-    - content：直接提交文本内容，自动命名为 novel.txt
-
-    最大 200000 字符（约 10 万汉字）。
-    """
-    MAX_CHARS = 200_000
-    ALLOWED_SUFFIXES = {".txt", ".md"}
-
-    if not content and not file:
-        raise HTTPException(status_code=400, detail=_t("content_or_file_required"))
-    if content and file:
-        raise HTTPException(status_code=400, detail=_t("one_of_content_or_file"))
-
-    try:
-        manager = get_project_manager()
-
-        # 异步读取上传文件
-        raw: bytes | None = None
-        original_name: str = "novel.txt"
-        if file:
-            original_name = file.filename or "novel.txt"
-            suffix = Path(original_name).suffix.lower()
-            if suffix not in ALLOWED_SUFFIXES:
-                raise HTTPException(status_code=400, detail=_t("unsupported_file_type", name=suffix))
-            if file.size is not None and file.size > MAX_CHARS * 4:
-                raise HTTPException(status_code=400, detail=_t("file_too_large", max_chars=MAX_CHARS))
-            raw = await file.read()
-        text_content: str = content or ""
-
-        # 同步文件 I/O 在线程中执行
-        def _sync_write():
-            if not manager.project_exists(name):
-                raise HTTPException(status_code=404, detail=_t("project_not_found", name=name))
-            with manager.locked_source_registration(name) as (source_dir, project, _undo):
-                if raw is not None:
-                    safe_filename = Path(original_name).name
-                    if is_derived_episode_name(safe_filename):
-                        raise HTTPException(status_code=400, detail=_t("source_name_reserved"))
-                    try:
-                        text = raw.decode("utf-8")
-                    except UnicodeDecodeError as exc:
-                        raise HTTPException(status_code=400, detail=_t("invalid_encoding")) from exc
-                    if len(text) > MAX_CHARS:
-                        raise HTTPException(status_code=400, detail=_t("file_too_large", max_chars=MAX_CHARS))
-                    (source_dir / safe_filename).write_text(text, encoding="utf-8")
-                    register_whole_source_file(project, f"source/{safe_filename}")
-                    return safe_filename, len(text)
-                if len(text_content) > MAX_CHARS:
-                    raise HTTPException(status_code=400, detail=_t("file_too_large", max_chars=MAX_CHARS))
-                safe_filename = "novel.txt"
-                (source_dir / safe_filename).write_text(text_content, encoding="utf-8")
-                register_whole_source_file(project, f"source/{safe_filename}")
-                return safe_filename, len(text_content)
-
-        safe_filename, chars = await asyncio.to_thread(_sync_write)
-
-        result: dict = {"success": True, "filename": safe_filename, "chars": chars}
-
-        if generate_overview:
-            try:
-                with project_change_source("webui"):
-                    overview = await manager.generate_overview(name)
-                result["overview"] = overview
-            except Exception as ov_err:
-                # 概览生成是上传的可选后续步骤，失败仅降级回传提示、不影响上传成功。
-                # 裸 str(ov_err) 可能携带服务器路径等内部细节，回传翻译后的通用文案。
-                logger.exception("上传后概览生成失败")
-                result["overview"] = None
-                result["overview_error"] = (
-                    _t("overview_ai_response_invalid")
-                    if isinstance(ov_err, PydanticValidationError)
-                    else _t("overview_generation_failed")
-                )
-
-        return result
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-    finally:
-        if file:
-            await file.close()
-
-
 # ==================== 项目概述管理 ====================
-
-
-@router.post("/projects/{name}/generate-overview", dependencies=[Depends(require_project_migration_ok)])
-async def generate_overview(name: str, _t: Translator):
-    """使用 AI 生成项目概述"""
-    try:
-        get_project_manager().get_project_path(name)
-    except ValueError as e:
-        # 非法项目名（路径穿越等）先于生成流程拦截，避免落入下面 generate_overview()
-        # 内部供应商解析链路的 except ValueError，被误判为「未配置供应商」
-        raise BadRequestError("invalid_project_name", name=name) from e
-    except FileNotFoundError as exc:
-        raise NotFoundError("project_not_found", name=name) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-
-    def _provider_not_configured(exc: ValueError) -> BadRequestError:
-        # 非法项目名已由上方预校验拦截，此处均来自供应商解析链路（未配置/无可用供应商）；str(exc) 只进日志
-        logger.warning("生成概述配置错误: name=%s (%s)", name, exc)
-        return BadRequestError("text_provider_not_configured")
-
-    try:
-        # EmptySourceError / PydanticValidationError 都是 ValueError 子类，须放行给下方各自的
-        # 专属 except 分支，不能被 domain_error_on_value_error 的通用 ValueError 处理误判为「未配置供应商」
-        with (
-            project_change_source("webui"),
-            domain_error_on_value_error(
-                _provider_not_configured,
-                extra_passthrough=(EmptySourceError, PydanticValidationError),
-            ),
-        ):
-            overview = await get_project_manager().generate_overview(name)
-        return {"success": True, "overview": overview}
-    except FileNotFoundError as exc:
-        raise NotFoundError("project_not_found", name=name) from exc
-    except PydanticValidationError as exc:
-        # 模型输出未通过 schema 校验（后端降级仍失守时的最后防线），
-        # 裸 pydantic 错误串含模型原始输出片段，不透传给用户
-        logger.exception("概述生成响应解析失败")
-        raise HTTPException(status_code=400, detail=_t("overview_ai_response_invalid")) from exc
-    except TextOutputTruncatedError as exc:
-        # 输出被最大输出长度截断：与各文本任务同一个问题票形状，前端据此给出登记输出长度或换模型的出路
-        logger.warning("概述生成输出被截断: name=%s (%s)", name, exc)
-        raise UnprocessableError(
-            "text_output_truncated", provider_id=exc.provider_id or exc.provider, model=exc.model
-        ).with_diagnostic(truncation_problem(exc).model_dump()) from exc
-    except EmptySourceError as e:
-        logger.warning("生成概述参数错误: name=%s (%s)", name, e)
-        raise BadRequestError("overview_source_empty") from e
-    except json.JSONDecodeError as exc:
-        # 供应商解析链路内部会重新 load_project，project.json 损坏时不能误判为「未配置供应商」
-        logger.exception("生成概述失败：项目数据损坏 name=%s", name)
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc
-
-
-@router.patch("/projects/{name}/overview")
-async def update_overview(name: str, req: UpdateOverviewRequest, _t: Translator):
-    """更新项目概述（手动编辑）"""
-    try:
-
-        def _sync():
-            manager = get_project_manager()
-            captured: dict[str, Any] = {}
-
-            def _mutate(project: dict) -> None:
-                # 整段 RMW 在单一 _project_lock 内完成，避免与并发生成的 overview 回写互相覆盖
-                if "overview" not in project:
-                    project["overview"] = {}
-                if req.synopsis is not None:
-                    project["overview"]["synopsis"] = req.synopsis
-                if req.genre is not None:
-                    project["overview"]["genre"] = req.genre
-                if req.theme is not None:
-                    project["overview"]["theme"] = req.theme
-                if req.world_setting is not None:
-                    project["overview"]["world_setting"] = req.world_setting
-                captured["overview"] = project["overview"]
-
-            with project_change_source("webui"):
-                manager.update_project(name, _mutate)
-            return {"success": True, "overview": captured["overview"]}
-
-        return await asyncio.to_thread(_sync)
-    except FileNotFoundError as exc:
-        raise NotFoundError("project_not_found", name=name) from exc
-    except (HTTPException, ApiError):
-        raise
-    except Exception as exc:
-        logger.exception("请求处理失败")
-        raise HTTPException(status_code=500, detail=_t("internal_server_error")) from exc

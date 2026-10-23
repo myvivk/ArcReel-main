@@ -42,11 +42,11 @@ from lib.project.project_migration_failure import (
 )
 from lib.project.script_entry_cleanup import purge_replaced_entry_media
 from lib.script.prompt_authoring_scope import VISUAL_LAYER_FIELDS, visual_layer_complete
-from lib.script.reference_video.draft_validation import is_verbatim_source_anchor
 from lib.script.script_editor import ScriptEditError, new_item_id, patch_field, resolve_items
 from lib.script.script_models import PENDING_AUTHORING_FIELD
-from lib.script.script_review import content_fingerprint_of_data
+from lib.script.script_revision import content_fingerprint_of_data
 from lib.script.script_structure_validator import validate_script_structure
+from lib.script.source_anchor import is_verbatim_source_anchor
 from lib.script.storyboard_mentions import storyboard_mention_warnings
 from lib.speech.speech_composition import SpeechAdmission, admit_script_unit, refresh_video_unit_replan_state
 

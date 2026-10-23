@@ -29,7 +29,7 @@ import { useAppStore } from "@/stores/app-store";
 import { isResourceBusy, isScriptFileBusy } from "@/stores/tasks-store";
 import { useCostStore } from "@/stores/cost-store";
 import { useProjectsStore } from "@/stores/projects-store";
-import { durationIncompatibleLabel } from "@/components/canvas/shared/PlanDurationSelect";
+import { durationIncompatibleLabel } from "@/components/shared/ShotDurationSelect";
 import { errMsg } from "@/utils/async";
 import { isContinuousIntegerRange } from "@/utils/duration_format";
 import { itemIdWithinEpisode } from "@/utils/episode-display";
@@ -162,7 +162,6 @@ function durationLockedByTasks(projectName: string, segmentId: string, scriptFil
   return (
     isResourceBusy("storyboard", projectName, segmentId) ||
     isResourceBusy("video", projectName, segmentId) ||
-    isScriptFileBusy("grid", scriptFile, projectName) ||
     isScriptFileBusy("shot_grid", scriptFile, projectName)
   );
 }
@@ -415,7 +414,7 @@ function ShotDetailContent({
     : [];
   const hasConfirmedMaterials = materials.length > 0;
   const gridBusy = () =>
-    isScriptFileBusy("grid", scriptFile, projectName) || isScriptFileBusy("shot_grid", scriptFile, projectName);
+    isScriptFileBusy("shot_grid", scriptFile, projectName);
   const generateLabel = dirty ? t("common:save_and_generate") : undefined;
   const savingHint = saving ? t("common:save_status_saving") : undefined;
   const videoDisabled = editingBlocked || refreshPending || !!generatingVideo || !hasConfirmedMaterials;

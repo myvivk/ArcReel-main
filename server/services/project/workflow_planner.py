@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 from lib.config.resolver import ConfigResolver
 from lib.db.base import DEFAULT_USER_ID
@@ -25,32 +25,21 @@ from lib.project.project_migration_failure import (
     MigrationFailureRecord,
     load_migration_failure,
 )
-from lib.script.grid.grid_manager import GridManager
-from lib.script.reference_video.request_projection import ReferenceRequestOptions
 from lib.script.script_batch_edit import script_revision
 from lib.script.script_skeleton import ensure_route_skeleton, resolve_kind_items
 from lib.speech.speech_composition import admit_script_unit
 from lib.workflow.workflow_plan import (
-    EPISODE_PLANNING_SLOTS,
-    TEXT_DRAFT_REPAIR_TASK_TYPE,
     WorkflowPlan,
     WorkflowPlanRequest,
     WorkflowProviderCheckpoint,
     WorkflowTaskObservation,
     build_workflow_plan,
-    draft_repair_resource_id,
 )
 from lib.workflow.workflow_state import WorkflowBlocker, WorkflowStateService, WorkflowStatus
-from server.draft_workflow import DraftDocType
 from server.services.admission.video_batch_admission import (
-    admit_reference_video_batch,
     admit_storyboard_video_request,
-    artifact_state_tickets,
     build_storyboard_video_specs,
-    reference_unit_task_spec,
-    resolve_reference_batch_targets,
     resolve_voice_context,
-    screen_script_entries,
     speech_admission_problems,
 )
 
@@ -200,25 +189,9 @@ class WorkflowPlanner:
         queue: GenerationQueue,
     ) -> list[WorkflowTaskObservation]:
         rows: list[dict[str, Any]] = []
-        text_queries: list[tuple[str, list[str]]] = (
-            [("text_episode_plan", list(EPISODE_PLANNING_SLOTS))] if status.project.content_mode != "ad" else []
-        )
+        text_queries: list[tuple[str, list[str]]] = []
         if status.target is not None:
-            episode_ids = [f"episode-{status.target.episode}"]
-            text_queries.append(("text_episode_script", episode_ids))
-            if status.project.content_mode != "ad":
-                script_plan_type = (
-                    "text_reference_script_plan"
-                    if status.project.generation_mode == "reference_video"
-                    else f"text_{status.project.content_mode}_script_plan"
-                )
-                text_queries.append((script_plan_type, episode_ids))
-            text_queries.append(
-                (
-                    TEXT_DRAFT_REPAIR_TASK_TYPE,
-                    [draft_repair_resource_id(status.target.episode, doc_type) for doc_type in get_args(DraftDocType)],
-                )
-            )
+            text_queries.append(("text_episode_script", [f"episode-{status.target.episode}"]))
         for task_type, resource_ids in text_queries:
             rows.extend(
                 await get_active_tasks_for_resources(
@@ -250,34 +223,7 @@ class WorkflowPlanner:
                 for item in facts.items
                 if isinstance(item.get(id_field), str) and str(item[id_field])
             ]
-            task_types = ["reference_video" if status.project.generation_mode == "reference_video" else "video"]
-            if status.project.generation_mode == "storyboard":
-                if status.project.grid_storyboard:
-                    grids_dir = facts.project_path / "grids"
-                    grids = (
-                        await asyncio.to_thread(GridManager(facts.project_path).list_all)
-                        if await asyncio.to_thread(grids_dir.is_dir)
-                        else []
-                    )
-                    unit_id_set = set(unit_ids)
-                    grid_ids = [
-                        grid.id
-                        for grid in grids
-                        if grid.script_file == facts.script_file and set(grid.scene_ids) & unit_id_set
-                    ]
-                    if grid_ids:
-                        rows.extend(
-                            await get_active_tasks_for_resources(
-                                project_name=project_name,
-                                task_type="grid",
-                                resource_ids=grid_ids,
-                                script_file=facts.script_file,
-                                user_id=user_id,
-                                queue=queue,
-                            )
-                        )
-                else:
-                    task_types.append("storyboard")
+            task_types = ["video", "storyboard"]
             for task_type in task_types:
                 rows.extend(
                     await get_active_tasks_for_resources(
@@ -325,38 +271,6 @@ class WorkflowPlanner:
         config_resolver: ConfigResolver | None,
     ) -> dict[str, Any] | None:
         """预告这一批真提交时的准入结论；正在生成的单元与 Web 批量入口一样不算目标，不作为在途冲突报出。"""
-
-        if status.project.generation_mode == "reference_video":
-            units = facts.script.get("video_units")
-            if isinstance(units, list):
-                units = [unit for unit in units if not (isinstance(unit, dict) and unit.get("unit_id") in in_flight)]
-            screened, malformed = screen_script_entries(units, requested_ids=None)
-            targets, selection, _states = resolve_reference_batch_targets(
-                units=screened,
-                requested_ids=None,
-                project=facts.project,
-                project_path=facts.project_path,
-                episode=status.target.episode if status.target is not None else 1,
-            )
-            extra = [*malformed, *artifact_state_tickets(selection.unavailable)]
-            admission = await admit_reference_video_batch(
-                project_name=project_name,
-                project=facts.project,
-                project_path=facts.project_path,
-                script=facts.script,
-                script_file=facts.script_file,
-                units=targets,
-                request_options=ReferenceRequestOptions(),
-                operation=status.next_action.type,
-                selection=selection.mode,
-                confirmed_request_durations=request.confirmed_request_durations,
-                spec_check=lambda unit: reference_unit_task_spec(unit, facts.script_file),
-                extra_tickets=extra,
-                user_id=user_id,
-                queue=queue,
-                config_resolver=config_resolver,
-            )
-            return admission.to_payload()
 
         # 计划要预告的是「这一批真提交时会得到什么结论」，所以走的是提交侧同一条缝：
         # spec 由 build_storyboard_video_specs 构造（发声准入、输入可用性、prompt 组装
@@ -408,9 +322,7 @@ class WorkflowPlanner:
 
 def _in_flight_video_units(tasks: list[WorkflowTaskObservation]) -> frozenset[str]:
     return frozenset(
-        task.unit_id
-        for task in tasks
-        if task.task_type in {"video", "reference_video"} and task.status in {"queued", "running"}
+        task.unit_id for task in tasks if task.task_type == "video" and task.status in {"queued", "running"}
     )
 
 

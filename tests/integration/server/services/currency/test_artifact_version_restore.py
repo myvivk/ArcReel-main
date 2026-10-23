@@ -25,7 +25,7 @@ from server.services.currency.artifact_version_restore import (
     get_typed_media_restore_target,
     restore_typed_media_version,
 )
-from tests.legacy_project_shapes import write_legacy_tts_narration_project
+from tests.legacy_project_shapes import seed_legacy_project_metadata, write_legacy_tts_narration_project
 
 
 def _descriptor(seed: str, *, kind: str = "narration-delivery/tts-audio") -> ArtifactBasisDescriptor:
@@ -46,7 +46,7 @@ def _descriptor(seed: str, *, kind: str = "narration-delivery/tts-audio") -> Art
 def _project(tmp_path: Path) -> tuple[ProjectManager, Path]:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.save_script(
         "demo",
         {

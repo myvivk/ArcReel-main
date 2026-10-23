@@ -20,6 +20,7 @@ from server.error_handlers import register_error_handlers
 from server.routers import episode_assets
 from server.services import asset_ai_fill
 from tests.auth_deps import AUTH_DEPENDENCIES, override_auth
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 SCRIPT_FILE = "scripts/episode_1.json"
 
@@ -27,7 +28,7 @@ SCRIPT_FILE = "scripts/episode_1.json"
 def _client(monkeypatch, tmp_path: Path, **fields) -> tuple[TestClient, ProjectManager, Path]:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     if fields:
         pm.update_project("demo", lambda project: project.update(**fields))
     monkeypatch.setattr(episode_assets, "get_project_manager", lambda: pm)
@@ -267,7 +268,7 @@ async def generate_client(
 ) -> AsyncIterator[tuple[httpx.AsyncClient, ProjectManager, Path]]:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project("demo", lambda project: project.update({"episodes": [_episode()]}))
     queue = GenerationQueue(session_factory=session_factory, project_manager=pm)
     await queue.acquire_or_renew_worker_lease(name="default", owner_id="worker-a", ttl_seconds=60)

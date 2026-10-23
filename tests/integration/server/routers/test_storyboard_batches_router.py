@@ -23,6 +23,7 @@ from lib.project.project_manager import ProjectManager
 from lib.script.grid.keyframe_parser import parse_scene_shots
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
+from lib.script.short_drama_source import replace_short_drama_source
 from server.error_handlers import register_error_handlers
 from server.routers import storyboard_batches
 from tests.auth_deps import AUTH_DEPENDENCIES, override_auth
@@ -35,7 +36,7 @@ BASE = f"/api/v1/projects/{PROJECT}/episodes"
 def board_projects(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(tmp_path / "projects")
     manager.create_project(PROJECT)
-    manager.create_project_metadata(PROJECT, "Demo", content_mode="narration")
+    manager.create_project_metadata(PROJECT, "Demo", content_mode="drama")
     return manager
 
 
@@ -98,10 +99,10 @@ async def board_client(
         yield http
 
 
-def _segment(segment_id: str, **overrides: object) -> dict:
+def _segment(scene_id: str, **overrides: object) -> dict:
     segment: dict = {
-        "segment_id": segment_id,
-        "novel_text": "黄昏时分，风吹过村口。",
+        "scene_id": scene_id,
+        "source_text": "黄昏时分，风吹过村口。",
         "image_prompt": "村口黄昏",
         "video_prompt": {"action": "镜头平移", "camera_motion": "Pan", "ambiance_audio": "风声"},
         "duration_seconds": 4,
@@ -114,22 +115,24 @@ def _segment(segment_id: str, **overrides: object) -> dict:
 def _write_episode(board_projects: ProjectManager, segments: list[dict]) -> None:
     scripts = board_projects.get_project_path(PROJECT) / "scripts"
     scripts.mkdir(exist_ok=True)
-    script = {"episode": 1, "title": "第一集", "content_mode": "narration", "segments": segments}
+    script = {"episode": 1, "title": "第一集", "content_mode": "drama", "scenes": segments}
+    saved = replace_short_drama_source(board_projects, PROJECT, 1, "# 第1集\n黄昏时分，风吹过村口。\n")
+    script["short_drama_meta"] = {"source_revision": saved.revision}
     (scripts / "episode_1.json").write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
     board_projects.add_episode(PROJECT, 1, "第一集", "scripts/episode_1.json")
 
 
-def _with_storyboard(board_projects: ProjectManager, segment_id: str) -> dict:
-    relative_path = f"storyboards/scene_{segment_id}.png"
+def _with_storyboard(board_projects: ProjectManager, scene_id: str) -> dict:
+    relative_path = f"storyboards/scene_{scene_id}.png"
     path = board_projects.get_project_path(PROJECT) / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(relative_path.encode("utf-8"))
-    return _segment(segment_id, generated_assets={"storyboard_image": relative_path})
+    return _segment(scene_id, generated_assets={"storyboard_image": relative_path})
 
 
-def _claim_storyboard(board_projects: ProjectManager, segment_id: str) -> None:
+def _claim_storyboard(board_projects: ProjectManager, scene_id: str) -> None:
     project_dir = board_projects.get_project_path(PROJECT)
-    key = ArtifactKey.episode_storyboard(1, segment_id)
+    key = ArtifactKey.episode_storyboard(1, scene_id)
     entry = resolve_current_artifact_target(project_dir, key)
     assert entry is not None
     ProjectArtifactManifestAdapter(project_dir).put_entry(key, entry)
@@ -233,8 +236,8 @@ def _scene(*shots: tuple[str, str]) -> dict:
     return {"scene": "".join(f"【镜头{index}｜{size}】{text}" for index, (size, text) in enumerate(shots, start=1))}
 
 
-def _grid(board_projects: ProjectManager, segment_id: str, **overrides: object) -> ShotGrid:
-    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=segment_id, rows=2, cols=2)
+def _grid(board_projects: ProjectManager, scene_id: str, **overrides: object) -> ShotGrid:
+    grid = ShotGrid.create(episode=1, script_file="episode_1.json", shot_id=scene_id, rows=2, cols=2)
     for key, value in overrides.items():
         setattr(grid, key, value)
     ShotGridManager(board_projects.get_project_path(PROJECT)).save(grid)

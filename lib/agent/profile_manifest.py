@@ -56,8 +56,8 @@ class ProfileMisconfiguredError(RuntimeError):
     """profile 端变体文件不合法（成对缺失或与通用文件并存）→ 部署错误。物化流程拒绝运行。"""
 
 
-ContentMode = Literal["narration", "drama", "ad"]
-VALID_CONTENT_MODES: frozenset[str] = frozenset({"narration", "drama", "ad"})
+ContentMode = Literal["drama"]
+VALID_CONTENT_MODES: frozenset[str] = frozenset({"drama"})
 
 
 # ---------- 基础工具 ----------
@@ -78,7 +78,7 @@ def _walk_files(root: Path, rel_to: Path) -> set[str]:
 
 
 def _parse_variant_suffix(rel: str) -> tuple[str, str | None]:
-    """把 ``foo.narration.md`` 拆成 (logical_rel="foo.md", mode="narration")。
+    """把 ``foo.drama.md`` 拆成 (logical_rel="foo.md", mode="drama")。
     非变体文件返回 (rel, None)。只识别 stem 中最后一段。
     """
     path = PurePosixPath(rel)
@@ -372,7 +372,8 @@ def load_manifest(project_dir: Path) -> tuple[Manifest, bytes] | None:
             return None
     raw_mode = data.get("content_mode")
     content_mode: ContentMode | None
-    if raw_mode is None:
+    if raw_mode is None or raw_mode in ("narration", "ad"):
+        # 旧模式沿文件指纹逐项升级，保留用户改过的文件；不触发整目录重置。
         content_mode = None
     elif isinstance(raw_mode, str) and raw_mode in VALID_CONTENT_MODES:
         content_mode = cast(ContentMode, raw_mode)
@@ -679,7 +680,7 @@ def sync_profile_to_project(
         ProfileMissingError: profile 目录不存在
         ProfileEmptyError: profile 目录无可物化文件
         ProfileMisconfiguredError: 变体文件配置违规
-        ValueError: content_mode 非 narration/drama
+        ValueError: content_mode 非 drama
     """
     if not profile_dir.exists():
         raise ProfileMissingError(f"Profile dir not found: {profile_dir}")

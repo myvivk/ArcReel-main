@@ -13,14 +13,15 @@ from typing import Any
 
 from arcreel_market_core.video_backend_contract import ResumeEndpointChangedError
 from lib.config.service import DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS
-from lib.project.project_change_hints import project_change_source
-from lib.script.reference_video.execution_checkpoint import (
+from lib.generation.execution_checkpoint import (
     ReferenceExecutionIdentityError,
     VideoSubmissionCheckpoint,
     checkpoint_version_metadata,
     cleanup_staged_provider_media,
     load_task_video_checkpoint,
 )
+from lib.project.project_change_hints import project_change_source
+from server.services.currency.legacy_video_assets import finalize_reference_video_unit
 from server.services.currency.video_artifact_currency import (
     VideoArtifactCommitter,
     complete_video_artifact_commit,
@@ -32,7 +33,6 @@ from server.services.tasks.generation_tasks import (
     finalize_video_task,
     get_project_manager,
 )
-from server.services.tasks.reference_video_tasks import finalize_reference_video_unit
 
 logger = logging.getLogger(__name__)
 

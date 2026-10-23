@@ -25,6 +25,7 @@ from tests.integration.server.asset_library_support import (
     store_character_with_derivatives,
 )
 from tests.integration.server.derivative_sheet_support import solid_png_bytes
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _ALL_CURRENT = LIBRARY_SHEETS_ALL_CURRENT
 
@@ -42,7 +43,7 @@ def _applied_project(
     asset_id = store_character_with_derivatives(client, pm, owner_description=owner_description)
     if not pm.project_exists("demo"):
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     applied = client.post(
         "/api/v1/assets/apply-to-project",
         json={"asset_ids": [asset_id], "target_project": "demo", "conflict_policy": conflict_policy},
@@ -122,7 +123,7 @@ def test_current_package_carries_only_the_selected_applied_derivatives_and_keeps
 
     client, pm = library_client
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.add_character("demo", "王", "项目里的王")
     project_dir = pm.get_project_path("demo")
     table = {}

@@ -13,16 +13,16 @@ from typing import TYPE_CHECKING, Any, Protocol
 from arcreel_market_core.video_backend_contract import ResumeEndpointChangedError, ResumeExpiredError
 from lib.billing.ledger import Ledger
 from lib.db.repositories.project_records import is_deleted_project_name
+from lib.generation.execution_checkpoint import (
+    VideoResumeState,
+    classify_video_resume_state,
+    cleanup_staged_provider_media,
+)
 from lib.generation.media_generator import cleanup_staged_video_output
 from lib.generation.task_failure import encode_failure
 from lib.generation.task_failure_encoding import encode_task_failure_message
 from lib.project.project_manager import get_project_manager
 from lib.project.task_project_claim import TaskProjectClaim, claim_task_project
-from lib.script.reference_video.execution_checkpoint import (
-    VideoResumeState,
-    classify_video_resume_state,
-    cleanup_staged_provider_media,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

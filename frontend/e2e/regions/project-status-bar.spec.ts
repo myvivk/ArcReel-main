@@ -63,20 +63,9 @@ const MANY_EPISODES: ApiOverrides = {
     body: {
       episodes: Array.from({ length: EPISODE_COUNT }, (_, i) => ({
         episode: i + 1,
-        plan_stale: i % 7 === 3,
         next_action: action(i % 4 === 0 ? "none" : "generate_videos", { episode_id: i + 1 }),
       })),
     },
-  },
-};
-
-// 尚未建集：下一步是 AI 分集规划，弹层里有附加要求输入框与「或者」的备选。
-const PLAN_EPISODES: ApiOverrides = {
-  ...EVENT_STREAM,
-  ...projectWith({ episodes_summary: { total: 0, scripted: 0, in_production: 0, completed: 0 } }, []),
-  "GET /api/v1/projects/demo/workflow-status": {
-    status: 200,
-    body: { ...workflowStatus, next_action: action("plan_episodes"), next_alternatives: [action("create_episode")] },
   },
 };
 
@@ -118,22 +107,6 @@ defineRegionScenarios("顶栏状态条", [
       await waitForEntrance(popover(page));
     },
     screenshot: { name: "project-status-bar-episodes", target: popover },
-  },
-  {
-    name: "打开 AI 分集规划的下一步，附加要求输入框与备选都在弹层里",
-    path: OVERVIEW_PATH,
-    api: PLAN_EPISODES,
-    ready: async (page) => {
-      await headerReady(page);
-      await page.getByRole("button", { name: /AI 分集规划/ }).waitFor();
-    },
-    act: async (page) => {
-      await page.getByRole("button", { name: /AI 分集规划/ }).click();
-      await popover(page).getByRole("textbox").fill("每集 90 秒，结尾留悬念");
-      await expect(popover(page).getByRole("button", { name: "新建一集" })).toBeInViewport({ ratio: 1 });
-      await waitForEntrance(popover(page));
-    },
-    screenshot: { name: "project-status-bar-next", target: popover },
   },
   {
     name: "数据升级重试失败后，弹层展开很长的失败原因",

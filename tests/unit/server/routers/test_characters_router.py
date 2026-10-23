@@ -12,6 +12,7 @@ from server.error_handlers import register_error_handlers
 from server.routers import characters
 from tests.auth_deps import AUTH_DEPENDENCIES
 from tests.fakes import FakeProjectAssetMutationMixin
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class _FakePM(FakeProjectAssetMutationMixin):
@@ -65,7 +66,7 @@ class TestCharactersRouter:
     def test_clearing_character_sheet_forgets_its_formal_claim(self, tmp_path, monkeypatch):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "lead")
         project_dir = pm.get_project_path("demo")
         buffer = BytesIO()

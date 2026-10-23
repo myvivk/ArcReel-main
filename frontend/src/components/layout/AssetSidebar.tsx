@@ -3,7 +3,6 @@ import { Link, useLocation } from "wouter";
 import { useTranslation } from "react-i18next";
 import {
   BookOpen,
-  Clapperboard,
   FilePlus,
   Landmark,
   LayoutDashboard,
@@ -12,8 +11,6 @@ import {
   PanelLeftOpen,
   Plus,
   Search,
-  ShoppingBag,
-  Upload,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -70,8 +67,6 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
   const [createAfter, setCreateAfter] = useState<number | null | undefined>(undefined);
 
   const episodes = currentProjectData?.episodes ?? [];
-  // 广告/短片项目恒单集：隐藏「集」语义（标题/计数/搜索/添加），直达唯一视频
-  const isAd = currentProjectData?.content_mode === "ad";
   // 演示项目没有服务端侧数据，「分集」入口与添加菜单隐藏（导航其余项与分集列表照常渲染）
   const demoMode = useDemoWorkbench();
   const route = normalizeRoute(currentProjectData?.generation_mode);
@@ -94,11 +89,11 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
 
   const navItems: NavItem[] = [
     { key: "overview", path: "/", label: t("dashboard:workspace_nav_overview"), icon: LayoutDashboard },
-    ...(demoMode || currentProjectData?.content_mode !== "drama" ? [] : [
+    ...(demoMode ? [] : [
       { key: "story", path: "/story", label: t("dashboard:story_title"), icon: BookOpen },
     ]),
     // 演示项目后端不存在，广告/短片恒单集、不经分集：隐藏入口而非渲染必然报错或无意义的页面
-    ...(demoMode || isAd
+    ...(demoMode
       ? []
       : [
           {
@@ -134,18 +129,6 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
       count: Object.keys(currentProjectData?.props ?? {}).length,
       hint: t("dashboard:workspace_nav_all_assets_hint"),
     },
-    // 商品资产仅广告/短片项目使用（v1 单商品设定），其余模式隐藏入口
-    ...(isAd
-      ? [
-          {
-            key: "products",
-            path: "/products",
-            label: t("dashboard:workspace_nav_products"),
-            icon: ShoppingBag,
-            count: Object.keys(currentProjectData?.products ?? {}).length,
-          },
-        ]
-      : []),
   ];
 
   const isNavActive = (item: NavItem): boolean => {
@@ -156,21 +139,11 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
 
   // 播出位置按完整账本的排列算，过滤不改变它；搜索按标题与播出位置匹配，集 ID 不参与。
   const positioned = episodes.map((ep, index) => ({ ep, position: index + 1 }));
-  // ad 隐藏搜索框，残留的 search state 不参与过滤，避免唯一视频入口被吞
-  const filteredEps = isAd
-    ? positioned
-    : positioned.filter(
-        ({ ep, position }) => !search || ep.title.includes(search) || String(position).includes(search),
-      );
-
-  const sectionTitle = isAd ? t("dashboard:ad_video_section_title") : t("dashboard:episodes_section_title");
-  const addEpisodeMenu =
-    isAd || demoMode ? null : (
-      <AddEpisodeMenu
-        onCreate={() => setCreateAfter(null)}
-        onUpload={() => setLocation(episodesViewPath({ upload: "episode" }))}
-      />
-    );
+  const filteredEps = positioned.filter(
+    ({ ep, position }) => !search || ep.title.includes(search) || String(position).includes(search),
+  );
+  const sectionTitle = t("dashboard:episodes_section_title");
+  const addEpisodeMenu = demoMode ? null : <AddEpisodeMenu onCreate={() => setCreateAfter(null)} />;
 
   return (
     <div className="@container/sidebar relative flex h-full min-w-0 flex-col">
@@ -195,16 +168,10 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
               key={ep.episode}
               href={`/episodes/${ep.episode}`}
               active={ep.episode === activeEp}
-              label={
-                isAd
-                  ? sectionTitle
-                  : t("dashboard:episode_collapsed_button_label", {
-                      position,
-                      title: ep.title || t("common:episode_position_name", { position }),
-                    })
-              }
-              icon={isAd ? Clapperboard : undefined}
-              text={isAd ? undefined : String(position)}
+              label={t("dashboard:episode_collapsed_button_label", {
+                position, title: ep.title || t("common:episode_position_name", { position }),
+              })}
+              text={String(position)}
             />
           ))}
         </div>
@@ -212,12 +179,12 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
         <section aria-label={sectionTitle} className="flex min-h-0 flex-1 flex-col">
           <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-3">
             <h2 className="text-xs font-medium text-muted-foreground">{sectionTitle}</h2>
-            {!isAd && <span className="text-xs tabular-nums text-muted-foreground">{episodes.length}</span>}
+            {<span className="text-xs tabular-nums text-muted-foreground">{episodes.length}</span>}
             <span className="flex-1" />
             {addEpisodeMenu}
           </div>
 
-          {!isAd && (
+          {(
             <div className="shrink-0 px-2 pb-2">
               <InputGroup>
                 <InputGroupAddon>
@@ -239,7 +206,7 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
               <p className="px-2 py-6 text-center text-xs text-muted-foreground">
                 {episodes.length === 0 ? t("dashboard:no_episodes_yet") : t("dashboard:no_episode_search_results")}
               </p>
-            ) : isAd || demoMode ? (
+            ) : demoMode ? (
               filteredEps.map(({ ep, position }) => (
                 <EpisodeCard
                   key={ep.episode}
@@ -247,8 +214,6 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
                   position={position}
                   active={ep.episode === activeEp}
                   onClick={() => setLocation(`/episodes/${ep.episode}`)}
-                  showEpisodeBadge={!isAd}
-                  fallbackTitle={isAd ? currentProjectData?.title : undefined}
                   route={route}
                 />
               ))
@@ -353,7 +318,7 @@ function RailLink({
   );
 }
 
-function AddEpisodeMenu({ onCreate, onUpload }: { onCreate: () => void; onUpload: () => void }) {
+function AddEpisodeMenu({ onCreate }: { onCreate: () => void }) {
   const { t } = useTranslation("dashboard");
   return (
     <DropdownMenu>
@@ -364,10 +329,6 @@ function AddEpisodeMenu({ onCreate, onUpload }: { onCreate: () => void; onUpload
         <DropdownMenuItem onClick={onCreate}>
           <FilePlus aria-hidden />
           {t("episode_create_title")}
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={onUpload}>
-          <Upload aria-hidden />
-          {t("episode_menu_upload_sources")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -48,6 +48,12 @@ from lib.artifacts.formal_write import project_metadata_lock
 from lib.episode.episode_paths import episode_script_relpath
 from lib.infra.json_io import atomic_write_json
 from lib.infra.path_safety import try_safe_join
+from lib.project.legacy_script_plans import (
+    REVIEW_FIELD,
+    script_plan_kind,
+    script_plan_path,
+    stored_review,
+)
 from lib.project.project_manager import is_episode_number
 from lib.project.project_migration_failure import ProjectMigrationError
 from lib.project.project_migration_report import ArtifactBackfillOutcome, MigrationSkippedArtifact
@@ -56,13 +62,7 @@ from lib.project.project_schema import parse_project_schema_version
 from lib.script.script_document import build_materialized_script
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from lib.script.script_plan_entries import ScriptPlanKind, entry_id_field, plan_entries_from_document, plan_variant
-from lib.script.script_review import (
-    REVIEW_FIELD,
-    content_fingerprint,
-    script_plan_kind,
-    script_plan_path,
-    stored_review,
-)
+from lib.script.script_revision import content_fingerprint
 from lib.script.script_skeleton import SKELETONS, rewrite_episode_prefix
 from lib.script.script_structure_validator import validate_script_structure
 

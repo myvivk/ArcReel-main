@@ -29,7 +29,7 @@ function assistantTurn(...content: ContentBlock[]): Turn {
 }
 
 const SCRIPT_TOOL = "mcp__arcreel__generate_episode_script";
-const SCRIPT_PLAN_TOOL = "mcp__arcreel__generate_script_plan";
+const SCRIPT_PLAN_TOOL = "mcp__arcreel__generate_short_drama_factory";
 
 describe("useScriptGenerationNotice", () => {
   beforeEach(() => {

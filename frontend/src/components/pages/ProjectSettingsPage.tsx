@@ -269,13 +269,8 @@ function TabBadge({ overrides, dirty }: { overrides?: number; dirty: boolean }) 
 }
 
 /** 基础分页里校验未通过的字段；行内已有提示，保存时只需指出分页。 */
-function basicsInvalid(value: ProjectSettingsForm, facts: ProjectFacts): boolean {
-  return (
-    !isValidSpeechRate(value.speechRate) ||
-    (facts.contentMode === "ad"
-      ? value.adTargetDuration === null
-      : !isValidEpisodeTargetDuration(value.episodeTargetDuration))
-  );
+function basicsInvalid(value: ProjectSettingsForm): boolean {
+  return !isValidSpeechRate(value.speechRate) || !isValidEpisodeTargetDuration(value.episodeTargetDuration);
 }
 
 function LoadedProjectSettings({ projectName, loaded }: { projectName: string; loaded: LoadedSettings }) {
@@ -304,14 +299,14 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
   // 已保存内容推进到 PATCH 的结果，只有新参考图仍是未保存修改，再次保存会重新上传。
   const save = useCallback(
     async (value: ProjectSettingsForm, saved: ProjectSettingsForm): Promise<ProjectSettingsForm> => {
-      if (basicsInvalid(value, facts)) {
+      if (basicsInvalid(value)) {
         throw new Error(t("project_settings_invalid_fields", { tab: t("project_settings_tab_basics") }));
       }
       const narrationProblem = narrationDeliveryProblem(value.narration);
       if (narrationProblem) {
         throw new Error(t(narrationProblem === "model" ? "project_tts_model_required" : "project_narration_voice_required"));
       }
-      const res = await API.updateProject(projectName, buildProjectPatch(value, saved, facts, globals));
+      const res = await API.updateProject(projectName, buildProjectPatch(value, saved, globals));
       // grid_storyboard、video_backend 落盘后 /video-capabilities 按已存值解析，查询 key 不变，需显式失效
       useCapabilitiesStore.getState().invalidate();
       const next = keepSavedStylePreview(deriveForm(res.project, projectName, globals, null), saved);
@@ -332,7 +327,7 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
       const preview = styleImageUrl(projectName, uploaded.style_image, Date.now());
       return { ...next, style: { kind: "image", preview, description: uploaded.style_description, file: null } };
     },
-    [projectName, facts, globals, t],
+    [projectName, globals, t],
   );
 
   // 四个表单分页之间切换不卸载编辑单元，不拦截；切到项目记忆、Agent 配置或离开本页时拦截
@@ -411,7 +406,6 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
             }
             usesReferenceImages={usesReferenceImages}
             showOverrideSources
-            enable={facts.contentMode === "ad" ? { duration: false } : undefined}
           />
         </div>
       );
@@ -421,7 +415,6 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
         <VoiceTab
           value={value}
           onChange={setValue}
-          generationRoute={facts.generationRoute}
           narrationDefaults={loaded.narrationDefaults}
           audioBackends={loaded.options.audioBackends}
           providerNames={providerNames}

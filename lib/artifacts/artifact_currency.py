@@ -67,7 +67,7 @@ def read_artifact_content_snapshot(
 def decode_script_content_snapshot(content: bytes, artifact_path: str) -> dict[str, Any]:
     """Decode the exact script bytes used to establish a formal input claim."""
 
-    from lib.script.reference_video.duration_migration import migrate_script_unit_durations
+    from lib.project.legacy_reference_durations import migrate_script_unit_durations
 
     try:
         script = json.loads(content.decode("utf-8"))

@@ -1,10 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentFailureError,
   API,
   ApiRequestError,
-  ConflictError,
-  ReferenceProjectionError,
   ScriptEditCommandError,
   SpeechAdmissionError,
 } from "@/api";
@@ -289,41 +287,6 @@ describe("API", () => {
       expect(error.result).toEqual(result);
     });
 
-    it("preserves a structured reference request projection blocker", async () => {
-      const projection = {
-        allowed: false as const,
-        kind: "reference_request_projection" as const,
-        unit_id: "E1U1",
-        problems: [
-          {
-            code: "reference_images_clamped",
-            blocking: false,
-            unit_id: "E1U1",
-            locations: [{ path: ["references"], line: null }],
-            params: { count: 4, max_count: 3 },
-            action: "review_reference_selection",
-            message: "参考图片将被裁剪",
-          },
-          {
-            code: "reference_asset_missing",
-            blocking: true,
-            unit_id: "E1U1",
-            locations: [{ path: ["references"], line: null }],
-            params: { missing: [["character", "张三"]] },
-            action: "repair_reference_assets",
-            message: "参考图缺失",
-          },
-        ],
-      };
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
-        mockResponse({ ok: false, status: 400, jsonData: { detail: projection } }),
-      ));
-
-      const call = API.precheckReferenceVideoDuration("demo", 1, "E1U1");
-      await expect(call).rejects.toBeInstanceOf(ReferenceProjectionError);
-      await expect(call).rejects.toMatchObject({ message: "参考图缺失", projection });
-    });
-
     it("clears auth and redirects on unauthorized responses", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         mockResponse({
@@ -393,7 +356,7 @@ describe("API", () => {
 
       await API.listProjects();
       await API.createProject({ title: "Demo", generation_mode: "storyboard" });
-      await API.createProject({ title: "Untitled", generation_mode: "reference_video" });
+      await API.createProject({ title: "Untitled" });
       await API.getProject("a b");
       await API.updateProject("demo", { style: "Anime" });
       await API.deleteProject("demo");
@@ -405,13 +368,8 @@ describe("API", () => {
       await API.updateProjectScene("demo", "Temple", { description: "dark" });
       await API.addProjectProp("demo", "Sword", "rusty");
       await API.updateProjectProp("demo", "Sword", { description: "shiny" });
-      await API.addProjectProduct("demo", "Phone", "sleek");
-      await API.addProjectProduct("demo", "Phone", "sleek", "Acme");
-      await API.updateProjectProduct("demo", "Phone", { description: "matte" });
-      await API.deleteProjectAsset("demo", "product", "Phone");
       await API.previewProjectAssetDeletion("demo", "character", "Hero");
       await API.renameProjectAsset("demo", "character", "Hero", "Knight");
-      await API.renameProjectAsset("demo", "product", "Phone", "Tablet", { dryRun: true });
 
       await API.getScript("demo", "episode 1.json");
       await API.editScriptBatch("demo", {
@@ -420,8 +378,6 @@ describe("API", () => {
         operations: [{ op: "update", id: "E1S01", fields: { note: "keep" } }],
       });
       await API.updateScene("demo", "scene-1", "episode_1.json", { x: 1 });
-      await API.updateSegment("demo", "segment-1", { y: 2 });
-      await API.updateShot("demo", "E1S01", "episode_1.json", { voiceover_text: "新口播" });
       await API.moveScriptItem("demo", "episode_1.json", "E1S02", null);
       await API.updateEpisode("demo", 3, { title: "新标题" });
 
@@ -431,11 +387,6 @@ describe("API", () => {
       await API.getPromptTemplate("asset/sheet 1");
       await API.getPromptPartial("shared/media style");
       await API.updateSystemConfig({ default_image_backend: "vertex" });
-      await API.getEpisodesView("demo");
-      await API.adoptSourceFile("demo", "旧 稿.txt", { target: "episode", episode: 2 });
-      await API.deleteDraft("demo", 1, "script_plan");
-      await API.generateOverview("demo");
-      await API.updateOverview("demo", { synopsis: "new" });
 
       await API.generateStoryboard("demo", "seg-1", "img", "episode_1.json");
       await API.generateVideo("demo", "seg-1", "vid", "episode_1.json");
@@ -444,7 +395,6 @@ describe("API", () => {
       await API.generateCharacter("demo", "Hero");
       await API.generateProjectScene("demo", "Temple");
       await API.generateProjectProp("demo", "Sword");
-      await API.generateProjectProduct("demo", "Phone");
 
       expect(requestSpy).toHaveBeenCalledWith("/projects", { signal: undefined });
       expect(requestSpy).toHaveBeenCalledWith("/projects", {
@@ -453,7 +403,7 @@ describe("API", () => {
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects", {
         method: "POST",
-        body: JSON.stringify({ title: "Untitled", generation_mode: "reference_video" }),
+        body: JSON.stringify({ title: "Untitled" }),
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b", { signal: undefined });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo", {
@@ -479,21 +429,6 @@ describe("API", () => {
         method: "POST",
         body: JSON.stringify({ name: "Sword", description: "rusty" }),
       });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/products", {
-        method: "POST",
-        body: JSON.stringify({ name: "Phone", description: "sleek" }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/products", {
-        method: "POST",
-        body: JSON.stringify({ name: "Phone", description: "sleek", brand: "Acme" }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/products/Phone", {
-        method: "PATCH",
-        body: JSON.stringify({ description: "matte" }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/products/Phone", {
-        method: "DELETE",
-      });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/characters/Hero?dry_run=true", {
         method: "DELETE",
         signal: undefined,
@@ -502,14 +437,6 @@ describe("API", () => {
         method: "POST",
         body: JSON.stringify({ new_name: "Knight", dry_run: false }),
         signal: undefined,
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/products/Phone/rename", {
-        method: "POST",
-        body: JSON.stringify({ new_name: "Tablet", dry_run: true }),
-        signal: undefined,
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/generate/product/Phone", {
-        method: "POST",
       });
       expect(requestSpy).toHaveBeenCalledWith(
         "/projects/demo/scripts/episode%201.json",
@@ -525,14 +452,6 @@ describe("API", () => {
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/script-scenes/scene-1", {
         method: "PATCH",
         body: JSON.stringify({ script_file: "episode_1.json", updates: { x: 1 } }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/segments/segment-1", {
-        method: "PATCH",
-        body: JSON.stringify({ y: 2 }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/script-shots/E1S01", {
-        method: "PATCH",
-        body: JSON.stringify({ script_file: "episode_1.json", updates: { voiceover_text: "新口播" } }),
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/script-items/E1S02/move", {
         method: "POST",
@@ -579,11 +498,6 @@ describe("API", () => {
         method: "POST",
         body: JSON.stringify({ script_file: "episode_1.json" }),
       });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/episodes-view", { signal: undefined });
-      expect(requestSpy).toHaveBeenCalledWith(
-        "/projects/demo/source-files/%E6%97%A7%20%E7%A8%BF.txt/adopt",
-        { method: "POST", body: JSON.stringify({ target: "episode", episode: 2 }) },
-      );
     });
 
     it("editImage posts instruction with singular resource_type; script_file null for non-storyboard", async () => {
@@ -766,54 +680,6 @@ describe("API", () => {
         }),
       });
     });
-
-    it("covers script_plan→prompt_authoring script-review gate endpoints", async () => {
-      const requestSpy = vi.spyOn(API, "request").mockResolvedValue({ status: "pending_review" } as never);
-
-      const content = {
-        segments: [
-          {
-            segment_id: "E1S01",
-            novel_text: "原文",
-            duration_seconds: 6,
-            segment_break: false,
-            characters_in_segment: [],
-            scenes: [],
-            props: [],
-          },
-        ],
-      };
-      // 三个封装都用含空格项目名，断言 encodeURIComponent 在各自路径上生效（编码丢失即失败）。
-      await API.getScriptReview("a b", 1);
-      await API.saveScriptReviewContent("a b", 2, content);
-      await API.saveScriptReviewContent("a b", 2, content, "fp 1");
-      await API.confirmScriptReview("a b", 3);
-      await API.confirmScriptReview("a b", 3, { overwriteRevision: "sha256-v1:abc" });
-
-      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/episodes/1/script-review", {
-        signal: undefined,
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/episodes/2/script-review/content", {
-        method: "PUT",
-        body: JSON.stringify(content),
-      });
-      // 基线指纹经 query 传递（编码后），供服务端做并发编辑冲突比对
-      expect(requestSpy).toHaveBeenCalledWith(
-        "/projects/a%20b/episodes/2/script-review/content?base_fingerprint=fp%201",
-        {
-          method: "PUT",
-          body: JSON.stringify(content),
-        },
-      );
-      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/episodes/3/script-review/confirm", {
-        method: "POST",
-        body: JSON.stringify({ overwrite_revision: null }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/a%20b/episodes/3/script-review/confirm", {
-        method: "POST",
-        body: JSON.stringify({ overwrite_revision: "sha256-v1:abc" }),
-      });
-    });
   });
 
   describe("fetch-based wrappers", () => {
@@ -862,31 +728,15 @@ describe("API", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       const file = new File(["hello"], "demo.txt", { type: "text/plain" });
-      const result = await API.uploadFile("my project", "source", file, "x y");
+      const result = await API.uploadFile("my project", "character", file, "x y");
 
       expect(result).toEqual({ success: true, path: "p", url: "u" });
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(fetchMock.mock.calls[0][0]).toBe(
-        "/api/v1/projects/my%20project/upload/source?name=x%20y",
+        "/api/v1/projects/my%20project/upload/character?name=x%20y",
       );
       expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
       expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeInstanceOf(FormData);
-    });
-
-    it("registers whole-source uploads at a position and per-episode uploads by role", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(
-        mockResponse({ jsonData: { success: true, path: "source/a.txt", filename: "a.txt" } }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-      const file = new File(["hello"], "a.txt", { type: "text/plain" });
-
-      await API.uploadFile("demo", "source", file, null, { role: "whole_source", onConflict: "rename", insertAt: 0 });
-      await API.uploadFile("demo", "source", file, null, { role: "episode" });
-
-      expect(fetchMock.mock.calls[0][0]).toBe(
-        "/api/v1/projects/demo/upload/source?on_conflict=rename&role=whole_source&insert_at=0",
-      );
-      expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/projects/demo/upload/source?role=episode");
     });
 
     it("falls back to messages in the current language when the server gives no reason", async () => {
@@ -894,7 +744,7 @@ describe("API", () => {
       try {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse({ ok: false, status: 500, jsonData: {} })));
         await expect(API.request("/projects")).rejects.toThrow("Request failed");
-        await expect(API.uploadFile("demo", "source", new File(["x"], "a.txt"))).rejects.toThrow("Upload failed");
+        await expect(API.uploadFile("demo", "character", new File(["x"], "a.txt"))).rejects.toThrow("Upload failed");
 
         vi.stubGlobal(
           "fetch",
@@ -920,7 +770,7 @@ describe("API", () => {
       vi.stubGlobal("fetch", fetchMock);
       const file = new File(["hello"], "demo.txt", { type: "text/plain" });
 
-      await expect(API.uploadFile("demo", "source", file)).rejects.toThrow("上传失败");
+      await expect(API.uploadFile("demo", "character", file)).rejects.toThrow("上传失败");
     });
 
     it("uploads shot media via multipart form and returns fingerprints", async () => {
@@ -954,70 +804,11 @@ describe("API", () => {
       expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeInstanceOf(FormData);
     });
 
-    it("uploads reference unit video and throws detail on failure", async () => {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce(
-          mockResponse({
-            jsonData: {
-              success: true,
-              path: "reference_videos/unit-1.mp4",
-              version: 1,
-              asset_fingerprints: { "reference_videos/unit-1.mp4": 1 },
-            },
-          }),
-        )
-        .mockResolvedValueOnce(
-          mockResponse({
-            ok: false,
-            statusText: "Bad Request",
-            jsonData: { detail: "不支持的视频格式" },
-          }),
-        );
+    it("reads historical source text without a write channel", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(mockResponse({ textData: "source content" }));
       vi.stubGlobal("fetch", fetchMock);
-      const file = new File(["vid"], "clip.mp4", { type: "video/mp4" });
-
-      const result = await API.uploadReferenceUnitVideo("demo", 1, "unit-1", file);
-      expect(result.path).toBe("reference_videos/unit-1.mp4");
-      expect(fetchMock.mock.calls[0][0]).toBe(
-        "/api/v1/projects/demo/reference-videos/episodes/1/units/unit-1/upload-video",
-      );
-      expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeInstanceOf(FormData);
-
-      await expect(API.uploadReferenceUnitVideo("demo", 1, "unit-1", file)).rejects.toThrow(
-        "不支持的视频格式",
-      );
-    });
-
-    it("handles source and draft text APIs", async () => {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce(mockResponse({ textData: "source content" }))
-        .mockResolvedValueOnce(
-          mockResponse({ jsonData: { success: true }, statusText: "OK" }),
-        )
-        .mockResolvedValueOnce(mockResponse({ textData: "draft content" }))
-        .mockResolvedValueOnce(
-          mockResponse({ jsonData: { success: true }, statusText: "OK" }),
-        );
-      vi.stubGlobal("fetch", fetchMock);
-
-      await expect(API.getSourceContent("demo", "source.txt")).resolves.toBe(
-        "source content",
-      );
-      await expect(API.deleteSourceFile("demo", "source.txt")).resolves.toEqual({
-        success: true,
-      });
-      await expect(API.getDraftContent("demo", 1, "script_plan")).resolves.toBe("draft content");
-      await expect(API.saveDraft("demo", 1, "script_plan", "draft")).resolves.toEqual({
-        success: true,
-      });
-
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        2,
-        "/api/v1/projects/demo/source/source.txt",
-        expect.objectContaining({ method: "DELETE" }),
-      );
+      await expect(API.getSourceContent("demo", "source.txt")).resolves.toBe("source content");
+      expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/projects/demo/source/source.txt");
     });
 
     it("falls back to status text in text endpoint errors", async () => {
@@ -1463,172 +1254,7 @@ describe("API", () => {
   });
 });
 
-import type { ReferenceVideoUnit } from "@/types";
 
-describe("API.referenceVideos", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchMock = vi.spyOn(globalThis, "fetch");
-  });
-
-  afterAll(() => {
-    vi.restoreAllMocks();
-  });
-
-  const mkUnit = (id: string): ReferenceVideoUnit => ({
-    unit_id: id,
-    text: "test",
-    duration_seconds: 3,
-    note: null,
-    generated_assets: {
-      storyboard_image: null,
-      storyboard_last_image: null,
-      grid_id: null,
-      grid_cell_index: null,
-      video_clip: null,
-      video_uri: null,
-      status: "pending",
-      video_generated_at: null,
-    },
-  });
-
-  it("listReferenceVideoUnits calls GET /reference-videos/episodes/:ep/units", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ units: [mkUnit("E1U1")] }), { status: 200 }));
-    const res = await API.listReferenceVideoUnits("proj", 1);
-    expect(res.units).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/projects/proj/reference-videos/episodes/1/units",
-      expect.not.objectContaining({ method: expect.stringMatching(/./) }),
-    );
-  });
-
-  it("addReferenceVideoUnit posts the prompt payload", async () => {
-    const unit = mkUnit("E1U2");
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ unit }), { status: 201 }));
-    const res = await API.addReferenceVideoUnit("proj", 1, { prompt: "@[张三] 推门" });
-    expect(res.unit.unit_id).toBe("E1U2");
-    const [, init] = fetchMock.mock.calls[0]!;
-    expect(init!.method).toBe("POST");
-    const body = JSON.parse(init!.body as string) as Record<string, unknown>;
-    expect(body).toEqual({ prompt: "@[张三] 推门" });
-  });
-
-  it("moveReferenceVideoUnit sends the anchor", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ units: [] }), { status: 200 }));
-    await API.moveReferenceVideoUnit("proj", 1, "E1U2", null);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toContain("/reference-videos/episodes/1/units/E1U2/move");
-    expect(JSON.parse(init!.body as string)).toEqual({ after_unit_id: null });
-  });
-
-  it("generateReferenceVideoUnit returns task id", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ task_id: "t-1", deduped: false }), { status: 202 }));
-    const res = await API.generateReferenceVideoUnit("proj", 1, "E1U1", {
-      confirmed_request_duration_seconds: 12,
-    });
-    expect(res.task_id).toBe("t-1");
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
-    expect(body).toEqual({ confirmed_request_duration_seconds: 12 });
-  });
-
-  it("generateReferenceVideoBatch posts the batch admission payload", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ decision: "admitted", task_ids: ["t-1"], units: [], deduped: false }),
-        { status: 200 },
-      ),
-    );
-
-    const res = await API.generateReferenceVideoBatch("proj", 1, {
-      unit_ids: ["E1U1", "E1U2"],
-      confirmed_request_durations: { E1U1: 8 },
-    });
-
-    expect(fetchMock.mock.calls[0]![0]).toContain(
-      "/projects/proj/reference-videos/episodes/1/units/generate-batch",
-    );
-    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({
-      unit_ids: ["E1U1", "E1U2"],
-      confirmed_request_durations: { E1U1: 8 },
-    });
-    expect(res.decision).toBe("admitted");
-  });
-
-  it("precheckReferenceVideoDuration sends no query string", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }));
-
-    await API.precheckReferenceVideoDuration("proj", 1, "E1U1");
-
-    expect(fetchMock.mock.calls[0]![0]).toMatch(/\/units\/E1U1\/duration-precheck$/);
-  });
-
-  it("getCostEstimate scopes to one reference unit only", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }));
-
-    await API.getCostEstimate("proj", { referenceUnitId: "E1U1" });
-
-    expect(fetchMock.mock.calls[0]![0]).toMatch(/\/cost-estimate\?reference_unit_id=E1U1$/);
-  });
-
-  it("deleteReferenceVideoUnit returns void on 204", async () => {
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await expect(API.deleteReferenceVideoUnit("proj", 1, "E1U1")).resolves.toBeUndefined();
-  });
-});
-
-describe("uploadFile (source) onConflict", () => {
-  beforeEach(() => {
-    globalThis.fetch = vi.fn();
-  });
-
-  it("passes on_conflict query when provided", async () => {
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(JSON.stringify({ success: true, path: "source/a.txt", url: "/x" }), { status: 200 })
-    );
-    await API.uploadFile("p", "source", new File(["x"], "a.txt"), null, { onConflict: "replace" });
-    const url = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-    expect(url).toContain("on_conflict=replace");
-  });
-
-  it("throws ConflictError on 409 with structured detail", async () => {
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          detail: { existing: "a.txt", suggested_name: "a_1", message: "conflict" },
-        }),
-        { status: 409 }
-      )
-    );
-    await expect(
-      API.uploadFile("p", "source", new File(["x"], "a.txt"))
-    ).rejects.toBeInstanceOf(ConflictError);
-  });
-
-  it("ConflictError carries existing and suggestedName", async () => {
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          detail: { existing: "a.txt", suggested_name: "a_1", message: "conflict" },
-        }),
-        { status: 409 }
-      )
-    );
-    const call = API.uploadFile("p", "source", new File(["x"], "a.txt"));
-    await expect(call).rejects.toBeInstanceOf(ConflictError);
-    await expect(call).rejects.toMatchObject({ existing: "a.txt", suggestedName: "a_1" });
-  });
-
-  it("throws generic Error (not ConflictError) on 409 with malformed detail", async () => {
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: {} }), { status: 409 }),
-    );
-    // 避免前端手搓 suggested_name 冒充后端语义：detail 不完整时应直接报协议异常
-    const call = API.uploadFile("p", "source", new File(["x"], "a.txt"));
-    await expect(call).rejects.not.toBeInstanceOf(ConflictError);
-    await expect(call).rejects.toThrow("a.txt");
-  });
-});
 
 describe("custom endpoint test multipart", () => {
   it("fetches the artifact with the current auth header", async () => {

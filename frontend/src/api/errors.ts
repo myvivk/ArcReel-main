@@ -128,22 +128,6 @@ export class AgentFailureError extends Error {
   }
 }
 
-/**
- * Error thrown when uploading a source file conflicts with an existing file
- * (HTTP 409). Carries the existing filename and a server-suggested alternative
- * so callers can prompt the user to retry with `on_conflict=rename|replace`.
- */
-export class ConflictError extends Error {
-  constructor(
-    public readonly existing: string,
-    public readonly suggestedName: string,
-    message: string
-  ) {
-    super(message);
-    this.name = "ConflictError";
-  }
-}
-
 /** Error payload from the import project endpoint (extends ErrorResponse with import-specific fields). */
 export interface ImportErrorPayload {
   detail?: string | { msg?: string }[];

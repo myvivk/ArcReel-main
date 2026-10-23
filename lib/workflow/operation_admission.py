@@ -13,16 +13,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from lib.episode.episode_ledger import SourceDoc
-from lib.episode.episode_paths import episode_source_path
-from lib.episode.episode_sources import SourceOrigin, episode_source_origin
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from lib.script.script_skeleton import SKELETONS
 
@@ -40,15 +36,12 @@ class AdmissionReason(StrEnum):
     """不能执行的理由码闭集；界面按码取文案，Agent 按码转述。"""
 
     NOT_APPLICABLE = "operation_not_applicable"
-    WHOLE_SOURCE_MISSING = "whole_source_missing"
-    REPLAN_CANDIDATE_PENDING = "replan_candidate_pending"
-    EPISODE_SOURCE_MISSING = "episode_source_missing"
+
     FORMAL_SCRIPT_MISSING = "formal_script_missing"
-    FORMAL_SCRIPT_EXISTS = "formal_script_exists"
-    FORMAL_SCRIPT_NO_SOURCE = "formal_script_no_source"
+
     NO_PENDING_AUTHORING = "no_pending_authoring"
     PROMPT_AUTHORING_DRAFT_PENDING = "prompt_authoring_draft_pending"
-    AD_INPUTS_MISSING = "ad_brief_and_products_missing"
+
     NO_AVAILABLE_VIDEO = "no_available_video"
     NO_MISSING_SHOT_GRID = "no_missing_shot_grid"
     NO_MISSING_VIDEO_PROMPT = "no_missing_video_prompt"
@@ -80,37 +73,6 @@ def _refused(reason: AdmissionReason) -> OperationAdmission:
 # ---------------------------------------------------------------------------
 
 
-def whole_source_present(docs: Iterable[SourceDoc]) -> bool:
-    """有可供分集规划的整本源文：项目登记的整本源文文件里有非空白的原文。
-
-    ``docs`` 取自 :func:`lib.episode.episode_sources.discover_sources`；未登记的文件不算。
-    """
-    return any(doc.text.strip() for doc in docs)
-
-
-def episode_source_present(project_path: Path, episode: int, entry: Mapping[str, Any] | None) -> bool:
-    """本集有非空白的集原文：账本记为切出集或自带原文，且集文件 ``source/episode_N.txt`` 非空白。
-
-    不在账本里（``entry`` 为 None）或账本记为无原文的集，即使 ``source/`` 里恰好有同名文件也不算。
-    """
-    if entry is None or episode_source_origin(entry) is SourceOrigin.NONE:
-        return False
-    path = episode_source_path(project_path, episode)
-    if path.is_symlink() or not path.is_file():
-        return False
-    try:
-        return bool(path.read_text(encoding="utf-8").strip())
-    except (OSError, UnicodeDecodeError):
-        return False
-
-
-def ad_inputs_present(project: Mapping[str, Any]) -> bool:
-    """广告/短片的创作灵感与商品至少填了一项。"""
-    brief = project.get("brief")
-    products = project.get("products")
-    return (isinstance(brief, str) and bool(brief.strip())) or (isinstance(products, Mapping) and bool(products))
-
-
 def pending_authoring_entry_ids(items: Sequence[Any], kind: str | None) -> list[str]:
     """正式脚本里带待编写标记的条目 id，按脚本顺序；四种骨架都由提示词编写补写。"""
     if kind not in SKELETONS:
@@ -129,35 +91,6 @@ def pending_authoring_entry_ids(items: Sequence[Any], kind: str | None) -> list[
 # ---------------------------------------------------------------------------
 # 准入谓词：每个 AI 操作一份
 # ---------------------------------------------------------------------------
-
-
-def admit_plan_episodes(
-    content_mode: object, *, whole_source: bool, replan_pending: bool = False
-) -> OperationAdmission:
-    """AI 分集规划：有整本源文，且没有悬而未决的重新规划候选。"""
-    if content_mode == "ad":
-        return NOT_APPLICABLE
-    if not whole_source:
-        return _refused(AdmissionReason.WHOLE_SOURCE_MISSING)
-    return _refused(AdmissionReason.REPLAN_CANDIDATE_PENDING) if replan_pending else ADMITTED
-
-
-def admit_script_plan(
-    content_mode: object, *, episode_source: bool, formal_script: bool = False, factory_source: bool = False
-) -> OperationAdmission:
-    """AI 规划脚本：本集有集原文。
-
-    短剧工厂导入的集无集原文，但已有正式脚本：AI 规划脚本不适用，应走
-    ``patch_episode_script`` / ``generate_episode_script``，故返回专门的拒绝理由，
-    避免回执误导成「补充集原文」（旧文案会引导去补源文，而这类集本就不该有源文）。
-    """
-    if content_mode == "ad" or factory_source:
-        return NOT_APPLICABLE
-    if episode_source:
-        return ADMITTED
-    if formal_script:
-        return _refused(AdmissionReason.FORMAL_SCRIPT_NO_SOURCE)
-    return _refused(AdmissionReason.EPISODE_SOURCE_MISSING)
 
 
 def admit_author_prompts(
@@ -180,22 +113,6 @@ def admit_author_prompts(
     return _refused(AdmissionReason.NO_PENDING_AUTHORING)
 
 
-def admit_ad_script(
-    content_mode: object, *, formal_script: bool, ad_inputs: bool, regenerate: bool = False
-) -> OperationAdmission:
-    """广告/短片 AI 生成脚本：创作灵感与商品至少一项；已有正式脚本时只接受显式整份重做。
-
-    输入缺失先于「已有正式脚本」报出：理由为 ``formal_script_exists`` 时，整份重做的输入一定齐备。
-    """
-    if content_mode != "ad":
-        return NOT_APPLICABLE
-    if not ad_inputs:
-        return _refused(AdmissionReason.AD_INPUTS_MISSING)
-    if formal_script and not regenerate:
-        return _refused(AdmissionReason.FORMAL_SCRIPT_EXISTS)
-    return ADMITTED
-
-
 def admit_edit_timeline(*, available_videos: int) -> OperationAdmission:
     """剪辑（新建剪辑时间线、交给 Agent 剪辑）：本集至少有一个可用视频（current 或 stale）。"""
     return ADMITTED if available_videos > 0 else _refused(AdmissionReason.NO_AVAILABLE_VIDEO)
@@ -213,7 +130,7 @@ def admit_shot_grids(
     与「分镜图」行同一把尺子：没有正式脚本就无从谈产物；一个都不缺时这条操作无事可做。
     参考生视频与广告不走这一步，报「不适用」而不是「缺东西」。
     """
-    if content_mode == "ad" or generation_mode != "storyboard":
+    if content_mode != "drama" or generation_mode != "storyboard":
         return NOT_APPLICABLE
     if not formal_script:
         return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
@@ -234,7 +151,7 @@ def admit_author_video_prompts(
     没有已确认的参考素材就无从按 K 帧写动作；一个都不缺时这条操作无事可做。
     """
 
-    if content_mode == "ad" or generation_mode != "storyboard":
+    if content_mode != "drama" or generation_mode != "storyboard":
         return NOT_APPLICABLE
     if not formal_script:
         return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
@@ -249,15 +166,9 @@ __all__ = [
     "AdmissionReason",
     "AdmissionState",
     "OperationAdmission",
-    "ad_inputs_present",
-    "admit_ad_script",
     "admit_author_prompts",
     "admit_author_video_prompts",
     "admit_edit_timeline",
-    "admit_plan_episodes",
-    "admit_script_plan",
     "admit_shot_grids",
-    "episode_source_present",
     "pending_authoring_entry_ids",
-    "whole_source_present",
 ]

@@ -12,7 +12,6 @@ import {
   MoreHorizontal,
   Package,
   PenLine,
-  ShoppingBag,
   Sparkles,
   Tags,
   Trash2,
@@ -49,7 +48,6 @@ export const ASSET_TYPE_ICON: Record<AssetSheetType, typeof User> = {
   character: User,
   scene: Landmark,
   prop: Package,
-  product: ShoppingBag,
 };
 
 type DialogKey = "image-edit" | "versions" | "library" | "merge" | "delete";
@@ -129,7 +127,7 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
     return () => onWritingChange(name, false);
   }, [writing, name, onWritingChange]);
   // 合并只开放带别名、与资产库互通的类型；商品不传入库预览。
-  const mergeable = libraryPreview !== undefined && type !== "product";
+  const mergeable = libraryPreview !== undefined;
   const describable = asset.description.trim().length > 0;
   const staleConfirm = useStaleRegenerateConfirm({
     projectName,
@@ -310,7 +308,7 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
             onDeletingChange={setDeleting}
             onMergeInstead={mergeable ? () => openGuarded("merge") : undefined}
           />
-          {libraryPreview && type !== "product" && (
+          {libraryPreview && (
             <>
               <AddToLibraryDialog
                 open={dialog === "library"}

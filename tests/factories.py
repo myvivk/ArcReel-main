@@ -526,19 +526,14 @@ def register_project_sources(
     project_name: str,
     *,
     whole_source: dict[str, str] | None = None,
-    own_episodes: tuple[str, ...] = (),
-) -> list[int]:
-    """经登记命令放入源文：``whole_source`` 是文件名到全文的整本源文，``own_episodes`` 逐集登记为自带原文的集。
+) -> None:
+    """经登记命令放入源文：``whole_source`` 是文件名到全文的整本源文。"""
+    from lib.episode.episode_sources import append_whole_source_file
+    from lib.episode.source_kinds import record_whole_source_file_kind
 
-    返回自带原文的集分配到的集 ID。
-    """
-    from lib.episode.episode_source_commands import add_own_source_episode, register_whole_source_file
-
-    project_dir = projects.get_project_path(project_name)
-    episode_ids: list[int] = []
-    with projects.locked_source_registration(project_name) as (source_dir, project, undo):
+    with projects.locked_source_registration(project_name) as (source_dir, project, _undo):
         for filename, text in (whole_source or {}).items():
             (source_dir / filename).write_text(text, encoding="utf-8")
-            register_whole_source_file(project, f"source/{filename}")
-        episode_ids.extend(add_own_source_episode(project_dir, project, text, undo=undo) for text in own_episodes)
-    return episode_ids
+            rel = f"source/{filename}"
+            if append_whole_source_file(project, rel):
+                record_whole_source_file_kind(project, rel, None)

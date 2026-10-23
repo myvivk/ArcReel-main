@@ -31,9 +31,8 @@ GET_WORKFLOW_PLAN = ToolDeclaration(
 GET_VIDEO_CAPABILITIES = ToolDeclaration(
     name="get_video_capabilities",
     description=(
-        "查询项目当前视频模型的能力（model 粒度：供应商、模型、支持的时长等）与项目偏好，并给出按项目生成模式"
-        "定轴的时长约束 duration_constraints；全项目同一口径，无需指定剧集。参考生视频项目另含 "
-        "reference_unit_durations（带图与无图的档位、各桶 endpoint_fixed 标志及成因；无图不可解析时附 problem）。"
+        "查询项目当前视频模型的能力（model 粒度：供应商、模型、支持的时长等）与项目偏好，"
+        "并给出时长约束 duration_constraints；全项目同一口径，无需指定剧集。"
         "只读，不向供应商发请求。视频模型未配置或能力无法解析时返回相应 problem。"
     ),
     request_model=NoArguments,

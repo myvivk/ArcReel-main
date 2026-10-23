@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from lib.script.reference_video.request_projection import clamp_reference_assets, resolve_reference_assets
+from lib.project.legacy_reference_assets import clamp_reference_assets, resolve_reference_assets
 from tests.integration.server.services.tasks.reference_video_tasks_support import (
     load_project_and_unit,
     register_asset_sheet,

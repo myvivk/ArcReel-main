@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unicodedata
 
-from lib.script.reference_video.prompt_render import resolve_reference_audio_paths
+from lib.speech.reference_audio import resolve_reference_audio_paths
 
 _NAME_NFC = unicodedata.normalize("NFC", "Hiếu")
 _NAME_NFD = unicodedata.normalize("NFD", "Hiếu")

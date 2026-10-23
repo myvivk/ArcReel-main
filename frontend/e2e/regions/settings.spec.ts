@@ -293,40 +293,26 @@ defineRegionScenarios("全局设置", [
     },
     act: async (page) => {
       const contentMode = page.getByRole("group", { name: "创作类型" });
-      await contentMode.getByRole("button", { name: "旁白/解说" }).click();
-      await expect(contentMode.getByRole("button", { name: "旁白/解说" })).toHaveAttribute("aria-pressed", "true");
+      await contentMode.getByRole("button", { name: /剧情演绎/ }).click();
+      await expect(contentMode.getByRole("button", { name: /剧情演绎/ })).toHaveAttribute("aria-pressed", "true");
     },
     screenshot: { name: "settings-prompt-templates", target: (page) => page.getByRole("main") },
   },
   {
     name: "提示词模版详情：展开片段与输出结构后滚动到底",
-    path: `${PROMPT_TEMPLATES}&template=text/episode_plan`,
+    path: `${PROMPT_TEMPLATES}&template=text/drama_prompt_authoring`,
     ready: async (page) => {
       await settingsReady(page);
-      await page.getByRole("heading", { name: "分集规划", level: 2 }).waitFor();
+      await page.getByRole("heading", { name: "剧情演绎 · 提示词编写", level: 2 }).waitFor();
     },
     act: async (page) => {
       const main = page.getByRole("main");
-      await main.getByRole("button", { name: /variant\("text\/episode_plan\/intro"/ }).click();
+      await main.getByRole("button", { name: /partial\("shared\/pacing\/drama"/ }).click();
       await main.getByRole("button", { name: /输出结构/ }).click();
       await main.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
       await expect(main.getByRole("table")).toBeInViewport();
     },
     screenshot: { name: "settings-prompt-template-detail", target: (page) => page.getByRole("main") },
-  },
-  {
-    name: "提示词模版详情：打开片段的取值下拉",
-    path: `${PROMPT_TEMPLATES}&template=text/episode_plan`,
-    ready: async (page) => {
-      await settingsReady(page);
-      await page.getByRole("heading", { name: "分集规划", level: 2 }).waitFor();
-    },
-    act: async (page) => {
-      const main = page.getByRole("main");
-      await main.getByRole("button", { name: /variant\("text\/episode_plan\/intro"/ }).click();
-      await main.getByRole("combobox", { name: "源文件类型" }).click();
-      await expect(page.getByRole("listbox")).toBeInViewport({ ratio: 1 });
-    },
   },
   {
     name: "提示词片段详情列出引用它的模版",

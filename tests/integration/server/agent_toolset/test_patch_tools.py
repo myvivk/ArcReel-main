@@ -15,14 +15,15 @@ from mcp import types
 
 from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactManifestEntry, ProjectArtifactManifestAdapter
 from lib.project.data_validator import DataValidator
+from lib.project.legacy_reference_assets import unit_reference_declarations
 from lib.project.project_manager import ProjectManager
-from lib.script.reference_video.request_projection import unit_reference_declarations
 from lib.script.script_batch_edit import script_revision
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
 from server.agent_toolset.repair_channel import MERGE_ASSET, PATCH_EPISODE_META, PATCH_PROJECT, RENAME_ASSET
 from server.agent_toolset.script_editing import PATCH_EPISODE_SCRIPT
 from server.tool_runtime import ScriptPatchResult, ToolMessage, ToolOutcome
 from tests.integration.server.agent_tool_support import ToolHarness, run_declared_tool
+from tests.legacy_project_shapes import make_legacy_project
 
 
 def _segment(segment_id: str, duration: int = 4) -> dict[str, Any]:
@@ -128,8 +129,7 @@ def _register_default_character(pm: ProjectManager) -> None:
 @pytest.fixture
 def ctx(tmp_path: Path) -> ToolHarness:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir)
     _register_default_character(pm)
     pm.save_script("demo", _script(), "episode_1.json")
     return ToolHarness(project_name="demo", data_root=tmp_path, pm=pm)
@@ -148,10 +148,8 @@ def drama_ctx(tmp_path: Path) -> ToolHarness:
 @pytest.fixture
 def ref_ctx(tmp_path: Path) -> ToolHarness:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir, generation_mode="reference_video")
     _register_default_character(pm)
-    pm.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     pm.save_script("demo", _reference_script(), "episode_1.json")
     return ToolHarness(project_name="demo", data_root=tmp_path, pm=pm)
 
@@ -159,8 +157,7 @@ def ref_ctx(tmp_path: Path) -> ToolHarness:
 @pytest.fixture
 def ad_ctx(tmp_path: Path) -> ToolHarness:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="ad")
-    pm.create_project_metadata("demo", "Demo", "Anime", "ad")
+    make_legacy_project(pm.projects_dir, content_mode="ad", target_duration=60, brief="")
     _register_default_character(pm)
     pm.save_script("demo", _ad_script(), "episode_1.json")
     return ToolHarness(project_name="demo", data_root=tmp_path, pm=pm)
@@ -1330,24 +1327,11 @@ class TestPatchProject:
 
 
 class TestPatchProjectSettings:
-    """patch_project 顶层 settings 分支:首期支持 episode_target_units 写入/清除/校验."""
-
-    async def test_set_episode_target_units(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": 1000}})
-        assert out.problem is None
-        assert ctx.pm.load_project("demo")["episode_target_units"] == 1000
-        assert "已更新" in _said(out)
-
-    async def test_clear_episode_target_units(self, ctx: ToolHarness) -> None:
-        await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": 1000}})
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": None}})
-        assert out.problem is None
-        assert "episode_target_units" not in ctx.pm.load_project("demo")
-        assert "已清除" in _said(out)
+    """patch_project 顶层 settings 分支：偏好、语言与声音设置的写入和校验。"""
 
     async def test_noop_when_same_value(self, ctx: ToolHarness) -> None:
-        await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": 800}})
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": 800}})
+        await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_duration": 120}})
+        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_duration": 120}})
         assert out.problem is None
         assert "无变更" in _said(out)
 
@@ -1409,9 +1393,9 @@ class TestPatchProjectSettings:
 
     async def test_positive_int_setting_accepts_digit_string(self, ctx: ToolHarness) -> None:
         """MCP object 入参无逐字段类型声明，模型常把数字加引号传入；数字字符串按落盘用 int 容忍。"""
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_units": "10"}})
+        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_duration": "120"}})
         assert out.problem is None
-        assert ctx.pm.load_project("demo")["episode_target_units"] == 10
+        assert ctx.pm.load_project("demo")["episode_target_duration"] == 120
 
     @pytest.mark.parametrize("key", ["planning_window_chars", "planning_max_episodes"])
     async def test_planning_window_and_batch_size_are_not_settings(self, ctx: ToolHarness, key: str) -> None:
@@ -1540,82 +1524,13 @@ class TestPatchProjectNarrationSettings:
         assert (settings.voice, settings.speed) == ("Ethan", 1.2)
 
 
-class TestPatchProjectOverview:
-    """patch_project overview 分支：四字段白名单 merge 编辑，概述不存在时创建，三选一互斥。"""
-
-    async def test_set_overview_fields(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(
-            PATCH_PROJECT,
-            ctx,
-            {"overview": {"synopsis": "一句话", "genre": "悬疑", "theme": "复仇", "world_setting": "近未来"}},
-        )
-        assert out.problem is None
-        ov = ctx.pm.load_project("demo")["overview"]
-        assert ov["synopsis"] == "一句话"
-        assert ov["genre"] == "悬疑"
-        assert ov["theme"] == "复仇"
-        assert ov["world_setting"] == "近未来"
-        assert "已更新" in _said(out)
-
-    async def test_merge_preserves_untouched_fields(self, ctx: ToolHarness) -> None:
-        await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"synopsis": "原始梗概", "genre": "原题材"}})
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"genre": "悬疑"}})
-        assert out.problem is None
-        ov = ctx.pm.load_project("demo")["overview"]
-        assert ov["genre"] == "悬疑"
-        assert ov["synopsis"] == "原始梗概"  # 未传字段保留
-
-    async def test_creates_overview_when_absent(self, ctx: ToolHarness) -> None:
-        assert "overview" not in ctx.pm.load_project("demo")
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"synopsis": "新建概述"}})
-        assert out.problem is None
-        assert ctx.pm.load_project("demo")["overview"]["synopsis"] == "新建概述"
-
-    async def test_non_whitelist_key_rejected(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"title": "x"}})
-        assert out.problem is not None
-        assert "title" not in ctx.pm.load_project("demo").get("overview", {})
-
-    async def test_non_string_value_rejected(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"synopsis": 1}})
-        assert out.problem is not None
-        assert "overview" not in ctx.pm.load_project("demo")
-
-    async def test_empty_overview_rejected(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {}})
-        assert out.problem is not None
-
-    async def test_noop_when_same_value(self, ctx: ToolHarness) -> None:
-        await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"synopsis": "同值"}})
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"overview": {"synopsis": "同值"}})
-        assert out.problem is None
-        assert "无变更" in _said(out)
-
-    async def test_overview_with_settings_rejected(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(
-            PATCH_PROJECT,
-            ctx,
-            {"overview": {"synopsis": "x"}, "settings": {"episode_target_units": 1}},
-        )
-        assert out.problem is not None
-
-    async def test_overview_with_table_rejected(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(
-            PATCH_PROJECT,
-            ctx,
-            {"overview": {"synopsis": "x"}, "table": "characters", "entries": {"a": {"description": "b"}}},
-        )
-        assert out.problem is not None
-
-
 class TestPatchProjectEpisodeTargetDurationSetting:
     """单集目标时长经 settings 白名单写入/清除；区间校验与 ad 互斥与 REST 路径同一把尺。"""
 
     @pytest.fixture
     def ad_ctx(self, tmp_path: Path) -> ToolHarness:
         pm = ProjectManager(str(tmp_path))
-        pm.create_project("ad-demo", content_mode="ad")
-        pm.create_project_metadata("ad-demo", "Ad Demo", "Realistic", "ad", target_duration=60)
+        make_legacy_project(pm.projects_dir, "ad-demo", content_mode="ad", target_duration=60, brief="")
         return ToolHarness(project_name="ad-demo", data_root=tmp_path, pm=pm)
 
     async def test_set_episode_target_duration(self, ctx: ToolHarness) -> None:
@@ -1639,44 +1554,6 @@ class TestPatchProjectEpisodeTargetDurationSetting:
         out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"episode_target_duration": bad}})
         assert out.problem is not None
         assert "episode_target_duration" not in ctx.pm.load_project("demo")
-
-    async def test_rejected_on_ad_project(self, ad_ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ad_ctx, {"settings": {"episode_target_duration": 120}})
-        assert out.problem is not None
-        assert "episode_target_duration" not in ad_ctx.pm.load_project("ad-demo")
-
-
-class TestPatchProjectBriefSetting:
-    """brief 是 ad 项目的创作诉求短文本，经 settings 白名单写入/清除；非 ad 项目拒绝。"""
-
-    @pytest.fixture
-    def ad_ctx(self, tmp_path: Path) -> ToolHarness:
-        pm = ProjectManager(str(tmp_path))
-        pm.create_project("ad-demo", content_mode="ad")
-        pm.create_project_metadata("ad-demo", "Ad Demo", "Realistic", "ad", target_duration=60)
-        return ToolHarness(project_name="ad-demo", data_root=tmp_path, pm=pm)
-
-    async def test_set_brief_on_ad_project(self, ad_ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ad_ctx, {"settings": {"brief": "突出 3 秒速干卖点"}})
-        assert out.problem is None
-        assert ad_ctx.pm.load_project("ad-demo")["brief"] == "突出 3 秒速干卖点"
-
-    async def test_clear_brief_on_ad_project(self, ad_ctx: ToolHarness) -> None:
-        await run_declared_tool(PATCH_PROJECT, ad_ctx, {"settings": {"brief": "x"}})
-        out = await run_declared_tool(PATCH_PROJECT, ad_ctx, {"settings": {"brief": None}})
-        assert out.problem is None
-        assert "brief" not in ad_ctx.pm.load_project("ad-demo")
-
-    async def test_brief_rejected_on_non_ad_project(self, ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ctx, {"settings": {"brief": "x"}})
-        assert out.problem is not None
-        assert "brief" not in ctx.pm.load_project("demo")
-
-    async def test_non_string_brief_rejected(self, ad_ctx: ToolHarness) -> None:
-        out = await run_declared_tool(PATCH_PROJECT, ad_ctx, {"settings": {"brief": 42}})
-        assert out.problem is not None
-        # 创建时写入的 brief=""（可空）不被非法写入污染
-        assert ad_ctx.pm.load_project("ad-demo")["brief"] == ""
 
 
 class TestRenameAssetTool:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
+from lib.speech.voice_settings import VoiceRenderSettings
 
 
 def test_from_caps_reads_every_field_from_capability_dict():

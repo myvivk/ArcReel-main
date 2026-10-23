@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -44,7 +45,7 @@ class _FakePM:
             "generation_mode": "storyboard",
             "style": "Anime",
             "style_description": "cinematic",
-            "content_mode": "narration",
+            "content_mode": "drama",
             "characters": {
                 "Alice": {
                     "character_sheet": "characters/Alice.png",
@@ -64,61 +65,57 @@ class _FakePM:
                     "description": "prop",
                 }
             },
-            "products": {
-                "保温杯": {
-                    "product_sheet": "",
-                    "brand": "",
-                    "reference_images": ["products/refs/保温杯_1.jpg"],
-                    "selling_points": [],
-                    "description": "product",
-                }
-            },
         }
+        source = project_path / "source/short_drama/episodes/episode_01.md"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("# 第1集\n\n风吹过旷野。\n", encoding="utf-8")
+        self.factory_metadata = {"source_revision": hashlib.sha256(source.read_bytes()).hexdigest()}
         self.script = {
             "episode": 1,
-            "content_mode": "narration",
-            "segments": [
+            "content_mode": "drama",
+            "short_drama_meta": self.factory_metadata,
+            "scenes": [
                 {
-                    "segment_id": "E1S01",
+                    "scene_id": "E1S01",
                     "duration_seconds": 4,
-                    "novel_text": "风吹过旷野。",
+                    "utterances": [{"kind": "voiceover", "speaker": None, "text": "风吹过旷野。"}],
                     "image_prompt": {
                         "scene": "旷野",
                         "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
                     },
                     "video_prompt": {},
                     "segment_break": False,
-                    "characters_in_segment": [],
+                    "characters_in_scene": [],
                     "scenes": [],
                     "props": [],
                     "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
                 },
                 {
-                    "segment_id": "E1S02",
+                    "scene_id": "E1S02",
                     "duration_seconds": 4,
-                    "novel_text": "风吹过旷野。",
+                    "utterances": [{"kind": "voiceover", "speaker": None, "text": "风吹过旷野。"}],
                     "image_prompt": {
                         "scene": "旷野",
                         "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
                     },
                     "video_prompt": {},
                     "segment_break": False,
-                    "characters_in_segment": ["Alice"],
+                    "characters_in_scene": ["Alice"],
                     "scenes": ["祠堂"],
                     "props": ["玉佩"],
                     "generated_assets": {"storyboard_image": "storyboards/scene_E1S02.png"},
                 },
                 {
-                    "segment_id": "E1S03",
+                    "scene_id": "E1S03",
                     "duration_seconds": 4,
-                    "novel_text": "风吹过旷野。",
+                    "utterances": [{"kind": "voiceover", "speaker": None, "text": "风吹过旷野。"}],
                     "image_prompt": {
                         "scene": "旷野",
                         "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
                     },
                     "video_prompt": {},
                     "segment_break": True,
-                    "characters_in_segment": ["Alice"],
+                    "characters_in_scene": ["Alice"],
                     "scenes": ["祠堂"],
                     "props": ["玉佩"],
                     "generated_assets": {"storyboard_image": "storyboards/scene_E1S03.png"},
@@ -143,7 +140,7 @@ class _FakePM:
         for asset_type, bucket in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
             for name in self.project.get(bucket) or {}:
                 register_current_artifact_if_provable(self.project_path, ArtifactKey.asset_sheet(asset_type, name))
-        for container in ("segments", "shots", "scenes", "units"):
+        for container in ("scenes", "shots", "scenes", "units"):
             for item in self.script.get(container) or []:
                 unit_id = item.get("segment_id") or item.get("shot_id") or item.get("scene_id") or item.get("unit_id")
                 if unit_id:
@@ -243,7 +240,7 @@ class TestGenerateRouter:
         """正式剧本里该分镜的 image_prompt 尚未填写（None）：单条端点 409，不入队。"""
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][1]["image_prompt"] = None
+        fake_pm.script["scenes"][1]["image_prompt"] = None
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -259,7 +256,7 @@ class TestGenerateRouter:
     def test_video_refuses_a_pending_video_prompt_before_enqueue(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["video_prompt"] = None
+        fake_pm.script["scenes"][0]["video_prompt"] = None
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -352,82 +349,10 @@ class TestGenerateRouter:
         ]
         assert fake_queue.calls == []
 
-    def test_legacy_drama_dialogue_can_enqueue_single_video(self, tmp_path, monkeypatch):
+    def test_factory_string_prompt_can_enqueue_single_video(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.project["content_mode"] = "drama"
-        fake_pm.script = {
-            "episode": 1,
-            "content_mode": "drama",
-            "scenes": [
-                {
-                    "scene_id": "E1S01",
-                    "image_prompt": {
-                        "scene": "旷野",
-                        "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
-                    },
-                    "video_prompt": {
-                        "action": "阿离转身",
-                        "camera_motion": "Static",
-                        "ambiance_audio": "风声",
-                        "dialogue": [{"speaker": "Alice", "line": "跟紧我。"}],
-                    },
-                    "voiceover": [],
-                    "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
-                }
-            ],
-        }
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            response = client.post(
-                "/api/v1/projects/demo/generate/video/E1S01",
-                json={"script_file": "episode_1.json", "prompt": "阿离转身"},
-            )
-
-        assert response.status_code == 200, response.text
-        assert len(fake_queue.calls) == 1
-
-    def test_speech_free_legacy_drama_can_enqueue_single_video(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.project["content_mode"] = "drama"
-        fake_pm.script = {
-            "episode": 1,
-            "content_mode": "drama",
-            "scenes": [
-                {
-                    "scene_id": "E1S01",
-                    "image_prompt": {
-                        "scene": "旷野",
-                        "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
-                    },
-                    "video_prompt": {
-                        "action": "阿离转身",
-                        "camera_motion": "Static",
-                        "ambiance_audio": "风声",
-                    },
-                    "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
-                }
-            ],
-        }
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            response = client.post(
-                "/api/v1/projects/demo/generate/video/E1S01",
-                json={"script_file": "episode_1.json", "prompt": "阿离转身"},
-            )
-
-        assert response.status_code == 200, response.text
-        assert len(fake_queue.calls) == 1
-
-    def test_legacy_narration_string_prompt_can_enqueue_single_video(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["video_prompt"] = "Slow pan across the field"
+        fake_pm.script["scenes"][0]["video_prompt"] = "Slow pan across the field"
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -440,39 +365,11 @@ class TestGenerateRouter:
         assert response.status_code == 200, response.text
         assert len(fake_queue.calls) == 1
 
-    @pytest.mark.parametrize(
-        ("content_mode", "root", "id_field", "narrator_field"),
-        [
-            ("narration", "segments", "segment_id", "novel_text"),
-            ("ad", "shots", "shot_id", "voiceover_text"),
-        ],
-    )
-    def test_narrator_video_request_admits_the_saved_unit_not_the_request_prompt(
-        self, tmp_path, monkeypatch, content_mode, root, id_field, narrator_field
-    ):
-        """worker 按盘上 video_prompt 执行：盘上单元只有旁白时，请求 prompt 里的角色台词不拦截入队。"""
+    def test_video_request_admits_saved_speech_not_request_prompt(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.project["content_mode"] = content_mode
-        fake_pm.script = {
-            "episode": 1,
-            "content_mode": content_mode,
-            root: [
-                {
-                    id_field: "E1S01",
-                    narrator_field: "风吹过旷野。",
-                    "image_prompt": {
-                        "scene": "旷野",
-                        "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
-                    },
-                    "video_prompt": {"action": "风吹草动", "camera_motion": "Static"},
-                    "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
-                }
-            ],
-        }
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
-
         with client:
             response = client.post(
                 "/api/v1/projects/demo/generate/video/E1S01",
@@ -480,18 +377,20 @@ class TestGenerateRouter:
                     "script_file": "episode_1.json",
                     "prompt": {
                         "action": "阿离回头",
-                        "camera_motion": "Static",
                         "dialogue": [{"speaker": "阿离", "line": "快走。"}],
                     },
                 },
             )
-
         assert response.status_code == 200, response.text
         assert len(fake_queue.calls) == 1
 
     @pytest.mark.parametrize(
         "case",
-        [case for case in SPEECH_CONTRACT_CASES if case.generation_mode == "storyboard"],
+        [
+            case
+            for case in SPEECH_CONTRACT_CASES
+            if case.generation_mode == "storyboard" and case.content_mode == "drama"
+        ],
         ids=lambda case: case.route_id,
     )
     def test_three_storyboard_web_video_entries_return_structured_speech_admission_without_enqueuing(
@@ -500,7 +399,7 @@ class TestGenerateRouter:
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
         fake_pm.project.update({"content_mode": case.content_mode, "generation_mode": "storyboard"})
-        fake_pm.script = case.script()
+        fake_pm.script = {**case.script(), "short_drama_meta": fake_pm.factory_metadata}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -591,7 +490,7 @@ class TestGenerateRouter:
         (project_path / "storyboards" / "scene_E1S02_first.png").write_bytes(b"png")
 
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][1]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S02_first.png"}
+        fake_pm.script["scenes"][1]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S02_first.png"}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -611,7 +510,7 @@ class TestGenerateRouter:
         拒绝，而不是抛未捕获 AttributeError（脏数据非 dict 上没有 .get()）。"""
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = ["bad"]
+        fake_pm.script["scenes"][0]["generated_assets"] = ["bad"]
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -627,7 +526,7 @@ class TestGenerateRouter:
     def test_video_does_not_infer_storyboard_from_same_name_file(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = {}
+        fake_pm.script["scenes"][0]["generated_assets"] = {}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -692,22 +591,19 @@ class TestGenerateRouter:
         assert response.json()["detail"] == i18n_message("generate_storyboard_first", segment_id="未命名集 · S01")
         assert fake_queue.calls == []
 
-    def test_video_invalid_end_frame_has_its_own_error_message(self, tmp_path, monkeypatch):
+    def test_video_invalid_continuity_snapshot_is_rejected_before_enqueue(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "storyboards/scene_E1S01.png"}
-        fake_pm.script["segments"][0]["end_frame_image"] = "end_frames/scene_E1S01.png"
+        fake_pm.script["scenes"][0]["end_frame_image"] = "end_frames/scene_E1S99.png"
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
-
         with client:
             response = client.post(
-                "/api/v1/projects/demo/generate/video/E1S01",
+                "/api/v1/projects/demo/generate/video/E1S02",
                 json={"script_file": "episode_1.json", "prompt": "x"},
             )
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == i18n_message("invalid_end_frame_image_path", segment_id="未命名集 · S01")
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == i18n_message("invalid_end_frame_image_path", segment_id="未命名集 · S02")
         assert fake_queue.calls == []
 
     def test_video_storyboard_image_non_string_returns_400(self, tmp_path, monkeypatch):
@@ -715,7 +611,7 @@ class TestGenerateRouter:
         而不是让 `project_path / storyboard_rel` 抛未处理 TypeError 变成 500。"""
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": 123}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": 123}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -732,7 +628,7 @@ class TestGenerateRouter:
         """storyboard_image 是绝对路径时应 400 可读失败，不越权引用项目外文件。"""
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "/etc/passwd"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "/etc/passwd"}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -749,7 +645,7 @@ class TestGenerateRouter:
         """storyboard_image 含 `..` 越出项目目录时应 400 可读失败，不越权引用项目外文件。"""
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["generated_assets"] = {"storyboard_image": "../../outside.png"}
+        fake_pm.script["scenes"][0]["generated_assets"] = {"storyboard_image": "../../outside.png"}
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -794,7 +690,7 @@ class TestGenerateRouter:
             assert video.status_code == 400, video.text
             # detail 走 i18n 不直接暴露内部 str(e)
             assert (
-                "segments" not in video.json()["detail"]
+                "scenes" not in video.json()["detail"]
                 or "script" in video.json()["detail"].lower()
                 or "kịch bản" in video.json()["detail"]
                 or "损坏" in video.json()["detail"]
@@ -888,7 +784,6 @@ class TestGenerateRouter:
             ("character/Alice", "characters", "Alice"),
             ("scene/祠堂", "scenes", "祠堂"),
             ("prop/玉佩", "props", "玉佩"),
-            ("product/保温杯", "products", "保温杯"),
         ],
     )
     def test_asset_without_a_stored_description_is_refused_before_enqueue(
@@ -967,38 +862,6 @@ class TestGenerateRouter:
             assert call["task_type"] == "prop"
             assert call["media_type"] == "image"
             assert call["resource_id"] == "玉佩"
-
-    def test_product_enqueue_success(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            product = client.post(
-                "/api/v1/projects/demo/generate/product/保温杯",
-            )
-            assert product.status_code == 200
-            body = product.json()
-            assert body["success"] is True
-
-            call = fake_queue.calls[0]
-            assert call["task_type"] == "product"
-            assert call["media_type"] == "image"
-            assert call["resource_id"] == "保温杯"
-
-    def test_product_enqueue_unknown_product_404(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            resp = client.post(
-                "/api/v1/projects/demo/generate/product/不存在",
-            )
-            assert resp.status_code == 404
-            assert fake_queue.calls == []
 
     def test_error_paths(self, tmp_path, monkeypatch):
         project_path = _prepare_files(tmp_path)
@@ -1161,15 +1024,6 @@ class TestUnexpectedErrorMapsTo500:
             assert resp.status_code == 500
             assert "LEAK_prop" not in resp.text
 
-    def test_product_unexpected_error_maps_to_500(self, monkeypatch):
-        client = self._client_with_leak(monkeypatch, "LEAK_product")
-        with client:
-            resp = client.post(
-                "/api/v1/projects/demo/generate/product/保温杯",
-            )
-            assert resp.status_code == 500
-            assert "LEAK_product" not in resp.text
-
 
 class TestVideoRouteGate:
     """逐条视频生成端点按项目生成模式定轴：参考生视频在提交入口即拒绝。"""
@@ -1185,7 +1039,7 @@ class TestVideoRouteGate:
         if not storyboard_script:
             fake_pm.script = {
                 "episode": 1,
-                "content_mode": "narration",
+                "content_mode": "drama",
                 "video_units": [{"unit_id": "E1U01", "prompt": "镜头1：奔跑"}],
             }
         return fake_pm
@@ -1203,7 +1057,7 @@ class TestVideoRouteGate:
                 json={"script_file": "episode_1.json", "prompt": "x"},
             )
         assert resp.status_code == 409
-        assert resp.json()["detail"] == i18n_message("video_route_is_reference_video")
+        assert resp.json()["detail"] == i18n_message("short_drama_factory_only")
         assert fake_queue.calls == []
 
     def test_reference_route_rejected_even_with_leftover_storyboard(self, tmp_path, monkeypatch):
@@ -1220,7 +1074,7 @@ class TestVideoRouteGate:
                 json={"script_file": "episode_1.json", "prompt": "x"},
             )
         assert resp.status_code == 409
-        assert resp.json()["detail"] == i18n_message("video_route_is_reference_video")
+        assert resp.json()["detail"] == i18n_message("short_drama_factory_only")
         assert fake_queue.calls == []
 
     def test_storyboard_route_enqueues_with_i2v_bucket(self, tmp_path, monkeypatch):
@@ -1255,7 +1109,7 @@ class TestReferenceAdmissionAtGenerationEntries:
     def test_unregistered_reference_blocks_and_names_it(self, tmp_path, monkeypatch, endpoint: str):
         project_path = _prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][1]["characters_in_segment"] = ["Alice", "李四"]
+        fake_pm.script["scenes"][1]["characters_in_scene"] = ["Alice", "李四"]
         fake_queue = _FakeQueue()
         client = _client(monkeypatch, fake_pm, fake_queue)
 
@@ -1307,83 +1161,6 @@ class TestReferenceAdmissionAtGenerationEntries:
         assert resp.json()["detail"] == i18n_message("reference_asset_missing", missing_text="character: Alice")
         assert fake_queue.calls == []
 
-    def test_product_without_sheet_still_enqueues(self, tmp_path, monkeypatch):
-        """商品原图是保真验收锚点，没有资产图不阻断（ADR 0034）。"""
-        project_path = _prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
-        fake_pm.script["segments"][0]["products_in_shot"] = ["保温杯"]
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            resp = client.post(
-                "/api/v1/projects/demo/generate/storyboard/E1S01",
-                json={"script_file": "episode_1.json", "prompt": "x"},
-            )
-
-        assert resp.status_code == 200
-        assert fake_queue.calls[0]["resource_id"] == "E1S01"
-
-
-class TestAdStoryboardRegeneration:
-    """ad 剧本（平铺 shots[]）沿用既有分镜生成/重生成端点——人工审核后重生成同一入口。"""
-
-    def _ad_pm(self, project_path: Path) -> _FakePM:
-        fake_pm = _FakePM(project_path)
-        fake_pm.project["content_mode"] = "ad"
-        fake_pm.script = {
-            "episode": 1,
-            "content_mode": "ad",
-            "shots": [
-                {
-                    "shot_id": "E1S01",
-                    "section": "product_reveal",
-                    "duration_seconds": 4,
-                    "voiceover_text": "商品亮相",
-                    "characters_in_shot": [],
-                    "scenes": [],
-                    "props": [],
-                    "products_in_shot": ["保温杯"],
-                    "image_prompt": {
-                        "scene": "旷野",
-                        "composition": {"shot_type": "medium", "lighting": "natural", "ambiance": "calm"},
-                    },
-                    "generated_assets": {"storyboard_image": "storyboards/scene_E1S01.png"},
-                },
-            ],
-        }
-        return fake_pm
-
-    def test_ad_shot_storyboard_enqueue_success(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = self._ad_pm(project_path)
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            resp = client.post(
-                "/api/v1/projects/demo/generate/storyboard/E1S01",
-                json={"script_file": "episode_1.json", "prompt": "商品特写"},
-            )
-            assert resp.status_code == 200
-            assert resp.json()["success"] is True
-            call = fake_queue.calls[0]
-            assert call["task_type"] == "storyboard"
-            assert call["resource_id"] == "E1S01"
-
-    def test_ad_shot_not_found_is_404(self, tmp_path, monkeypatch):
-        project_path = _prepare_files(tmp_path)
-        fake_pm = self._ad_pm(project_path)
-        fake_queue = _FakeQueue()
-        client = _client(monkeypatch, fake_pm, fake_queue)
-
-        with client:
-            resp = client.post(
-                "/api/v1/projects/demo/generate/storyboard/E9S99",
-                json={"script_file": "episode_1.json", "prompt": "商品特写"},
-            )
-            assert resp.status_code == 404
-
 
 class TestNoServerPathLeak:
     """404/400/500 响应形状：detail 不得含服务器绝对路径片段。
@@ -1421,7 +1198,6 @@ class TestNoServerPathLeak:
             ("/api/v1/projects/demo/generate/character/Alice", {"prompt": "x"}),
             ("/api/v1/projects/demo/generate/scene/祠堂", {"prompt": "x"}),
             ("/api/v1/projects/demo/generate/prop/玉佩", {"prompt": "x"}),
-            ("/api/v1/projects/demo/generate/product/保温杯", {"prompt": "x"}),
         ]
         with client:
             for url, payload in requests:

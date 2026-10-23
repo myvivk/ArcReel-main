@@ -1,1 +1,0 @@
-{{ variant("text/episode_plan/outline_rule/drama", source_kind) }}

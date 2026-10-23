@@ -23,23 +23,19 @@ from lib.episode.episode_paths import NARRATION_SCRIPT_PLAN_QUARANTINE_FILENAME
 from lib.infra.json_io import atomic_write_json, load_json_or_none
 from lib.project.asset_derivatives import derivative_artifact_key
 from lib.project.asset_merge import AssetMergeEpisodeImpact, AssetMergeNotFoundError, AssetMergeRejectedError
-from lib.project.project_manager import ProjectManager
-from lib.script.plan_new_assets import resolve_new_assets
-from lib.script.reference_video.request_projection import (
+from lib.project.legacy_reference_assets import (
     FilesystemReferenceAssets,
     hydrate_reference_assets,
     resolve_reference_assets,
     unit_reference_declarations,
 )
-from lib.script.script_review import (
-    apply_confirmation,
-    content_fingerprint,
-    formal_script_plan_confirmed,
-    review_status,
-    script_plan_path,
-)
+from lib.project.legacy_script_plans import apply_confirmation, script_plan_path
+from lib.project.project_manager import ProjectManager
+from lib.script.plan_new_assets import resolve_new_assets
+from lib.script.script_revision import content_fingerprint
 from lib.speech.speech_artifact_provenance import build_video_duration_basis, build_video_speech_basis
 from lib.speech.speech_composition import admit_script_unit
+from tests.legacy_project_shapes import legacy_plan_confirmation_matches, seed_legacy_project_metadata
 
 PROJECT = "demo"
 
@@ -48,7 +44,7 @@ PROJECT = "demo"
 def pm(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(str(tmp_path))
     manager.create_project(PROJECT)
-    manager.create_project_metadata(PROJECT, "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, PROJECT, "Demo", "Anime", "narration")
     manager.upsert_assets(
         PROJECT,
         "characters",
@@ -191,7 +187,8 @@ def _plan_review(pm: ProjectManager) -> tuple[str, bool]:
     """第 1 集的内容确认状态，以及正式脚本规划是否因已确认而只读。"""
     project_dir = pm.get_project_path(PROJECT)
     project = pm.load_project(PROJECT)
-    return review_status(project_dir, project, 1), formal_script_plan_confirmed(project_dir, project, 1)
+    confirmed = legacy_plan_confirmation_matches(project_dir, project, 1)
+    return ("confirmed" if confirmed else "pending_review"), confirmed
 
 
 def _plan_with_merged_new_asset() -> dict[str, Any]:

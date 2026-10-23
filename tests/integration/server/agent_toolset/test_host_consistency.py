@@ -33,6 +33,7 @@ from lib.project.project_migration_failure import (
     record_migration_failure,
 )
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
+from lib.script.short_drama_source import replace_short_drama_source
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
 from server.agent_toolset.declaration import (
     BLOCKED,
@@ -54,26 +55,18 @@ from server.agent_toolset.edit_timelines import (
 from server.agent_toolset.embedded import embedded_server
 from server.agent_toolset.envelope import json_value
 from server.agent_toolset.generation_batches import CANCEL_GENERATION_BATCH, GET_GENERATION_BATCH
-from server.agent_toolset.grid_storyboards import GENERATE_GRID, SPLIT_GRIDS
 from server.agent_toolset.orientation import GET_PROMPT_PREVIEW, GET_VIDEO_CAPABILITIES
-from server.agent_toolset.project_entry import CREATE_PROJECT, EDIT_SOURCE_TEXT
+from server.agent_toolset.project_entry import CREATE_PROJECT
 from server.agent_toolset.remote import LONG_TASK_NOTE, remote_tool
 from server.agent_toolset.repair_channel import MERGE_ASSET
 from server.agent_toolset.script_authoring import (
-    CONFIRM_SCRIPT_REVIEW,
     GENERATE_EPISODE_SCRIPT,
     GENERATE_SHORT_DRAMA_FACTORY,
-    IMPORT_SHORT_DRAMA_SCRIPT,
-    IMPORT_SHORT_DRAMA_SERIES,
-    OPEN_DRAFT,
-    PATCH_DRAFT,
-    PROMOTE_DRAFT,
 )
 from server.agent_toolset.script_editing import PATCH_EPISODE_SCRIPT
 from server.agent_toolset.toolset import AGENT_TOOLSET, ARCREEL_MCP_TOOL_IDS, MIGRATION_BLOCKED_TOOL_IDS
 from server.agent_toolset.video_review import INSPECT_VIDEO_UNITS
 from server.agent_toolset.video_versions import SELECT_VIDEO_VERSION
-from server.agent_toolset.workflow_completion import COMPLETE_SCRIPT_PLAN_REBUILD
 from server.remote_mcp import build_remote_mcp_server
 from server.services.project.workflow_planner import WorkflowPlanner
 from server.tool_runtime import (
@@ -94,14 +87,12 @@ _ABSENT_REVISION = "sha256-v1:" + "0" * 64
 SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "list_projects": {},
     "create_project": {"name": "fresh", "title": "Fresh"},
-    "upload_source": {"filename": "novel.txt", "content": "第一章\n你好", "on_conflict": "replace"},
-    "edit_source_text": {"filename": "novel.txt", "text": "第一章\n改写"},
     "get_workflow_plan": {"episode_id": 1},
     "get_video_capabilities": {},
     "get_prompt_preview": {"script": "episode_1.json", "item_id": "E1S01"},
     "get_generation_batch": {"batch_id": "batch-absent"},
     "cancel_generation_batch": {"batch_id": "batch-absent"},
-    "patch_project": {"overview": {"synopsis": "梗概"}},
+    "patch_project": {"settings": {"source_language": "zh"}},
     "patch_episode_meta": {"script": "episode_1.json", "field": "title", "value": "第一集"},
     "rename_asset": {"table": "characters", "old_name": "甲", "new_name": "乙"},
     "merge_asset": {"table": "characters", "source": "甲", "target": "乙", "dry_run": True},
@@ -110,7 +101,6 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "list_source_files": {},
     "get_source_text": {"path": "source/episode_1.txt"},
     "get_episode_script": {"script": "episode_1.json"},
-    "get_script_plan_content": {"episode_id": 1},
     "list_project_files": {},
     "read_project_file": {"path": "project.json"},
     "list_pending_assets": {"type": "character"},
@@ -119,36 +109,15 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "edit_images": {"resource_type": "character", "edits": [{"id": "张三", "instruction": "把头发改成红色"}]},
     "generate_narration_audio": {"script": "episode_1.json", "segment_ids": ["E1S01"]},
     "generate_episode_script": {"episode_id": 1, "dry_run": True},
-    "generate_script_plan": {"episode_id": 1, "dry_run": True},
-    "confirm_script_review": {"episode_id": 1},
     "generate_short_drama_factory": {"prompt": "按人物圣经生成分集规划"},
     "ingest_short_drama_artifacts": {
         "artifacts": [{"path": "character-bible.md", "content_base64": base64.b64encode(b"# Bible\n").decode()}],
     },
-    "import_short_drama_script": {"episode_id": 1, "markdown": "第【1】集：测试"},
-    "import_short_drama_series": {
-        "episodes": [{"episode_id": 1, "markdown": "第【1】集：测试"}],
-        "continue_on_error": True,
-    },
-    "open_draft": {"episode_id": 1, "doc_type": "drama_script_plan"},
-    "patch_draft": {
-        "episode_id": 1,
-        "doc_type": "drama_script_plan",
-        "content": {"title": "第一集", "scenes": []},
-        "base_revision": _ABSENT_REVISION,
-    },
-    "promote_draft": {"episode_id": 1, "doc_type": "drama_script_plan", "base_revision": _ABSENT_REVISION},
-    "discard_draft": {"episode_id": 1, "doc_type": "drama_script_plan", "base_revision": _ABSENT_REVISION},
     "patch_episode_script": {
         "script": "episode_9.json",
         "base_revision": "sha256-v1:" + "0" * 64,
         "operations": [{"op": "remove", "id": "E9S01"}],
     },
-    "generate_grid": {"script": "episode_1.json", "list_only": True},
-    "split_grids": {"grid_ids": ["grid_000000000000"]},
-    "plan_episodes": {"instructions": "按章节对齐切分"},
-    "reset_episode_planning": {},
-    "complete_script_plan_rebuild": {"episode_id": 1, "expected_stale_script_plan_revision": None},
     "generate_videos": {"script": "episode_1.json", "target": {"scope": "all"}},
     "select_video_version": {"unit_id": "E1S01", "version": 1},
     "inspect_video_units": {"unit_ids": ["E1S01"]},
@@ -547,14 +516,7 @@ _PROBLEM_ON_SAMPLE = frozenset(
         GET_GENERATION_BATCH.name,
         CANCEL_GENERATION_BATCH.name,
         # 测试项目已有正式脚本：确认需要覆盖认可，取回编辑副本被拒；没有在场草稿可改、可晋升。
-        CONFIRM_SCRIPT_REVIEW.name,
-        OPEN_DRAFT.name,
-        PATCH_DRAFT.name,
-        PROMOTE_DRAFT.name,
-        IMPORT_SHORT_DRAMA_SCRIPT.name,
-        IMPORT_SHORT_DRAMA_SERIES.name,
         PATCH_EPISODE_SCRIPT.name,
-        SPLIT_GRIDS.name,
         SELECT_VIDEO_VERSION.name,
         INSPECT_VIDEO_UNITS.name,
         READ_TIMELINE.name,
@@ -562,11 +524,9 @@ _PROBLEM_ON_SAMPLE = frozenset(
         RENAME_TIMELINE.name,
         LIST_REVISIONS.name,
         RESTORE_REVISION.name,
-        COMPLETE_SCRIPT_PLAN_REBUILD.name,
         # 测试项目只登记了一个角色，没有可并入的保留方。
         MERGE_ASSET.name,
         # 测试项目没有登记整本源文的文件。
-        EDIT_SOURCE_TEXT.name,
     }
 )
 
@@ -717,36 +677,6 @@ async def test_embedded_terminal_generation_result_has_the_shape_remote_polling_
     waiter.assert_not_awaited()
 
 
-async def test_grid_list_only_preview_is_the_same_json_in_both_hosts(
-    seeded_projects: ProjectManager, services: Services
-) -> None:
-    """宫格预览不是生成结果：两宿主都立即拿到同一份规划文本，放在工具名下，没有批次可轮询。"""
-    project = seeded_projects.load_project("demo")
-    project.update(
-        {
-            "generation_mode": "storyboard",
-            "grid_storyboard": True,
-            "episodes": [{"episode": 1, "script_file": "episode_1.json"}],
-        }
-    )
-    seeded_projects.save_project("demo", project)
-    scenes = [{"scene_id": f"E1S0{i}", "image_prompt": "p", "segment_break": False} for i in range(1, 5)]
-    (seeded_projects.get_project_path("demo") / "scripts" / "episode_1.json").write_text(
-        json.dumps({"episode": 1, "content_mode": "drama", "scenes": scenes}), encoding="utf-8"
-    )
-    arguments = SAMPLE_ARGUMENTS[GENERATE_GRID.name]
-
-    embedded = await _call_embedded(GENERATE_GRID, arguments, services)
-    remote = await _call_remote(GENERATE_GRID, _remote_arguments(GENERATE_GRID, arguments), services)
-
-    assert embedded.isError is remote.isError is False
-    assert remote.structuredContent is not None
-    assert set(remote.structuredContent) == {GENERATE_GRID.name}
-    assert "E1S01..E1S04" in remote.structuredContent[GENERATE_GRID.name]
-    assert _embedded_json(embedded) == remote.structuredContent
-    assert _texts(embedded) == _texts(remote)
-
-
 async def test_a_text_generation_dry_run_returns_the_same_prompt_in_both_hosts(
     seeded_projects: ProjectManager, services: Services, tmp_path: Path
 ) -> None:
@@ -760,10 +690,23 @@ async def test_a_text_generation_dry_run_returns_the_same_prompt_in_both_hosts(
         "image_prompt": None,
         "video_prompt": None,
         "pending_authoring": True,
+        "source_text": "男人推门，走到窗边。",
         "generated_assets": {},
     }
+    source = replace_short_drama_source(
+        seeded_projects, "demo", 1, "# 第1集\n男人推门，走到窗边。\n"
+    )
     (seeded_projects.get_project_path("demo") / "scripts" / "episode_1.json").write_text(
-        json.dumps({"episode": 1, "title": "第一集", "scenes": [pending_scene]}), encoding="utf-8"
+        json.dumps(
+            {
+                "episode": 1,
+                "title": "第一集",
+                "content_mode": "drama",
+                "short_drama_meta": {"source_revision": source.revision},
+                "scenes": [pending_scene],
+            }
+        ),
+        encoding="utf-8",
     )
     seeded_projects.update_project(
         "demo", lambda project: project.update(episodes=[{"episode": 1, "script_file": "scripts/episode_1.json"}])

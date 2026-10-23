@@ -1,5 +1,4 @@
-import type { NarrationSegment, ScriptOverwrite, ScriptOverwriteEntry, TaskItem } from "@/types";
-import type { ReferenceUnitCapability } from "@/types/reference-video";
+import type { DramaScene, NarrationSegment, TaskItem } from "@/types";
 import type {
   WorkflowContent,
   WorkflowPlan,
@@ -9,14 +8,14 @@ import type {
 
 
 /** Shared test factory for `TaskItem`. Defaults model a freshly-queued
- *  reference_video task; callers override fields relevant to each scenario. */
+ *  factory video task; callers override fields relevant to each scenario. */
 export function makeTask(overrides: Partial<TaskItem> = {}): TaskItem {
   return {
     task_id: "t1",
     project_name: "proj",
-    task_type: "reference_video",
+    task_type: "video",
     media_type: "video",
-    resource_id: "E1U1",
+    resource_id: "E1S01",
     resource_type: null,
     script_file: null,
     payload: {},
@@ -52,22 +51,15 @@ export function makeStep(overrides: Partial<WorkflowPlanStep> = {}): WorkflowPla
   };
 }
 
-/** 一集的内容现状；缺省是有集原文、正式脚本 2 条、提示词都已编写、没有草稿与提醒。 */
+/** 工厂一集的内容现状；缺省是正文在位、正式分镜 2 条、提示词已编写。 */
 export function makeContent(overrides: Partial<WorkflowContent> = {}): WorkflowContent {
   return {
     episode_count: 1,
-    whole_source: "present",
-    source_remaining: false,
-    ad_inputs: "not_applicable",
-    products_without_selling_points: [],
     episode_source: "present",
-    episode_plan_stale: false,
-    expected_stale_script_plan_revision: null,
-    drafts: [],
+    script_from_short_drama: true,
     formal_script: "present",
     script_item_count: 2,
     pending_authoring_ids: [],
-    needs_replan_ids: [],
     referenced_assets_without_sheet: [],
     unregistered_references: [],
     referenced_asset_sheets_stale: [],
@@ -81,8 +73,8 @@ export function makeStatus(overrides: Partial<WorkflowStatus> = {}): WorkflowSta
     schema_version: 2,
     project_revision: "sha256-v1:project",
     source_revision: "sha256-v1:source",
-    project: { content_mode: "narration", generation_mode: "storyboard", grid_storyboard: false },
-    target: { episode: 1, script: "scripts/episode_1.json", script_filename: "episode_1.json", source: "source/episode_1.txt" },
+    project: { content_mode: "drama", generation_mode: "storyboard" },
+    target: { episode: 1, script: "scripts/episode_1.json", script_filename: "episode_1.json", source: "source/short_drama/episodes/episode_01.md" },
     blockers: [],
     issues: [],
     content: makeContent(),
@@ -115,6 +107,23 @@ export function makePlan(overrides: Partial<WorkflowPlan> = {}): WorkflowPlan {
   };
 }
 
+/** 工厂视觉分镜；视频提示词在参考素材确认后单独编写。 */
+export function makeDramaScene(overrides: Partial<DramaScene> = {}): DramaScene {
+  return {
+    scene_id: "E1S01",
+    duration_seconds: 8,
+    segment_break: false,
+    characters_in_scene: [],
+    scenes: [],
+    props: [],
+    utterances: [],
+    scene_description: "雨夜街道",
+    image_prompt: "雨夜街道",
+    video_prompt: null,
+    ...overrides,
+  };
+}
+
 /** 一条旁白分镜；默认两侧提示词都是文本形态，各用例按需覆盖为结构化或待编写（null）。 */
 export function makeNarrationSegment(overrides: Partial<NarrationSegment> = {}): NarrationSegment {
   return {
@@ -128,60 +137,6 @@ export function makeNarrationSegment(overrides: Partial<NarrationSegment> = {}):
     props: [],
     image_prompt: "雨夜街道",
     video_prompt: "撑伞走过",
-    ...overrides,
-  };
-}
-
-/** 服务端逐单元定桶结论的共享构造器；缺省是无引用、落 i2v 的单元，各场景按需覆盖。 */
-export function makeReferenceUnitCapability(
-  unitId: string,
-  overrides: Partial<ReferenceUnitCapability> = {},
-): ReferenceUnitCapability {
-  return {
-    unit_id: unitId,
-    declared_capability: "i2v",
-    hydrated_capability: "i2v",
-    declared_references: [],
-    unavailable_references: [],
-    unregistered_references: [],
-    allowed_durations: [3, 8],
-    excluded_durations: {},
-    duration_endpoint_fixed: false,
-    duration_endpoint_fixed_reason: null,
-    problem: null,
-    problems: [],
-    ...overrides,
-  };
-}
-
-/** 覆盖清单条目的共享构造器；缺省是名下没有任何产物的条目。 */
-export function makeScriptOverwriteEntry(
-  id: string,
-  overrides: Partial<ScriptOverwriteEntry> = {},
-): ScriptOverwriteEntry {
-  return {
-    id,
-    has_storyboard: false,
-    has_video: false,
-    has_narration_audio: false,
-    has_end_frame: false,
-    grid_id: null,
-    ...overrides,
-  };
-}
-
-/** 覆盖清单的共享构造器；`text` 是服务端渲染好的丢失清单，确认框原样呈现。 */
-export function makeScriptOverwrite(overrides: Partial<ScriptOverwrite> = {}): ScriptOverwrite {
-  return {
-    revision: "sha256-v1:formal",
-    entries: [],
-    storyboard_count: 0,
-    video_count: 0,
-    narration_audio_count: 0,
-    end_frame_count: 0,
-    grid_member_count: 0,
-    grid_count: 0,
-    text: "",
     ...overrides,
   };
 }

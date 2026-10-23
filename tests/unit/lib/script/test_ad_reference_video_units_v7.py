@@ -3,7 +3,7 @@
 import pydantic
 import pytest
 
-from lib.script.reference_video.text_parser import derive_references_from_text
+from lib.references.text_parser import derive_references_from_text
 from lib.script.script_models import ReferenceVideoScript, ReferenceVideoUnit
 from lib.script.script_skeleton import ensure_route_skeleton, resolve_declared_kind
 from lib.speech.speech_composition import SpeechComposition, SpeechMode, adapt_video_unit

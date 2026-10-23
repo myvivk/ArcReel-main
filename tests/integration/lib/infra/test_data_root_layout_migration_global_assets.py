@@ -13,6 +13,7 @@ from lib.db.repositories.asset_repo import AssetRepository
 from lib.infra.data_root_layout import DataRootLayout
 from lib.infra.data_root_layout_migration import migrate_data_root_layout
 from lib.project.project_manager import ProjectManager
+from tests.legacy_project_shapes import make_legacy_project
 
 _LEGACY_FILES = (
     "_global_assets/character/hero.png",
@@ -25,7 +26,7 @@ _LEGACY_FILES = (
 @pytest.fixture
 def projects(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(tmp_path / "data")
-    manager.create_project("demo", content_mode="narration")
+    make_legacy_project(manager.projects_dir, "demo", content_mode="narration")
     return manager
 
 

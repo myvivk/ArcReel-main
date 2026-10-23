@@ -55,7 +55,6 @@ from server.dependencies import require_project_migration_ok, require_valid_proj
 from server.error_handlers import register_error_handlers
 from server.remote_mcp import mount_remote_mcp, remote_mcp_host
 from server.routers import (
-    ad_script,
     agent_config,
     agent_memory,
     api_keys,
@@ -69,19 +68,14 @@ from server.routers import (
     edit_timelines,
     end_frames,
     episode_assets,
-    episode_drafts,
     episode_management,
-    episode_planning,
-    episodes_view,
     files,
     generate,
-    grids,
     market,
     market_submissions,
     official_service,
     onboarding,
     presentations,
-    products,
     project_events,
     project_migration,
     projects,
@@ -89,10 +83,7 @@ from server.routers import (
     prompt_templates,
     props,
     providers,
-    reference_videos,
     scenes,
-    script_plan,
-    script_review,
     short_drama,
     shot_grids,
     shot_uploads,
@@ -627,13 +618,11 @@ app.include_router(story_planning.router, prefix="/api/v1", dependencies=[Depend
 app.include_router(characters.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["角色管理"])
 app.include_router(scenes.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["场景管理"])
 app.include_router(props.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["道具管理"])
-app.include_router(products.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["商品管理"])
 app.include_router(presentations.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["成片演示"])
 app.include_router(
     edit_timelines.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["剪辑时间线"]
 )
 app.include_router(files.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["文件管理"])
-app.include_router(episodes_view.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["分集视图"])
 app.include_router(episode_assets.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["本集资产"])
 app.include_router(
     episode_management.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["集管理"]
@@ -657,46 +646,16 @@ app.include_router(
     tags=["资产图"],
 )
 app.include_router(
-    script_review.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["内容确认"],
-)
-app.include_router(
     short_drama.router,
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["短剧工厂导入"],
 )
 app.include_router(
-    episode_drafts.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["内容确认"],
-)
-app.include_router(
     prompt_authoring.router,
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["提示词编写"],
-)
-app.include_router(
-    episode_planning.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["分集规划"],
-)
-app.include_router(
-    script_plan.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["脚本规划"],
-)
-app.include_router(
-    ad_script.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["广告/短片脚本"],
 )
 app.include_router(
     shot_uploads.router,
@@ -746,22 +705,10 @@ app.include_router(
     cost_estimation.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["费用估算"]
 )
 app.include_router(
-    grids.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["多宫格分镜图"],
-)
-app.include_router(
     shot_grids.router,
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["分镜镜头宫格"],
-)
-app.include_router(
-    reference_videos.router,
-    prefix="/api/v1",
-    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
-    tags=["参考生视频"],
 )
 app.include_router(assets.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["全局资产库"])
 app.include_router(

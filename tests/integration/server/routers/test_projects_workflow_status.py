@@ -14,12 +14,13 @@ from lib.workflow.workflow_state import WorkflowRequestError, WorkflowStateServi
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import projects
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _project(tmp_path: Path) -> ProjectManager:
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Ad", "", "ad", target_duration=30)
+    seed_legacy_project_metadata(pm, "demo", "Ad", "", "ad", target_duration=30)
     return pm
 
 

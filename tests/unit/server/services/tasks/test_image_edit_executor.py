@@ -39,6 +39,7 @@ from server.services.tasks.image_edit_tasks import (
     execute_image_edit_task,
     resolve_current_image_rel,
 )
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 @pytest.fixture
@@ -258,7 +259,7 @@ class TestExecuteImageEditTask:
     ) -> None:
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "hero")
         project_path = pm.get_project_path("demo")
         current = project_path / "characters" / "Alice.png"
@@ -327,7 +328,7 @@ class TestExecuteImageEditTask:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "")
         project_path = pm.get_project_path("demo")
         current = project_path / "characters" / "Alice.png"
@@ -366,7 +367,7 @@ class TestExecuteImageEditTask:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "hero")
         project_path = pm.get_project_path("demo")
         current = project_path / "characters" / "Alice.png"
@@ -430,13 +431,7 @@ class TestExecuteImageEditTask:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata(
-            "demo",
-            "Demo",
-            "Anime",
-            "narration",
-            extras={"generation_mode": "storyboard"},
-        )
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration", extras={"generation_mode": "storyboard"})
         if resource_type == "character":
             resource_id = "Alice"
             version_resource_type = "characters"

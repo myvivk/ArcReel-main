@@ -18,11 +18,10 @@ from lib.project.project_migration_failure import ProjectMigrationError
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
 from lib.workflow.workflow_plan import WorkflowPlanRequest, build_workflow_plan
 from lib.workflow.workflow_state import WorkflowStatus
-from server import draft_workflow, tool_runtime
 from server import text_generation as shared_text_generation
+from server import tool_runtime
 from server.tool_runtime import (
     CallerContext,
-    DraftLocator,
     EpisodeScriptRequest,
     GenerationBatchToolRequest,
     NoArguments,
@@ -30,14 +29,12 @@ from server.tool_runtime import (
     PatchEpisodeScriptRequest,
     ProjectFileRequest,
     ProjectScope,
-    ScriptPlanContentRequest,
     Services,
     SourceTextRequest,
     ToolRequest,
     get_episode_script,
     get_generation_batch,
     get_project_content,
-    get_script_plan_content,
     get_source_text,
     get_video_capabilities,
     get_workflow_plan,
@@ -48,6 +45,7 @@ from server.tool_runtime import (
     read_project_file,
 )
 from tests.factories import make_video_request_facts
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class _Projects:
@@ -419,7 +417,7 @@ async def test_sync_transaction_finishes_worker_before_propagating_cancellation(
     assert finished.is_set()
 
 
-@pytest.mark.parametrize("module", [shared_text_generation, draft_workflow], ids=lambda module: module.__name__)
+@pytest.mark.parametrize("module", [shared_text_generation], ids=lambda module: module.__name__)
 def test_shared_text_and_draft_handlers_stay_host_independent(module) -> None:
     path = Path(module.__file__)
     shared_imports = _imported_modules(path)
@@ -437,7 +435,7 @@ async def test_patch_episode_meta_returns_typed_domain_outcome(tmp_path: Path, m
 
     projects = ProjectManager(tmp_path / "projects")
     projects.create_project("demo")
-    projects.create_project_metadata("demo", "Demo", "", "narration")
+    seed_legacy_project_metadata(projects, "demo", "Demo", "", "narration")
     projects.save_script("demo", {"title": "旧标题", "segments": []}, "episode_1.json", validate=False)
     services = Services(projects=projects, workflow_planner=_Planner(_status()), capabilities=_Capabilities())
     caller_thread = threading.get_ident()
@@ -510,9 +508,6 @@ async def test_content_readers_return_body_and_revision_from_the_same_snapshot(t
     script = await get_episode_script(
         ToolRequest(EpisodeScriptRequest(script="episode_1.json")), scope, caller, services
     )
-    script_plan = await get_script_plan_content(
-        ToolRequest(ScriptPlanContentRequest(episode_id=1)), scope, caller, services
-    )
 
     assert project.problem is None
     assert project.value is not None
@@ -522,10 +517,7 @@ async def test_content_readers_return_body_and_revision_from_the_same_snapshot(t
     assert script.value is not None
     assert script.value.script["title"] == "第一集"
     assert script.value.revision.startswith("sha256-v1:")
-    assert script_plan.problem is None
-    assert script_plan.value is not None
-    assert script_plan.value.content["title"] == "第一集"
-    assert len(reader_threads) == 3
+    assert len(reader_threads) == 2
     assert all(thread != caller_thread for thread in reader_threads)
 
 
@@ -549,9 +541,6 @@ async def test_file_readers_share_a_business_file_allowlist_and_reject_symlinks(
     caller = CallerContext(user_id="u1", source="mcp")
     sources = await list_source_files(ToolRequest(NoArguments()), scope, caller, services)
     source = await get_source_text(ToolRequest(SourceTextRequest(path="source/episode_1.txt")), scope, caller, services)
-    script_plan = await get_script_plan_content(
-        ToolRequest(ScriptPlanContentRequest(episode_id=1)), scope, caller, services
-    )
     files = await list_project_files(ToolRequest(NoArguments()), scope, caller, services)
     script = await read_project_file(
         ToolRequest(ProjectFileRequest(path="scripts/episode_1.json")), scope, caller, services
@@ -570,8 +559,6 @@ async def test_file_readers_share_a_business_file_allowlist_and_reject_symlinks(
     assert [entry.path for entry in sources.value.files] == ["source/episode_1.txt", "source/novel.txt"]
     assert source.value is not None
     assert source.value.text == "第一集原文"
-    assert script_plan.value is not None
-    assert script_plan.value.content["title"] == "第一集"
     assert files.value is not None
     assert {entry.path for entry in files.value.files} == {
         "project.json",
@@ -649,17 +636,6 @@ async def test_project_file_read_rejects_oversized_regular_file(tmp_path: Path) 
 
     assert outcome.problem is not None
     assert outcome.problem.code == "file_too_large"
-
-
-@pytest.mark.parametrize("episode", [0, -1, True, 1.5, "1"])
-def test_draft_locator_requires_a_strict_positive_episode(episode: object) -> None:
-    with pytest.raises(ValidationError, match=r"DraftLocator\nepisode"):
-        DraftLocator(episode_id=episode, doc_type="reference_script_plan")
-
-
-def test_draft_locator_rejects_unknown_document_types() -> None:
-    with pytest.raises(ValidationError, match=r"DraftLocator\ndoc_type"):
-        DraftLocator(episode_id=1, doc_type="unsupported")
 
 
 @pytest.mark.parametrize("entry_ids", [(1,), (["E1U01"],), ({"id": "E1U01"},)])

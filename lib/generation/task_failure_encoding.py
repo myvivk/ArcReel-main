@@ -16,12 +16,11 @@ from lib.backends.image_backends.base import ImageCapabilityError
 from lib.config.resolver import ImageBucketCapabilityError, VideoBucketCapabilityError
 from lib.custom_provider.comfyui.failures import ComfyuiError
 from lib.custom_provider.declarative_backend import DeclarativeRuntimeError
+from lib.generation.execution_checkpoint import ReferenceExecutionIdentityError
 from lib.generation.task_failure import encode_failure
 from lib.generation.video_request_facts import VideoRequestFactsError
 from lib.infra.api_errors import ApiError
 from lib.references.reference_compression import ReferencePayloadFloorError
-from lib.script.reference_video.execution_checkpoint import ReferenceExecutionIdentityError
-from lib.script.reference_video.request_projection import ReferenceProjectionBlockedError
 from lib.script.script_editor import ScriptEditError
 
 logger = logging.getLogger(__name__)
@@ -54,7 +53,6 @@ def encode_task_failure_message(exc: Exception) -> str:
         | ReferencePayloadFloorError
         | ImageBucketCapabilityError
         | VideoBucketCapabilityError
-        | ReferenceProjectionBlockedError
         | VideoRequestFactsError
         | ReferenceExecutionIdentityError
         | DeclarativeRuntimeError

@@ -31,6 +31,7 @@ from lib.generation.generation_result import (
     select_generation_targets,
 )
 from lib.project.resource_paths import resource_relative_path
+from lib.script.factory_episode import require_factory_script
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets, resolve_content_mode
 from lib.script.script_skeleton import ensure_route_skeleton
@@ -165,6 +166,7 @@ async def generate_narration_audio(
             )
             or 1
         )
+        require_factory_script(services.projects.get_project_path(scope.project_name), project, script, episode)
 
         candidates, admission_problems = _candidates(
             items,

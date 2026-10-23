@@ -322,8 +322,7 @@ def enqueue_and_wait_sync(**kwargs) -> dict[str, Any]:
 # plain-string-only asset prompts still flow through the image branch (no scene key).
 _VIDEO_TASK_TYPES = frozenset({"video"})
 _IMAGE_STRUCTURED_TASK_TYPES = frozenset({"storyboard"})
-# 旁白合成任务：文本默认由执行层从剧本 novel_text 读取，prompt 允许缺省；
-# 显式传入时必须是非空字符串（作为待合成文本覆盖）。
+# 旁白合成任务：执行层只读取工厂派生剧本的规范 narrator utterances。
 _TTS_TASK_TYPES = frozenset({"tts"})
 # 资产图任务：描述由执行层从项目里存储的条目读取，入队不收 prompt、载荷不存快照。
 _ASSET_SHEET_TASK_TYPES = frozenset(ASSET_SPECS)
@@ -360,13 +359,9 @@ def _validate_prompt(task_type: str, prompt: str | dict[str, Any] | None) -> Non
         return
 
     if task_type in _TTS_TASK_TYPES:
-        if prompt is None:
-            return
-        if isinstance(prompt, str):
-            if not prompt.strip():
-                raise TaskSpecValidationError("prompt_text_empty")
-            return
-        raise TaskSpecValidationError("tts_prompt_must_be_string_or_null")
+        if prompt is not None:
+            raise ValueError("tts tasks read factory utterances and take no prompt")
+        return
 
     if task_type in _IMAGE_STRUCTURED_TASK_TYPES and isinstance(prompt, dict):
         if not is_structured_image_prompt(prompt):
@@ -469,6 +464,8 @@ class TaskSpec:
         # 空白文件名。判空统一按 strip 后的值，各调用点因此不必各自 strip 一遍。
         if not resource_id.strip():
             raise TaskSpecValidationError("resource_id_required")
+        if task_type in _TTS_TASK_TYPES and not script_file:
+            raise ValueError("tts tasks require a factory script_file")
         # resource_id 在执行期是产物路径的一段：带路径分隔符或 .. 的值要到 worker 拼路径时
         # 才被 safe_join 拒绝，那时同批健康的任务已经在跑并计费。结构守卫在这里就拒，让它
         # 与其它结构问题一样折成该 unit 的准入问题码。带层级 id 的任务类型按段逐一守同一条
@@ -485,17 +482,15 @@ class TaskSpec:
         # extra_payload 不得携带守卫点已校验的保留键，否则调用方能绕过单一守卫点
         # 把未校验的 prompt / script_file 入队。
         reserved = {"prompt", "script_file"}
-        # tts 执行层读 payload.text 优先于 prompt（历史任务排空通道）；新入队一律走
-        # 受校验的 prompt，不允许借 extra_payload.text 绕过结构校验。
+        # TTS 从工厂派生剧本读取规范发声文本，拒绝直接文本载荷。
         if task_type in _TTS_TASK_TYPES:
             reserved = reserved | {"text"}
         if extra_payload and (conflict := reserved & extra_payload.keys()):
             raise ValueError(f"extra_payload contains reserved keys: {', '.join(sorted(conflict))}")
 
         payload: dict[str, Any] = dict(extra_payload) if extra_payload else {}
-        # reference_video 的 prompt 是可变剧本内容：这里只用当前文本做结构守卫，任务仅保存
-        # unit 定位与请求选项，worker 开始时按 script_file + resource_id 重读最新 shots。
-        if task_type != "reference_video" and task_type not in _ASSET_SHEET_TASK_TYPES:
+        # 资产图提示词从正式资产描述重取，其余任务保留请求内容与脚本定位。
+        if task_type not in _ASSET_SHEET_TASK_TYPES:
             payload["prompt"] = prompt
         if script_file is not None:
             payload["script_file"] = script_file

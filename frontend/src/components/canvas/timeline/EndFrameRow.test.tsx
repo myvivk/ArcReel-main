@@ -61,7 +61,7 @@ function renderRow(props: Partial<Parameters<typeof EndFrameRow>[0]> = {}) {
       projectName={PROJECT}
       segmentId={SHOT}
       scriptFile={SCRIPT}
-      contentMode="narration"
+      contentMode="drama"
       aspectRatio="9:16"
       endFramePath={null}
       {...props}
@@ -76,17 +76,16 @@ const refreshProject = vi.fn().mockResolvedValue("success" satisfies RefreshProj
 beforeEach(() => {
   useAppStore.setState({ toast: null });
   vi.spyOn(API, "getVideoCapabilities").mockResolvedValue(caps(true));
-  vi.spyOn(API, "listGrids").mockResolvedValue([]);
+  vi.spyOn(API, "getShotGrid").mockResolvedValue(null);
   useProjectsStore.setState({
     currentProjectName: PROJECT,
     currentScripts: {
       [SCRIPT]: {
         episode: 1,
         title: "第一集",
-        segments: [
+        scenes: [
           {
-            segment_id: SHOT,
-            novel_text: "",
+            scene_id: SHOT,
             image_prompt: "",
             video_prompt: "",
             generated_assets: { storyboard_image: "storyboards/E1S01_v1.png" },

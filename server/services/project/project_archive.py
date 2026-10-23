@@ -41,6 +41,7 @@ from lib.infra.path_safety import PathTraversalError, safe_join, try_safe_join
 from lib.infra.validation_messages import ValidationResult, default_translate
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key, normalize_asset_name
 from lib.project.data_validator import DataValidator
+from lib.project.legacy_reference_durations import migrate_unit_durations
 from lib.project.project_change_hints import emit_project_change_hint
 from lib.project.project_manager import ProjectManager
 from lib.project.project_migrations.runner import migrate_project_dir
@@ -54,9 +55,7 @@ from lib.project.resource_paths import (
     resource_extension,
     resource_relative_path,
 )
-from lib.script.reference_video.draft_validation import dialogue_speakers
-from lib.script.reference_video.duration_migration import migrate_unit_durations
-from lib.script.reference_video.text_parser import extract_mentions
+from lib.references.text_parser import dialogue_speakers, extract_mentions
 from lib.script.script_skeleton import SKELETONS, resolve_declared_kind, resolve_kind_items
 from lib.script.source_loader.migration import migrate_project_source_encoding
 from server.services.project.project_retirement import RetireProject

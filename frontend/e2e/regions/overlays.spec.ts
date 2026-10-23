@@ -134,7 +134,7 @@ defineRegionScenarios("弹层与提示", [
       await page.getByRole("button", { name: "添加一集" }).click();
       const menu = page.getByRole("menu", { name: "添加一集" });
       await expect(menu.getByRole("menuitem", { name: "新建一集" })).toBeInViewport({ ratio: 1 });
-      await expect(menu.getByRole("menuitem", { name: "上传集原文" })).toBeInViewport({ ratio: 1 });
+      await expect(menu.getByRole("menuitem", { name: "上传集原文" })).toHaveCount(0);
     },
     screenshot: { name: "overlays-action-menu", target: (page) => page.getByRole("menu", { name: "添加一集" }) },
   },

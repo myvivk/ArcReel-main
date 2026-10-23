@@ -32,10 +32,10 @@ from lib.artifacts.generation_input import (
 )
 from lib.generation.video_request_facts import VideoRequestFacts
 from lib.project.project_manager import ProjectManager, get_project_manager
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_models import resolve_content_mode
 from lib.script.storyboard_sequence import find_storyboard_item, get_storyboard_items
 from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
+from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import input_refusal_error
 from server.services.admission.video_batch_admission import storyboard_video_prompt, storyboard_video_request_facts
 from server.services.tasks.generation_context import ImageLaneRequest, resolve_generation_context

@@ -25,7 +25,7 @@ from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactManifestError, 
 from lib.project.asset_derivatives import derivative_table
 from lib.project.asset_types import ALIASES_FIELD, ASSET_SPECS, asset_name_comparison_key, resolve_asset_key
 from lib.references.reference_catalog import derivative_reference, split_derivative_reference
-from lib.script.reference_video.text_parser import extract_mentions, remap_mentions
+from lib.references.text_parser import extract_mentions, remap_mentions
 from lib.script.script_editor import ScriptEditError, resolve_items
 from lib.script.script_references import iter_reference_lists, iter_reference_sites
 from lib.speech.speech_artifact_provenance import build_video_speech_basis

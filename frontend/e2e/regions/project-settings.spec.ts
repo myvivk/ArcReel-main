@@ -117,18 +117,6 @@ defineRegionScenarios("项目设置", [
     screenshot: { name: "project-settings-basics", target: (page) => page.getByRole("main") },
   },
   {
-    name: "广告项目的基础分页：目标总时长自定义输入无效时的行内提示",
-    path: settings(),
-    api: projectWith({ content_mode: "ad", target_duration: 45 }),
-    ready: (page) => tabReady(page, "基础"),
-    act: async (page) => {
-      const group = page.getByRole("radiogroup", { name: "目标总时长" });
-      await expect(group.getByRole("radio", { name: "自定义" })).toBeChecked();
-      await page.getByRole("spinbutton", { name: /目标总时长/ }).fill("0");
-      await page.getByRole("main").evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
-    },
-  },
-  {
     name: "风格分页：「更换」打开风格对话框，只有对话框正文滚动",
     path: settings("style"),
     api: projectWith({ style_template_id: "live_premium_drama" }),
@@ -172,7 +160,7 @@ defineRegionScenarios("项目设置", [
     },
   },
   {
-    name: "配音分页：参考生视频项目使用 TTS 配音，显示角色声音绑定",
+    name: "配音分页：工厂项目使用 TTS 配音，显示角色声音绑定",
     path: settings("voice"),
     api: {
       "GET /api/v1/system/tts-model-capabilities?backend=gemini-aistudio/gemini-2.5-flash-preview-tts": {
@@ -180,7 +168,7 @@ defineRegionScenarios("项目设置", [
         body: { supports_speed: true },
       },
       ...projectWith({
-        generation_mode: "reference_video",
+        generation_mode: "storyboard",
         narration_delivery: "use_tts",
         audio_backend: "gemini-aistudio/gemini-2.5-flash-preview-tts",
         narration_voice: "Kore-with-a-very-long-custom-voice-identifier-for-wrapping-checks",

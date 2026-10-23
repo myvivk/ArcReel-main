@@ -32,25 +32,25 @@ from lib.artifacts.visual_artifact_provenance import (
     build_storyboard_video_artifact_visual_basis,
     project_basis_style_description,
 )
+from lib.generation.duration_slots import resolve_duration_slot
 from lib.project.asset_types import asset_name_comparison_key
-from lib.project.project_manager import ProjectManager, resolve_episode_script_binding
-from lib.project.project_schema import parse_project_schema_version
-from lib.project.resource_paths import resource_relative_path
-from lib.script.reference_video.duration_slots import resolve_duration_slot
-from lib.script.reference_video.prompt_render import resolve_reference_audio_paths
-from lib.script.reference_video.request_projection import (
+from lib.project.legacy_reference_assets import (
     FilesystemReferenceAssets,
     clamp_reference_assets,
     hydrate_reference_assets,
     resolve_reference_assets,
     unit_reference_declarations,
 )
+from lib.project.project_manager import ProjectManager, resolve_episode_script_binding
+from lib.project.project_schema import parse_project_schema_version
+from lib.project.resource_paths import resource_relative_path
 from lib.script.script_editor import resolve_items
 from lib.script.storyboard_sequence import resolve_storyboard_video_inputs, resolve_storyboard_video_slots
 from lib.script.storyboard_video_request import storyboard_asset_links, storyboard_frame_evidence
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.narration_config import PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION, project_tts_settings
 from lib.speech.narration_delivery import build_narration_audio_basis
+from lib.speech.reference_audio import resolve_reference_audio_paths
 from lib.speech.speech_artifact_provenance import (
     build_video_duration_basis,
     build_video_speech_basis,

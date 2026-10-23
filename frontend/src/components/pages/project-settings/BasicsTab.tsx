@@ -2,14 +2,11 @@ import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
-import { DurationTierPicker } from "@/components/shared/DurationTierPicker";
 import { EpisodeTargetDurationField } from "@/components/shared/EpisodeTargetDurationField";
-import { ROUTE_META, RouteLockBadge } from "@/components/shared/GenerationRouteCards";
-import { GridStoryboardBar } from "@/components/shared/GridStoryboardBar";
 import { InlineWarning } from "@/components/shared/InlineWarning";
 import { SpeechRateField } from "@/components/shared/SpeechRateField";
 
-import { gridToggleVisible, type ProjectFacts, type ProjectSettingsForm } from "./project-settings-form";
+import { type ProjectFacts, type ProjectSettingsForm } from "./project-settings-form";
 import { SettingsBlock, TabHeader } from "./SettingsBlock";
 
 const ASPECT_RATIOS = [
@@ -24,11 +21,10 @@ interface BasicsTabProps {
   facts: ProjectFacts & { sourceLanguage: string | null };
 }
 
-/** 「基础」：画面比例、生成方式（只读，含宫格开关）、口播语速估算与目标时长。 */
+/** 「基础」：画面比例、口播语速估算、单集时长和全剧集数。 */
 export function BasicsTab({ value, savedValue, onChange, facts }: BasicsTabProps) {
   const { t } = useTranslation("dashboard");
   const aspectId = useId();
-  const route = ROUTE_META[facts.generationRoute];
 
   return (
     <div className="flex flex-col gap-6">
@@ -63,22 +59,6 @@ export function BasicsTab({ value, savedValue, onChange, facts }: BasicsTabProps
         {value.aspectRatio !== savedValue.aspectRatio && <InlineWarning message={t("aspect_ratio_change_warning")} />}
       </SettingsBlock>
 
-      <SettingsBlock title={t("generation_route")} aside={<RouteLockBadge />}>
-        <div className="rounded-lg border border-border px-3.5 py-2.5">
-          <div className="flex items-baseline gap-2">
-            <span className="text-sm font-medium text-foreground">{t(route.nameKey)}</span>
-            <span className="text-xs text-muted-foreground">{route.tag}</span>
-          </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{t(route.descKey)}</p>
-        </div>
-        {gridToggleVisible(facts) && (
-          <GridStoryboardBar
-            checked={value.gridStoryboard}
-            onToggle={(next) => onChange((prev) => ({ ...prev, gridStoryboard: next }))}
-          />
-        )}
-      </SettingsBlock>
-
       <SettingsBlock title={t("project_settings_pacing_title")}>
         <div className="flex flex-col gap-5">
           <SpeechRateField
@@ -86,24 +66,14 @@ export function BasicsTab({ value, savedValue, onChange, facts }: BasicsTabProps
             onChange={(next) => onChange((prev) => ({ ...prev, speechRate: next }))}
             sourceLanguage={facts.sourceLanguage}
           />
-          {/* 广告项目的整集体量由目标总时长表达，不呈现单集目标时长（服务端亦拒写） */}
-          {facts.contentMode === "ad" ? (
-            <DurationTierPicker
-              value={value.adTargetDuration}
-              onChange={(next) => onChange((prev) => ({ ...prev, adTargetDuration: next }))}
-            />
-          ) : (
-            <EpisodeTargetDurationField
-              value={value.episodeTargetDuration}
-              onChange={(next) => onChange((prev) => ({ ...prev, episodeTargetDuration: next }))}
-            />
-          )}
+          <EpisodeTargetDurationField
+            value={value.episodeTargetDuration}
+            onChange={(next) => onChange((prev) => ({ ...prev, episodeTargetDuration: next }))}
+          />
         </div>
       </SettingsBlock>
 
-      {/* 全剧规划总集数：仅非 ad 项目；剧情演绎连写 / 续写据此告知 Agent 全剧体量 */}
-      {facts.contentMode !== "ad" && (
-        <SettingsBlock title={t("project_settings_total_episodes_label")}>
+      <SettingsBlock title={t("project_settings_total_episodes_label")}>
           <input
             id="total-episodes"
             type="number"
@@ -121,8 +91,7 @@ export function BasicsTab({ value, savedValue, onChange, facts }: BasicsTabProps
             }}
           />
           <p className="mt-1 text-xs text-muted-foreground">{t("project_settings_total_episodes_hint")}</p>
-        </SettingsBlock>
-      )}
+      </SettingsBlock>
     </div>
   );
 }

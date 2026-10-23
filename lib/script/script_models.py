@@ -920,7 +920,7 @@ class ReferenceResource(BaseModel):
     """参考图引用——只存名称 + 类型，具体路径从 project.json 对应 bucket 读时解析。
 
     执行期派生物，不落盘：视频单元只持久化正文，参考图由正文的 ``@[名称]`` 在渲染与请求
-    投影时解析（见 :func:`lib.script.reference_video.text_parser.derive_references_from_text`）。
+    投影时解析（见 :func:`lib.references.text_parser.derive_references_from_text`）。
     """
 
     model_config = _STRICT_CONFIG

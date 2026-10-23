@@ -8,10 +8,7 @@ Voice_Profiles 注入判定）。入队时机尚未 resolve 任务实际的 prov
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import Iterable
-from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -19,7 +16,6 @@ from lib.config.resolver import (
     ConfigResolver,
     VideoGenerationType,
     caps_generation_mode,
-    duration_endpoint_fixed_reason,
     video_bucket_for_generation_mode,
 )
 from lib.db import async_session_factory
@@ -32,16 +28,7 @@ from lib.generation.video_request_facts import (
     evaluate_video_request_facts,
     require_video_request_facts,
 )
-from lib.project.project_manager import ProjectManager
-from lib.script.reference_video.request_projection import (
-    ReferenceRequestFactsLookup,
-    configured_reference_request_facts,
-)
-from lib.script.reference_video.unit_capabilities import (
-    evaluate_reference_unit_capabilities,
-    reference_unit_capability_payloads,
-)
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
+from lib.speech.voice_settings import VoiceRenderSettings
 
 logger = logging.getLogger(__name__)
 
@@ -60,50 +47,6 @@ async def storyboard_request_facts(
         identity=CONFIGURED_VIDEO_IDENTITY,
         resolver=config_resolver or ConfigResolver(async_session_factory),
     )
-
-
-def reference_request_facts_lookup(
-    project: dict, config_resolver: ConfigResolver | None = None
-) -> ReferenceRequestFactsLookup:
-    """读侧按桶的视频请求事实查找；同一次请求内共用一份，每个桶至多求值一次。"""
-    return configured_reference_request_facts(project, config_resolver or ConfigResolver(async_session_factory))
-
-
-async def reference_unit_capabilities(
-    project: dict,
-    project_path: Path,
-    units: Iterable[dict],
-    *,
-    request_facts: ReferenceRequestFactsLookup,
-) -> dict[str, dict[str, object]]:
-    """按 ``unit_id`` 索引的逐单元定桶结论与所落桶档位（Web 与 Agent 同一份）。"""
-    return reference_unit_capability_payloads(
-        await evaluate_reference_unit_capabilities(project, project_path, units, request_facts=request_facts)
-    )
-
-
-def reference_script_units(projects: ProjectManager, project_name: str, project: dict) -> list[dict]:
-    """参考生视频项目全部已登记剧本的视频单元；非参考路线没有视频单元。
-
-    只读取、不回写存量迁移。剧本文件缺失的分集跳过：那是分集尚未产出剧本，不是能力问题；读不出
-    或解析不了的分集同样跳过并记日志，单集损坏不拖垮整份能力查询。
-    """
-    if project.get("generation_mode") != "reference_video":
-        return []
-    units: list[dict] = []
-    for episode in project.get("episodes") or []:
-        script_file = episode.get("script_file") if isinstance(episode, dict) else None
-        if not script_file:
-            continue
-        try:
-            script = projects.load_script_readonly(project_name, script_file)
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError) as exc:
-            logger.warning("能力标注跳过无法读取的剧本 %s/%s：%s", project_name, script_file, exc)
-            continue
-        units.extend(unit for unit in script.get("video_units") or [] if isinstance(unit, dict))
-    return units
 
 
 def video_facts_problem(failure: VideoRequestFactsFailure) -> dict:
@@ -137,73 +80,16 @@ async def capability_request_facts(
     ``resolution_override`` 只由设置页与创建向导的能力预览传入。求值失败抛
     :class:`~lib.generation.video_request_facts.VideoRequestFactsError`。
     """
-    route = (
-        "reference_video"
-        if generation_type == "r2v" or project.get("generation_mode") == "reference_video"
-        else "storyboard"
-    )
     return require_video_request_facts(
         await evaluate_video_request_facts(
             project,
-            route=route,
+            route="storyboard",
             generation_type=generation_type,
             identity=CONFIGURED_VIDEO_IDENTITY,
             resolver=config_resolver,
             resolution_override=resolution_override,
         )
     )
-
-
-async def annotate_reference_unit_tiers(
-    payload: dict,
-    project: dict,
-    *,
-    config_resolver: ConfigResolver | None,
-    projects: ProjectManager,
-    project_name: str,
-) -> None:
-    """Add effective duration tiers only for episode reference-video units.
-
-    ``supported_durations`` remains the model-declared full set. The annotation
-    gives script authors the narrower execution tiers for units with and without
-    references, plus ``units``: the server-side bucket, tiers and reference split
-    of every formal unit, keyed by ``unit_id``; ad projects do not use this
-    duration enumeration.
-    """
-    if payload.get("generation_mode") != "reference_video" or payload.get("content_mode") == "ad":
-        return
-    durations = [int(d) for d in payload.get("supported_durations") or []]
-    if not durations and not payload.get("duration_endpoint_fixed"):
-        return
-    request_facts = reference_request_facts_lookup(project, config_resolver)
-    with_ref_facts = await request_facts("r2v")
-    without_ref_facts = await request_facts("i2v")
-    units = await asyncio.to_thread(reference_script_units, projects, project_name, project)
-    unit_capabilities = await reference_unit_capabilities(
-        project,
-        projects.get_project_path(project_name),
-        units,
-        request_facts=request_facts,
-    )
-    with_refs_fixed = facts_duration_endpoint_fixed(with_ref_facts)
-    without_refs_fixed = facts_duration_endpoint_fixed(without_ref_facts)
-    payload["reference_unit_durations"] = {
-        "with_references": (
-            list(with_ref_facts.allowed_durations) if isinstance(with_ref_facts, VideoRequestFacts) else []
-        ),
-        "with_references_endpoint_fixed": with_refs_fixed,
-        "with_references_endpoint_fixed_reason": duration_endpoint_fixed_reason(with_refs_fixed),
-        "without_references": (
-            list(without_ref_facts.allowed_durations) if isinstance(without_ref_facts, VideoRequestFacts) else None
-        ),
-        "without_references_endpoint_fixed": without_refs_fixed,
-        "without_references_endpoint_fixed_reason": duration_endpoint_fixed_reason(without_refs_fixed),
-        "excluded": (
-            dict(without_ref_facts.excluded_durations) if isinstance(without_ref_facts, VideoRequestFacts) else None
-        ),
-        "problem": None if isinstance(without_ref_facts, VideoRequestFacts) else video_facts_problem(without_ref_facts),
-        "units": unit_capabilities,
-    }
 
 
 async def project_video_caps(
@@ -264,7 +150,7 @@ async def resolve_audio_switch_conflict(project: dict, generation_type: VideoGen
     try:
         result = await evaluate_video_request_facts(
             project,
-            route="reference_video" if project.get("generation_mode") == "reference_video" else "storyboard",
+            route="storyboard",
             generation_type=generation_type,
             identity=CONFIGURED_VIDEO_IDENTITY,
             resolver=resolver,

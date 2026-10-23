@@ -7,17 +7,17 @@ import { AssetOriginalsField } from "./AssetOriginalsField";
 describe("AssetOriginalsField", () => {
   it("lists thumbnails sized to the tiles and opens the original in the viewer", async () => {
     const user = userEvent.setup();
-    useProjectsStore.setState({ assetFingerprints: { "products/a.png": 7 } });
+    useProjectsStore.setState({ assetFingerprints: { "characters/a.png": 7 } });
     render(
-      <AssetOriginalsField projectName="p" name="水杯" assetType="product" paths={["products/a.png"]} readOnly />,
+      <AssetOriginalsField projectName="p" name="阿青" assetType="character" paths={["characters/a.png"]} readOnly />,
     );
 
-    const tile = screen.getByRole("button", { name: /水杯/ });
-    expect(within(tile).getByRole("img")).toHaveAttribute("src", "/api/v1/files/p/products/a.png?v=7&w=160");
+    const tile = screen.getByRole("button", { name: /阿青/ });
+    expect(within(tile).getByRole("img")).toHaveAttribute("src", "/api/v1/files/p/characters/a.png?v=7&w=640");
 
     await user.click(tile);
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/api/v1/files/p/products/a.png?v=7");
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/api/v1/files/p/characters/a.png?v=7");
   });
 
   it("requests a wider thumbnail for a single character original", () => {

@@ -4,9 +4,6 @@ import { ListChecks } from "lucide-react";
 import { useLocation } from "wouter";
 import { API } from "@/api";
 import {
-  draftRepairResourceId,
-  enqueueAdScript,
-  enqueueDraftRepair,
   enqueuePromptAuthoring,
   promptAuthoringResourceId,
 } from "@/actions/generation";
@@ -24,28 +21,21 @@ import {
 import { AssetSheetBatchDialog } from "@/components/canvas/lorebook/AssetSheetBatchDialog";
 import { StoryboardBatchDialog } from "@/components/canvas/timeline/StoryboardBatchDialog";
 import { createScriptEditTimeline } from "@/components/canvas/edit-render/create-script-timeline";
-import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { promptAuthoringHandoffText } from "@/components/canvas/shared/prompt-authoring-handoff";
-import { DiscardDraftDialog, draftFallbackText, draftFixRequestText, prefillAssistant } from "@/components/shared/DraftStatus";
-import { diagnosticCode } from "@/hooks/useDraftEditor";
+import { prefillAssistant } from "@/utils/assistant-prefill";
 import { useEpisodeLedger } from "@/hooks/useEpisodeLedger";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useAdScriptStore } from "@/stores/ad-script-store";
 import { useAppStore } from "@/stores/app-store";
-import { useEpisodeSurfaceStore } from "@/stores/episode-surface-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
-import { useScriptPlanStore } from "@/stores/script-plan-store";
 import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import type { ProjectData, StoryboardBatchKind } from "@/types";
 import type { EpisodeEditOverview } from "@/types/edit-timeline";
-import type { DraftDocType } from "@/types/reference-video";
 import { errMsg } from "@/utils/async";
 import { episodeAgentRef } from "@/utils/episode-display";
 import {
   WORKSPACE_ROUTE_CHARACTERS,
-  WORKSPACE_ROUTE_PRODUCTS,
   WORKSPACE_ROUTE_PROPS,
   WORKSPACE_ROUTE_SCENES,
 } from "@/app-routes";
@@ -67,7 +57,6 @@ const ASSET_ROUTES: [keyof ProjectData, string][] = [
   ["characters", WORKSPACE_ROUTE_CHARACTERS],
   ["scenes", WORKSPACE_ROUTE_SCENES],
   ["props", WORKSPACE_ROUTE_PROPS],
-  ["products", WORKSPACE_ROUTE_PRODUCTS],
 ];
 
 /** 资产名（衍生为「本体/衍生」）所在类型的画廊路由。 */
@@ -92,7 +81,7 @@ function useEditOverview(projectName: string, episodeId: number | null, refetchO
     if (episodeId == null || timelineCount === 0) return;
     const controller = new AbortController();
     API.getEpisodeEditOverview(projectName, episodeId, { signal: controller.signal })
-      .then((value) => setOverview({ key, value }))
+      .then((value) => { if (!controller.signal.aborted) setOverview({ key, value }); })
       .catch(() => {
         if (!controller.signal.aborted) setOverview(null);
       });
@@ -105,22 +94,11 @@ const CLOSES_POPOVER = new Set<StepAct["intent"]["type"]>([
   "agent",
   "open_author_prompts",
   "open_video_prompts",
-  "open_script_plan",
-  "open_ad_script",
-  "open_script_plan_over_draft",
   "asset_batch",
   "storyboard_batch",
-  "show_surface",
   "view_unit",
   "route",
 ]);
-
-interface PendingDiscard {
-  docType: DraftDocType;
-  revision: string | null;
-  agentOwned: boolean;
-  fallbackText: string;
-}
 
 interface Props {
   projectName: string;
@@ -154,8 +132,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
   );
   const [instructionDraft, setInstructionDraft] = useState<{ key: string; value: string } | null>(null);
   const [running, setRunning] = useState(false);
-  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
-  const [discarding, setDiscarding] = useState(false);
 
   const plan = useWorkflowStore((s) => s.plan);
   const planKey = useWorkflowStore((s) => s.planKey);
@@ -213,7 +189,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
       episodeId,
       episodeRef,
       episodeDurationSeconds: episodeMeta?.duration_seconds ?? null,
-      adTargetSeconds: projectData?.content_mode === "ad" ? (projectData.target_duration ?? null) : null,
       assetRoute: (name) => assetRouteIn(projectData, name),
       savedPromptInstructions: episodeMeta?.prompt_authoring_instructions ?? "",
       canAuthorPrompts: Boolean(onAuthorPrompts),
@@ -266,23 +241,11 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             lockFields: true,
           });
           return;
-        case "open_script_plan":
-          useScriptPlanStore.getState().open({ projectName, episode: episodeId, replaces: "formal_script" });
-          return;
-        case "open_ad_script":
-          useAdScriptStore.getState().open({ projectName, episode: episodeId, regenerate: intent.regenerate });
-          return;
-        case "open_script_plan_over_draft":
-          useScriptPlanStore.getState().open({ projectName, episode: episodeId, replaces: "draft" });
-          return;
         case "asset_batch":
           setAssetBatchEpisode(intent.episodeId);
           return;
         case "storyboard_batch":
           setStoryboardBatch({ episodeId: intent.episodeId, kind: intent.kind });
-          return;
-        case "show_surface":
-          useEpisodeSurfaceStore.getState().show({ projectName, episode: episodeId, surface: intent.surface });
           return;
         case "view_unit":
           onViewUnit?.(intent.unitId);
@@ -317,18 +280,8 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             await enqueuePromptAuthoring(projectName, episodeId, {
               entry_ids: null,
               rewrite: false,
+              fields: ["image_prompt"],
               instructions: instruction.trim() || null,
-              overwrite_revision: null,
-            });
-            break;
-          case "generate_ad_script":
-            if (isResourceBusy("text_episode_script", projectName, promptAuthoringResourceId(episodeId))) {
-              pushToast(t("dashboard:ad_script_busy"), "error");
-              break;
-            }
-            await enqueueAdScript(projectName, episodeId, {
-              instructions: instruction.trim() || null,
-              regenerate: false,
               overwrite_revision: null,
             });
             break;
@@ -339,35 +292,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
               pushToast(t("workflow:edit_timeline_created", { name: created.timeline.name }), "success");
             }
             void refreshPlan(projectName, episode);
-            break;
-          }
-          case "start_blank_script":
-            await API.startBlankScript(projectName, episodeId);
-            await refreshAfterWrite(projectName, t);
-            void refreshPlan(projectName, episode);
-            break;
-          case "draft_to_agent": {
-            const draft = await API.getEpisodeDraft(projectName, episodeId, intent.docType);
-            prefillAssistant(withInstruction(draftFixRequestText(t, episodeRef, intent.docType, draft.violations)));
-            break;
-          }
-          case "repair_draft": {
-            if (isResourceBusy("text_draft_repair", projectName, draftRepairResourceId(episodeId, intent.docType))) {
-              pushToast(t("dashboard:draft_repair_busy"), "error");
-              break;
-            }
-            const draft = await API.getEpisodeDraft(projectName, episodeId, intent.docType);
-            await enqueueDraftRepair(projectName, episodeId, intent.docType, draft.revision ?? "", instruction.trim() || null);
-            break;
-          }
-          case "discard_draft": {
-            const draft = await API.getEpisodeDraft(projectName, episodeId, intent.docType);
-            setPendingDiscard({
-              docType: intent.docType,
-              revision: draft.revision,
-              agentOwned: draft.editable_by === "agent",
-              fallbackText: draftFallbackText(t, intent.docType, draft.formal_exists),
-            });
             break;
           }
           default:
@@ -392,24 +316,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
         : undefined,
     [onViewUnit],
   );
-
-  const confirmDiscard = async () => {
-    if (!pendingDiscard || episodeId == null) return;
-    setDiscarding(true);
-    try {
-      await API.discardEpisodeDraft(projectName, episodeId, pendingDiscard.docType, pendingDiscard.revision);
-      pushToast(t("dashboard:draft_discarded_toast"), "success");
-    } catch (err) {
-      pushToast(
-        diagnosticCode(err) === "revision_conflict" ? t("dashboard:draft_conflict_toast") : errMsg(err),
-        diagnosticCode(err) === "revision_conflict" ? "warning" : "error",
-      );
-    } finally {
-      setDiscarding(false);
-      setPendingDiscard(null);
-      void refreshPlan(projectName, episode);
-    }
-  };
 
   // 计划没能投影成步骤清单（项目整体不可用、目标集绑定损坏）时，只复述后端给的下一步。
   const headline = view
@@ -447,18 +353,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             <PopoverTitle>{t("panel_title")}</PopoverTitle>
             <PopoverDescription>{headline}</PopoverDescription>
           </PopoverHeader>
-
-          {view?.adDuration && (
-            <Badge
-              variant={view.adDuration.over ? "destructive" : "outline"}
-              title={view.adDuration.over ? t("ad_duration_over_hint") : undefined}
-              data-over={view.adDuration.over || undefined}
-            >
-              {view.adDuration.total != null
-                ? t("ad_duration", { total: view.adDuration.total, target: view.adDuration.target })
-                : t("ad_duration_no_script", { target: view.adDuration.target })}
-            </Badge>
-          )}
 
           {error && (
             <p className="text-xs text-muted-foreground" role="status">
@@ -518,16 +412,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
           episode={storyboardBatch.episodeId}
           kind={storyboardBatch.kind}
           onClose={() => setStoryboardBatch(null)}
-        />
-      )}
-      {pendingDiscard && (
-        <DiscardDraftDialog
-          open
-          agentOwned={pendingDiscard.agentOwned}
-          fallbackText={pendingDiscard.fallbackText}
-          loading={discarding}
-          onConfirm={() => void confirmDiscard()}
-          onCancel={() => setPendingDiscard(null)}
         />
       )}
     </>

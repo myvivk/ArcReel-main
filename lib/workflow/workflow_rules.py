@@ -1,10 +1,8 @@
-"""Data-driven workflow step rules for every content and generation mode pair."""
+"""The short-drama factory production workflow."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from lib.script.script_skeleton import resolve_declared_kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,83 +20,27 @@ class WorkflowRule:
     content_mode: str
     generation_mode: str
     skeleton_kind: str
-    preprocessor: str | None
     steps: tuple[WorkflowStepRule, ...]
 
 
-_STEP_IDS: tuple[str, ...] = (
+_STEP_IDS = (
     "project_input",
-    "selling_points",
-    "episode_plan",
-    "script_plan_content",
-    "script_plan_review",
-    "final_script",
     "asset_sheets",
+    "final_script",
     "script_structure",
-    "storyboard",
     "shot_grid",
     "video_prompt",
     "video",
     "edit",
 )
 
-_EPISODIC_STEPS = frozenset(
-    {
-        "project_input",
-        "episode_plan",
-        "script_plan_content",
-        "script_plan_review",
-        "final_script",
-        "asset_sheets",
-        "script_structure",
-        "video",
-        "edit",
-    }
-)
-
-_CONTENT_STEPS: dict[str, frozenset[str]] = {
-    "narration": _EPISODIC_STEPS,
-    "drama": _EPISODIC_STEPS,
-    "ad": frozenset(
-        {
-            "project_input",
-            "selling_points",
-            "final_script",
-            "asset_sheets",
-            "script_structure",
-            "video",
-            "edit",
-        }
-    ),
-}
-
-_PREPROCESSORS: dict[tuple[str, str], str | None] = {
-    ("narration", "storyboard"): "split-narration-segments",
-    ("narration", "reference_video"): "split-reference-video-units",
-    ("drama", "storyboard"): "normalize-drama-script",
-    ("drama", "reference_video"): "split-reference-video-units",
-    ("ad", "storyboard"): None,
-    ("ad", "reference_video"): None,
-}
-
-
-def _build_rule(content_mode: str, generation_mode: str) -> WorkflowRule:
-    applicable = set(_CONTENT_STEPS[content_mode])
-    if generation_mode == "storyboard":
-        applicable.update({"storyboard", "shot_grid", "video_prompt"})
-    return WorkflowRule(
-        content_mode=content_mode,
-        generation_mode=generation_mode,
-        skeleton_kind=resolve_declared_kind(content_mode, generation_mode),
-        preprocessor=_PREPROCESSORS[(content_mode, generation_mode)],
-        steps=tuple(WorkflowStepRule(id=step_id, applicable=step_id in applicable) for step_id in _STEP_IDS),
-    )
-
-
 WORKFLOW_RULES: dict[tuple[str, str], WorkflowRule] = {
-    (content_mode, generation_mode): _build_rule(content_mode, generation_mode)
-    for content_mode in ("narration", "drama", "ad")
-    for generation_mode in ("storyboard", "reference_video")
+    ("drama", "storyboard"): WorkflowRule(
+        content_mode="drama",
+        generation_mode="storyboard",
+        skeleton_kind="scenes",
+        steps=tuple(WorkflowStepRule(id=step, applicable=True) for step in _STEP_IDS),
+    ),
 }
 
 

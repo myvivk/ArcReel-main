@@ -16,6 +16,7 @@ from server.error_handlers import register_error_handlers
 from server.routers import generate
 from server.services.tasks.generation_context import AudioLaneResult, GenerationContext
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class _FakeQueue:
@@ -295,7 +296,7 @@ class TestConfirmCharacterVoiceSample:
     def test_confirm_waits_for_video_selection_before_replacing_reference_audio(self, tmp_path, monkeypatch):
         pm = project_manager_module.ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "艾莉", "desc")
         project_path = pm.get_project_path("demo")
         script_file = project_path / "scripts" / "episode_1.json"

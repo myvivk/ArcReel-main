@@ -1,7 +1,6 @@
 import type { TFunction } from "i18next";
 import {
   WORKSPACE_ROUTE_CHARACTERS,
-  WORKSPACE_ROUTE_PRODUCTS,
   WORKSPACE_ROUTE_PROPS,
   WORKSPACE_ROUTE_SCENES,
 } from "@/app-routes";
@@ -22,11 +21,10 @@ import { episodeDisplayName, episodeItemLabel, itemIdsInEpisodeText } from "@/ut
  * null，让通知仍然推送、仅不可点击（优雅降级）。
  */
 
-const ASSET_ROUTES: Record<"character" | "scene" | "prop" | "product", string> = {
+const ASSET_ROUTES: Record<"character" | "scene" | "prop", string> = {
   character: `/${WORKSPACE_ROUTE_CHARACTERS}`,
   scene: `/${WORKSPACE_ROUTE_SCENES}`,
   prop: `/${WORKSPACE_ROUTE_PROPS}`,
-  product: `/${WORKSPACE_ROUTE_PRODUCTS}`,
 };
 
 /** 资产页上某张资产的回跳 target（衍生定位到其本体卡片）。 */
@@ -41,17 +39,12 @@ const FAILURE_TEXT_KEYS: Partial<
   Record<TaskItem["task_type"], { key: string; idParam: "id" | "unitId" | "episode" }>
 > = {
   storyboard: { key: "storyboard_task_failed", idParam: "id" },
+  shot_grid: { key: "storyboard_task_failed", idParam: "id" },
   video: { key: "video_task_failed", idParam: "id" },
   character: { key: "character_task_failed", idParam: "id" },
   scene: { key: "scene_task_failed", idParam: "id" },
   prop: { key: "prop_task_failed", idParam: "id" },
-  product: { key: "product_task_failed", idParam: "id" },
-  grid: { key: "grid_task_failed", idParam: "id" },
-  reference_video: { key: "reference_generation_task_failed", idParam: "unitId" },
   image_edit: { key: "image_edit_task_failed", idParam: "id" },
-  text_drama_script_plan: { key: "script_plan_task_failed", idParam: "episode" },
-  text_narration_script_plan: { key: "script_plan_task_failed", idParam: "episode" },
-  text_reference_script_plan: { key: "script_plan_task_failed", idParam: "episode" },
 };
 
 /** 集级任务的 resource_id 形如 `episode-3`，失败文案按集名指称。 */
@@ -97,7 +90,6 @@ export function buildTaskFailureTarget(
     case "character":
     case "scene":
     case "prop":
-    case "product":
       return {
         type: task.task_type,
         id: task.resource_id,
@@ -105,19 +97,12 @@ export function buildTaskFailureTarget(
         highlight_style: "flash",
       };
     case "storyboard":
-    case "video": {
+    case "video":
+    case "shot_grid": {
       const route = resolveEpisodeRoute(projectData, task.script_file);
       return route
         ? { type: "segment", id: task.resource_id, route, highlight_style: "flash" }
         : null;
-    }
-    case "grid": {
-      const route = resolveEpisodeRoute(projectData, task.script_file);
-      return route ? { type: "grid", id: task.resource_id, route } : null;
-    }
-    case "reference_video": {
-      const route = resolveEpisodeRoute(projectData, task.script_file);
-      return route ? { type: "reference_unit", id: task.resource_id, route } : null;
     }
     case "image_edit": {
       // image_edit 跨 character/scene/prop/product/storyboard 共用 task_type，真正
@@ -126,7 +111,6 @@ export function buildTaskFailureTarget(
         case "character":
         case "scene":
         case "prop":
-        case "product":
           return {
             type: task.resource_type,
             id: task.resource_id,

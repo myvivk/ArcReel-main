@@ -401,12 +401,9 @@ async def list_providers(
                 },
                 audio_track=audio_track,
                 reference_route_audio_track=reference_route_audio_track,
-                # generation_mode / character_voice_binding 均为 None：目录端点无项目上下文，按非
-                # 参考生视频路径派生，音轨位同样取 i2v 路径——有项目上下文时改用
-                # /projects/{name}/video-capabilities。
+                # 目录没有角色绑定配置，项目内的能力查询再按角色绑定方式派生。
                 voice_consistency=derive_voice_consistency(
                     reference_audio_mode=reference_audio_mode,
-                    generation_mode=None,
                     has_audio=audio_track != silent,
                     character_voice_binding=None,
                 ),

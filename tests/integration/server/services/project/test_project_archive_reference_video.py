@@ -17,6 +17,7 @@ from lib.config.registry import PROVIDER_REGISTRY
 from lib.project.project_manager import ProjectManager
 from lib.project.resource_paths import resource_relative_path
 from server.services.project.project_archive import ProjectArchiveService
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 REMOTE_VIDEO_URI = "https://cdn.example.com/v/E1U1.mp4"
 
@@ -94,7 +95,7 @@ def _create_reference_video_project(
     write_thumbnail: bool = True,
 ) -> Path:
     pm.create_project(name)
-    pm.create_project_metadata(name, "RefDemo", "水墨风格，淡彩", "narration")
+    seed_legacy_project_metadata(pm, name, "RefDemo", "水墨风格，淡彩", "narration")
 
     project_dir = pm.get_project_path(name)
     project = pm.load_project(name)

@@ -22,13 +22,13 @@ from lib.artifacts.video_artifact_facts import VideoArtifactCurrencyFacts
 from lib.artifacts.video_visual_provenance import resolve_video_aspect_ratio
 from lib.artifacts.visual_artifact_provenance import build_reference_video_artifact_visual_basis
 from lib.project.asset_derivatives import derivative_artifact_key
-from lib.project.project_manager import ProjectManager
-from lib.script.reference_video.request_projection import (
+from lib.project.legacy_reference_assets import (
     FilesystemReferenceAssets,
     hydrate_reference_assets,
     resolve_reference_assets,
     unit_reference_declarations,
 )
+from lib.project.project_manager import ProjectManager
 from lib.speech.speech_artifact_provenance import build_video_duration_basis, build_video_speech_basis
 from lib.speech.speech_composition import admit_script_unit
 from server.services.currency.asset_regeneration_impact import AssetRegenerationImpact, asset_regeneration_impact

@@ -18,6 +18,7 @@ from lib.artifacts.artifact_manifest import (
     ArtifactBasis,
     ArtifactBasisDescriptor,
     ArtifactKey,
+    ArtifactManifest,
     ArtifactManifestEntry,
     ArtifactStatus,
     ProjectArtifactManifestAdapter,
@@ -36,8 +37,6 @@ from lib.project.project_manager import ProjectManager
 from lib.project.project_migrations.runner import migrate_project_dir
 from lib.project.project_migrations.v7_to_v8_artifact_manifest import migrate_v7_to_v8
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script import script_review
-from lib.script.grid.models import GridGeneration
 from lib.speech.narration_delivery import TtsSynthesisSettings, build_narration_audio_basis_from_canonical_text
 from server.services.project import project_archive as project_archive_module
 from server.services.project.project_archive import (
@@ -46,6 +45,7 @@ from server.services.project.project_archive import (
     ProjectArchiveValidationError,
 )
 from tests.factories import wav_bytes
+from tests.legacy_project_shapes import make_legacy_grid_record, seed_legacy_project_metadata
 
 
 class _RetireRecorder:
@@ -130,7 +130,7 @@ def _create_project(
     video_uri: str | None = None,
 ) -> Path:
     pm.create_project(name)
-    pm.create_project_metadata(name, title, style, "narration")
+    seed_legacy_project_metadata(pm, name, title, style, "narration")
 
     project_dir = pm.get_project_path(name)
     project = pm.load_project(name)
@@ -708,7 +708,10 @@ class TestProjectArchiveService:
         before = ProjectArtifactManifestAdapter(project_dir).get_entry(key)
         assert before is not None
         # 正式脚本不以脚本规划为依据：删掉脚本规划只撤它自己的登记，剧本登记与时效都不变。
-        assert script_review.delete_script_plan_file(project_dir, 1, script_plan_path)
+        script_plan_path.unlink()
+        ArtifactManifest(ProjectArtifactManifestAdapter(project_dir)).forget_entry_transactionally(
+            ArtifactKey.episode_script_plan(1)
+        )
         assert ProjectArtifactManifestAdapter(project_dir).get_entry(ArtifactKey.episode_script_plan(1)) is None
         assert ProjectArtifactManifestAdapter(project_dir).get_entry(key) == before
         assert (
@@ -750,7 +753,7 @@ class TestProjectArchiveService:
         project["schema_version"] = 7
         project["grid_storyboard"] = True
         _write_json(project_dir / "project.json", project)
-        grid = GridGeneration.create(
+        grid = make_legacy_grid_record(
             episode=1,
             script_file="episode_1.json",
             scene_ids=["E1S01"],

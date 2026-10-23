@@ -11,12 +11,13 @@ from lib.project.project_manager import ProjectManager
 from lib.project.task_project_claim import claim_task_project, ensure_task_project_claim
 from server.services.project.project_archive import ProjectArchiveService
 from tests.integration.server.routers.projects_router_support import build_projects_client, seed_project_records
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _create_demo_with_archive(manager: ProjectManager) -> bytes:
     """建好项目 demo，返回它的导出包，并给现有项目留下导出包里没有的项目记忆。"""
     manager.create_project("demo")
-    manager.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(manager, "demo", "Demo", "Anime", "narration")
     archive_path, _ = ProjectArchiveService(manager).export_project("demo")
     memory = manager.get_project_path("demo") / ".arcreel" / "memory" / "MEMORY.md"
     memory.parent.mkdir(parents=True)

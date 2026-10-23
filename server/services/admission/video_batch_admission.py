@@ -13,10 +13,10 @@ so the two cannot reach different conclusions about the same project.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from lib.artifacts.artifact_activation import (
     ArtifactCurrencyResolver,
@@ -39,18 +39,14 @@ from lib.generation.generation_result import (
     GenerationCandidate,
     GenerationProblem,
     GenerationProblemCode,
-    GenerationSelection,
     GenerationSelectionMode,
     GenerationTargetState,
     artifact_state_problem,
     observe_artifact_status,
-    select_generation_targets,
 )
 from lib.generation.video_request_facts import (
     CONFIGURED_VIDEO_IDENTITY,
-    VideoRequestCostFacts,
     VideoRequestFacts,
-    VideoRequestFactsError,
     VideoRequestFactsFailure,
     evaluate_video_request_facts,
 )
@@ -61,19 +57,11 @@ from lib.prompts.prompt_utils import (
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.grid.keyframe_parser import keyframe_reference_problems
-from lib.script.reference_video.request_projection import (
-    ProjectionProblem,
-    ReferenceRequestOptions,
-    ReferenceUnitRequestProjection,
-    configured_reference_request_facts,
-    project_reference_unit_request,
-)
-from lib.script.reference_video.voice_settings import VoiceRenderSettings
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import StoryboardImageUnavailable, StoryboardVideoSlots
 from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
 from lib.speech.speech_composition import SpeechAdmission, SpeechAdmissionError, require_script_unit_admitted
-from server.services.admission.cost_estimation import quote_video_request
+from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import reference_admission_problems
 from server.services.tasks.video_caps import (
     AudioSwitchConflict,
@@ -152,92 +140,6 @@ def diagnostic_unit_id(base: str, taken: Collection[str]) -> str:
     while unit_id in taken:
         unit_id += "*"
     return unit_id
-
-
-def screen_script_entries(
-    entries: object,
-    *,
-    requested_ids: Collection[str] | None,
-) -> tuple[list[dict[str, Any]], list[UnitAdmissionTicket]]:
-    """把 video_units 分成「能当目标的」与「成不了目标的」两份，后者按位置记名。
-
-    非对象条目、unit_id 不是字符串、unit_id 为空、以及同一个 unit_id 出现多次，都会让后面
-    按 id 索引的每一步失手：条目被静默滤掉时同批健康的 unit 独自入队计费，撞上集合查询时又
-    把逐目标的拒绝契约打成一句通用报错。数字、布尔与对象 id 还能一路混过 ``str()`` 进队列，
-    执行期按原值比对时找不到 unit 才失败，那时兄弟条目可能已经在跑、已经计费。
-
-    缺失即生成把整个剧本当作目标集合，剧本里任何一处脏条目都参与判定；点名生成的目标集合由
-    调用方给定，只有点到的 id 上的脏（同一个 id 的副本）才参与，否则别处的脏数据会否决一次
-    精确点名的重做。
-
-    容器本身不是数组时同样在这里记名：遍历它会把请求打成 500，而假值（如 ``false``）会被
-    当作空批次报成通过。记名用带方括号的位置写法，与合法 id 不共用命名空间。
-    """
-
-    if not isinstance(entries, list):
-        return [], [
-            refused_ticket(
-                "video_units",
-                code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                detail=f"video_units 必须是数组，当前为 {type(entries).__name__}",
-                action=GenerationAction.FIX_INPUT,
-            )
-        ]
-
-    clean: list[dict[str, Any]] = []
-    tickets: list[UnitAdmissionTicket] = []
-    seen: set[str] = set()
-    taken = {
-        entry["unit_id"].strip()
-        for entry in entries
-        if isinstance(entry, dict) and isinstance(entry.get("unit_id"), str)
-    }
-    named = set(requested_ids) if requested_ids is not None else None
-    if named is not None:
-        # 点名的 ID 也占着记名空间：调用方点了一个剧本里没有的名字时，上游还会为它记一条
-        # 「不存在」，诊断名与它同名同样会把两条并成一条。
-        taken |= named
-    for index, entry in enumerate(entries):
-        detail: str | None = None
-        unit_id = ""
-        if not isinstance(entry, dict):
-            detail = f"该条目不是对象，当前为 {type(entry).__name__}"
-        else:
-            raw_id = entry.get("unit_id")
-            if raw_id is not None and not isinstance(raw_id, str):
-                detail = f"该 unit 的 ID 不是字符串，当前为 {type(raw_id).__name__}"
-            else:
-                unit_id = (raw_id or "").strip()
-                if not unit_id:
-                    detail = "该 unit 没有可用的 unit_id"
-        if detail is not None:
-            if named is None:
-                tickets.append(
-                    refused_ticket(
-                        diagnostic_unit_id(f"video_units[{index}]", taken),
-                        code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                        detail=detail,
-                        action=GenerationAction.FIX_INPUT,
-                    )
-                )
-            continue
-        entry_dict = cast("dict[str, Any]", entry)
-        if named is not None and unit_id not in named:
-            clean.append(entry_dict)
-            continue
-        if unit_id in seen:
-            tickets.append(
-                refused_ticket(
-                    diagnostic_unit_id(f"{unit_id}#{index}", taken),
-                    code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                    detail=f"unit {unit_id} 在剧本中重复出现",
-                    action=GenerationAction.FIX_INPUT,
-                )
-            )
-            continue
-        seen.add(unit_id)
-        clean.append(entry_dict)
-    return clean, tickets
 
 
 def storyboard_item_aliases(item: dict[str, Any], id_field: str) -> set[str]:
@@ -374,66 +276,6 @@ def screen_storyboard_items(
     return clean, tickets
 
 
-def resolve_reference_batch_targets(
-    *,
-    units: Sequence[Any],
-    requested_ids: Sequence[str] | None,
-    project: dict[str, Any],
-    project_path: Path,
-    episode: int,
-) -> tuple[list[dict[str, Any]], GenerationSelection, dict[str, GenerationTargetState]]:
-    """Resolve one request's stable target set before anything is evaluated.
-
-    ``requested_ids`` of ``None`` means missing-only: a unit whose paid video is
-    still usable — current *or* stale — stays out of the request, because a stale
-    artifact is the user's to replace by naming it, not the batch's to silently
-    re-bill. Named ids are taken as given and always regenerate.
-    """
-
-    resolver = active_artifact_currency_resolver(project_path, project)
-    states = video_target_states(units, "unit_id", episode=episode, resolver=resolver)
-    selection = select_generation_targets(
-        candidates=[state.candidate for state in states.values()],
-        requested_ids=requested_ids,
-        resolver=resolver,
-    )
-    target_ids = set(selection.target_ids)
-    targets = [unit for unit in units if isinstance(unit, dict) and str(unit.get("unit_id") or "") in target_ids]
-    return targets, selection, states
-
-
-def reference_unit_task_spec(unit: object, script_file: str) -> TaskSpec:
-    """单 unit 的 TaskSpec 构造，供整批准入判定、批量入队与时长预检共用同一份结构校验
-    （见 ADR-0001）——``TaskSpec.from_request`` 是「是否可入队」的唯一真相源，几处判断
-    不能各自维护一份、由此产生分歧（如预检放行了入队会拒绝的空提示词 unit）。
-    """
-
-    # 用 .get 归一化：缺失 unit_id 的坏数据（Agent 可裸写 script JSON）会被 from_request
-    # 当作空 resource_id 拒绝，而不是在此抛 KeyError 中断整批。
-    if not isinstance(unit, dict):
-        raise ValueError("unit 必须是对象")
-    unit_id = str(unit.get("unit_id") or "")
-    if unit.get("needs_replan") is True:
-        require_script_unit_admitted("video_units", unit)
-    text = unit.get("text")
-    if not isinstance(text, str):
-        # 容器校验落在入队校验这一处：脏值（导入 / Agent 裸写 script 产生的 dict、数字）
-        # 不拦就会在下游拼接提示词时抛出 TypeError，把整批打成 500，而不是让这个 unit
-        # 带着自己的问题码进入准入结论。
-        raise ValueError(f"text 必须是字符串，当前为 {type(text).__name__}")
-    if not text.strip():
-        raise ValueError("正文为空")
-    spec = TaskSpec.from_request(
-        task_type="reference_video",
-        media_type="video",
-        resource_id=unit_id,
-        prompt=text,
-        script_file=script_file,
-    )
-    require_script_unit_admitted("video_units", unit)
-    return spec
-
-
 _SPEECH_ACTIONS: dict[str, GenerationAction] = {
     "replan_unit": GenerationAction.REPLAN_UNIT,
     "assign_speaker": GenerationAction.FIX_INPUT,
@@ -469,17 +311,11 @@ def generation_action_for(raw: object) -> GenerationAction:
 def _facts_failure_problem(failure: VideoRequestFactsFailure, unit_id: str) -> GenerationProblem:
     """视频请求事实失败折成该目标的阻断问题：问题码、参数与修复指引与投影侧同一出口。"""
 
-    return _generation_problem(ProjectionProblem.from_request_facts_failure(failure), unit_id=unit_id)
-
-
-def _generation_problem(problem: ProjectionProblem, *, unit_id: str) -> GenerationProblem:
-    payload = problem.to_payload(unit_id=unit_id)
-    params = payload.get("params")
     return GenerationProblem(
-        code=problem.code,
-        detail=str(payload.get("reason") or problem.code),
-        action=generation_action_for(payload.get("action")),
-        params=params if isinstance(params, dict) else {},
+        code=failure.code,
+        detail=failure.summary(),
+        action=generation_action_for(failure.action),
+        params={"unit_id": unit_id, **failure.parameters()},
     )
 
 
@@ -498,10 +334,6 @@ def speech_admission_problems(admission: SpeechAdmission) -> tuple[GenerationPro
     )
 
 
-def _speech_problem(exc: SpeechAdmissionError) -> GenerationProblem:
-    return speech_admission_problems(exc.admission)[0]
-
-
 def active_task_problem(task: Mapping[str, Any]) -> GenerationProblem:
     return GenerationProblem(
         code=GenerationProblemCode.ACTIVE_TASK_CONFLICT,
@@ -509,13 +341,6 @@ def active_task_problem(task: Mapping[str, Any]) -> GenerationProblem:
         action=GenerationAction.WAIT_FOR_TASK,
         params={"task_id": str(task.get("id") or task.get("task_id") or ""), "status": str(task.get("status") or "")},
     )
-
-
-async def _quote_for_display(cost: VideoRequestCostFacts | None) -> dict[str, object] | None:
-    if cost is None:
-        return None
-    quote = await quote_video_request(cost, async_session_factory)
-    return quote.to_payload() if quote is not None else None
 
 
 async def _active_conflicts(
@@ -540,168 +365,6 @@ async def _active_conflicts(
         queue=queue,
     )
     return {str(task["resource_id"]): task for task in active if task.get("resource_id")}
-
-
-def request_options_for_unit(
-    options: ReferenceRequestOptions,
-    unit_id: str,
-    confirmed: Mapping[str, int] | None,
-) -> ReferenceRequestOptions:
-    """Apply this request's per-unit tier consent, if the entry collected any.
-
-    Admission and the task spec that follows it must read the same options, so
-    both sides call this rather than re-deriving the consent from the request
-    body — a second derivation is where the two can silently diverge.
-    """
-
-    if not confirmed or unit_id not in confirmed:
-        return options
-    return replace(options, confirmed_request_duration_seconds=confirmed[unit_id])
-
-
-async def admit_reference_video_batch(
-    *,
-    project_name: str,
-    project: dict[str, Any],
-    project_path: Path,
-    script: dict[str, Any],
-    script_file: str,
-    units: Sequence[dict[str, Any]],
-    request_options: ReferenceRequestOptions,
-    operation: str,
-    selection: GenerationSelectionMode,
-    confirmed_request_durations: Mapping[str, int] | None = None,
-    spec_check: Callable[[dict[str, Any]], object] | None = None,
-    extra_tickets: Sequence[UnitAdmissionTicket] = (),
-    user_id: str = DEFAULT_USER_ID,
-    queue: GenerationQueue | None = None,
-    config_resolver: ConfigResolver | None = None,
-) -> BatchAdmission:
-    """Evaluate every reference unit of one request against the current state.
-
-    ``spec_check`` is the caller's own "can this unit be requested at all" guard
-    (structural enqueue validation and speech admission). Sharing it keeps the
-    admission and the later spec construction on one verdict instead of two.
-
-    ``extra_tickets`` are targets the caller already refused before reaching this
-    seam (an unreadable artifact state, an id that is not in the script). They
-    belong to the same request, so they take part in the same all-or-nothing fold
-    rather than being reported next to a batch that went ahead without them.
-    """
-
-    request_facts_lookup = configured_reference_request_facts(
-        project, config_resolver or ConfigResolver(async_session_factory)
-    )
-    unit_ids = [str(unit.get("unit_id") or "") for unit in units if str(unit.get("unit_id") or "")]
-    conflicts = await _active_conflicts(
-        project_name=project_name,
-        task_type="reference_video",
-        script_file=script_file,
-        unit_ids=unit_ids,
-        user_id=user_id,
-        queue=queue,
-    )
-
-    tickets: list[UnitAdmissionTicket] = list(extra_tickets)
-    seen_ids: set[str] = set()
-    for index, unit in enumerate(units):
-        unit_id = str(unit.get("unit_id") or "")
-        # 脏数据（缺 unit_id、同一个 id 出现多次）不能被悄悄丢出目标集合：剩下的健康 unit
-        # 会独自入队并计费，正是这道门要防的部分成批。缺 id 的按诊断 id 记名报告，重复的
-        # 拒收副本，两者都让整批停在这里由用户去修剧本。
-        if not unit_id:
-            tickets.append(
-                refused_ticket(
-                    f"video_units[{index}]",
-                    code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                    detail="该 unit 没有可用的 unit_id",
-                    action=GenerationAction.FIX_INPUT,
-                )
-            )
-            continue
-        if unit_id in seen_ids:
-            tickets.append(
-                refused_ticket(
-                    f"{unit_id}#{index}",
-                    code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                    detail=f"unit_id {unit_id} 在剧本中重复出现",
-                    action=GenerationAction.FIX_INPUT,
-                )
-            )
-            continue
-        seen_ids.add(unit_id)
-        problems: list[GenerationProblem] = []
-        if unit_id in conflicts:
-            problems.append(active_task_problem(conflicts[unit_id]))
-        if spec_check is not None:
-            try:
-                spec_check(unit)
-            except SpeechAdmissionError as exc:
-                problems.append(_speech_problem(exc))
-            except ValueError as exc:
-                problems.append(
-                    GenerationProblem(
-                        code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                        detail=f"入队校验未通过：{exc}",
-                        action=GenerationAction.FIX_INPUT,
-                    )
-                )
-        if problems:
-            tickets.append(UnitAdmissionTicket(unit_id=unit_id, problems=tuple(problems)))
-            continue
-
-        unit_options = request_options_for_unit(request_options, unit_id, confirmed_request_durations)
-        try:
-            projection = await project_reference_unit_request(
-                request_facts_lookup=request_facts_lookup,
-                project=project,
-                script=script,
-                unit=unit,
-                project_path=project_path,
-                options=unit_options,
-                resolver=config_resolver,
-            )
-        except VideoRequestFactsError as exc:
-            tickets.append(
-                UnitAdmissionTicket(unit_id=unit_id, problems=(_facts_failure_problem(exc.failure, unit_id),))
-            )
-            continue
-        except ValueError as exc:
-            # 投影读的是剧本上的值（如 duration_seconds）：脏值在这里抛出去会让整个请求塌成
-            # 一句通用错误，其余 unit 的结论无从得知。按逐 unit 的可入队性问题如实报告。
-            tickets.append(
-                refused_ticket(
-                    unit_id,
-                    code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                    detail=f"请求投影失败：{exc}",
-                    action=GenerationAction.FIX_INPUT,
-                )
-            )
-            continue
-        tickets.append(await _reference_ticket(projection))
-
-    return BatchAdmission(
-        operation=operation,
-        selection=selection,
-        tickets=tuple(tickets),
-    )
-
-
-async def _reference_ticket(projection: ReferenceUnitRequestProjection) -> UnitAdmissionTicket:
-    unit_id = projection.unit_id
-    payload = projection.to_advisory_payload()
-    request_duration = projection.request_duration.seconds if projection.request_duration is not None else None
-    cost_payload = await _quote_for_display(projection.cost)
-    problems = [_generation_problem(problem, unit_id=unit_id) for problem in projection.blocking_problems]
-    if cost_payload is not None:
-        payload["request_cost"] = cost_payload
-    return UnitAdmissionTicket(
-        unit_id=unit_id,
-        problems=tuple(problems),
-        request_duration_seconds=request_duration,
-        request_cost=cost_payload,
-        projection=payload,
-    )
 
 
 async def admit_storyboard_video_batch(
@@ -1178,15 +841,11 @@ async def admit_storyboard_video_request(
 
 __all__ = [
     "active_task_problem",
-    "admit_reference_video_batch",
     "admit_storyboard_video_batch",
     "admit_storyboard_video_request",
     "artifact_state_tickets",
     "audio_switch_conflict",
     "build_storyboard_video_specs",
-    "reference_unit_task_spec",
-    "request_options_for_unit",
-    "resolve_reference_batch_targets",
     "resolve_voice_context",
     "screen_storyboard_items",
     "speech_admission_problems",

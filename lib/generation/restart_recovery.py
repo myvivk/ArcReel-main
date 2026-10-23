@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 from lib.artifacts.rendered_artifact import cleanup_interrupted_render_staging
 from lib.backends.providers import PROVIDER_GROK, PROVIDER_VIDU
 from lib.config.service import read_video_poll_timeout_seconds
+from lib.generation.execution_checkpoint import VideoResumeState, classify_video_resume_state
 from lib.generation.render_lane import RENDER_MEDIA_TYPE
 from lib.generation.task_failure import encode_failure
 from lib.generation.video_resume import VideoResumeRunner, cleanup_video_staging
 from lib.project.project_manager import get_project_manager
-from lib.script.reference_video.execution_checkpoint import VideoResumeState, classify_video_resume_state
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

@@ -1,11 +1,12 @@
 ---
 name: generate-storyboard
-description: 为分镜生成分镜图。当用户说"生成分镜"、"预览分镜画面"、想重新生成某些分镜图、或剧本中有分镜缺少分镜图时使用。自动保持角色和画面连续性。
+description: 用户点名生成或重做工厂分镜的独立视觉图时使用。工厂制作的参考素材 K 帧仍在分镜详情中逐镜生成和确认。
 ---
 
 # 生成分镜图
 
-通过生成队列创建分镜图，画面比例根据 content_mode 自动设置。
+通过生成队列创建工厂分镜图，画面比例来自项目设置。只接受来源一致的工厂 AI 分镜。
+独立视觉图不替代 K 帧参考素材的生成、确认和后续视频提示词。
 
 > 生成模式规格详见 `.claude/references/generation-modes.md`。
 
@@ -21,14 +22,14 @@ description: 为分镜生成分镜图。当用户说"生成分镜"、"预览分�
 | 重新生成指定 ID | `mcp__arcreel__generate_storyboards({"script": "episode_1.json", "segment_ids": ["E1S05"]})` |
 | 重新生成多个 ID | `mcp__arcreel__generate_storyboards({"script": "episode_1.json", "segment_ids": ["E1S01", "E1S02"]})` |
 
-> **选择规则**：`segment_ids` 兼容 narration 的 segment_id 与 drama 的 scene_id；未传则提交所有缺失项。
+> **选择规则**：`segment_ids` 传工厂 scene_id；未传则提交所有缺失项。
 >
 > **依赖**：generation worker 必须在线（图像/视频两条独立通道），worker 负责实际生成与速率控制。
 
 ## 工作流程
 
 1. **加载项目和剧本** — 确认所有角色都有 `character_sheet` 图像
-2. **生成分镜图** — MCP 工具自动检测 content_mode，按相邻关系串联依赖任务
+2. **生成分镜图** — MCP 工具校验工厂来源和资产引用，按相邻关系串联依赖任务
 3. **审核检查点** — 展示每张分镜图，用户可批准、要求重新生成，或要求编辑
 4. **更新剧本** — 更新 `storyboard_image` 路径和场景状态
 
@@ -47,17 +48,15 @@ description: 为分镜生成分镜图。当用户说"生成分镜"、"预览分�
 MCP 工具自动处理以下参考图传入，无需手动指定：
 - **character_sheet**：场景中出场角色的资产图，保持外貌一致
 - **scene_sheet / prop_sheet**：场景中出现的场景 / 道具资产图
-- **商品参考（广告/短片项目）**：分镜 `products_in_shot` 非空时自动注入商品参考并排在所有参考之前（有 product sheet 时 sheet + 原图，无 sheet 时原图直注）；声明行把这些序位标为商品参考图并要求画面中的商品与之完全一致——image_prompt 无需复述商品外观
 - **上一张分镜图**：相邻片段默认引用，排在参考图列表最后，只参考构图与色调
 - 当片段标记 `segment_break=true` 时，跳过上一张分镜图参考
 
-参考图对模型只是一个按顺序排列的图数组，prompt 用「图N」指认它们（N = 参考图在数组中的位置，商品在前，
-然后是角色 / 场景 / 道具资产图，上一张分镜图最后）：
+参考图对模型是按顺序排列的图数组，prompt 用「图N」指认角色 / 场景 / 道具资产图，
+上一张分镜图最后：
 - 生成端在 `Style` 与 `Scene` 之间插一行 `Reference_Images` 类型声明，例如
-  `图1、图2为角色参考图；图3为场景参考图；图4为上一分镜图，只参考构图与色调。`；商品分镜为
-  `图1为商品参考图，画面中的商品须与之完全一致；……`
+  `图1、图2为角色参考图；图3为场景参考图；图4为上一分镜图，只参考构图与色调。`
 - `image_prompt.scene` 里用 `@[登记名]` 指认资产（衍生形态写 `@[角色/衍生]`），生成端按上述编号把它换成对应的「图N」；
-  该名字须同时写进条目的引用字段（`characters_in_*` / `scenes` / `props` / `products_in_shot`），参考图只由引用字段决定，`@[]` 不会额外带图
+  该名字须同时写进条目的引用字段（`characters_in_scene` / `scenes` / `props`），参考图只由引用字段决定，`@[]` 不会额外带图
 - 未登记或不在引用字段里的 `@[名称]` 按名字原样发送；`generate_episode_script` / `patch_episode_script` 的回执 `warnings` 会列出这类引用，按提示补登记或补引用字段后重新生成
 
 ## Prompt 模板

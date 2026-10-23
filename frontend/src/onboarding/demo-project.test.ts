@@ -90,10 +90,10 @@ describe("demo project data", () => {
 
   it("references only assets that exist in the lorebook", () => {
     const data = buildDemoProjectData(t);
-    const segments = buildDemoScripts(t)["E1.json"].segments;
+    const segments = buildDemoScripts(t)["E1.json"].scenes;
 
     for (const segment of segments) {
-      for (const name of segment.characters_in_segment) {
+      for (const name of segment.characters_in_scene) {
         expect(Object.keys(data.characters)).toContain(name);
       }
       for (const name of segment.scenes ?? []) {
@@ -108,7 +108,7 @@ describe("demo project data", () => {
   it("counts shots and storyboards the way the episode meta claims", () => {
     const data = buildDemoProjectData(t);
     const episode = data.episodes.find((e) => e.episode === DEMO_SCRIPTED_EPISODE)!;
-    const segments = buildDemoScripts(t)["E1.json"].segments;
+    const segments = buildDemoScripts(t)["E1.json"].scenes;
     const withStoryboard = segments.filter(
       (s) => s.generated_assets?.storyboard_image,
     );
@@ -120,7 +120,7 @@ describe("demo project data", () => {
   });
 
   it("leaves video and narration unset — an SVG cannot stand in for them", () => {
-    const segments = buildDemoScripts(t)["E1.json"].segments;
+    const segments = buildDemoScripts(t)["E1.json"].scenes;
 
     for (const segment of segments) {
       expect(segment.generated_assets?.video_clip).toBeNull();
@@ -131,7 +131,7 @@ describe("demo project data", () => {
 
   it("draws every placeholder inline as an SVG data URI", () => {
     const data = buildDemoProjectData(t);
-    const segments = buildDemoScripts(t)["E1.json"].segments;
+    const segments = buildDemoScripts(t)["E1.json"].scenes;
 
     for (const character of Object.values(data.characters)) {
       if (character.character_sheet) expectInlinePlaceholder(character.character_sheet);

@@ -42,7 +42,7 @@ function workflowStatus(
     schema_version: 2,
     project_revision: "r",
     source_revision: null,
-    project: { content_mode: "narration", generation_mode: "storyboard", grid_storyboard: false },
+    project: { content_mode: "drama", generation_mode: "storyboard" },
     target: null,
     blockers: [],
     issues: [],
@@ -101,8 +101,8 @@ describe("ProjectStatusBar", () => {
   it("leaves an episode's own alternatives to its panel instead of handing them to the agent", async () => {
     setProject();
     vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(
-      workflowStatus(action("prepare_script_plan", { episode_id: 7 }), {
-        next_alternatives: [action("start_blank_script", { episode_id: 7 })],
+      workflowStatus(action("plan_short_drama_storyboards", { episode_id: 7 }), {
+        next_alternatives: [action("prepare_episode_assets", { episode_id: 7 })],
       }),
     );
     renderBar();
@@ -112,26 +112,6 @@ describe("ProjectStatusBar", () => {
 
     expect(screen.getByRole("button", { name: "去第 2 集" })).toBeInTheDocument();
     expect(screen.queryByText(/或者/)).not.toBeInTheDocument();
-  });
-
-  it("sends an ad project without a brief or products to fill them in", async () => {
-    setProject(
-      { ...SUMMARY, episodes_summary: { total: 1, scripted: 0, in_production: 0, completed: 0 } },
-      [{ episode: 1, title: "", status: "draft" }],
-      "ad",
-    );
-    vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(
-      workflowStatus(action("collect_project_input"), {
-        project: { content_mode: "ad", generation_mode: "storyboard", grid_storyboard: false },
-      }),
-    );
-    const location = renderBar("/characters");
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: /AI 生成脚本/ }));
-    expect(screen.getByText("先填写创作灵感或添加商品。")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "去填写" }));
-    expect(location.history?.at(-1)).toBe("/");
   });
 
   it("yields to the episode panel when the next step is the current episode", async () => {
@@ -150,9 +130,9 @@ describe("ProjectStatusBar", () => {
     vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(workflowStatus(action("none")));
     vi.spyOn(API, "getEpisodeNextSteps").mockResolvedValue({
       episodes: [
-        { episode: 4, plan_stale: false, next_action: action("none") },
-        { episode: 7, plan_stale: false, next_action: action("generate_videos", { episode_id: 7 }) },
-        { episode: 2, plan_stale: true, next_action: action("none") },
+        { episode: 4, next_action: action("none") },
+        { episode: 7, next_action: action("generate_videos", { episode_id: 7 }) },
+        { episode: 2, next_action: action("none") },
       ],
     });
     const location = renderBar();
@@ -164,49 +144,10 @@ describe("ProjectStatusBar", () => {
     expect(rows.map((row) => row.textContent)).toEqual([
       "第 1 集旧账已完成",
       "第 2 集雨夜下一步：生成缺失的视频",
-      "第 3 集第 3 集原文已重新规划",
+      "第 3 集第 3 集暂时无需操作",
     ]);
     await user.click(within(rows[1]).getByRole("button"));
     expect(location.history?.at(-1)).toBe("/episodes/7");
-  });
-
-  it("hands episode planning to the agent with the additional requirements", async () => {
-    setProject({ ...SUMMARY, episodes_summary: { total: 0, scripted: 0, in_production: 0, completed: 0 } }, []);
-    vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(
-      workflowStatus(action("plan_episodes"), {
-        next_alternatives: [action("create_episode")],
-      }),
-    );
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    renderBar();
-    const user = userEvent.setup();
-
-    expect(screen.getByText("尚未建集")).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: /AI 分集规划/ }));
-    await user.type(screen.getByRole("textbox"), "每集 90 秒");
-    await user.click(screen.getByRole("button", { name: "交给 Agent" }));
-
-    expect(useAssistantStore.getState().input).toBe(
-      "请为整本源文规划分集，一直规划到源文结尾。\n附加指令：每集 90 秒",
-    );
-    expect(useAppStore.getState().assistantPanelOpen).toBe(true);
-    // 只预填不发送
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("opens the create-episode dialog in the episodes view as the alternative to planning", async () => {
-    setProject({ ...SUMMARY, episodes_summary: { total: 0, scripted: 0, in_production: 0, completed: 0 } }, []);
-    vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(
-      workflowStatus(action("plan_episodes"), {
-        next_alternatives: [action("create_episode")],
-      }),
-    );
-    const location = renderBar();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: /AI 分集规划/ }));
-    await user.click(screen.getByRole("button", { name: "新建一集" }));
-    expect(location.history?.at(-1)).toBe("/episodes?create=1");
   });
 
   it("states all complete without an action once every episode is done and no source remains", async () => {
@@ -219,30 +160,6 @@ describe("ProjectStatusBar", () => {
 
     expect(await screen.findByText("全部完成")).toBeInTheDocument();
     expect(screen.queryByText("下一步")).not.toBeInTheDocument();
-  });
-
-  it("continues episode planning instead of all complete while source text remains", async () => {
-    const done: Partial<EpisodeMeta>[] = [{ episode: 4, title: "旧账", status: "completed" }];
-    setProject({ ...SUMMARY, episodes_summary: { total: 1, scripted: 1, in_production: 0, completed: 1 } }, done);
-    vi.spyOn(API, "getWorkflowStatus").mockResolvedValue(
-      workflowStatus(action("plan_episodes"), { content: makeContent({ episode_count: 1, project_complete: false }) }),
-    );
-    renderBar();
-
-    expect(await screen.findByRole("button", { name: /继续 AI 分集规划/ })).toBeInTheDocument();
-    expect(screen.queryByText("全部完成")).not.toBeInTheDocument();
-  });
-
-  it("shows short-film progress without an episode list for ad projects", () => {
-    setProject(
-      { ...SUMMARY, episodes_summary: { total: 1, scripted: 1, in_production: 0, completed: 0 } },
-      [{ episode: 1, title: "", status: "scripted" }],
-      "ad",
-    );
-    vi.spyOn(API, "getWorkflowStatus").mockReturnValue(new Promise(() => {}));
-    renderBar();
-
-    expect(screen.getByRole("button", { name: /短片未完成/ })).toBeDisabled();
   });
 
   it("retries a failed migration in place, reporting the reason until it succeeds", async () => {

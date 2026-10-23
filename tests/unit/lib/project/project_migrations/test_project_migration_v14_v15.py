@@ -13,7 +13,7 @@ from lib.artifacts.artifact_provenance import build_episode_script_basis
 from lib.project import project_schema
 from lib.project.project_migration_failure import ProjectMigrationError
 from lib.project.project_migrations.v14_to_v15_formal_script_truth import TARGET_SCHEMA_VERSION, migrate_v14_to_v15
-from lib.script.script_review import content_fingerprint
+from lib.script.script_revision import content_fingerprint
 from tests.legacy_project_shapes import ScriptPlanVariantName, write_legacy_script_plan_project
 
 _VARIANTS: tuple[ScriptPlanVariantName, ...] = ("drama", "narration", "reference_video")

@@ -16,8 +16,7 @@ from lib.artifacts.artifact_manifest import (
     compose_video_artifact_basis,
 )
 from lib.artifacts.video_artifact_facts import VideoArtifactCurrencyFacts
-from lib.infra.path_safety import PathTraversalError
-from lib.script.reference_video.execution_checkpoint import (
+from lib.generation.execution_checkpoint import (
     ProviderMediaInput,
     ReferenceExecutionIdentityError,
     ReferenceSubmissionCheckpoint,
@@ -29,6 +28,7 @@ from lib.script.reference_video.execution_checkpoint import (
     load_task_reference_checkpoint,
     stage_provider_media,
 )
+from lib.infra.path_safety import PathTraversalError
 from lib.speech.speech_artifact_provenance import build_video_duration_basis
 
 

@@ -20,7 +20,8 @@ from lib.project.project_migration_failure import load_migration_failure
 from lib.project.project_migrations.runner import migrate_project_dir, migrate_project_with_verdict
 from lib.project.project_migrations.v9_to_v10_script_plan_naming import migrate_v9_to_v10
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script import script_review
+from lib.script import script_revision
+from tests.legacy_project_shapes import legacy_plan_confirmation_matches
 
 #: 三种脚本规划变体：content_mode / generation_mode / v9 草稿文件名 / 迁移后文件名。
 _VARIANTS = [
@@ -103,7 +104,7 @@ def test_every_script_plan_variant_keeps_its_confirmation_across_the_rename(
     project_dir = _project(tmp_path, content_mode=content_mode, generation_mode=generation_mode)
     draft_path = project_dir / "drafts" / "episode_1" / old_name
     _write_json(draft_path, draft)
-    fingerprint = script_review.content_fingerprint(draft_path)
+    fingerprint = script_revision.content_fingerprint(draft_path)
     project = _read_json(project_dir / "project.json")
     project["episodes"][0]["step1_review"] = {"fingerprint": fingerprint, "confirmed_at": "2026-01-01T00:00:00Z"}
     _write_json(project_dir / "project.json", project)
@@ -121,7 +122,7 @@ def test_every_script_plan_variant_keeps_its_confirmation_across_the_rename(
     # 链尾（v15）的剧本 metadata 不带整集指纹。
     assert _read_json(project_dir / "scripts" / "episode_1.json")["metadata"] == {}
     # 确认指纹是内容指纹，改名不动内容：迁移后这一集仍是已确认、不重新阻塞提示词编写。
-    assert script_review.review_status(project_dir, migrated, 1) == "confirmed"
+    assert legacy_plan_confirmation_matches(project_dir, migrated, 1)
 
 
 def test_invalid_drafts_and_legacy_markdown_aliases_are_renamed_too(tmp_path: Path) -> None:

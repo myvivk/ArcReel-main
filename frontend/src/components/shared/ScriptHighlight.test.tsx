@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ScriptHighlight } from "./ScriptHighlight";
-import type { MentionLookup } from "@/hooks/useUnitPromptHighlight";
+import type { MentionLookup } from "@/utils/script-highlight";
 
 const LOOKUP: MentionLookup = { 张三: "character", 酒馆: "scene", 长剑: "prop" };
 

@@ -2,7 +2,7 @@
 // 在临时数据目录里启动后端、创建演示项目，按 RECORDINGS 逐个请求并写入 e2e/fixtures/recorded/。
 // 时间戳、临时数据目录、仓库检出路径、令牌与项目修订号改写成固定值，重录后只有接口形状的变化会出现在 diff 里。
 // 后端改动接口形状的 PR 同时重录。
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -51,9 +51,8 @@ const RECORDINGS: Recording[] = [
   { file: "onboarding-status", method: "GET", path: "/api/v1/onboarding/status" },
   { file: "projects", method: "GET", path: "/api/v1/projects" },
   { file: "project-demo", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}` },
-  { file: "project-demo-story", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/story-planning` },
-  // 录制项目为 narration，工厂源稿接口按实际模式拒绝；drama 场景按需覆写。
-  { file: "project-demo-factory-source", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/episodes/1/short-drama-source`, status: 422 },
+  { file: "project-demo-artifacts", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/short-drama/artifacts` },
+  { file: "project-demo-factory-source", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/episodes/1/short-drama-source` },
   // 工作区与集页的启动请求（项目事件流是 SSE，不录制，场景里按需替换）。
   { file: "tasks", method: "GET", path: "/api/v1/tasks?page_size=200" },
   { file: "project-demo-tasks", method: "GET", path: `/api/v1/tasks?page_size=200&project_name=${DEMO_PROJECT}` },
@@ -94,7 +93,7 @@ const RECORDINGS: Recording[] = [
   // 全局设置：关于（版本信息访问外网，由场景替换）、提示词模版列表与详情。
   { file: "official-service", method: "GET", path: "/api/v1/official-service" },
   { file: "prompt-templates", method: "GET", path: "/api/v1/prompt-templates" },
-  { file: "prompt-template-episode-plan", method: "GET", path: "/api/v1/prompt-templates/text/episode_plan" },
+  { file: "prompt-template-drama-prompt-authoring", method: "GET", path: "/api/v1/prompt-templates/text/drama_prompt_authoring" },
   {
     file: "prompt-partial-additional-instructions",
     method: "GET",
@@ -121,11 +120,8 @@ const RECORDINGS: Recording[] = [
   // 项目设置：Agent 配置状态与项目记忆（演示项目没有定制配置与记忆文件，多条目由场景替换）。
   { file: "project-demo-agent-profile", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/agent-profile` },
   { file: "project-demo-agent-memory", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/agent-memory` },
-  // 项目「分集」视图：演示项目没有整本源文，只有一集无原文的集；整本源文、多集与未登记文件由场景替换。
+  // 工厂集目录：多集压力数据由场景替换。
   { file: "project-demo-episodes-view", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/episodes-view` },
-  // 集页「多宫格分镜图」：宫格档位上限与宫格记录（演示项目没有宫格，多组联合图由场景替换）。
-  { file: "project-demo-grid-capability", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/grid-capability` },
-  { file: "project-demo-grids", method: "GET", path: `/api/v1/projects/${DEMO_PROJECT}/grids` },
   ...["E1S01", "E1S02", "E1S03", "E1S05"].map((id): Recording => ({
     file: `project-demo-shot-grid-${id}`, method: "GET",
     path: `/api/v1/projects/${DEMO_PROJECT}/shot-grids?script_file=episode_1.json&shot_id=${id}`,
@@ -276,10 +272,28 @@ async function main() {
     const token = (login.body as { access_token: string }).access_token;
 
     await postJson(baseUrl, token, "/api/v1/onboarding/seen", {});
-    await postJson(baseUrl, token, "/api/v1/projects", { name: DEMO_PROJECT, title: "演示项目", generation_mode: "storyboard" });
-    // 一集还没有分镜的空正式脚本，集页显示「新增第一个分镜」。
-    await postJson(baseUrl, token, `/api/v1/projects/${DEMO_PROJECT}/episodes`, { title: "第一集" });
-    await postJson(baseUrl, token, `/api/v1/projects/${DEMO_PROJECT}/episodes/1/blank-script`, {});
+    await postJson(baseUrl, token, "/api/v1/projects", { name: DEMO_PROJECT, title: "演示项目", content_mode: "drama", generation_mode: "storyboard" });
+    const packageResult = spawnSync("uv", ["run", "--frozen", "python", "-c",
+      "import json; from tests.short_drama_support import factory_package, artifact_request; print(json.dumps(artifact_request(factory_package())))",
+    ], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    if (packageResult.status !== 0) throw new Error(packageResult.stderr);
+    await postJson(baseUrl, token, `/api/v1/projects/${DEMO_PROJECT}/short-drama/import-artifacts`, JSON.parse(packageResult.stdout));
+    // 视觉制作样本通过正式存储写入；接口响应仍由真实后端录制。
+    const seedResult = spawnSync("uv", ["run", "--frozen", "python", "-c", `
+from lib.project.project_manager import get_project_manager
+from lib.script.short_drama_source import load_short_drama_source
+pm = get_project_manager()
+source = load_short_drama_source(pm, "demo", 1)
+pm.save_script("demo", {
+    "episode": 1, "title": "第一集", "content_mode": "drama",
+    "short_drama_meta": {"source_revision": source.revision},
+    "scenes": [{"scene_id": f"E1S{i:02d}", "duration_seconds": 8,
+                "segment_break": i == 1, "characters_in_scene": [], "scenes": [],
+                "props": [], "utterances": [], "image_prompt": None, "video_prompt": None}
+               for i in range(1, 4)]
+}, "episode_1.json")
+`], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    if (seedResult.status !== 0) throw new Error(seedResult.stderr);
     // 资产库按更新时间倒序列出，逐个创建使顺序与 LIBRARY_ASSETS 相反、且每次录制一致。
     for (const asset of LIBRARY_ASSETS) await postForm(baseUrl, token, "/api/v1/assets", asset);
 

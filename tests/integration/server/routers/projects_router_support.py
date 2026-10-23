@@ -1,6 +1,5 @@
 """server.routers.projects 测试共享的替身与 helper。"""
 
-import json
 import re
 import shutil
 from collections.abc import Callable
@@ -12,14 +11,11 @@ from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
 
 from lib.backends.providers import CallStatus
-from lib.backends.text_backends.base import TextOutputTruncatedError
 from lib.db.models.api_call import ApiCall
 from lib.db.repositories.session_repo import SessionRepository
 from lib.db.repositories.task_repo import TaskRepository
-from lib.project.project_manager import EmptySourceError
 from lib.script.script_batch_edit import (
     InsertAfterOperation,
     MoveAfterOperation,
@@ -32,14 +28,6 @@ from lib.script.script_batch_edit import (
 from lib.script.script_editor import ScriptEditError, patch_field, resolve_items
 from lib.speech.speech_composition import admit_script_unit
 from lib.workflow.workflow_state import ArtifactCount, EpisodesSummary, EpisodeSummary, ProjectSummary
-
-
-class _OverviewProbe(BaseModel):
-    """仅用于让 fake 生成器抛出真实的 pydantic ValidationError（也是 ValueError 子类）。"""
-
-    synopsis: str
-
-
 from server.auth import CurrentUserInfo, get_current_user
 from server.error_handlers import register_error_handlers
 from server.routers import projects
@@ -149,7 +137,7 @@ class _FakePM:
         self.profile_reset_calls.append(project_dir.name)
         return {"repaired": 2, "errors": 0}
 
-    def create_project(self, name, content_mode="narration"):
+    def create_project(self, name, content_mode="drama"):
         if not name or not re.fullmatch(r"[A-Za-z0-9-]+", name):
             raise ValueError("项目标识仅允许英文字母、数字和中划线")
         if name == "exists":
@@ -172,28 +160,18 @@ class _FakePM:
         total_episodes=None,
         style_template_id=None,
         extras=None,
-        target_duration=None,
-        brief=None,
         narration=None,
     ):
         payload = {
             "title": (title or name),
             "style": style or "",
             "content_mode": content_mode,
+            "generation_mode": "storyboard",
             "aspect_ratio": aspect_ratio,
             "episodes": [],
         }
         if total_episodes is not None:
             payload["total_episodes"] = total_episodes
-        if content_mode == "ad":
-            # 镜像真实 ProjectManager 的 ad 形状：常量直接取自生产代码，避免第二份真相
-            from lib.project.project_manager import ProjectManager
-
-            payload["target_duration"] = (
-                target_duration if target_duration is not None else ProjectManager.AD_DEFAULT_TARGET_DURATION
-            )
-            payload["brief"] = brief if brief is not None else ""
-            payload["episodes"] = [dict(ProjectManager.AD_SINGLE_EPISODE)]
         if default_duration is not None:
             payload["default_duration"] = default_duration
         if episode_target_duration is not None:
@@ -269,30 +247,6 @@ class _FakePM:
             self.save_project(name, project)
         if on_commit is not None:
             on_commit(self.base / name / "scripts" / norm)
-
-    async def generate_overview(self, name):
-        if name == "ready":
-            return {"synopsis": "generated"}
-        if name == "leaky":
-            # 模拟底层异常文本携带服务器绝对路径（如文件读写失败），
-            # 上传端点的软降级分支不得把裸 str(e) 透传给客户端。
-            raise RuntimeError("open failed: /Users/secret/projects/leaky/source/novel.txt")
-        if name == "no-provider":
-            raise ValueError("未找到可用的 text 供应商")
-        if name == "corrupted":
-            # 模拟供应商解析链路内部重新 load_project 时命中损坏的 project.json：
-            # JSONDecodeError 是 ValueError 子类，不该被误判为「未配置供应商」
-            json.loads("{not valid json")
-        if name == "truncated":
-            # 模拟文本模型的输出被最大输出长度截断（TextGenerator 补齐 provider_id / custom_model 后抛出）
-            raise TextOutputTruncatedError(
-                provider="openai", model="my-llm", output_tokens=64, provider_id="custom-3", custom_model=True
-            )
-        if name == "bad-schema":
-            # 模拟模型输出未通过 schema 校验：pydantic ValidationError 同样是 ValueError 子类，
-            # 不该被误判为「未配置供应商」
-            _OverviewProbe.model_validate({})
-        raise EmptySourceError("source missing")
 
 
 class _RejectedFakeEdit(Exception):
@@ -451,7 +405,6 @@ class _FakeSummaries:
                     videos=ArtifactCount(total=1, available=0, stale=0),
                 )
             ],
-            source_remaining=False,
         )
 
 

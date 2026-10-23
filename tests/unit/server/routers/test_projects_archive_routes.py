@@ -12,6 +12,7 @@ from lib.project.project_manager import ProjectManager
 from server.auth import CurrentUserInfo, create_download_token, create_token, get_current_user
 from server.routers import projects
 from tests.auth_deps import AUTH_DEPENDENCIES
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -31,7 +32,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _create_demo_project(pm: ProjectManager) -> None:
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     project = pm.load_project("demo")
     project["episodes"] = [{"episode": 1, "title": "第一集", "script_file": "scripts/episode_1.json"}]
     project["characters"] = {"Hero": {"description": "Lead", "character_sheet": "characters/Hero.png"}}

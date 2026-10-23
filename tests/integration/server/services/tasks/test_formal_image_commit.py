@@ -23,6 +23,7 @@ from tests.integration.server.services.tasks.generation_tasks_support import (
     register_asset_sheet_claims,
     register_stale_visual_claim,
 )
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 class TestGenerationTasks:
@@ -158,9 +159,9 @@ class TestGenerationTasks:
         from lib.artifacts.artifact_activation import activate_artifact_target_state
         from lib.artifacts.formal_write import project_metadata_lock
         from lib.artifacts.version_manager import VersionManager
+        from lib.project.legacy_grid_record import LegacyGridRecord
+        from lib.project.legacy_grid_store import LegacyGridStore
         from lib.project.project_migrations.runner import migrate_project_dir
-        from lib.script.grid.grid_manager import GridManager
-        from lib.script.grid.models import GridGeneration
 
         project_path = prepare_files(tmp_path)
         fake_pm = _FakePM(project_path)
@@ -182,7 +183,7 @@ class TestGenerationTasks:
             json.dumps(fake_pm.script, ensure_ascii=False),
             encoding="utf-8",
         )
-        grid = GridGeneration.create(
+        grid = LegacyGridRecord.create(
             episode=1,
             script_file="episode_1.json",
             scene_ids=["E1S01"],
@@ -194,7 +195,7 @@ class TestGenerationTasks:
             video_aspect_ratio="9:16",
         )
         grid.status = "generating"
-        manager = GridManager(project_path)
+        manager = LegacyGridStore(project_path)
         manager.save(grid)
         staged = project_path / "grids" / f".{grid.id}.staged.png"
         staged.write_bytes(b"paid-grid")
@@ -603,7 +604,7 @@ class TestGenerationTasks:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "queued definition")
         project_path = pm.get_project_path("demo")
         current = project_path / "characters" / "Alice.png"
@@ -657,7 +658,7 @@ class TestGenerationTasks:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.add_character("demo", "Alice", "queued definition")
         project_path = pm.get_project_path("demo")
         current = project_path / "characters" / "Alice.png"

@@ -15,10 +15,10 @@ from typing import Any
 
 from lib.artifacts.artifact_manifest import ArtifactBasis, ArtifactBasisDescriptor, compose_video_artifact_basis
 from lib.artifacts.video_artifact_facts import VIDEO_ARTIFACT_RESTORE_BLOCKER_FIELD, VideoArtifactCurrencyFacts
+from lib.generation.execution_checkpoint import CURRENCY_CHECKPOINT_SCHEMA_VERSIONS
 from lib.project.asset_derivatives import DERIVATIVE_ASSET_TYPE
 from lib.project.asset_types import ASSET_SPECS, normalize_asset_name
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE
-from lib.script.reference_video.execution_checkpoint import CURRENCY_CHECKPOINT_SCHEMA_VERSIONS
 from lib.speech.narration_delivery import TtsSynthesisSettings, build_narration_audio_basis_from_canonical_text
 from lib.speech.speech_artifact_provenance import build_video_duration_basis
 

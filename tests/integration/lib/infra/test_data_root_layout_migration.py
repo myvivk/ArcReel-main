@@ -27,12 +27,13 @@ from lib.infra.data_root_layout import DataRootLayout
 from lib.infra.data_root_layout_migration import migrate_data_root_layout
 from lib.project.project_manager import ProjectManager
 from lib.project.project_migrations.runner import run_project_migrations
+from tests.legacy_project_shapes import make_legacy_project
 
 
 @pytest.fixture
 def projects(tmp_path: Path) -> ProjectManager:
     manager = ProjectManager(tmp_path / "data")
-    manager.create_project("demo", content_mode="narration")
+    make_legacy_project(manager.projects_dir, "demo", content_mode="narration")
     return manager
 
 
@@ -198,7 +199,7 @@ async def test_user_memory_move_resumes_after_interruption(
 async def test_completed_session_import_is_not_rerun_after_migration(
     data_root: Path, session_factory: async_sessionmaker[AsyncSession], sdk_config_dir: Path
 ) -> None:
-    project_dir = ProjectManager(data_root).create_project("demo", content_mode="narration")
+    project_dir = make_legacy_project(ProjectManager(data_root).projects_dir, "demo", content_mode="narration")
     transcript_dir = sdk_config_dir / "projects" / project_key_for_directory(str(project_dir))
     transcript_dir.mkdir(parents=True)
     (transcript_dir / "00000000-0000-0000-0000-0000000000aa.jsonl").write_text(
@@ -223,7 +224,7 @@ _SESSION_ID = "00000000-0000-0000-0000-0000000000bb"
 def _write_legacy_project(data_root: Path, name: str, novel: str = "从前有座山") -> None:
     """旧布局的项目：直接放在数据根下。"""
     scratch = ProjectManager(data_root.parent / "scratch")
-    scratch.create_project(name, content_mode="narration")
+    make_legacy_project(scratch.projects_dir, name, content_mode="narration")
     project_dir = scratch.get_project_path(name)
     (project_dir / "source").mkdir(exist_ok=True)
     (project_dir / "source" / "novel.txt").write_text(novel, encoding="utf-8")

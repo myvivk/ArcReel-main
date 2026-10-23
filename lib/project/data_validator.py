@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 from pydantic import ValidationError
 
 from arcreel_market_core.validation_messages import MessageJoin, MessagePart, MessageRef, ValidationMessage
-from lib.agent.profile_manifest import VALID_CONTENT_MODES as _VALID_CONTENT_MODES
 from lib.episode.episode_ledger import (
     LEDGER_STATUSES,
     EpisodeOutline,
@@ -56,6 +55,7 @@ from lib.project.asset_types import (
     project_asset_name_conflicts,
 )
 from lib.project.project_manager import VALID_GENERATION_MODES as _VALID_GENERATION_MODES
+from lib.project.project_schema import PERSISTED_PROJECT_CONTENT_MODES
 from lib.references.reference_catalog import ReferenceCatalog, build_reference_catalog
 from lib.script.script_models import (
     AD_TARGET_DURATION_DRIFT_THRESHOLD,
@@ -161,7 +161,7 @@ class DataValidator:
 
     # content_mode 严格只表达"内容类型"；"视频来源"维度由项目级 generation_mode 字段表达。
     # 合法集真相源在 lib.agent.profile_manifest，避免两处枚举漂移。
-    VALID_CONTENT_MODES: ClassVar[set[str]] = set(_VALID_CONTENT_MODES)
+    VALID_CONTENT_MODES: ClassVar[set[str]] = set(PERSISTED_PROJECT_CONTENT_MODES)
     # 生成模式合法集（storyboard / reference_video），真相源在 lib.project.project_manager（创建写入方），
     # 避免两处枚举漂移。必填：存量项目由 v4→v5 迁移补写显式值，缺失即非法。
     VALID_GENERATION_MODES: ClassVar[set[str]] = set(_VALID_GENERATION_MODES)

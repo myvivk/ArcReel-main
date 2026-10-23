@@ -50,7 +50,7 @@ from lib.episode.episode_sources import (
     whole_source_files,
 )
 from lib.infra.text_metrics import count_reading_units, reading_unit_noun
-from lib.script.script_review import ForeignFormalScriptError, formal_script_filename, formal_script_overwrite
+from lib.script.script_revision import ForeignFormalScriptError, formal_script_filename, formal_script_overwrite
 from lib.script.short_drama_source import short_drama_source_relative_path
 
 if TYPE_CHECKING:
@@ -283,6 +283,7 @@ def delete_episode(
         *discover_episode_file_aliases(project_dir).get(episode, []),
         episode_source_path(project_dir, episode),
         project_dir / short_drama_source_relative_path(episode),
+        project_dir / f"source/short_drama/episode_{episode}.md",
     ]
     formal_paths = list(dict.fromkeys(source_files))
     if script_path is not None:
@@ -364,6 +365,7 @@ def delete_episodes(
         formal_paths.extend(discover_episode_file_aliases(project_dir).get(episode, []))
         formal_paths.append(episode_source_path(project_dir, episode))
         formal_paths.append(project_dir / short_drama_source_relative_path(episode))
+        formal_paths.append(project_dir / f"source/short_drama/episode_{episode}.md")
         script_path = _script_path(project_dir, project, episode)
         if script_path is not None:
             formal_paths.append(script_path)
@@ -447,9 +449,9 @@ def _purge_episode_products(project_dir: Path, episode: int) -> None:
                 _remove_tree(path)
 
     if (project_dir / "grids").is_dir():
-        from lib.script.grid.grid_manager import GridManager
+        from lib.project.legacy_grid_store import LegacyGridStore
 
-        grids = GridManager(project_dir)
+        grids = LegacyGridStore(project_dir)
         for grid_id in _grid_records(project_dir, episode):
             try:
                 grids.delete(grid_id)

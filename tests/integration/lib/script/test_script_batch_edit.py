@@ -17,8 +17,6 @@ from lib.artifacts.artifact_manifest import (
 from lib.artifacts.artifact_provenance import build_ad_episode_script_basis, build_episode_script_basis
 from lib.artifacts.version_manager import VersionManager
 from lib.project.project_manager import ProjectManager
-from lib.script.grid.grid_manager import GridManager
-from lib.script.grid.models import GridGeneration
 from lib.script.script_batch_edit import (
     ScriptBatchEditCommand,
     ScriptBatchEditor,
@@ -26,6 +24,8 @@ from lib.script.script_batch_edit import (
     script_revision,
 )
 from lib.script.script_editor import ScriptEditError
+from tests.legacy_project_shapes import LegacyGridFixtureStore as LegacyGridStore
+from tests.legacy_project_shapes import make_legacy_grid_record, make_legacy_project, seed_legacy_project_metadata
 
 
 def _segment(segment_id: str, *, text: str = "风吹过旷野。") -> dict[str, Any]:
@@ -57,8 +57,8 @@ def _script() -> dict[str, Any]:
 @pytest.fixture
 def editor(tmp_path: Path) -> tuple[ProjectManager, ScriptBatchEditor, Path]:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="narration")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir, "demo", content_mode="narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     project_dir = pm.get_project_path("demo")
     script_plan = project_dir / "drafts" / "episode_1" / "script_plan_segments.json"
     script_plan.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +159,7 @@ def test_permanent_remove_forgets_grids_that_reference_removed_items(
     adapter = ProjectArtifactManifestAdapter(project_dir)
 
     def _completed_grid(scene_ids: list[str]) -> tuple[ArtifactKey, ArtifactManifestEntry]:
-        grid = GridGeneration.create(
+        grid = make_legacy_grid_record(
             episode=1,
             script_file="episode_1.json",
             scene_ids=scene_ids,
@@ -173,7 +173,7 @@ def test_permanent_remove_forgets_grids_that_reference_removed_items(
         grid.status = "completed"
         grid.grid_image_path = f"grids/{grid.id}.png"
         (project_dir / grid.grid_image_path).write_bytes(b"grid")
-        GridManager(project_dir).save(grid)
+        LegacyGridStore(project_dir).save(grid)
         key = ArtifactKey.episode_grid(1, grid.id)
         entry = ArtifactManifestEntry(
             artifact_path=grid.grid_image_path,
@@ -215,8 +215,8 @@ def test_complete_script_replacement_forgets_claims_for_removed_items(
 
 def test_ad_batch_edit_registers_shared_canonical_script_basis(tmp_path: Path) -> None:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="ad")
-    pm.create_project_metadata("demo", "Demo", "Live action", "ad")
+    make_legacy_project(pm.projects_dir, "demo", content_mode="ad")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Live action", "ad")
     pm.update_project(
         "demo",
         lambda project: project.update(
@@ -807,8 +807,8 @@ def test_preexisting_reference_failure_is_not_attributed_to_unrelated_operation(
 
 def test_unrelated_video_unit_edit_does_not_reject_unmarked_legacy_mixed_speech(tmp_path: Path) -> None:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="narration")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir, "demo", content_mode="narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     pm.upsert_assets("demo", "characters", {"角色A": {"description": "主角"}})
     script = {
@@ -844,8 +844,8 @@ def test_unrelated_video_unit_edit_does_not_reject_unmarked_legacy_mixed_speech(
 
 def test_malformed_video_unit_text_returns_structured_failure_without_writes(tmp_path: Path) -> None:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="narration")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir, "demo", content_mode="narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     pm.save_script(
         "demo",
@@ -1042,8 +1042,8 @@ def test_structural_edit_preserves_existing_paid_media(
 
 def _reference_project(tmp_path: Path, *, sources: dict[str, str]) -> tuple[ProjectManager, ScriptBatchEditor]:
     pm = ProjectManager(str(tmp_path))
-    pm.create_project("demo", content_mode="narration")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    make_legacy_project(pm.projects_dir, "demo", content_mode="narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     pm.update_project("demo", lambda project: project.update({"generation_mode": "reference_video"}))
     pm.save_script(
         "demo",

@@ -15,8 +15,6 @@ from lib.generation.generation_result import GenerationSelectionMode
 from lib.generation.video_request_facts import VideoRequestFactsFailure
 from lib.project.project_manager import ProjectManager
 from lib.project.project_schema import CURRENT_PROJECT_SCHEMA_VERSION
-from lib.script.grid.grid_manager import GridManager
-from lib.script.grid.models import GridGeneration
 from lib.workflow.workflow_plan import WorkflowPlanRequest, WorkflowStepState
 from lib.workflow.workflow_state import (
     WorkflowActionType,
@@ -28,6 +26,7 @@ from lib.workflow.workflow_state import (
 from server.services.admission import video_batch_admission
 from server.services.project import workflow_planner
 from tests.factories import make_video_request_facts
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _status(*, action: str = "generate_videos") -> WorkflowStatus:
@@ -38,7 +37,6 @@ def _status(*, action: str = "generate_videos") -> WorkflowStatus:
             "project": WorkflowProject(
                 content_mode="narration",
                 generation_mode="storyboard",
-                grid_storyboard=False,
             ),
             "target": WorkflowTarget(
                 episode=1,
@@ -93,12 +91,8 @@ def _project_dir(tmp_path: Path) -> Path:
     """真实的 v8 项目目录：计划按产物清单读取产物，纸面路径不成立。"""
     pm = ProjectManager(tmp_path / "projects")
     pm.create_project("demo")
-    pm.create_project_metadata(
-        "demo",
-        "Demo",
-        "",
-        "narration",
-        extras={"generation_mode": "storyboard", "grid_storyboard": False},
+    seed_legacy_project_metadata(
+        pm, "demo", "Demo", "", "narration", extras={"generation_mode": "storyboard", "grid_storyboard": False}
     )
     return pm.get_project_path("demo")
 
@@ -328,54 +322,6 @@ async def test_active_task_and_provider_checkpoint_are_reported_as_separate_axes
     }
 
 
-async def test_grid_storyboard_plan_waits_for_active_grid_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project_path = _project_dir(tmp_path)
-    pm = _ProjectManager(project_path, _script())
-    status = _status(action="generate_grid").model_copy(
-        update={
-            "project": WorkflowProject(
-                content_mode="narration",
-                generation_mode="storyboard",
-                grid_storyboard=True,
-            )
-        }
-    )
-    monkeypatch.setattr(workflow_planner.WorkflowStateService, "get_status", lambda *_args: status)
-    grid = GridGeneration.create(
-        episode=1,
-        script_file="episode_1.json",
-        scene_ids=["E1S01"],
-        rows=1,
-        cols=1,
-        grid_size="1x1",
-        provider="",
-        model="",
-        video_aspect_ratio="9:16",
-    )
-    GridManager(project_path).save(grid)
-
-    async def _active_tasks(**kwargs: Any) -> list[dict[str, Any]]:
-        if kwargs["task_type"] != "grid":
-            return []
-        assert kwargs["resource_ids"] == [grid.id]
-        return [
-            {
-                "task_id": "grid-task",
-                "resource_id": grid.id,
-                "task_type": "grid",
-                "status": "running",
-            }
-        ]
-
-    monkeypatch.setattr(workflow_planner, "get_active_tasks_for_resources", _active_tasks)
-
-    plan = await workflow_planner.WorkflowPlanner(pm).get_plan("demo", WorkflowPlanRequest())
-
-    assert next(step for step in plan.steps if step.id == "storyboard").state is WorkflowStepState.ACTIVE
-    assert plan.next_action.type == "wait_for_task"
-    assert plan.next_action.args["task_ids"] == ["grid-task"]
-
-
 async def test_asset_sheet_plan_waits_for_active_asset_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pm = _ProjectManager(_project_dir(tmp_path), _script())
     monkeypatch.setattr(
@@ -570,7 +516,7 @@ async def test_status_read_is_idempotent_and_does_not_touch_project_files(
     projects_root = tmp_path / "projects"
     pm = ProjectManager(projects_root)
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Ad", "", "ad", target_duration=30)
+    seed_legacy_project_metadata(pm, "demo", "Ad", "", "ad", target_duration=30)
 
     async def _no_active_tasks(**_kwargs: Any) -> list[dict[str, Any]]:
         return []

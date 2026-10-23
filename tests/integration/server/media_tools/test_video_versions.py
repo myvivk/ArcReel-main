@@ -12,6 +12,7 @@ from lib.project.project_manager import ProjectManager
 from server.services.project.project_events import ProjectEventService
 from tests.factories import add_typed_video_version
 from tests.integration.server.agent_tool_support import ToolHarness, problem_of, run_declared_tool
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _STORYBOARD_SCRIPT = {
     "episode": 1,
@@ -34,7 +35,7 @@ def _harness(tmp_path: Path, *, reference: bool) -> ToolHarness:
     pm = ProjectManager(tmp_path)
     pm.create_project("demo")
     extras = {"generation_mode": "reference_video"} if reference else None
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration", extras=extras)
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration", extras=extras)
     pm.save_script("demo", _REFERENCE_SCRIPT if reference else _STORYBOARD_SCRIPT, "episode_1.json", validate=False)
     return ToolHarness("demo", tmp_path, pm)
 

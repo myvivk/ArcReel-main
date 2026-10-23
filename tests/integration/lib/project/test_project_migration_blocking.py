@@ -56,6 +56,7 @@ from server.tool_runtime import (
     retry_project_migration,
 )
 from tests.integration.lib.project.project_migrations.test_project_migration_v7_v8 import _project
+from tests.legacy_project_shapes import make_legacy_project, seed_legacy_project_metadata
 
 
 def _break_episode_script(project_dir: Path) -> None:
@@ -244,8 +245,8 @@ def test_web_retry_reports_the_reason_then_unblocks_once_repaired(tmp_path: Path
 async def test_retry_success_uses_caller_scoped_queue_and_capabilities(tmp_path: Path, file_db_factory) -> None:
     projects_root = tmp_path / "projects"
     projects = ProjectManager(tmp_path)
-    projects.create_project("demo", content_mode="ad")
-    projects.create_project_metadata("demo", "Demo", "", "ad", target_duration=30)
+    make_legacy_project(projects.projects_dir, "demo", content_mode="ad")
+    seed_legacy_project_metadata(projects, "demo", "Demo", "", "ad", target_duration=30)
     project_dir = projects.get_project_path("demo")
     atomic_write_json(
         project_dir / "scripts" / "episode_1.json",

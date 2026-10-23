@@ -1,6 +1,5 @@
 import json
 import shutil
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -8,8 +7,8 @@ from threading import Event
 import pytest
 
 from lib.artifacts.artifact_manifest import ArtifactKey, ArtifactManifestEntry, ProjectArtifactManifestAdapter
-from lib.backends.providers import CallPurpose
-from lib.project.project_manager import EmptySourceError, ProjectManager
+from lib.project.project_manager import ProjectManager
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 
 def _write(path: Path, text: str):
@@ -56,70 +55,7 @@ def _seed_episode_resource_claims(project_dir: Path, resource_id: str):
     return adapter, keys
 
 
-class _FakeTextBackend:
-    def __init__(self, language: str = "zh"):
-        self._language = language
-        self.last_request = None
-
-    @property
-    def name(self):
-        return "fake"
-
-    @property
-    def model(self):
-        return "fake-model"
-
-    @property
-    def capabilities(self):
-        return set()
-
-    async def generate(self, request):
-        from lib.backends.text_backends.base import TextGenerationResult
-
-        self.last_request = request
-        return TextGenerationResult(
-            text=json.dumps(
-                {
-                    "synopsis": "故事梗概",
-                    "genre": "悬疑",
-                    "theme": "真相",
-                    "world_setting": "古代",
-                    "language": self._language,
-                },
-                ensure_ascii=False,
-            ),
-            provider="fake",
-            model="fake-model",
-        )
-
-
 class TestProjectManager:
-    @pytest.mark.asyncio
-    async def test_generate_overview_declares_project_overview_purpose(self, tmp_path, monkeypatch):
-        from lib.backends.text_generator import TextGenerator
-
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo")
-        _write(pm.get_project_path("demo") / "source" / "1.txt", "source body")
-        captured: dict[str, object] = {}
-        original_create = TextGenerator.create
-
-        async def capture_create(task_type, project_name=None, *, purpose):
-            captured["purpose"] = purpose
-            return await original_create(task_type, project_name, purpose=purpose)
-
-        async def fake_backend(*args, **kwargs):
-            return _FakeTextBackend(), "gemini-aistudio"
-
-        monkeypatch.setattr(TextGenerator, "create", capture_create)
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", fake_backend)
-
-        overview = await pm.generate_overview("demo")
-
-        assert overview["genre"] == "悬疑"
-        assert captured["purpose"] is CallPurpose.PROJECT_OVERVIEW
-
     def test_delete_continues_after_a_concurrent_cleanup_removed_an_empty_subdirectory(self, tmp_path, monkeypatch):
         """删除中途并发的残余目录清理先删掉了一个空目录：rmtree 报目录不存在，但项目目录还在，要接着删净。"""
         pm = ProjectManager(tmp_path / "projects")
@@ -141,7 +77,7 @@ class TestProjectManager:
     def test_filesystem_script_binding_forgets_unbound_resource_claims(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         (project_dir / "scripts" / "episode_1.json").write_text(
             json.dumps(_narration_script("E1S02")),
             encoding="utf-8",
@@ -156,7 +92,7 @@ class TestProjectManager:
     def test_save_script_binding_forgets_unbound_resource_claims(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         adapter, old_keys = _seed_episode_resource_claims(project_dir, "E1S01")
 
         pm.save_script("demo", _narration_script("E1S02"), "episode_1.json", validate=False)
@@ -167,7 +103,7 @@ class TestProjectManager:
     def test_project_and_status_lifecycle(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         # products 与其他三类资产一样属于项目脚手架
         assert (project_dir / "products").is_dir()
@@ -201,16 +137,14 @@ class TestProjectManager:
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
         with pytest.raises(ValueError, match="image_backend"):
-            pm.create_project_metadata(
-                "demo", "Demo", "Anime", "narration", extras={"image_backend": "openai/gpt-image-1"}
-            )
+            pm.create_project_metadata("demo", "Demo", "Anime", "drama", extras={"image_backend": "openai/gpt-image-1"})
 
     def test_create_project_metadata_accepts_new_image_provider_fields(self, tmp_path):
         """新字段 image_provider_t2i/i2i 正常写入（不受守卫影响）。"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
         project = pm.create_project_metadata(
-            "demo", "Demo", "Anime", "narration", extras={"image_provider_t2i": "openai/gpt-image-1"}
+            "demo", "Demo", "Anime", "drama", extras={"image_provider_t2i": "openai/gpt-image-1"}
         )
         assert project["image_provider_t2i"] == "openai/gpt-image-1"
 
@@ -220,7 +154,7 @@ class TestProjectManager:
 
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        project = pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        project = pm.create_project_metadata("demo", "Demo", "Anime", "drama")
         assert project["schema_version"] == CURRENT_SCHEMA_VERSION
         assert project["whole_source_files"] == []
         assert "planning_cursor" not in project
@@ -272,7 +206,7 @@ class TestProjectManager:
     def test_script_operations_and_scene_updates(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         script = {
             "episode": 1,
@@ -358,7 +292,7 @@ class TestProjectManager:
     def test_scene_asset_restore_across_scripts_only_rewrites_canonical_names(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         pm.save_script("demo", _narration_script("E1S01"), "episode_1.json", validate=False)
         scripts_dir = project_dir / "scripts"
         for name in ("episode_1_backup.json", "custom.json"):
@@ -499,7 +433,7 @@ class TestProjectManager:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         bad = {
             "episode": 1,  # 与文件名 episode_10.json 错配
@@ -526,7 +460,7 @@ class TestProjectManager:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         script = {**_narration_script("E1S01"), "episode": bogus_episode}
 
         pm.save_script("demo", script, "episode_1.json", validate=False)
@@ -539,7 +473,7 @@ class TestProjectManager:
         """`episode_0.json`：0 不对应任何一集，认它作归属会让账本多出一条 `episode: 0`。"""
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         script = _narration_script("E1S01")
 
         assert ProjectManager.filename_episode("episode_0.json") is None
@@ -553,7 +487,7 @@ class TestProjectManager:
         """规范名的两种写法都指向同一份剧本：写盘收下它并登记为第 1 集的绑定。"""
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         pm.save_script("demo", _narration_script("E1S01"), filename, validate=False)
 
@@ -570,7 +504,7 @@ class TestProjectManager:
         """文件名不是规范名时拒绝：写盘前不落盘，外部落盘的文件也不登记为集绑定。"""
         pm = ProjectManager(tmp_path / "projects")
         project_dir = pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
         script = _narration_script("E1S01")
         stored = project_dir / "scripts" / ProjectManager.normalize_script_filename(filename)
 
@@ -594,7 +528,7 @@ class TestProjectManager:
         """
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         ep1 = {
             "episode": 1,
@@ -628,7 +562,7 @@ class TestProjectManager:
         """load_script / save_script / update_scene_asset 应兼容带 scripts/ 前缀的文件名"""
         pm = ProjectManager(tmp_path / "projects")
         pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
 
         script = {
             "episode": 1,
@@ -829,161 +763,6 @@ class TestProjectManager:
         assert pm.load_project("demo")["characters"]["Alice"]["reference_audio"] == wav_rel
         assert (project_dir / wav_rel).read_bytes() == b"new-wav"
         assert not (project_dir / mp3_rel).exists()
-
-    @pytest.mark.asyncio
-    async def test_reference_read_source_and_generate_overview(self, tmp_path, monkeypatch):
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo")
-
-        pm.add_character("demo", "Alice", "hero")
-        pm.add_props_batch("demo", {"玉佩": {"description": "古玉"}})
-
-        project_dir = pm.get_project_path("demo")
-        (project_dir / "characters" / "Alice.png").write_bytes(b"png")
-        (project_dir / "props" / "玉佩.png").write_bytes(b"png")
-
-        project = pm.load_project("demo")
-        project["characters"]["Alice"]["character_sheet"] = "characters/Alice.png"
-        project["props"]["玉佩"]["prop_sheet"] = "props/玉佩.png"
-        pm.save_project("demo", project)
-
-        refs = pm.collect_reference_images(
-            "demo",
-            {"characters_in_scene": ["Alice"], "props_in_scene": ["玉佩"]},
-        )
-        assert len(refs) == 2
-
-        _write(project_dir / "source" / "1.txt", "a" * 10)
-        _write(project_dir / "source" / "2.md", "b" * 10)
-        _write(project_dir / "source" / "3.bin", "ignored")
-        content = pm._read_source_files("demo", max_chars=15)
-        assert "1.txt" in content
-
-        async def _fake_create_backend(*args, **kwargs):
-            return _FakeTextBackend(), "gemini-aistudio"
-
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", _fake_create_backend)
-        overview = await pm.generate_overview("demo")
-        assert overview["genre"] == "悬疑"
-        assert "generated_at" in overview
-        assert overview["language"] == "zh"
-        # 顶层 source_language 必须由 generate_overview 写入,与 overview.language 同源
-        assert pm.load_project("demo")["source_language"] == "zh"
-
-        with warnings.catch_warnings(record=True) as captured:
-            warnings.simplefilter("always")
-            project_data = pm.sync_project_status("demo")
-        assert captured
-        assert project_data["title"] == "Demo"
-
-        pm_empty = ProjectManager(tmp_path / "projects-empty")
-        pm_empty.create_project("demo")
-        pm_empty.create_project_metadata("demo", "Demo")
-        with pytest.raises(EmptySourceError, match=r"source 目录为空"):
-            await pm_empty.generate_overview("demo")
-
-    @pytest.mark.parametrize("lang", ["zh", "en", "vi"])
-    @pytest.mark.asyncio
-    async def test_generate_overview_source_language_synced(self, tmp_path, monkeypatch, lang):
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo")
-        _write(pm.get_project_path("demo") / "source" / "1.txt", "source body")
-
-        async def _fake_create_backend(*args, **kwargs):
-            return _FakeTextBackend(language=lang), "gemini-aistudio"
-
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", _fake_create_backend)
-        overview = await pm.generate_overview("demo")
-        assert overview["language"] == lang
-        assert pm.load_project("demo")["source_language"] == lang
-
-    @pytest.mark.asyncio
-    async def test_generate_overview_invalid_language_raises(self, tmp_path, monkeypatch):
-        """schema 违反 → ValidationError 干净抛出,source_language 不被写入."""
-        from pydantic import ValidationError
-
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo")
-        _write(pm.get_project_path("demo") / "source" / "1.txt", "source body")
-
-        async def _fake_create_backend(*args, **kwargs):
-            return _FakeTextBackend(language="chinese"), "gemini-aistudio"  # 非枚举值
-
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", _fake_create_backend)
-        with pytest.raises(ValidationError):
-            await pm.generate_overview("demo")
-        assert "source_language" not in pm.load_project("demo")
-
-    @pytest.mark.parametrize(
-        ("content_mode", "kinds", "expected"),
-        [
-            ("drama", ("screenplay", "screenplay"), "screenplay"),
-            ("drama", ("novel", "screenplay"), "novel"),
-            ("drama", (None, None), "novel"),
-            ("narration", ("screenplay", "screenplay"), "novel"),
-        ],
-    )
-    @pytest.mark.asyncio
-    async def test_generate_overview_routes_prompt_by_source_kinds(
-        self, tmp_path, monkeypatch, content_mode, kinds, expected
-    ):
-        """剧情演绎全部源文都是剧本时 overview 走「提取优先」分支；混合、缺省或非剧情演绎按小说口径。"""
-        from lib.prompts.prompt_builders_script import build_overview_prompt
-
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo", content_mode=content_mode)
-        files = [
-            {"source_file": f"source/{index}.txt", **({} if kind is None else {"source_kind": kind})}
-            for index, kind in enumerate(kinds, start=1)
-        ]
-        pm.update_project("demo", lambda project: project.__setitem__("whole_source_files", files))
-        for index in range(1, len(kinds) + 1):
-            _write(pm.get_project_path("demo") / "source" / f"{index}.txt", f"源文本内容{index}")
-
-        backend = _FakeTextBackend()
-
-        async def _fake_create_backend(*args, **kwargs):
-            return backend, "gemini-aistudio"
-
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", _fake_create_backend)
-        await pm.generate_overview("demo")
-
-        source_content = pm._read_source_files("demo")
-        assert backend.last_request is not None
-        assert backend.last_request.prompt == build_overview_prompt(source_content, source_kind=expected)
-
-    @pytest.mark.parametrize("dirty_source_language", [123, ["zh"], {}, "", "   "])
-    @pytest.mark.asyncio
-    async def test_generate_overview_dirty_source_language_falls_back_to_default(
-        self, tmp_path, monkeypatch, dirty_source_language
-    ):
-        """project.json 的 source_language 是非字符串或空白脏数据时，target_language 回退默认值，
-        不把脏对象直接传入 prompt 文本。"""
-        from lib.prompts.prompt_builders_script import build_overview_prompt
-
-        pm = ProjectManager(tmp_path / "projects")
-        pm.create_project("demo")
-        pm.create_project_metadata("demo", "Demo")
-        pm.update_project("demo", lambda project: project.__setitem__("source_language", dirty_source_language))
-        _write(pm.get_project_path("demo") / "source" / "1.txt", "源文本内容")
-
-        backend = _FakeTextBackend()
-
-        async def _fake_create_backend(*args, **kwargs):
-            return backend, "gemini-aistudio"
-
-        monkeypatch.setattr("lib.backends.text_generator.create_text_backend_for_task", _fake_create_backend)
-        await pm.generate_overview("demo")
-
-        source_content = pm._read_source_files("demo")
-        assert backend.last_request is not None
-        assert backend.last_request.prompt == build_overview_prompt(
-            source_content, source_kind="novel", target_language="中文"
-        )
 
 
 class TestForProjectDir:

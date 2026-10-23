@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from lib.infra.validation_messages import default_translate
+from lib.project.legacy_reference_durations import migrate_script_unit_durations, migrate_unit_durations
 from lib.project.project_manager import ProjectManager
-from lib.script.reference_video.duration_migration import migrate_script_unit_durations, migrate_unit_durations
 from lib.script.script_models import REFERENCE_UNIT_DURATION_RANGE
 
 

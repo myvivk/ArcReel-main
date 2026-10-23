@@ -1,210 +1,58 @@
 import type { TFunction } from "i18next";
 import type { EpisodeEditOverview } from "@/types/edit-timeline";
-import type { DraftDocType } from "@/types/reference-video";
 import type { StoryboardBatchKind } from "@/types/storyboard-batch";
-import type {
-  WorkflowArtifactCollection,
-  WorkflowContent,
-  WorkflowDraft,
-  WorkflowNextAction,
-  WorkflowOperation,
-  WorkflowPlan,
-  WorkflowPlanStep,
-} from "@/types/workflow";
-import {
-  ROUTE_APP_SETTINGS,
-  WORKSPACE_ROUTE_EPISODES,
-  EPISODE_VIEW_PARAM,
-  WORKSPACE_ROUTE_PRODUCTS,
-  episodeAssetsViewPath,
-  episodeEditViewPath,
-} from "@/app-routes";
-import { episodesViewPath } from "@/components/canvas/episodes/episodes-view-model";
-import type { EpisodeSurface } from "@/stores/episode-surface-store";
+import type { WorkflowArtifactCollection, WorkflowContent, WorkflowNextAction, WorkflowOperation, WorkflowPlan, WorkflowPlanStep } from "@/types/workflow";
+import { ROUTE_APP_SETTINGS, WORKSPACE_ROUTE_EPISODES, EPISODE_VIEW_PARAM, episodeAssetsViewPath, episodeEditViewPath } from "@/app-routes";
 import { formatNameList } from "@/utils/list-format";
 
-/**
- * 制作进度面板的「步骤清单」投影：把后端的制作状态（内容现状、各操作准入、建议的下一步）
- * 排成一行一类内容，下一步挂在它所属的那一行上。
- *
- * 每行只陈述自己那类内容此刻的样子，不看前面的步骤——前一步没做完，后面一行照样写「还没有」，
- * 不写「等待上一步」。过期、缺描述这类提醒挂在对应行上，不进下一步。
- */
-
-export type StepRowKey =
-  | "brief"
-  | "source"
-  | "plan"
-  | "script"
-  | "prompts"
-  | "assets"
-  | "boards"
-  | "materials"
-  | "video_prompt"
-  | "voice"
-  | "videos"
-  | "edit";
-
-/** 行的现状色调：已齐 / 还没有 / 部分 / 进行中 / 需要留意 / 读不出。 */
+export type StepRowKey = "source" | "script" | "prompts" | "assets" | "materials" | "video_prompt" | "voice" | "videos" | "edit";
 export type StepRowTone = "done" | "todo" | "partial" | "running" | "warn" | "danger";
-
-/** 按下一个入口之后要做的事；面板按类型分派到具体的处理函数。 */
 export type StepIntent =
   | { type: "agent"; text: string }
-  | { type: "draft_to_agent"; docType: DraftDocType }
-  | { type: "repair_draft"; docType: DraftDocType }
   | { type: "author_prompts" }
   | { type: "author_prompts_to_agent" }
   | { type: "open_author_prompts" }
   | { type: "open_video_prompts"; entryIds: string[] }
-  | { type: "start_blank_script" }
-  | { type: "open_script_plan" }
-  | { type: "generate_ad_script" }
-  | { type: "open_ad_script"; regenerate: boolean }
-  | { type: "open_script_plan_over_draft" }
   | { type: "asset_batch"; episodeId: number }
   | { type: "storyboard_batch"; episodeId: number; kind: StoryboardBatchKind }
   | { type: "create_edit_timeline" }
-  | { type: "discard_draft"; docType: DraftDocType }
-  | { type: "show_surface"; surface: EpisodeSurface }
   | { type: "view_unit"; unitId: string }
   | { type: "route"; path: string };
-
-/**
- * 一个入口。`agent` 是「交给 Agent」（实心），`ai` 是直接 AI 调用（描边），`nav` 是跳转或手动去做（文字链），
- * `danger` 是需确认的破坏性操作（红字链）。`disabledReason` 非空时入口照常显示但不可点，悬停说明原因。
- */
 export interface StepAct {
-  key: string;
-  label: string;
-  kind: "agent" | "ai" | "nav" | "danger";
-  intent: StepIntent;
-  disabledReason?: string | null;
+  key: string; label: string; kind: "agent" | "ai" | "nav" | "danger";
+  intent: StepIntent; disabledReason?: string | null;
 }
-
-export interface StepNote {
-  key: string;
-  text: string;
-  tone: "warn" | "danger" | "info";
-  act?: StepAct;
-}
-
+export interface StepNote { key: string; text: string; tone: "warn" | "danger" | "info"; act?: StepAct; }
 export interface StepRowView {
-  key: StepRowKey;
-  title: string;
-  tone: StepRowTone;
-  status: string;
-  notes: StepNote[];
-  /** 本行常驻的入口（不是建议的下一步）。 */
-  acts: StepAct[];
-  /** 归到这一行的后端步骤：任务、结构问题、过期产物与整批准入从这里取。 */
-  steps: WorkflowPlanStep[];
+  key: StepRowKey; title: string; tone: StepRowTone; status: string;
+  notes: StepNote[]; acts: StepAct[]; steps: WorkflowPlanStep[];
 }
-
-/** 附加指令：`persist` 非空时按集保存到对应字段，为 null 时只随本次调用带上。 */
-export interface StepInstruction {
-  initial: string;
-  persist: "prompt_authoring" | null;
-}
-
+export interface StepInstruction { initial: string; persist: "prompt_authoring" | null; }
 export interface NextStepView {
-  rowKey: StepRowKey;
-  /** 下一步的动作类型，面板用它区分附加指令的归属。 */
-  actionType: WorkflowNextAction["type"];
-  title: string;
-  detail: string | null;
-  instruction: StepInstruction | null;
-  primary: StepAct[];
-  alternatives: StepAct[];
-  hint: StepNote | null;
+  rowKey: StepRowKey; actionType: WorkflowNextAction["type"]; title: string; detail: string | null;
+  instruction: StepInstruction | null; primary: StepAct[]; alternatives: StepAct[]; hint: StepNote | null;
 }
-
-export interface StepListView {
-  rows: StepRowView[];
-  next: NextStepView | null;
-  /** 收起时的一句话现状。 */
-  summary: string;
-  /** 广告/短片标题行的「总时长 / 目标时长」；`over` 为超出目标 10% 以上。 */
-  adDuration: { total: number | null; target: number; over: boolean } | null;
-}
-
+export interface StepListView { rows: StepRowView[]; next: NextStepView | null; summary: string; }
 export interface StepListContext {
-  t: TFunction;
-  /** 界面语言，名单按它连接。 */
-  lang: string;
-  episodeId: number;
-  /** 集名连同集 ID 的指称，预填给 Agent 用（`episodeAgentRef`）。 */
-  episodeRef: string;
-  /** 本集正式脚本的总时长（秒），项目摘要给出；未知时为 null。 */
-  episodeDurationSeconds: number | null;
-  /** 广告/短片的目标时长（秒）；未设或非广告为 null。 */
-  adTargetSeconds: number | null;
-  /** 资产名对应的画廊路由；名字不在任何资产表里时为 null。 */
-  assetRoute: (name: string) => string | null;
-  /** 本集保存的提示词编写附加指令。 */
-  savedPromptInstructions: string;
-  /** 集页上是否挂着「编写提示词」的宿主（有正式脚本时才有）。 */
-  canAuthorPrompts: boolean;
-  /** 能否跳到画布上的某个单元。 */
-  canViewUnit: boolean;
-  /** 本集的剪辑概况；还没取到或本集没有剪辑时间线时为 null。 */
-  editOverview: EpisodeEditOverview | null;
+  t: TFunction; lang: string; episodeId: number; episodeRef: string; episodeDurationSeconds: number | null;
+  assetRoute: (name: string) => string | null; savedPromptInstructions: string;
+  canAuthorPrompts: boolean; canViewUnit: boolean; editOverview: EpisodeEditOverview | null;
 }
-
-/** 状态里的草稿种类 → 草稿端点的 `doc_type`。 */
-const DOC_TYPE_BY_DRAFT_KIND: Record<string, DraftDocType> = {
-  drama_script_plan: "drama_script_plan",
-  narration_script_plan: "narration_script_plan",
-  reference_video_script_plan: "reference_script_plan",
-  reference_video_prompt_authoring: "reference_prompt_authoring",
-};
-
-const PROMPT_AUTHORING_DRAFT_KIND = "reference_video_prompt_authoring";
-
-/** 超出目标时长多少算「明显超出」，按比例。 */
-const AD_DURATION_OVER_RATIO = 1.1;
-
-/** 整批准入与任务失败交回的动作：它们的入口在视频行的准入陈述里，不在下一步里另起按钮。 */
-const ADMISSION_ACTIONS = new Set<WorkflowNextAction["type"]>([
-  "retry",
-  "fix_input",
-  "generate_dependency",
-  "replan_unit",
-  "confirm_request_duration",
-  "configure_provider",
-  "repair_artifact_state",
-  "retry_artifact_download",
-]);
-
-export function draftDocType(draft: WorkflowDraft): DraftDocType | null {
-  return DOC_TYPE_BY_DRAFT_KIND[draft.kind] ?? null;
-}
+interface Facts { plan: WorkflowPlan; content: WorkflowContent; steps: Map<string, WorkflowPlanStep>; }
 
 function ids(collection: WorkflowArtifactCollection | undefined, key: "current_ids" | "stale_ids" | "missing_ids") {
   const value = collection?.[key];
   return Array.isArray(value) ? value : [];
 }
 
-/** 准入被拒时悬停显示的原因，准入成立时为 null。「此类项目不适用」的操作由调用方用 `operationApplies` 过滤掉入口。 */
+
 export function refusalReason(t: TFunction, operation: WorkflowOperation | undefined): string | null {
   if (!operation || operation.state === "admitted") return null;
   const reason = operation.reason ?? "unknown";
   return t(`workflow:refusal_${reason}`, { defaultValue: t("workflow:refusal_unknown") });
 }
 
-function operationApplies(operation: WorkflowOperation | undefined): boolean {
-  return operation !== undefined && operation.state !== "not_applicable";
-}
 
-interface Facts {
-  plan: WorkflowPlan;
-  content: WorkflowContent;
-  isAd: boolean;
-  unitWordKey: "storyboard" | "unit";
-  steps: Map<string, WorkflowPlanStep>;
-}
-
-/** 媒体类内容的一句话现状：「N 个中 M 个已生成」，都齐时「全部 N 个已生成」。 */
 function mediaStatus(t: TFunction, collection: WorkflowArtifactCollection | undefined): { status: string; tone: StepRowTone } {
   if (collection?.state === "blocked") return { status: t("workflow:status_unreadable"), tone: "danger" };
   const available = ids(collection, "current_ids").length + ids(collection, "stale_ids").length;
@@ -215,37 +63,6 @@ function mediaStatus(t: TFunction, collection: WorkflowArtifactCollection | unde
   return { status: t("workflow:status_media_some", { count: total, available }), tone: "partial" };
 }
 
-/** 补充集原文：集页上无原文的集直接显示填写框，按下后聚焦到它。 */
-function provideSourceAct(t: TFunction): StepAct {
-  return {
-    key: "provide-source",
-    label: t("workflow:act_provide_source"),
-    kind: "nav",
-    intent: { type: "show_surface", surface: "episode_source" },
-  };
-}
-
-/** 去「脚本规划」tab 的起步区规划脚本，附加指令在那里填写。 */
-function goPlanScriptAct(t: TFunction): StepAct {
-  return {
-    key: "go-plan",
-    label: t("workflow:act_go_plan_script"),
-    kind: "nav",
-    intent: { type: "show_surface", surface: "script_plan" },
-  };
-}
-
-function blankScriptAct(t: TFunction): StepAct {
-  return { key: "blank-script", label: t("dashboard:blank_script_start"), kind: "nav", intent: { type: "start_blank_script" } };
-}
-
-function draftStatus(t: TFunction, draft: WorkflowDraft): string {
-  return draft.needs_repair ? t("workflow:status_draft_repair") : t("workflow:status_draft_agent");
-}
-
-function draftOf(content: WorkflowContent, promptAuthoring: boolean): WorkflowDraft | undefined {
-  return content.drafts.find((draft) => (draft.kind === PROMPT_AUTHORING_DRAFT_KIND) === promptAuthoring);
-}
 
 function stepsFor(facts: Facts, stepIds: string[]): WorkflowPlanStep[] {
   return stepIds.flatMap((id) => {
@@ -254,329 +71,12 @@ function stepsFor(facts: Facts, stepIds: string[]): WorkflowPlanStep[] {
   });
 }
 
+
 function withRunning(row: StepRowView): StepRowView {
   return row.steps.some((step) => step.state === "active") ? { ...row, tone: "running" } : row;
 }
 
-function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
-  const { t } = ctx;
-  const { plan, content } = facts;
-  const status = plan.status;
-  const formal = content.formal_script;
-  const itemCount = content.script_item_count ?? 0;
-  const rows: StepRowView[] = [];
-  const nextType = plan.next_action.type;
 
-  if (facts.isAd) {
-    const present = content.ad_inputs === "present";
-    const notes: StepNote[] = [];
-    if (content.products_without_selling_points.length > 0) {
-      notes.push({
-        key: "selling-points",
-        tone: "info",
-        text: t("workflow:note_products_without_selling_points", {
-          count: content.products_without_selling_points.length,
-          names: formatNameList(content.products_without_selling_points, ctx.lang),
-        }),
-        act: {
-          key: "selling-points",
-          label: t("workflow:act_view_products"),
-          kind: "nav",
-          intent: { type: "route", path: `/${WORKSPACE_ROUTE_PRODUCTS}` },
-        },
-      });
-    }
-    rows.push({
-      key: "brief",
-      title: t("workflow:row_brief"),
-      tone: present ? "done" : "todo",
-      status: present ? t("workflow:status_brief_present") : t("workflow:status_brief_absent"),
-      notes,
-      acts: present
-        ? [{ key: "edit-brief", label: t("workflow:act_edit_brief"), kind: "nav", intent: { type: "route", path: "/" } }]
-        : [],
-      steps: stepsFor(facts, ["project_input", "selling_points"]),
-    });
-  } else {
-    const present = content.episode_source === "present";
-    const notes: StepNote[] = [];
-    if (content.episode_plan_stale) {
-      notes.push({
-        key: "plan-stale",
-        tone: "warn",
-        text: t("workflow:note_episode_plan_stale"),
-        act: {
-          key: "view-source",
-          label: t("workflow:act_view_source"),
-          kind: "nav",
-          intent: { type: "route", path: episodesViewPath({ episode: ctx.episodeId }) },
-        },
-      });
-    }
-    const planDraft = draftOf(content, false);
-    const planState = status.artifacts.script_plan?.state;
-    // 填写集原文的界面只在本集既没有规划也没有草稿时显示，其余时候这个入口点了没有去处。
-    const sourceSurfaceShown = (planState === undefined || planState === "missing") && content.drafts.length === 0;
-    const acts: StepAct[] =
-      !present &&
-      formal !== "present" &&
-      sourceSurfaceShown &&
-      nextType !== "start_blank_script" &&
-      nextType !== "provide_episode_source"
-        ? [provideSourceAct(t)]
-        : [];
-    const planningSteps = stepsFor(facts, ["episode_plan"]);
-    const planning = planningSteps.some((step) => step.state === "active");
-    // 短剧工厂导入的集不走集原文，整行不出现（含「补充集原文」入口）；要走原生路线时补了原文自然回来。
-    if (!content.script_from_short_drama) {
-      rows.push({
-        key: "source",
-        title: t("workflow:row_source"),
-        tone: planning ? "running" : content.episode_plan_stale ? "warn" : present ? "done" : "todo",
-        status: present ? t("workflow:status_source_present") : t("workflow:status_source_absent"),
-        notes,
-        acts,
-        steps: planningSteps,
-      });
-    }
-
-    const review = status.gates.script_plan_review?.state;
-    let planStatus: string;
-    let planTone: StepRowTone;
-    if (planDraft) {
-      planStatus = draftStatus(t, planDraft);
-      planTone = "warn";
-    } else if (planState === "blocked") {
-      planStatus = t("workflow:status_unreadable");
-      planTone = "danger";
-    } else if (planState === "current" || planState === "stale") {
-      const confirmed = review === "confirmed";
-      planStatus = confirmed ? t("workflow:status_plan_confirmed") : t("workflow:status_plan_pending_review");
-      planTone = confirmed ? "done" : "partial";
-    } else {
-      planStatus =
-        formal !== "present"
-          ? t("workflow:status_none")
-          : content.script_from_short_drama
-            ? t("workflow:status_plan_short_drama")
-            : t("workflow:status_plan_not_used");
-      planTone = "todo";
-    }
-    const planOp = status.operations.prepare_script_plan;
-    const planOffered = !planDraft && planState === "missing" && nextType !== "prepare_script_plan" && operationApplies(planOp);
-    let planActs: StepAct[] = [];
-    if (planOffered && formal !== "present") {
-      // 首次规划只在「脚本规划」tab 的起步区里做，这里只跳过去。
-      planActs = [{ ...goPlanScriptAct(t), disabledReason: refusalReason(t, planOp) }];
-    } else if (planOffered && formal === "present") {
-      // 已有正式脚本（如从空白开始）时也能整集交给 AI 规划；新规划待确认，经覆盖确认才替换正式脚本。
-      planActs = [
-        {
-          key: "plan",
-          label: t("dashboard:script_plan_open"),
-          kind: "ai",
-          intent: { type: "open_script_plan" },
-          disabledReason: refusalReason(t, planOp),
-        },
-      ];
-    }
-    // 短剧工厂导入的集没有脚本规划时整行不出现；真跑了原生规划（current/stale）行会回来。
-    if (!content.script_from_short_drama) {
-      rows.push({
-        key: "plan",
-        title: t("workflow:row_plan"),
-        tone: planTone,
-        status: planStatus,
-        notes: [],
-        acts: planActs,
-        steps: stepsFor(facts, ["script_plan_content", "script_plan_review"]),
-      });
-    }
-  }
-
-  const unitWord = facts.unitWordKey;
-  let scriptStatus: string;
-  let scriptTone: StepRowTone;
-  if (formal === "invalid") {
-    scriptStatus = t("workflow:status_unreadable");
-    scriptTone = "danger";
-  } else if (formal === "present") {
-    const count = t(`workflow:status_items_${unitWord}`, { count: itemCount });
-    scriptStatus =
-      ctx.episodeDurationSeconds && itemCount > 0
-        ? t("workflow:status_items_with_duration", { items: count, seconds: ctx.episodeDurationSeconds })
-        : count;
-    scriptTone = itemCount > 0 ? "done" : "todo";
-  } else {
-    scriptStatus = t("workflow:status_none");
-    scriptTone = "todo";
-  }
-  // 广告/短片的整份重做：服务端先报输入缺失，`formal_script_exists` 只拦首次生成，不拦重做。
-  const generateOp = status.operations.generate_script;
-  const scriptActs: StepAct[] =
-    facts.isAd && formal === "present" && operationApplies(generateOp)
-      ? [
-          {
-            key: "regenerate-script",
-            label: t("dashboard:ad_script_regenerate"),
-            kind: "ai",
-            intent: { type: "open_ad_script", regenerate: true },
-            disabledReason: generateOp?.reason === "formal_script_exists" ? null : refusalReason(t, generateOp),
-          },
-        ]
-      : [];
-  rows.push({
-    key: "script",
-    title: t("workflow:row_script"),
-    tone: scriptTone,
-    status: scriptStatus,
-    notes: [],
-    acts: scriptActs,
-    steps: stepsFor(facts, facts.isAd ? ["final_script", "script_structure"] : ["script_structure"]),
-  });
-
-  const promptDraft = draftOf(content, true);
-  const pending = content.pending_authoring_ids.length;
-  const replan = content.needs_replan_ids;
-  let promptsStatus: string;
-  let promptsTone: StepRowTone;
-  if (promptDraft) {
-    promptsStatus = draftStatus(t, promptDraft);
-    promptsTone = "warn";
-  } else if (formal !== "present" || itemCount === 0) {
-    promptsStatus = t("workflow:status_none");
-    promptsTone = "todo";
-  } else if (pending > 0) {
-    promptsStatus = t("workflow:status_prompts_pending", { count: pending, total: itemCount });
-    promptsTone = "partial";
-  } else {
-    promptsStatus = t("workflow:status_prompts_done");
-    promptsTone = "done";
-  }
-  const promptsNotes: StepNote[] = [];
-  if (replan.length > 0 && nextType !== "repair_video_units") {
-    promptsTone = "warn";
-    promptsNotes.push({
-      key: "replan",
-      tone: "warn",
-      text: t("workflow:note_needs_replan", { count: replan.length, ids: formatNameList(replan, ctx.lang) }),
-      act: ctx.canViewUnit
-        ? { key: "view-replan", label: t("workflow:act_view_unit", { id: replan[0] }), kind: "nav", intent: { type: "view_unit", unitId: replan[0] } }
-        : undefined,
-    });
-  }
-  const authorOp = status.operations.author_prompts;
-  const promptsActs: StepAct[] =
-    pending > 0 && nextType !== "author_prompts" && !promptDraft && ctx.canAuthorPrompts
-      ? [
-          {
-            key: "author-prompts",
-            label: t("dashboard:prompt_authoring_open"),
-            kind: "ai",
-            intent: { type: "open_author_prompts" },
-            disabledReason: refusalReason(t, authorOp),
-          },
-        ]
-      : [];
-  rows.push({
-    key: "prompts",
-    title: t("workflow:row_prompts"),
-    tone: promptsTone,
-    status: promptsStatus,
-    notes: promptsNotes,
-    acts: promptsActs,
-    steps: stepsFor(facts, facts.isAd ? [] : ["final_script"]),
-  });
-
-  rows.push(assetsRow(facts, ctx));
-
-  if (status.project.generation_mode === "storyboard") {
-    const media = mediaStatus(t, status.artifacts.storyboards);
-    if (!content.script_from_short_drama) {
-      rows.push({
-        key: "boards",
-        title: status.project.grid_storyboard ? t("workflow:row_boards_grid") : t("workflow:row_boards"),
-        tone: formal === "present" ? media.tone : "todo",
-        status: formal === "present" ? media.status : t("workflow:status_none"),
-        notes: [],
-        acts: [],
-        steps: stepsFor(facts, ["storyboard"]),
-      });
-    }
-    // 参考素材（单分镜宫格）紧随分镜图：视频提示词从这里取连续关键帧（ADR 0099）。
-    const materials = mediaStatus(t, status.artifacts.shot_grids);
-    rows.push({
-      key: "materials",
-      title: t("workflow:row_materials"),
-      tone: formal === "present" ? materials.tone : "todo",
-      status: formal === "present" ? materials.status : t("workflow:status_none"),
-      notes: [],
-      acts: [],
-      steps: stepsFor(facts, ["shot_grid"]),
-    });
-    // 视频提示词是参考素材的收尾产物：一行一产物集合，过期的算「还没写好」（D-13 / D-19）。
-    const videoPromptIds = ids(status.artifacts.video_prompts, "stale_ids");
-    const videoPromptsForRow: WorkflowArtifactCollection = {
-      ...status.artifacts.video_prompts,
-      missing_ids: [...ids(status.artifacts.video_prompts, "missing_ids"), ...videoPromptIds],
-    };
-    const videoPrompts = mediaStatus(t, videoPromptsForRow);
-    rows.push({
-      key: "video_prompt",
-      title: t("dashboard:detail_video_prompt_title"),
-      tone: formal === "present" ? videoPrompts.tone : "todo",
-      status: formal === "present" ? videoPrompts.status : t("workflow:status_none"),
-      notes:
-        videoPromptIds.length > 0
-          ? [
-              {
-                key: "video-prompt-stale",
-                tone: "warn",
-                text: t("dashboard:video_prompt_stale_hint", { count: videoPromptIds.length }),
-              },
-            ]
-          : [],
-      acts: [],
-      steps: stepsFor(facts, ["video_prompt"]),
-    });
-  }
-
-  if (status.project.content_mode === "narration" && status.project.generation_mode === "storyboard") {
-    const audio = status.artifacts.audio;
-    const postProduction = audio?.state === "not_applicable";
-    const media = postProduction ? null : mediaStatus(t, audio);
-    rows.push({
-      key: "voice",
-      title: t("workflow:row_voice"),
-      tone: media && formal === "present" ? media.tone : postProduction ? "done" : "todo",
-      status: postProduction
-        ? t("workflow:status_voice_post_production")
-        : formal === "present" && media
-          ? media.status
-          : t("workflow:status_none"),
-      notes: [],
-      acts: [],
-      steps: [],
-    });
-  }
-
-  const videos = mediaStatus(t, status.artifacts.videos);
-  rows.push({
-    key: "videos",
-    title: t("workflow:row_videos"),
-    tone: formal === "present" ? videos.tone : "todo",
-    status: formal === "present" ? videos.status : t("workflow:status_none"),
-    notes: [],
-    acts: [],
-    steps: stepsFor(facts, ["video"]),
-  });
-
-  rows.push(editRow(facts, ctx));
-
-  return rows.map(withRunning);
-}
-
-/** 剪辑的两个入口：交给 Agent 剪辑为主，按脚本机械新建一条剪辑时间线为次；准入是本集至少有一个可用视频。 */
 function editActs(facts: Facts, ctx: StepListContext): StepAct[] {
   const { t } = ctx;
   const refusal = refusalReason(t, facts.plan.status.operations.create_edit_timeline);
@@ -592,16 +92,17 @@ function editActs(facts: Facts, ctx: StepListContext): StepAct[] {
   ];
 }
 
-/** 本集剪辑时间线条数：优先取剪辑概况，取不到时按计划里的剪辑时间线 ID 计。 */
+
 function editTimelineCount(facts: Facts, ctx: StepListContext): number {
   const ids = facts.plan.status.artifacts.edit_timelines?.timeline_ids;
   return ctx.editOverview?.timeline_count ?? (Array.isArray(ids) ? ids.length : 0);
 }
 
-/** 已有剪辑时间线时去剪辑视图的文字链；给出 `timelineId` 时切到那条剪辑时间线。 */
+
 function openEditViewAct(ctx: StepListContext, key: string, label: string, timelineId?: string): StepAct {
   return { key, label, kind: "nav", intent: { type: "route", path: episodeEditViewPath(ctx.episodeId, timelineId) } };
 }
+
 
 function editRow(facts: Facts, ctx: StepListContext): StepRowView {
   const { t } = ctx;
@@ -640,6 +141,7 @@ function editRow(facts: Facts, ctx: StepListContext): StepRowView {
     steps: stepsFor(facts, ["edit"]),
   };
 }
+
 
 function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
   const { t } = ctx;
@@ -717,49 +219,6 @@ function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
   };
 }
 
-/** 下一步挂在哪一行。 */
-function ownerRow(facts: Facts, rows: StepRowView[], action: WorkflowNextAction): StepRowKey | null {
-  switch (action.type) {
-    case "resolve_draft":
-      return action.args.draft_kind === PROMPT_AUTHORING_DRAFT_KIND ? "prompts" : "plan";
-    case "prepare_script_plan":
-    case "confirm_script_plan":
-      return "plan";
-    case "provide_episode_source":
-      return facts.isAd ? "script" : "source";
-    case "collect_project_input":
-      return facts.isAd ? "brief" : null;
-    case "start_blank_script":
-    case "generate_script":
-    case "add_script_items":
-    case "patch_episode_script":
-      return "script";
-    case "author_prompts":
-    case "repair_video_units":
-      return "prompts";
-    case "plan_short_drama_storyboards":
-      return "script";
-    case "author_video_prompts":
-      // 视频提示词自成一行（D-13）；没有这一行（广告 / 参考生视频）时不下发这个动作。
-      return rows.some((row) => row.key === "video_prompt") ? "video_prompt" : null;
-    case "generate_asset_sheets":
-    case "prepare_episode_assets":
-      return "assets";
-    case "generate_storyboards":
-    case "generate_grid":
-      return rows.some((row) => row.key === "boards") ? "boards" : null;
-    case "generate_shot_grids":
-      return rows.some((row) => row.key === "materials") ? "materials" : null;
-    case "generate_videos":
-      return "videos";
-    case "create_edit_timeline":
-      return "edit";
-    case "wait_for_task":
-      return rows.find((row) => row.steps.some((step) => step.state === "active"))?.key ?? null;
-    default:
-      return ADMISSION_ACTIONS.has(action.type) ? "videos" : null;
-  }
-}
 
 function agentAct(t: TFunction, text: string, label?: string, disabledReason?: string | null): StepAct {
   return {
@@ -771,384 +230,103 @@ function agentAct(t: TFunction, text: string, label?: string, disabledReason?: s
   };
 }
 
-/** 广告/短片「AI 生成脚本」：带上下一步的附加指令直接提交，结果写成正式脚本。 */
-function adScriptAct(t: TFunction, disabledReason?: string | null): StepAct {
-  return {
-    key: "ai-generate-script",
-    label: t("dashboard:ad_script_generate"),
-    kind: "ai",
-    intent: { type: "generate_ad_script" },
-    disabledReason,
+
+/** 工厂内容及视觉派生物按制作顺序呈现。 */
+function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
+  const { t } = ctx;
+  const { content, plan } = facts;
+  const status = plan.status;
+  const source = content.script_from_short_drama === true;
+  const formal = content.formal_script === "present";
+  const row = (key: StepRowKey, title: string, collection: WorkflowArtifactCollection | undefined, stepIds: string[]): StepRowView => {
+    const media = mediaStatus(t, collection);
+    return { key, title, tone: formal ? media.tone : "todo", status: formal ? media.status : t("workflow:status_none"), notes: [], acts: [], steps: stepsFor(facts, stepIds) };
   };
+  const rows: StepRowView[] = [{
+    key: "source", title: t("dashboard:episode_view_source"), tone: source ? "done" : "todo",
+    status: source ? t("workflow:status_source_present") : t("workflow:status_source_absent"), notes: [],
+    acts: [{ key: "factory-source", label: t("dashboard:episode_view_source"), kind: "nav", intent: { type: "route", path: "/" + WORKSPACE_ROUTE_EPISODES + "/" + ctx.episodeId + "?" + EPISODE_VIEW_PARAM + "=source" } }],
+    steps: stepsFor(facts, ["short_drama_source"]),
+  }, assetsRow(facts, ctx), {
+    key: "script", title: t("dashboard:short_drama_ai_storyboard"),
+    tone: content.formal_script === "invalid" ? "danger" : formal && (content.script_item_count ?? 0) > 0 ? "done" : "todo",
+    status: formal ? t("workflow:status_items_storyboard", { count: content.script_item_count ?? 0 }) : t("workflow:status_none"),
+    notes: [], acts: [], steps: stepsFor(facts, ["script_structure"]),
+  }];
+  const pending = content.pending_authoring_ids.length;
+  rows.push({
+    key: "prompts", title: t("workflow:row_prompts"), tone: !formal ? "todo" : pending ? "partial" : "done",
+    status: !formal ? t("workflow:status_none") : pending ? t("workflow:status_prompts_pending", { count: pending, total: content.script_item_count ?? 0 }) : t("workflow:status_prompts_done"),
+    notes: [], acts: pending && ctx.canAuthorPrompts && plan.next_action.type !== "author_prompts" ? [{ key: "author-prompts", label: t("dashboard:prompt_authoring_open"), kind: "ai", intent: { type: "open_author_prompts" }, disabledReason: refusalReason(t, status.operations.author_prompts) }] : [],
+    steps: stepsFor(facts, ["final_script"]),
+  });
+  rows.push(row("materials", t("workflow:row_materials"), status.artifacts.shot_grids, ["shot_grid"]));
+  const stale = ids(status.artifacts.video_prompts, "stale_ids");
+  const videoPrompts = row("video_prompt", t("dashboard:detail_video_prompt_title"), {
+    ...status.artifacts.video_prompts, missing_ids: [...ids(status.artifacts.video_prompts, "missing_ids"), ...stale], stale_ids: [],
+  }, ["video_prompt"]);
+  if (stale.length) videoPrompts.notes.push({ key: "video-prompt-stale", tone: "warn", text: t("dashboard:video_prompt_stale_hint", { count: stale.length }) });
+  rows.push(videoPrompts);
+  if (status.artifacts.audio && status.artifacts.audio.state !== "not_applicable") rows.push(row("voice", t("workflow:row_voice"), status.artifacts.audio, []));
+  rows.push(row("videos", t("workflow:row_videos"), status.artifacts.videos, ["video"]), editRow(facts, ctx));
+  return rows.map(withRunning);
 }
 
 function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): NextStepView | null {
-  const { t } = ctx;
-  const { plan, content } = facts;
-  const action = plan.next_action;
-  if (action.type === "none" || plan.blockers.length > 0) return null;
-  const rowKey = ownerRow(facts, rows, action);
-  if (rowKey === null) return null;
-  const episodeRef = ctx.episodeRef;
-  const count = action.requested_ids.length;
-  const base = {
-    rowKey,
-    actionType: action.type,
-    title: t(`workflow:next_title_${action.type}`, { defaultValue: t(`workflow:action_${action.type}`, { defaultValue: t("workflow:action_unknown") }) }),
-    detail: null as string | null,
-    instruction: null as StepInstruction | null,
-    primary: [] as StepAct[],
-    alternatives: [] as StepAct[],
-    hint: null as StepNote | null,
+  const action = facts.plan.next_action;
+  if (action.type === "none" || facts.plan.blockers.length > 0) return null;
+  const owners: Partial<Record<WorkflowNextAction["type"], StepRowKey>> = {
+    collect_project_input: "source", prepare_episode_assets: "assets", generate_asset_sheets: "assets",
+    plan_short_drama_storyboards: "script", patch_episode_script: "script", author_prompts: "prompts",
+    generate_shot_grids: "materials", author_video_prompts: "video_prompt", generate_videos: "videos",
+    create_edit_timeline: "edit", configure_provider: "videos", retry: "videos", fix_input: "videos",
+    generate_dependency: "videos", repair_artifact_state: "videos", retry_artifact_download: "videos", confirm_request_duration: "videos",
   };
-  const alternatives = plan.next_alternatives.flatMap((alt): StepAct[] => {
-    if (alt.type === "provide_episode_source" && !facts.isAd) return [provideSourceAct(t)];
-    if (alt.type === "start_blank_script") return [blankScriptAct(t)];
-    if (alt.type === "create_episode") {
-      return [
-        {
-          key: "create-episode",
-          label: t("workflow:action_create_episode"),
-          kind: "nav",
-          intent: { type: "route", path: episodesViewPath({ create: true }) },
-        },
-      ];
-    }
-    return [];
-  });
-
+  const rowKey = action.type === "wait_for_task" ? rows.find(row => row.steps.some(step => step.state === "active"))?.key : owners[action.type];
+  if (!rowKey) return null;
+  const { t } = ctx;
+  const base: NextStepView = {
+    rowKey, actionType: action.type, title: t("workflow:action_" + action.type),
+    detail: null, instruction: null, primary: [], alternatives: [], hint: null,
+  };
+  const boardPath = "/" + WORKSPACE_ROUTE_EPISODES + "/" + ctx.episodeId + "?" + EPISODE_VIEW_PARAM + "=board";
   switch (action.type) {
+    case "collect_project_input":
+      return { ...base, primary: [{ key: "factory", label: t("dashboard:short_drama_factory_generate"), kind: "nav", intent: { type: "route", path: "/" } }] };
     case "prepare_episode_assets":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_prepare_episode_assets"),
-        primary: [{
-          key: "open-assets",
-          label: t("workflow:act_open_assets_view"),
-          kind: "nav",
-          intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) },
-        }],
-      };
+      return { ...base, detail: t("workflow:next_detail_prepare_episode_assets"), primary: [{ key: "assets", label: t("workflow:act_open_assets_view"), kind: "nav", intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) } }] };
     case "plan_short_drama_storyboards":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_plan_short_drama_storyboards"),
-        primary: [{
-          key: "open-storyboard",
-          label: t("dashboard:short_drama_ai_storyboard"),
-          kind: "nav",
-          intent: {
-            type: "route",
-            path: `/${WORKSPACE_ROUTE_EPISODES}/${ctx.episodeId}?${EPISODE_VIEW_PARAM}=board`,
-          },
-        }],
-      };
-    case "resolve_draft": {
-      const draft = content.drafts.find((d) => d.kind === action.args.draft_kind) ?? content.drafts[0];
-      const docType = draft ? draftDocType(draft) : null;
-      if (!draft || !docType) return { ...base, detail: t("workflow:next_detail_resolve_draft_unknown") };
-      const surface: EpisodeSurface = draft.kind === PROMPT_AUTHORING_DRAFT_KIND ? "prompt_authoring_draft" : "script_plan";
-      if (draft.needs_repair) {
-        return {
-          ...base,
-          title: t("workflow:next_title_resolve_draft_repair"),
-          detail: t("workflow:next_detail_resolve_draft_repair"),
-          instruction: { initial: "", persist: null },
-          primary: [
-            { key: "agent", label: t("workflow:act_agent"), kind: "agent", intent: { type: "draft_to_agent", docType } },
-            { key: "ai-repair", label: t("dashboard:draft_ai_repair"), kind: "ai", intent: { type: "repair_draft", docType } },
-          ],
-          alternatives: [
-            { key: "edit-draft", label: t("workflow:act_edit_draft"), kind: "nav", intent: { type: "show_surface", surface } },
-            ...(surface === "script_plan"
-              ? [
-                  {
-                    key: "regenerate",
-                    label: t("dashboard:script_plan_regenerate_open"),
-                    kind: "nav",
-                    intent: { type: "open_script_plan_over_draft" },
-                  } satisfies StepAct,
-                ]
-              : []),
-            { key: "discard-draft", label: t("dashboard:draft_discard_action"), kind: "danger", intent: { type: "discard_draft", docType } },
-          ],
-        };
-      }
-      return {
-        ...base,
-        title: t("workflow:next_title_resolve_draft_agent"),
-        detail: t("workflow:next_detail_resolve_draft_agent"),
-        primary: [
-          agentAct(t, t("dashboard:draft_agent_finish_prefill", { episodeRef, docType }), t("dashboard:draft_agent_finish")),
-        ],
-        alternatives: [
-          { key: "discard-draft", label: t("dashboard:draft_agent_discard"), kind: "danger", intent: { type: "discard_draft", docType } },
-        ],
-      };
-    }
-    case "prepare_script_plan":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_prepare_script_plan"),
-        primary: [goPlanScriptAct(t)],
-        alternatives,
-      };
-    case "start_blank_script":
-      return {
-        ...base,
-        detail: t(`workflow:next_detail_start_blank_script_${facts.unitWordKey}`),
-        primary: [blankScriptAct(t)],
-        alternatives,
-      };
-    case "provide_episode_source":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_provide_episode_source"),
-        primary: [provideSourceAct(t)],
-      };
-    case "confirm_script_plan":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_confirm_script_plan"),
-        primary: [
-          { key: "go-confirm", label: t("workflow:act_go_confirm"), kind: "nav", intent: { type: "show_surface", surface: "script_plan" } },
-        ],
-      };
-    case "generate_script":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_generate_script"),
-        instruction: { initial: "", persist: null },
-        primary: [agentAct(t, t("workflow:agent_prefill_generate_script", { episodeRef })), adScriptAct(t)],
-        alternatives,
-      };
-    case "collect_project_input": {
-      const reason = refusalReason(t, plan.status.operations.generate_script) ?? t("workflow:refusal_ad_brief_and_products_missing");
-      return {
-        ...base,
-        title: t("workflow:next_title_generate_script"),
-        detail: t("workflow:next_detail_generate_script"),
-        primary: [
-          agentAct(t, t("workflow:agent_prefill_generate_script", { episodeRef }), undefined, reason),
-          adScriptAct(t, reason),
-        ],
-        alternatives,
-        hint: {
-          key: "fill-brief",
-          tone: "info",
-          text: t("workflow:hint_fill_brief"),
-          act: { key: "fill-brief", label: t("workflow:act_fill_brief"), kind: "nav", intent: { type: "route", path: "/" } },
-        },
-      };
-    }
-    case "add_script_items":
-      return {
-        ...base,
-        title: t(`workflow:next_title_add_script_items_${facts.unitWordKey}`),
-        detail: t(`workflow:next_detail_add_script_items_${facts.unitWordKey}`),
-        primary: [agentAct(t, t(`workflow:agent_prefill_add_script_items_${facts.unitWordKey}`, { episodeRef }))],
-        alternatives,
-      };
-    case "author_prompts": {
-      const pending = content.pending_authoring_ids.length;
-      const primary: StepAct[] = [
+      return { ...base, detail: t("workflow:next_detail_plan_short_drama_storyboards"), primary: [{ key: "board", label: t("dashboard:short_drama_ai_storyboard"), kind: "nav", intent: { type: "route", path: boardPath } }] };
+    case "author_prompts":
+      return { ...base, instruction: { initial: ctx.savedPromptInstructions, persist: "prompt_authoring" }, primary: [
         { key: "agent", label: t("workflow:act_agent"), kind: "agent", intent: { type: "author_prompts_to_agent" } },
-      ];
-      if (ctx.canAuthorPrompts) {
-        primary.push({ key: "author", label: t("workflow:act_author_prompts"), kind: "ai", intent: { type: "author_prompts" } });
-      }
-      return {
-        ...base,
-        detail: t("workflow:next_detail_author_prompts", { count: pending }),
-        instruction: { initial: ctx.savedPromptInstructions, persist: "prompt_authoring" },
-        primary,
-      };
-    }
-    case "repair_video_units": {
-      const first = action.requested_ids[0];
-      const primary: StepAct[] = [
-        agentAct(t, t("workflow:agent_prefill_repair_video_units", { episodeRef, ids: formatNameList(action.requested_ids, ctx.lang) })),
-      ];
-      if (first && ctx.canViewUnit) {
-        primary.push({ key: "view", label: t("workflow:act_view_unit", { id: first }), kind: "nav", intent: { type: "view_unit", unitId: first } });
-      }
-      return {
-        ...base,
-        detail: t("workflow:next_detail_repair_video_units", { count, ids: formatNameList(action.requested_ids, ctx.lang) }),
-        primary,
-      };
-    }
-    case "patch_episode_script":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_patch_episode_script"),
-        primary: [agentAct(t, t("workflow:agent_prefill_patch_episode_script", { episodeRef }))],
-      };
-    case "author_video_prompts": {
-      // 宫格已确认、视频提示词还空着的分镜：弹窗预选好这批，字段锁定为视频提示词（D-20）。
-      const awaiting = facts.plan.status.artifacts.video_prompts.awaiting_grid_ids?.length ?? 0;
-      const primary: StepAct[] = [
-        agentAct(t, t("workflow:agent_prefill_author_video_prompts", { episodeRef })),
-        {
-          key: "author-video-prompts",
-          label: t("workflow:act_author_video_prompts", { count }),
-          kind: "ai",
-          intent: { type: "open_video_prompts", entryIds: action.requested_ids },
-        },
-      ];
-      return {
-        ...base,
-        detail: t("workflow:next_detail_author_video_prompts", { count }),
-        primary,
-        hint:
-          awaiting > 0
-            ? { key: "awaiting-grid", tone: "info", text: t("workflow:hint_awaiting_grid", { count: awaiting }) }
-            : null,
-      };
-    }
+        ...(ctx.canAuthorPrompts ? [{ key: "author", label: t("workflow:act_author_prompts"), kind: "ai", intent: { type: "author_prompts" } } satisfies StepAct] : []),
+      ] };
+    case "author_video_prompts":
+      return { ...base, primary: [{ key: "video-prompts", label: t("workflow:act_author_video_prompts", { count: action.requested_ids.length }), kind: "ai", intent: { type: "open_video_prompts", entryIds: action.requested_ids } }] };
     case "generate_asset_sheets":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_generate_asset_sheets", { count, names: formatNameList(action.requested_ids, ctx.lang) }),
-        primary: [
-          agentAct(t, t("workflow:agent_prefill_generate_asset_sheets", { episodeRef })),
-          {
-            key: "batch",
-            label: t("workflow:act_asset_batch", { count }),
-            kind: "ai",
-            intent: { type: "asset_batch", episodeId: ctx.episodeId },
-          },
-        ],
-      };
-    case "generate_storyboards":
-    case "generate_grid":
+      return { ...base, primary: [{ key: "asset-batch", label: t("workflow:act_asset_batch", { count: action.requested_ids.length }), kind: "ai", intent: { type: "asset_batch", episodeId: ctx.episodeId } }] };
     case "generate_shot_grids":
     case "generate_videos": {
-      const primary = [agentAct(t, t(`workflow:agent_prefill_${action.type}`, { episodeRef }))];
-      // 分镜图、参考素材与视频的批量入口与时间线工具栏同一个确认框；参考生视频没有批量入口。
-      const batchKind: StoryboardBatchKind | null =
-        facts.plan.status.project.generation_mode === "reference_video"
-          ? null
-          : action.type === "generate_storyboards"
-            ? "storyboards"
-            : action.type === "generate_videos"
-              ? "videos"
-              : action.type === "generate_shot_grids"
-                ? "shot-grids"
-                : null;
-      if (batchKind) {
-        primary.push({
-          key: "batch",
-          label: t(`dashboard:batch_generate_${batchKind}`),
-          kind: "ai",
-          intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind: batchKind },
-        });
-      }
-      return {
-        ...base,
-        detail: t(`workflow:next_detail_${action.type}`, { count }),
-        primary,
-        hint: unsheetedAssetsHint(facts, ctx, action.type),
-      };
+      const kind = action.type === "generate_videos" ? "videos" : "shot-grids";
+      return { ...base, primary: [{ key: "batch", label: t("dashboard:batch_generate_" + kind), kind: "ai", intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind } }] };
     }
     case "create_edit_timeline":
-      return {
-        ...base,
-        detail: t("workflow:next_detail_create_edit_timeline"),
-        instruction: { initial: "", persist: null },
-        primary: editActs(facts, ctx),
-        alternatives:
-          editTimelineCount(facts, ctx) > 0
-            ? [openEditViewAct(ctx, "open-edit-view", t("workflow:act_open_edit_view"))]
-            : [],
-      };
-    case "wait_for_task":
-      if (rowKey === "source") {
-        return {
-          ...base,
-          title: t("workflow:next_title_wait_for_episode_planning"),
-          detail: t("workflow:next_detail_wait_for_episode_planning"),
-          primary: [
-            {
-              key: "view-planning",
-              label: t("workflow:act_view_planning_progress"),
-              kind: "nav",
-              intent: { type: "route", path: episodesViewPath() },
-            },
-          ],
-        };
-      }
-      return { ...base, detail: t("workflow:next_detail_wait_for_task") };
+      return { ...base, instruction: { initial: "", persist: null }, primary: editActs(facts, ctx) };
     case "configure_provider":
-      return {
-        ...base,
-        primary: [
-          { key: "settings", label: t("workflow:act_open_settings"), kind: "nav", intent: { type: "route", path: `~${ROUTE_APP_SETTINGS}` } },
-        ],
-      };
-    case "confirm_request_duration":
-      // 确认入口在视频行的整批准入陈述里。
-      return base;
-    default:
-      return ADMISSION_ACTIONS.has(action.type)
-        ? { ...base, primary: [agentAct(t, t("workflow:agent_prefill_admission", { episodeRef }))] }
-        : base;
+      return { ...base, primary: [{ key: "settings", label: t("workflow:act_open_settings"), kind: "nav", intent: { type: "route", path: "~" + ROUTE_APP_SETTINGS } }] };
+    case "wait_for_task":
+    case "confirm_request_duration": return base;
+    default: return { ...base, primary: [agentAct(t, t("workflow:agent_prefill_admission", { episodeRef: ctx.episodeRef }))] };
   }
-}
-
-/**
- * 引用了还没有资产图的资产时，生成入口会拒绝引用它们的分镜：下一步照常给出，另附一条跳转提示。
- * 提示只说数量，具体是哪些资产、为什么没有资产图由资产图行的提醒陈述。视频与参考素材同处
- * 分镜图之后，缺口已由分镜图那一步陈述过，不再重复；参考生视频模式直接引用资产，照常提示。
- */
-function unsheetedAssetsHint(facts: Facts, ctx: StepListContext, actionType: WorkflowNextAction["type"]): StepNote | null {
-  const names = facts.content.referenced_assets_without_sheet;
-  if (names.length === 0) return null;
-  if (actionType === "generate_videos" && facts.plan.status.project.generation_mode !== "reference_video") return null;
-  if (actionType === "generate_shot_grids") return null;
-  const { t } = ctx;
-  const path = ctx.assetRoute(names[0]);
-  return {
-    key: "unsheeted-assets",
-    tone: "warn",
-    text: t(`workflow:hint_assets_without_sheet_${facts.unitWordKey}`, { count: names.length }),
-    act: path ? { key: "unsheeted-gallery", label: t("workflow:act_view_gallery"), kind: "nav", intent: { type: "route", path } } : undefined,
-  };
-}
-
-function adDuration(facts: Facts, ctx: StepListContext): StepListView["adDuration"] {
-  if (!facts.isAd || !ctx.adTargetSeconds) return null;
-  const total = facts.content.formal_script === "present" ? ctx.episodeDurationSeconds : null;
-  return {
-    total,
-    target: ctx.adTargetSeconds,
-    over: total !== null && total > ctx.adTargetSeconds * AD_DURATION_OVER_RATIO,
-  };
 }
 
 export function buildStepList(plan: WorkflowPlan, ctx: StepListContext): StepListView | null {
   const content = plan.status.content;
-  if (content === null) return null;
-  const facts: Facts = {
-    plan,
-    content,
-    isAd: plan.status.project.content_mode === "ad",
-    unitWordKey: plan.status.project.generation_mode === "reference_video" ? "unit" : "storyboard",
-    steps: new Map(plan.steps.map((step) => [step.id, step])),
-  };
-  const rows = buildRows(facts, ctx);
-  const next = buildNext(facts, rows, ctx);
-  const { t } = ctx;
-  let summary: string;
-  const editDone = content.episode_complete === true;
-  if (next) {
-    const row = rows.find((candidate) => candidate.key === next.rowKey);
-    summary = row ? t("workflow:summary_row", { title: row.title, status: row.status }) : next.title;
-  } else if (editDone) {
-    summary = t("workflow:summary_complete");
-  } else {
-    const flagged = rows.find((row) => row.tone === "danger" || row.tone === "warn");
-    summary = flagged ? t("workflow:summary_row", { title: flagged.title, status: flagged.status }) : "";
-  }
-  return { rows, next, summary, adDuration: adDuration(facts, ctx) };
+  if (!content) return null;
+  const facts: Facts = { plan, content, steps: new Map(plan.steps.map(step => [step.id, step])) };
+  const rows = buildRows(facts, ctx), next = buildNext(facts, rows, ctx);
+  const summaryRow = next ? rows.find(row => row.key === next.rowKey) : rows.find(row => row.tone === "danger" || row.tone === "warn");
+  const summary = summaryRow ? ctx.t("workflow:summary_row", { title: summaryRow.title, status: summaryRow.status }) : content.episode_complete ? ctx.t("workflow:summary_complete") : "";
+  return { rows, next, summary };
 }

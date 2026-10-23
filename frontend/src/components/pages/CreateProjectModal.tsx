@@ -8,7 +8,7 @@ import { useAppStore } from "@/stores/app-store";
 import { DEFAULT_TEMPLATE_ID } from "@/data/style-templates";
 import { errMsg, voidCall, voidPromise } from "@/utils/async";
 import { formatNameList } from "@/utils/list-format";
-import { catalogDisplayNames, catalogDurations } from "@/utils/provider-models";
+import { catalogDisplayNames } from "@/utils/provider-models";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { isValidEpisodeTargetDuration } from "@/components/shared/EpisodeTargetDurationField";
@@ -92,13 +92,9 @@ export function CreateProjectModal() {
   const [step, setStep] = useState<WizardStep>(1);
   const [basics, setBasics] = useState<WizardBasicsValue>({
     title: "",
-    contentMode: null,
     aspectRatio: "9:16",
-    generationRoute: null,
-    gridStoryboard: false,
   });
   const [duration, setDuration] = useState<WizardDurationValue>({
-    targetDuration: 60,
     episodeTargetDuration: null,
     speechRate: null,
   });
@@ -168,40 +164,13 @@ export function CreateProjectModal() {
 
   const close = () => setShowCreateModal(false);
 
-  // 第二步选好时长与分辨率后还能退回第一步改生成模式。分辨率只由执行模型决定，模型没换就不动；
-  // 时长按新执行模型的声明全集校验，落在全集外的退回自动。参考图路径把该值收窄掉的情形由
-  // 第二步按服务端成因的提示引导重选——收窄结果只有服务端能给，这里是同步事件处理器。
-  const handleBasicsChange = (next: WizardBasicsValue) => {
-    setBasics(next);
-    if (next.generationRoute === basics.generationRoute) return;
-    const globals = generationData?.globalDefaults ?? { video: "", videoI2V: "", videoR2V: "" };
-    const before = executingVideoModel(models, globals, basics.generationRoute === "reference_video");
-    const after = executingVideoModel(models, globals, next.generationRoute === "reference_video");
-    const nextDurations = catalogDurations(
-      generationData?.providers ?? [],
-      generationData?.customProviders ?? [],
-      after,
-    );
-    setModels((prev) => ({
-      ...prev,
-      videoResolution: before !== after ? null : prev.videoResolution,
-      defaultDuration:
-        prev.defaultDuration !== null && nextDurations?.includes(prev.defaultDuration) ? prev.defaultDuration : null,
-    }));
-  };
-
-  const isAd = basics.contentMode === "ad";
-
   // 当前步骤还缺的必填项与需要修正的字段，按界面上的顺序列出
   const missing: string[] = [];
   const invalid: string[] = [];
   if (step === 1) {
     if (!basics.title.trim()) missing.push(t("project_title"));
-    if (!basics.contentMode) missing.push(t("content_mode"));
-    if (!basics.generationRoute) missing.push(t("generation_route"));
   } else if (step === 2) {
-    if (isAd && duration.targetDuration === null) invalid.push(t("target_duration_label"));
-    if (!isAd && !isValidEpisodeTargetDuration(duration.episodeTargetDuration)) {
+    if (!isValidEpisodeTargetDuration(duration.episodeTargetDuration)) {
       invalid.push(t("wizard_item_episode_target_duration"));
     }
     if (!isValidSpeechRate(duration.speechRate)) invalid.push(t("wizard_item_speech_rate"));
@@ -225,8 +194,6 @@ export function CreateProjectModal() {
   };
 
   const handleCreate = async () => {
-    const { contentMode, generationRoute } = basics;
-    if (!contentMode || !generationRoute) return;
     setCreating(true);
     try {
       // resolution 的 model_settings key 用执行模型：后端按执行模型查这张表，向导只暴露默认层，
@@ -238,7 +205,7 @@ export function CreateProjectModal() {
         image: "",
         imageT2I: "",
       };
-      const executingVideo = executingVideoModel(models, globals, generationRoute === "reference_video");
+      const executingVideo = executingVideoModel(models, globals, false);
       const executingImage = executingImageModel(models, globals);
       const modelSettings: Record<string, { resolution: string }> = {};
       if (executingVideo && models.videoResolution) {
@@ -250,22 +217,15 @@ export function CreateProjectModal() {
 
       const resp = await API.createProject({
         title: basics.title.trim(),
-        content_mode: contentMode,
+        content_mode: "drama",
         aspect_ratio: basics.aspectRatio,
-        generation_mode: generationRoute,
-        grid_storyboard: basics.gridStoryboard,
+        generation_mode: "storyboard",
         // 口播语速估算未填即不传（服务端不落盘，回退语言默认）
         ...(duration.speechRate !== null ? { speech_rate_units_per_second: duration.speechRate } : {}),
-        // 广告项目不暴露 default_duration（按目标总时长逐个分镜规划），改传 target_duration
-        ...(contentMode === "ad"
-          ? { target_duration: duration.targetDuration ?? undefined }
-          : {
-              default_duration: models.defaultDuration,
-              // 未设目标即不传（服务端不落盘，脚本规划不注入该软约束）
-              ...(duration.episodeTargetDuration !== null
-                ? { episode_target_duration: duration.episodeTargetDuration }
-                : {}),
-            }),
+        default_duration: models.defaultDuration,
+        ...(duration.episodeTargetDuration !== null
+          ? { episode_target_duration: duration.episodeTargetDuration }
+          : {}),
         style_template_id: style.mode === "template" ? style.templateId : null,
         video_backend: models.videoBackend || null,
         default_image_backend: models.imageBackendDefault || null,
@@ -326,11 +286,9 @@ export function CreateProjectModal() {
         </DialogHeader>
 
         <DialogBody ref={bodyRef}>
-          {step === 1 && <WizardStepBasics value={basics} onChange={handleBasicsChange} titleRef={titleRef} />}
+          {step === 1 && <WizardStepBasics value={basics} onChange={setBasics} titleRef={titleRef} />}
           {step === 2 && (
             <WizardStepGeneration
-              isAd={isAd}
-              usesReferenceImages={basics.generationRoute === "reference_video"}
               duration={duration}
               onDurationChange={setDuration}
               models={models}

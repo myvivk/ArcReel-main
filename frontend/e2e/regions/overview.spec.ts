@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { defineRegionScenarios } from "../support/scenarios.ts";
-import { waitForEntrance } from "../support/region-helpers.ts";
 import { RECORDED_DIR, type RecordedResponse } from "../support/recorded.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
-// 项目概览：单列限宽的设定页（页头、资产完成度与费用两行、故事设定），以及空项目的欢迎页。
+// 工厂项目概览：资产完成度、费用与内容入口，以及空项目欢迎页。
 const OVERVIEW_PATH = "/app/projects/demo";
 const PROJECT = "GET /api/v1/projects/demo";
 // 项目事件流是 SSE，没有录制；按不可重试的状态拒绝，页面停在录制的项目数据上。
@@ -113,27 +112,14 @@ const EMPTY_PROJECT: ApiOverrides = {
   ...withProject({ overview: null, episodes: [], whole_source_files: [] }),
 };
 
-const SOURCE_ONLY_PROJECT: ApiOverrides = {
-  ...EVENT_STREAM,
-  ...withProject({ overview: null, whole_source_files: [{ source_file: "source/novel.txt" }] }),
-};
-
-const storySetting = (page: Page) => page.getByRole("region", { name: "故事设定" });
-
 /** 紧凑档的 Agent 面板默认展开并盖住画布右侧，先收起，内容列与画布右侧的操作才完整可见。 */
 async function collapseAgentPanel(page: Page) {
   const toggle = page.getByRole("button", { name: "Agent", exact: true });
   if ((await toggle.getAttribute("aria-pressed")) === "true") await toggle.click();
 }
 
-async function box(locator: Locator) {
-  const rect = await locator.boundingBox();
-  if (!rect) throw new Error("元素不可见");
-  return rect;
-}
-
 async function overviewReady(page: Page) {
-  await storySetting(page).waitFor();
+  await page.getByRole("heading", { level: 1 }).waitFor();
   // 字体与费用响应都会改变内容高度；等真实页面加载完成再测滚动可达性。
   await page.waitForLoadState("networkidle");
   await page.evaluate(() => document.fonts.ready);
@@ -141,37 +127,15 @@ async function overviewReady(page: Page) {
 
 defineRegionScenarios("项目概览", [
   {
-    name: "录制的演示项目：页头元信息、资产与费用两行、空的故事设定",
+    name: "工厂项目：页头、资产、费用与工厂入口",
     path: OVERVIEW_PATH,
     api: EVENT_STREAM,
     ready: overviewReady,
     act: async (page) => {
       await expect(page.getByRole("heading", { level: 1, name: "演示项目" })).toBeVisible();
-      await expect(storySetting(page).getByRole("textbox", { name: "梗概" })).toHaveValue("");
-      // 限宽档：内容列最宽 760px，紧贴画布左侧的内边距，宽窗口多出的空白留在右侧
-      await collapseAgentPanel(page);
-      const canvas = await box(page.getByRole("main"));
-      const column = await box(storySetting(page));
-      const padding = canvas.width >= 768 ? 32 : 24;
-      expect(column.x - canvas.x).toBe(padding);
-      expect(column.width).toBeLessThanOrEqual(760);
-      if ((page.viewportSize()?.width ?? 0) >= 2560) expect(column.width).toBe(760);
     },
     // 内容列：页头、资产与费用两行、故事设定
-    screenshot: { name: "overview-column", target: (page) => storySetting(page).locator("xpath=..") },
-  },
-  {
-    name: "长文本故事设定与多条资产过期：字段随内容撑高，由画布滚动到底",
-    path: OVERVIEW_PATH,
-    api: LONG_PROJECT,
-    ready: overviewReady,
-    act: async (page) => {
-      await collapseAgentPanel(page);
-      await expect(page.getByRole("link", { name: "道具 210/210 · 23 过期" })).toBeVisible();
-      const world = storySetting(page).getByRole("textbox", { name: "世界观" });
-      await world.scrollIntoViewIfNeeded();
-      await expect(world).toBeInViewport();
-    },
+    screenshot: { name: "overview-column", target: (page) => page.getByRole("main") },
   },
   {
     name: "费用明细：多币种与历史支出在弹层里分两列，底部链接到使用记录",
@@ -210,49 +174,7 @@ defineRegionScenarios("项目概览", [
     },
   },
   {
-    name: "故事设定有修改时下方出现未保存提示条",
-    path: OVERVIEW_PATH,
-    api: LONG_PROJECT,
-    ready: overviewReady,
-    act: async (page) => {
-      await collapseAgentPanel(page);
-      await storySetting(page).getByRole("textbox", { name: "类型" }).fill("历史战争");
-      const save = storySetting(page).getByRole("button", { name: "保存" });
-      await waitForEntrance(page.locator("body"));
-      await save.scrollIntoViewIfNeeded();
-      await expect(save).toBeInViewport({ ratio: 1 });
-    },
-  },
-  {
-    name: "有未保存修改时从原文重新生成：确认框说明修改会丢失",
-    path: OVERVIEW_PATH,
-    api: LONG_PROJECT,
-    ready: overviewReady,
-    act: async (page) => {
-      await collapseAgentPanel(page);
-      await storySetting(page).getByRole("textbox", { name: "主题" }).fill("忠诚");
-      await storySetting(page).getByRole("button", { name: "放弃修改并重新生成" }).click();
-      const dialog = page.getByRole("alertdialog", { name: "从原文重新生成故事设定？" });
-      await dialog.waitFor();
-      await expect(dialog.getByRole("button", { name: "放弃修改并重新生成" })).toBeInViewport({ ratio: 1 });
-    },
-  },
-  {
-    name: "从原文生成时故事设定区显示骨架与「正在读取原文…」",
-    path: OVERVIEW_PATH,
-    api: SOURCE_ONLY_PROJECT,
-    ready: overviewReady,
-    act: async (page) => {
-      // 生成请求挂起不返回，停在读取中的状态
-      await page.route("**/api/v1/projects/demo/generate-overview", () => {});
-      await collapseAgentPanel(page);
-      await storySetting(page).getByRole("button", { name: "从原文生成" }).click();
-      await expect(storySetting(page).getByRole("status")).toHaveText("正在读取原文…");
-    },
-    screenshot: { name: "overview-reading-source", target: storySetting },
-  },
-  {
-    name: "空项目欢迎页：标题、一句说明、拖放区与从空白开始的指引",
+    name: "空项目欢迎页：标题、工厂生成与工件导入入口",
     path: OVERVIEW_PATH,
     api: EMPTY_PROJECT,
     ready: async (page) => {

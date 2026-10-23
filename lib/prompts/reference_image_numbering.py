@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from lib.project.asset_types import asset_name_comparison_key
-from lib.script.reference_video.text_parser import mention_spans, render_mentions
+from lib.references.text_parser import mention_spans, render_mentions
 
 logger = logging.getLogger(__name__)
 

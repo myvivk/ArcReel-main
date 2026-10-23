@@ -7,6 +7,7 @@ from pathlib import Path
 
 from lib.project.project_manager import ProjectManager
 from server.services.project.project_archive import ProjectArchiveService
+from tests.legacy_project_shapes import make_legacy_project, seed_legacy_project_metadata
 
 
 def _write_bytes(path: Path, content: bytes) -> None:
@@ -36,8 +37,8 @@ def _create_ad_reference_project(
     name: str = "addemo",
     video_units: list[dict] | None = None,
 ) -> Path:
-    pm.create_project(name, content_mode="ad")
-    pm.create_project_metadata(name, "AdDemo", "Realistic", "ad", target_duration=12)
+    make_legacy_project(pm.projects_dir, name, content_mode="ad")
+    seed_legacy_project_metadata(pm, name, "AdDemo", "Realistic", "ad", target_duration=12)
 
     project = pm.load_project(name)
     project["generation_mode"] = "reference_video"

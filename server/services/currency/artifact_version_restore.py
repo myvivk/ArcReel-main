@@ -20,7 +20,7 @@ from lib.artifacts.version_manager import VersionManager
 from lib.infra.api_errors import NotFoundError
 from lib.project.project_manager import ProjectManager, resolve_episode_script_binding
 from lib.script.script_editor import resolve_items
-from server.services.tasks.reference_video_tasks import apply_unit_video_assets
+from server.services.currency.legacy_video_assets import apply_unit_video_assets
 
 _TYPED_MEDIA_ARTIFACT_KEYS: dict[str, Callable[[int, str], ArtifactKey]] = {
     "audio": ArtifactKey.episode_audio,

@@ -475,7 +475,7 @@ def validate_asset_name(name: object) -> str:
     并在创建入口拒绝。
 
     ``]`` 一并拒绝：正文里的引用写作 ``@[名称]``，解析以首个 ``]`` 收尾
-    （见 :func:`lib.script.reference_video.text_parser._iter_mentions`），名字含 ``]`` 时写出的
+    （见 :func:`lib.references.text_parser._iter_mentions`），名字含 ``]`` 时写出的
     引用会在中途截断。``[`` 不致坏——名为 ``[甲`` 时 ``@[[甲]`` 仍解析回完整的 ``[甲``——不拦。
     """
     if not isinstance(name, str):

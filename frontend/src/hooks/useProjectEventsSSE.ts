@@ -8,13 +8,12 @@ import { useAppStore } from "@/stores/app-store";
 import { useAssistantStore } from "@/stores/assistant-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useCostStore } from "@/stores/cost-store";
-import { SCRIPT_PLAN_TASK_TYPES, useTasksStore } from "@/stores/tasks-store";
+import { useTasksStore } from "@/stores/tasks-store";
 import { useUsageHeaderStore } from "@/stores/usage-header-store";
 import { errMsg } from "@/utils/async";
 import {
   WORKSPACE_ROUTE_CHARACTERS,
   WORKSPACE_ROUTE_EPISODES,
-  WORKSPACE_ROUTE_PRODUCTS,
   WORKSPACE_ROUTE_PROPS,
   WORKSPACE_ROUTE_SCENES,
 } from "@/app-routes";
@@ -34,14 +33,6 @@ import {
   type GroupedProjectChange,
 } from "@/utils/project-changes";
 
-
-/** 可作视频单元参考图的资产实体：它们的增删改会改变单元的可用参考图与所落的桶。 */
-const REFERENCE_ASSET_ENTITY_TYPES: ReadonlySet<ProjectChange["entity_type"]> = new Set([
-  "character",
-  "scene",
-  "prop",
-  "product",
-]);
 
 const CHANGE_PRIORITY: Record<string, number> = {
   "segment:updated": 0,
@@ -90,25 +81,29 @@ function isNavigableChange(change: ProjectChange): boolean {
   if (COMPLETION_ACTIONS.has(change.action)) {
     return false;
   }
-  return Boolean(change.focus?.anchor_type && change.focus?.anchor_id);
+  return buildNotificationTarget(change) !== null;
 }
 
 /** 定位窗格 → 工作区路由，按窗格联合类型穷尽；返回 null 表示该事件缺少路由所需信息、不可导航。 */
-const PANE_ROUTES: Record<ProjectChangePane, (focus: ProjectChangeFocus) => string | null> = {
+const PANE_ROUTES: Partial<Record<ProjectChangePane, (focus: ProjectChangeFocus) => string | null>> = {
   characters: () => `/${WORKSPACE_ROUTE_CHARACTERS}`,
   scenes: () => `/${WORKSPACE_ROUTE_SCENES}`,
   props: () => `/${WORKSPACE_ROUTE_PROPS}`,
-  products: () => `/${WORKSPACE_ROUTE_PRODUCTS}`,
   episode: (focus) =>
     typeof focus.episode === "number" ? `/${WORKSPACE_ROUTE_EPISODES}/${focus.episode}` : null,
 };
 
-/** 草稿视图订阅的实体 ID 后缀：`draft:episode_N_<kind>`。 */
-const DRAFT_DOC_KINDS = ["script_plan", "prompt_authoring"] as const;
-
 function buildNotificationTarget(change: ProjectChange): WorkspaceNotificationTarget | null {
   const focus = change.focus;
-  if (!focus?.anchor_type || !focus.anchor_id) return null;
+  if (
+    !focus?.anchor_id ||
+    (focus.anchor_type !== "character" &&
+      focus.anchor_type !== "scene" &&
+      focus.anchor_type !== "prop" &&
+      focus.anchor_type !== "segment")
+  ) {
+    return null;
+  }
 
   const route = PANE_ROUTES[focus.pane]?.(focus);
   if (!route) return null;
@@ -276,13 +271,6 @@ export function useProjectEventsSSE(projectName?: string | null): void {
         const previousFingerprint = lastFingerprintRef.current;
         lastFingerprintRef.current = payload.fingerprint;
         if (previousFingerprint && previousFingerprint !== payload.fingerprint) {
-          // 草稿视图各自取数、只随 draft 事件重拉；断线期间错过的草稿变化在这里一并作废。
-          const episodes = useProjectsStore.getState().currentProjectData?.episodes ?? [];
-          invalidateEntities(
-            episodes.flatMap(({ episode }) =>
-              DRAFT_DOC_KINDS.map((kind) => buildEntityRevisionKey("draft", `episode_${episode}_${kind}`)),
-            ),
-          );
           void refreshProject();
         }
         // 快照在每次建连时到达。首次之外的每一次都意味着断过一次线：断线期间的结算与
@@ -326,29 +314,6 @@ export function useProjectEventsSSE(projectName?: string | null): void {
         const invalidationKeys = entityChanges.map((change) =>
           buildEntityRevisionKey(change.entity_type, change.entity_id),
         );
-        // 正式脚本规划不在项目快照里，重新规划完成不会产生实体变更；按任务终态作废各集的
-        // 脚本规划视图，内容确认页据此重拉。任务事件不带集号，逐集作废，只有挂载的视图会发请求。
-        if (taskChanges.some((c) => c.action === "task_succeeded" && SCRIPT_PLAN_TASK_TYPES.has(c.task_type ?? ""))) {
-          const episodes = useProjectsStore.getState().currentProjectData?.episodes ?? [];
-          invalidationKeys.push(
-            ...episodes.map(({ episode }) => buildEntityRevisionKey("draft", `episode_${episode}_script_plan`)),
-          );
-        }
-        // 草稿 AI 修复由 worker 写回草稿或采用为正式内容，同样没有实体变更；按终态作废各集的草稿视图。
-        if (
-          taskChanges.some(
-            (c) =>
-              (c.action === "task_succeeded" || c.action === "task_failed" || c.action === "task_cancelled") &&
-              c.task_type === "text_draft_repair",
-          )
-        ) {
-          const episodes = useProjectsStore.getState().currentProjectData?.episodes ?? [];
-          invalidationKeys.push(
-            ...episodes.flatMap(({ episode }) =>
-              DRAFT_DOC_KINDS.map((kind) => buildEntityRevisionKey("draft", `episode_${episode}_${kind}`)),
-            ),
-          );
-        }
         if (invalidationKeys.length > 0) {
           invalidateEntities(invalidationKeys);
         }
@@ -362,24 +327,6 @@ export function useProjectEventsSSE(projectName?: string | null): void {
           [];
 
         if (notifyChanges) {
-          // Draft 事件 — 自动导航到剧集脚本规划 Tab
-          let draftHandled = false;
-          for (const change of entityChanges) {
-            if (
-              change.entity_type === "draft" &&
-              change.action === "created" &&
-              typeof change.episode === "number" &&
-              !isWorkspaceEditing(hasUnsavedChanges)
-            ) {
-              startTransition(() => {
-                setLocation(`/episodes/${change.episode}`);
-              });
-              draftHandled = true;
-              break;
-            }
-          }
-
-          if (!draftHandled) {
             const nextFocusTarget =
               groupedChanges
                 .map((group) => {
@@ -393,26 +340,11 @@ export function useProjectEventsSSE(projectName?: string | null): void {
                 .find(Boolean) ?? null;
 
             queuedFocusRef.current = isWorkspaceEditing(hasUnsavedChanges) ? null : nextFocusTarget;
-          }
         }
 
         // 任务终态：立即重拉任务列表与统计，不等兜底轮询的间隔。
         if (taskChanges.length > 0) {
           void useTasksStore.getState().refreshTasks();
-        }
-
-        // Unit 增删改可能来自 Agent 或另一浏览器；生成完成则改变成片；资产增删改会改变
-        // 单元此刻可用的参考图，服务端逐单元的桶与档位随之变化。三类事件都要作废
-        // reference-video-store 的独立列表缓存，同一批只自增一次。
-        if (
-          entityChanges.some(
-            (c) => c.entity_type === "reference_unit" || REFERENCE_ASSET_ENTITY_TYPES.has(c.entity_type),
-          ) ||
-          taskChanges.some(
-            (c) => c.action === "task_succeeded" && c.task_type === "reference_video",
-          )
-        ) {
-          useAppStore.getState().invalidateReferenceVideoUnits();
         }
 
         // 每个批次都重拉，纯任务终态批次也不例外：后端每次广播都会把项目快照 rebase
@@ -473,10 +405,6 @@ export function useProjectEventsSSE(projectName?: string | null): void {
           useCostStore.getState().debouncedFetch(projectName);
         }
 
-        // Refresh grid list when a grid completes or gets split into cells
-        if (entityChanges.some((c) => c.action === "grid_ready" || c.action === "grid_split_done")) {
-          useAppStore.getState().invalidateGrids();
-        }
       },
       onAssistantSessionResumed(payload) {
         if (disposed) return;

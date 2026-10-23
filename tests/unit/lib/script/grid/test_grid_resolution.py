@@ -4,8 +4,8 @@ from typing import Any, cast
 
 import pytest
 
+from lib.config.image_resolution import resolve_image_resolution
 from lib.config.resolver import ConfigResolver
-from lib.script.grid.grid_resolution import resolve_image_resolution
 from lib.script.grid.layout import large_grid_allowed
 
 

@@ -1,180 +1,51 @@
 import { describe, expect, it } from "vitest";
-
 import {
-  defaultEpisodeView,
-  episodeViewTabs,
-  resolveEpisodeView,
-  staysInEpisodeView,
-  withEpisodeView,
+  defaultEpisodeView, episodeViewTabs, resolveEpisodeView, staysInEpisodeView, withEpisodeView,
   type EpisodeViewFacts,
 } from "./episode-view";
 
-const SCRIPTED: EpisodeViewFacts = {
-  isAd: false,
-  route: "storyboard",
-  grid: false,
-  hasScript: true,
-  hasDraft: true,
-  sourceReview: false,
-  demo: false,
-};
+const FACTORY: EpisodeViewFacts = { hasScript: true, hasShortDramaSource: true, demo: false };
 
-describe("episodeViewTabs", () => {
-  // 内容在前、产物在后：原文/剧本排在分镜之前，与制作进度的行序同一读法。
-  it("lists plan, source, grid, board and edit for a scripted grid episode", () => {
-    expect(episodeViewTabs({ ...SCRIPTED, grid: true })).toEqual([
-      { view: "plan", disabled: false },
+describe("factory episode navigation", () => {
+  it("offers the four factory views in production order", () => {
+    expect(episodeViewTabs(FACTORY)).toEqual([
       { view: "source", disabled: false },
       { view: "assets", disabled: false },
-      { view: "grid", disabled: false },
       { view: "board", disabled: false },
       { view: "edit", disabled: false },
     ]);
   });
 
-  it("lists all flow tabs for a storyboard episode that only has its script plan", () => {
-    const tabs = episodeViewTabs({ ...SCRIPTED, hasScript: false });
-    expect(tabs).toEqual([
-      { view: "plan", disabled: false },
-      { view: "source", disabled: false },
-      // 只有脚本规划中间稿、没有剧本原文：资产无资产可抽，置灰
-      { view: "assets", disabled: true },
-      { view: "board", disabled: false },
-      { view: "edit", disabled: false },
-    ]);
+  it("opens source before storyboarding and enables assets from Markdown", () => {
+    const source = { ...FACTORY, hasScript: false };
+    expect(defaultEpisodeView(source)).toBe("source");
+    expect(resolveEpisodeView("assets", source)).toBe("assets");
+    expect(resolveEpisodeView("assets", { ...source, hasShortDramaSource: false })).toBe("source");
   });
 
-  it("greys out the assets tab until the episode has a script source", () => {
-    const noScript: EpisodeViewFacts = { ...SCRIPTED, hasScript: false, hasDraft: false };
-    expect(episodeViewTabs(noScript)).toContainEqual({ view: "assets", disabled: true });
-    // 工厂源稿就是剧本：没有正式脚本也可点
-    expect(episodeViewTabs({ ...noScript, hasShortDramaSource: true })).toContainEqual({
-      view: "assets",
-      disabled: false,
-    });
-    // 置灰时地址上的 view=assets 落回缺省视图
-    expect(resolveEpisodeView("assets", noScript)).toBe(defaultEpisodeView(noScript));
+  it.each(["plan", "setting", "grid", "unknown"])("removed URL view %s cannot restore an old workspace", (view) => {
+    expect(resolveEpisodeView(view, FACTORY)).toBe("board");
+    expect(resolveEpisodeView(view, { ...FACTORY, hasScript: false })).toBe("source");
   });
 
-  it("shows the source tab for factory artifacts even without a native script", () => {
-    const tabs = episodeViewTabs({
-      ...SCRIPTED,
-      hasScript: false,
-      hasDraft: false,
-      hasShortDramaSource: true,
-    });
-    expect(tabs).toContainEqual({ view: "source", disabled: false });
+  it("keeps demo projects on the board", () => {
+    const demo = { ...FACTORY, demo: true, hasScript: false };
+    expect(episodeViewTabs(demo)).toEqual([{ view: "board", disabled: false }]);
+    expect(defaultEpisodeView(demo)).toBe("board");
   });
 
-  it("hides the plan tab for factory episodes and lands on the script view", () => {
-    const factory: EpisodeViewFacts = {
-      ...SCRIPTED,
-      hasScript: false,
-      hasDraft: false,
-      sourceReview: false,
-      hasShortDramaSource: true,
-    };
-    // 工厂 Markdown 就是剧本：不显示「脚本规划」页签（避免诱导空起稿），只给剧本/分镜/剪辑。
-    expect(episodeViewTabs(factory).map((tab) => tab.view)).toEqual(["source", "assets", "board", "edit"]);
-    expect(defaultEpisodeView(factory)).toBe("source");
-    // 工厂集用顶层 short_drama 标志时同样不显示规划页签。
-    expect(episodeViewTabs({ ...factory, shortDrama: true }).map((tab) => tab.view)).toEqual([
-      "source",
-      "assets",
-      "board",
-      "edit",
-    ]);
-    // 未登记的集仍在集原文确认态：缺省行为不变（plan 可用时不落剧本）。
-    expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false, hasDraft: false, sourceReview: true })).toBe("plan");
+  it("writes only non-default views without changing other params or the input", () => {
+    const params = new URLSearchParams("unit=E1S2");
+    expect(withEpisodeView(params, "source", FACTORY).toString()).toBe("unit=E1S2&view=source");
+    expect(withEpisodeView(new URLSearchParams("view=source&unit=E1S2"), "board", FACTORY).toString()).toBe("unit=E1S2");
+    expect(params.toString()).toBe("unit=E1S2");
   });
 
-  it("includes a separate assets step for regular episodes but not ads or demos", () => {
-    expect(episodeViewTabs(SCRIPTED).map((tab) => tab.view)).toContain("assets");
-    expect(episodeViewTabs({ ...SCRIPTED, isAd: true }).map((tab) => tab.view)).not.toContain("assets");
-    expect(episodeViewTabs({ ...SCRIPTED, demo: true }).map((tab) => tab.view)).not.toContain("assets");
-  });
-
-  it("opens the unit list during the draft stage on the reference route", () => {
-    const tabs = episodeViewTabs({ ...SCRIPTED, route: "reference_video", hasScript: false });
-    expect(tabs.find((tab) => tab.view === "board")).toEqual({ view: "board", disabled: false });
-  });
-
-  it("lists all flow tabs while the episode source is under review", () => {
-    const facts = { ...SCRIPTED, grid: true, hasScript: false, hasDraft: false, sourceReview: true };
-    expect(episodeViewTabs(facts)).toEqual([
-      { view: "plan", disabled: false },
-      { view: "source", disabled: false },
-      // 集原文确认阶段还没有剧本（正式脚本与工厂源稿都没有）：资产置灰
-      { view: "assets", disabled: true },
-      { view: "grid", disabled: false },
-      { view: "board", disabled: false },
-      { view: "edit", disabled: false },
-    ]);
-  });
-
-  it("gives ad projects the story setting first and no plan view, and demo projects no edit view", () => {
-    expect(episodeViewTabs({ ...SCRIPTED, isAd: true }).map((tab) => tab.view)).toEqual(["setting", "board", "edit"]);
-    expect(episodeViewTabs({ ...SCRIPTED, isAd: true, hasScript: false, hasDraft: false })).toEqual([
-      { view: "setting", disabled: false },
-      { view: "board", disabled: false },
-    ]);
-    expect(episodeViewTabs(SCRIPTED).map((tab) => tab.view)).not.toContain("setting");
-    expect(episodeViewTabs({ ...SCRIPTED, demo: true, hasDraft: false }).map((tab) => tab.view)).toEqual(["board"]);
-  });
-});
-
-describe("resolveEpisodeView", () => {
-  it("lands on the board once the script exists, otherwise on the plan", () => {
-    expect(defaultEpisodeView(SCRIPTED)).toBe("board");
-    expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false })).toBe("plan");
-    expect(defaultEpisodeView({ ...SCRIPTED, hasScript: false, hasDraft: false })).toBe("board");
-  });
-
-  it("honours an available view and falls back from unknown or disabled ones", () => {
-    expect(resolveEpisodeView("edit", SCRIPTED)).toBe("edit");
-    expect(resolveEpisodeView("grid", SCRIPTED)).toBe("board");
-    expect(resolveEpisodeView("nonsense", SCRIPTED)).toBe("board");
-    expect(resolveEpisodeView(null, SCRIPTED)).toBe("board");
-    expect(resolveEpisodeView("board", { ...SCRIPTED, hasScript: false })).toBe("board");
-  });
-});
-
-describe("withEpisodeView", () => {
-  it("writes only non-default views, keeps other params and leaves the input untouched", () => {
-    const params = new URLSearchParams("unit=SEG-3");
-
-    expect(withEpisodeView(params, "plan", SCRIPTED).toString()).toBe("unit=SEG-3&view=plan");
-    expect(withEpisodeView(new URLSearchParams("view=plan&unit=SEG-3"), "board", SCRIPTED).toString()).toBe(
-      "unit=SEG-3",
-    );
-    expect(params.toString()).toBe("unit=SEG-3");
-  });
-});
-
-describe("staysInEpisodeView", () => {
-  it("lets navigation through only while the resolved view stays the same", () => {
-    expect(staysInEpisodeView("/episodes/1", "/episodes/1?view=board", SCRIPTED)).toBe(true);
-    expect(staysInEpisodeView("/episodes/1?view=board&unit=2", "/episodes/1", SCRIPTED)).toBe(true);
-    expect(staysInEpisodeView("/episodes/1?view=plan", "/episodes/1", SCRIPTED)).toBe(false);
-    expect(staysInEpisodeView("?view=grid", "/episodes/1", { ...SCRIPTED, grid: true })).toBe(false);
-    expect(staysInEpisodeView("/episodes/1?view=edit", "/episodes/1", SCRIPTED)).toBe(false);
-    expect(staysInEpisodeView("/episodes/2", "/episodes/1", SCRIPTED)).toBe(false);
-  });
-
-  it("treats the ad story setting as its own view", () => {
-    const ad: EpisodeViewFacts = { ...SCRIPTED, isAd: true, hasDraft: false };
-    expect(staysInEpisodeView("/episodes/1?view=setting&unit=2", "/episodes/1?view=setting", ad)).toBe(true);
-    expect(staysInEpisodeView("/episodes/1", "/episodes/1?view=setting", ad)).toBe(false);
-    // 非广告项目没有故事设定 tab，view=setting 按缺省视图显示
-    expect(resolveEpisodeView("setting", SCRIPTED)).toBe("board");
-  });
-
-  it("resolves a missing or unavailable view to the default view of the episode", () => {
-    // 参考生视频在中间稿阶段缺省停在脚本规划：去掉 view 就是离开视频单元
-    const referenceDraft: EpisodeViewFacts = { ...SCRIPTED, route: "reference_video", hasScript: false };
-    expect(staysInEpisodeView("/episodes/1", "/episodes/1?view=board", referenceDraft)).toBe(false);
-    expect(staysInEpisodeView("/episodes/1?view=plan", "/episodes/1", referenceDraft)).toBe(true);
-    // 没开宫格时 view=grid 不可选，按缺省视图（分镜）显示
-    expect(staysInEpisodeView("/episodes/1?view=grid", "/episodes/1", SCRIPTED)).toBe(true);
+  it("requires a leave check when the visible editor or episode changes", () => {
+    expect(staysInEpisodeView("?view=board&unit=E1S2", "/episodes/1", FACTORY)).toBe(true);
+    expect(staysInEpisodeView("?view=source", "/episodes/1", FACTORY)).toBe(false);
+    expect(staysInEpisodeView("?view=edit", "/episodes/1", FACTORY)).toBe(false);
+    expect(staysInEpisodeView("/episodes/2", "/episodes/1", FACTORY)).toBe(false);
+    expect(staysInEpisodeView("?view=grid", "/episodes/1", FACTORY)).toBe(true);
   });
 });

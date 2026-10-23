@@ -15,7 +15,7 @@ By the end of this guide, you will be able to:
 
 1. Start ArcReel with Docker;
 2. Sign in to the workspace and configure model providers;
-3. Create a project from a novel, finished screenplay, or ad/short video;
+3. Create a short drama factory project and deliver its artifacts;
 4. Generate characters, scenes, props, storyboards, and video clips;
 5. Monitor task status and costs;
 6. Edit an episode, then render the final cut or export a Jianying draft for further post-production.
@@ -56,7 +56,7 @@ ArcReel uses two types of credentials for different purposes.
 
 #### Agent Credentials {#assistant-credentials}
 
-The Agent drives project conversations, content understanding, episode planning, script planning (including asset identification), and workflow orchestration.
+The Agent handles project conversations, factory creation, asset preparation, and production orchestration. A strong text model writes the factory source, followed by doctor refinement, machine checks, and compliance checks.
 
 You can use Anthropic's official service or a compatible service supported by ArcReel, and configure the Base URL and model name as needed.
 
@@ -215,129 +215,51 @@ Settings that are too high may trigger provider rate limits, while settings that
 
 On the project list page, click **New Project**.
 
-### 4.1 Choose a Project Source {#choose-project-source}
+### 4.1 Configure the Project {#choose-project-source}
 
-#### Novel {#source-novel}
+Enter a project name, aspect ratio, visual style, total episode count, episode target, and model settings. The short drama factory is the fixed workflow, with live-action or animation styles available.
 
-Best for projects that need to plan episodes, identify assets, and adapt a script from original source material.
+Prepare a strong text model, an image model, and a video model. Start with a few shots to check style, references, and video inputs. See [Short Drama Factory Workflow](./workflows.md).
 
-For your first upload, use:
+### 4.2 Deliver Factory Content {#choose-content-mode}
 
-- One complete but short chapter;
-- Or a 1,000–3,000-character excerpt from the story.
+Choose **AI original script** from the welcome page or overview. Enter the creative brief, genre, and length target, then hand it to the Agent. The factory supports new stories, continuations, and consecutive episodes. Every batch must pass doctor refinement, machine checks, repair, and compliance checks before saving seven Markdown artifact types unchanged.
 
-#### Finished Screenplay {#source-screenplay}
+For an existing delivery, choose **Import script** and upload its artifact directory. Every episode needs a plan, source text, machine report, and compliance report; existing series artifacts can be reused. A single episode or novel file cannot replace a complete directory.
 
-Best when you already have dialogue, voice-over, and scene structure that you want to preserve as closely as possible.
+Read the character bible, series outline, ledger, and episode plans in **Story planning**, and the episode text in **Script**. These are read-only; revisions return to the factory quality workflow.
 
-ArcReel builds characters and shots from the author's supplied content. It should not rewrite a finished screenplay as if it were an ordinary novel.
+## 5. Produce an Episode {#run-workflow-with-assistant}
 
-#### Ad or Short Video {#source-ad}
+Open the Agent panel and proceed by stage, or use the corresponding episode-page buttons.
 
-Best for merchandise showcases, shoppable videos, and short-form content with a defined target duration.
+### 5.1 Prepare Episode Assets {#character-scene-prop-assets}
 
-Prepare:
+Open **Assets** to register characters, scenes, and props, complete descriptions, and generate asset sheets. Check main characters’ age, hair, costumes, and body type before expanding the batch. Complete missing registrations and descriptions before AI storyboarding.
 
-- Clear merchandise photos from multiple angles;
-- Key selling points;
-- The target audience;
-- The desired duration and visual style.
+### 5.2 Generate AI Storyboards {#episodes-and-script}
 
-### 4.2 Choose a Content Mode {#choose-content-mode}
+Open **Storyboards**, choose **AI storyboards**, and select the optimization strength. ArcReel generates storyboard units and image prompts from the factory source, project shot duration, and registered assets. Check plot coverage, dialogue, shot purpose, and spatial relationships. Invalid results are repaired; exhausted retries fail.
 
-- **Narration/Commentary**: Organizes segments around the reading pace, with voice-over and visuals at the center.
-- **Drama**: Organizes shots around scenes, characters, and dialogue.
-- **Ad / Short Video**: Organizes content around the target duration, selling points, and merchandise visuals.
+### 5.3 Confirm Reference Materials {#storyboard-images}
 
-For a detailed comparison, see [Workflows and Modes](./workflows.md).
+Check references and image prompts in shot details, then generate **Reference materials**. The default is 2×2, with 2×3 and 3×3 options. Review action, composition, and character consistency across K-frames of the same shot, then confirm to split and bind them. Cancelling does not save edits.
 
-## 5. Run the Workflow with the Agent {#run-workflow-with-assistant}
+After changing the size, regenerate and confirm. The model must support the reference count; ArcReel never discards keyframes to fit its limits.
 
-Open the Agent panel on the right side of the project workbench.
+### 5.4 Write Video Prompts Separately {#video-prompts}
 
-Work through the process in stages instead of asking it to "generate the entire final video" at once.
+After confirmation, generate the video prompt in a separate step. It reads the factory source, saved image prompt, and K-frames. After reference changes, check actions and K-frame labels and rewrite as needed.
 
-### 5.1 Content Analysis {#content-analysis}
+### 5.5 Generate Video Clips {#video-clips}
 
-Ask the Agent to analyze:
+Confirm prompts and estimated costs before generating. Inputs contain current K-frames, the previous-shot continuity point, and the complete reference relationship. Check a small sample for character shape, action, motion direction, and ending continuity before completing the episode.
 
-- Main characters;
-- Important scenes;
-- Key props;
-- Story conflicts;
-- Suitable episode boundaries.
+### 5.6 Configure Audio {#narration-and-tts}
 
-Review the results for:
+Projects support generated source audio, character voices, and TTS narration. For TTS, select the project model, voice, and speed, then audition a short sample and check names and pauses. Shots without narration need no narration track.
 
-- Duplicate or missing characters;
-- Background extras incorrectly created as recurring characters;
-- Key items that must remain consistent across shots;
-- Complete episode boundaries that do not interrupt a key action.
-
-### 5.2 Episodes and Script {#episodes-and-script}
-
-After confirming the content analysis, generate the script for the episode or short video you are producing.
-
-Review it for:
-
-- A complete objective or emotional change in each episode;
-- Dialogue and voice-over that remain faithful to the source;
-- A shot count that fits the budget;
-- A clear subject and action in every shot;
-- Too many events packed into a single shot.
-
-### 5.3 Character, Scene, and Prop Assets {#character-scene-prop-assets}
-
-Generate the main character designs first, followed by reference images for key scenes and props.
-
-Review them for:
-
-- Accurate age, hairstyle, clothing, body type, and demeanor;
-- Characters that are easy to distinguish from one another;
-- Backgrounds or text in reference images that you do not want copied downstream;
-- Accurate structure for merchandise, logos, and key props.
-
-Do not batch-generate every storyboard before confirming the character assets, or any later rework will multiply.
-
-### 5.4 Storyboard Images {#storyboard-images}
-
-Generate a few storyboards to validate:
-
-- Composition;
-- Character positions;
-- Shot type;
-- Lighting and style;
-- Character and prop consistency;
-- Safe areas for portrait video.
-
-After confirming the direction, generate them in batches.
-
-### 5.5 Video Clips {#video-clips}
-
-Choose a video generation mode based on the project:
-
-- Storyboard to video (narration/commentary and drama projects can enable multi-grid storyboards);
-- Reference to video.
-
-When storyboard to video has multi-grid storyboards enabled, it first generates several shots together on one or more multi-grid storyboards, then splits each grid into individual storyboard images. It is suitable for scenes that need stronger consistency across multiple shots.
-
-Review the results for:
-
-- Obvious character deformation;
-- Actions that match the shot description;
-- Continuous direction of motion across adjacent shots;
-- An ending that connects cleanly to the next shot;
-- Model-generated audio that conflicts with the post-production plan.
-
-### 5.6 Narration and TTS {#narration-and-tts}
-
-Narration projects can generate voice-over one segment at a time:
-
-1. Select a TTS provider in Settings;
-2. Set the voice and speaking rate;
-3. Audition a short sample;
-4. Generate in batches after confirming it;
-5. Check proper nouns, character names, and pauses.
+For character voice cloning, select reference-audio binding and upload audio for speaking characters. Confirm that the video model supports it and respects clip-count and duration limits. Audio capability does not depend on the removed reference-video project route.
 
 ## 6. Monitor Tasks and Costs {#tasks-and-cost}
 
@@ -371,7 +293,7 @@ On the Usage page, review:
 
 ### 7.1 Edit and render the final cut {#compose-final-video}
 
-After the videos are generated, switch to the **Edit** view at the top of the episode page. An episode's final form is defined by its edit timeline: let the Agent make a cut, or create an edit timeline from the script and then ask the Agent to adjust it in the chat. Every script layout uses the same entry points.
+After the videos are generated, switch to the **Edit** view at the top of the episode page. An episode's final form is defined by its edit timeline: let the Agent make a cut, or create an edit timeline from the script and then ask the Agent to adjust it in the chat. Use the timeline to check shot order, trims, subtitles, and audio tracks.
 
 Click **Render** at the top of the edit view and select **Final cut** in the "Render · <edit timeline name>" dialog. An up-to-date final cut can be downloaded directly. When there is no final cut yet, or it is behind the edit timeline, start a render; the dialog shows its progress, and you can download the result when it finishes.
 
@@ -412,7 +334,7 @@ Do not define completion as "every asset has been generated once." At a minimum,
 
 ## 9. Next Steps {#next-steps}
 
-- Read [Workflows and Modes](./workflows.md) to choose a more suitable production path;
+- Read [Short Drama Factory Workflow](./workflows.md) to check each stage’s inputs and completion conditions;
 - Read [Provider and Model Configuration](./providers.md) to establish quality, speed, and cost tiers;
 - Read [Deployment and Operations](../ops/deployment.md) to configure a production environment and backups;
 - If you encounter a problem, see the [FAQ](./faq.md).

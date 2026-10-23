@@ -150,6 +150,22 @@ def story_plan_sections(project_dir: Path, kind: str, *, episode: int | str | No
     return sections
 
 
+def factory_authoring_context(project_dir: Path, episode: int) -> str:
+    """只读工厂系列工件与本集规划，为提示词和产物依据提供同一份上下文。"""
+    root = project_dir / "source" / "short_drama"
+    paths = [
+        root / "character-bible.md",
+        root / "series-outline.md",
+        root / "ledger.md",
+        root / "episode-plan" / f"episode_{episode:02d}.plan.md",
+    ]
+    return "\n\n".join(
+        f"【工厂工件：{path.relative_to(project_dir).as_posix()}】\n{text}"
+        for path in paths
+        if not path.is_symlink() and (text := _read_text(path)).strip()
+    )
+
+
 def _bible_section(bible: str, name: str) -> str:
     """人物圣经里 ``【角色】：名字`` 起到下一个角色前的整段。"""
 
@@ -334,6 +350,7 @@ __all__ = [
     "STORY_PLAN_LABELS",
     "collect_story_plan",
     "episode_plan_asset_names",
+    "factory_authoring_context",
     "marker_asset_names",
     "plan_episode_section",
     "story_plan_asset_names",

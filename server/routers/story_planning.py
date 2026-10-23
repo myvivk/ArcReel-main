@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends
 
 from lib.project.project_manager import ProjectManager, get_project_manager
 from lib.short_drama_ingest import load_short_drama_artifacts
-from lib.story.story_planning import authoring_context as legacy_authoring_context
 from server.dependencies import require_project_migration_ok
 
 router = APIRouter(dependencies=[Depends(require_project_migration_ok)])
@@ -47,5 +46,4 @@ async def get_story_context(project_name: str, episode: int, pm: Manager) -> dic
             for artifact in selected
         )
         return {"context": context}
-    context = await asyncio.to_thread(legacy_authoring_context, pm, project_name, episode)
-    return {"context": context}
+    return {"context": ""}

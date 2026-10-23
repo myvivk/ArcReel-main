@@ -27,6 +27,7 @@ from tests.integration.server.asset_library_support import (
 )
 from tests.integration.server.derivative_sheet_support import run_derivative_generation, solid_png_bytes
 from tests.integration.server.services.tasks.generation_tasks_support import fake_resolve_ctx
+from tests.legacy_project_shapes import seed_legacy_project_metadata
 
 _KEY = ArtifactKey.asset_sheet("character", "Alice")
 
@@ -37,7 +38,7 @@ def library(assets_env) -> tuple[TestClient, ProjectManager]:
 
     pm = assets_env["pm"]
     pm.create_project("demo")
-    pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "demo", "Demo", "Anime", "narration")
     return assets_env["client"], pm
 
 
@@ -288,7 +289,7 @@ def test_overwrite_onto_an_nfd_key_records_the_history_under_the_existing_key(li
     owner_nfc, owner_nfd = unicodedata.normalize("NFC", "Café"), unicodedata.normalize("NFD", "Café")
     derivative_nfc, derivative_nfd = unicodedata.normalize("NFC", "Robé"), unicodedata.normalize("NFD", "Robé")
     pm.create_project("source")
-    pm.create_project_metadata("source", "Source", "Anime", "narration")
+    seed_legacy_project_metadata(pm, "source", "Source", "Anime", "narration")
     pm.add_character("source", owner_nfc, "白衣少年")
     pm.install_asset_sheet_bytes(
         "character", "source", owner_nfc, f"characters/{owner_nfc}.png", solid_png_bytes((30, 30, 30))

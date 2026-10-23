@@ -71,6 +71,25 @@ pnpm check-consistency
 
 For the development loop and the full gate before pushing, see "工具链与校验" (Toolchain and checks) in [`AGENTS.md`](https://github.com/ArcReel/ArcReel/blob/main/AGENTS.md) and [`docs/agents/testing.md`](https://github.com/ArcReel/ArcReel/blob/main/docs/agents/testing.md). CI runs the same set of checks.
 
+### Frontend Page-Level Tests {#frontend-page-tests}
+
+`frontend/e2e/` is a Playwright page suite. Across five viewports from 1024×600 to 2560×1440, it checks that the document itself does not scroll, clipped content remains reachable, vertical scroll areas (including dialog bodies) have no unwanted horizontal overflow, and axe finds no WCAG 2.2 AA violations. CI’s `frontend-e2e` job uses the official Playwright image. Run the same renderer locally with run-server remote mode:
+
+```bash
+cd frontend
+pnpm e2e:server   # Terminal 1: start Playwright run-server in Docker; the image version comes from @playwright/test
+pnpm e2e:remote   # Terminal 2: build the frontend and connect to the container browser
+```
+
+Without Docker, install Chromium with `pnpm exec playwright install chromium`, then run `pnpm e2e`. Local fonts and layout can differ; the container result is authoritative.
+
+For parallel suites on one machine, set separate ports and output directories: `E2E_PORT` is the preview port (4173), `E2E_OUTPUT_DIR` stores failure screenshots and traces (`frontend/test-results`), and `E2E_SERVER_PORT` is the mapped run-server port (3000), read by both server and remote commands. With `CI=1`, set `PLAYWRIGHT_HTML_OUTPUT_DIR` for HTML reports. Screenshot baselines use the default port; screenshots showing the local address do not participate when the port changes.
+
+- **New scenarios**: register them with `defineRegionScenarios` under `frontend/e2e/regions/`, stating the route, readiness condition, and probe state. Focus on states changing available height, such as expanded panels and dialogs.
+- **Exceptions**: decorative clipping uses `data-overflow-ok="原因"` with an explicit reason. Deliberate horizontal scroll areas such as timeline tracks, code blocks, and tag rows use `overflow-x-auto`, which the probe recognizes without another exemption.
+- **API fixtures**: `frontend/e2e/fixtures/recorded/` is recorded from the real backend with `pnpm e2e:record`. The script requires `uv`, starts a temporary backend, and creates a demo project. Interface-shape changes require re-recording. Put long-text and many-item variants in the scenario’s `api` field.
+- **Page screenshots**: scenarios declaring `screenshot` compare them only with `E2E_SCREENSHOTS=1`, at 1024×600, 1440×900, and 2560×1440. CI enables this and fails on changed or missing baselines. Generate and compare baselines only in the container using server and remote commands; for intended changes, use `--update-snapshots=changed`, review each image, and commit it. Do not generate baselines with local rendering.
+
 ## Code Quality {#code-quality}
 
 The entry point for coding standards is [`CODING_STANDARDS.md`](https://github.com/ArcReel/ArcReel/blob/main/CODING_STANDARDS.md): it maps changed paths to the domain standards under `docs/standards/`, and it contains only project conventions that require judgment and cannot be replaced by tooling. Both local reviews and the AI reviewer on PRs use it as their basis.
@@ -94,7 +113,7 @@ Published pages also declare their documentation-refresh coverage tier via the `
 | `README.md` | Product positioning, core value, and the shortest path to getting started | A complete model list, every environment variable, or internal implementation details |
 | `website/docs/index.mdx` | Documentation-site positioning, primary entry points, and a navigation overview | Complete instructions for specific features |
 | `website/docs/guide/getting-started.md` | The complete path from deployment to the first final video | Production-grade reverse proxy and backup strategies |
-| `website/docs/guide/workflows.md` | Content modes, generation modes, content review checkpoints, and selection guidance | Provider credentials and operations commands |
+| `website/docs/guide/workflows.md` | Factory-stage inputs, review points, completion criteria, and historical data boundaries | Provider credentials and operations commands |
 | `website/docs/guide/providers.md` | Provider types, capability coverage, selection principles, and configuration hierarchy | Price promises likely to become outdated |
 | `website/docs/guide/comfyui.md` | Importing ComfyUI workflows, node binding, conversion semantics for size/duration/seed, testing, and runtime limits | Deploying ComfyUI itself or installing custom nodes |
 | `website/docs/guide/market.md` | Managing market sources, confirming installation of market entries, updating, and uninstalling | Contribution workflow and steps for hosting a market source (the official market source repository docs are authoritative) |

@@ -22,7 +22,7 @@ from tests.integration.server.services.tasks.generation_tasks_support import (
 class TestGenerationTasks:
     async def test_execute_task_dispatch(self, tmp_path, monkeypatch):
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         register_asset_sheet_claims(fake_pm)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator(project_path)
@@ -180,7 +180,7 @@ class TestGenerationTasks:
         """成功事件发出失败不回撤已写入的产物：普通异常在通知边界内记录后任务照常返回，
         BaseException 穿透通知边界照常上抛；两种情况下产物、版本与清单登记都保持有效。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         fake_generator = FakeGenerator(project_path)
         emit_attempts: list[str] = []
 
@@ -210,23 +210,25 @@ class TestGenerationTasks:
         assert emit_attempts == ["demo"]
         assert (project_path / "storyboards" / "scene_E1S01.png").read_bytes() == b"png"
         assert fake_generator.get_current_version("storyboards", "E1S01") == 1
-        assert fake_pm.script["segments"][0]["generated_assets"]["storyboard_image"] == "storyboards/scene_E1S01.png"
+        assert fake_pm.script["scenes"][0]["generated_assets"]["storyboard_image"] == "storyboards/scene_E1S01.png"
         entry = ProjectArtifactManifestAdapter(project_path).get_entry(ArtifactKey.episode_storyboard(1, "E1S01"))
         assert entry is not None
         assert entry.artifact_path == "storyboards/scene_E1S01.png"
 
     async def test_execute_task_validation_errors(self, tmp_path, monkeypatch):
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         monkeypatch.setattr(generation_tasks, "get_project_manager", lambda: fake_pm)
         monkeypatch.setattr(generation_tasks, "resolve_generation_context", fake_resolve_ctx(FakeGenerator()))
 
         with pytest.raises(ValueError, match=r"script_file is required for storyboard task"):
             await generation_tasks.execute_storyboard_task("demo", "E1S01", {"prompt": "x"})
 
+        fake_pm.script["scenes"][0].pop("video_prompt")
         with pytest.raises(ValueError, match=r"current script unit is missing video_prompt"):
             await generation_tasks.execute_video_task("demo", "E1S01", {"script_file": "episode_1.json"})
 
+        fake_pm.script["scenes"][0]["video_prompt"] = "走到门口"
         (project_path / "storyboards" / "scene_E1S01.png").unlink()
         with pytest.raises(StoryboardImageBindingRequired, match=r"storyboard binding missing"):
             await generation_tasks.execute_video_task("demo", "E1S01", {"script_file": "episode_1.json", "prompt": "x"})
@@ -248,7 +250,7 @@ class TestGenerationTasks:
         不因视频供应商缺配置失败，未声明 lane 不解析见 tests/server/test_generation_context.py），
         视频任务只声明 video；带参考图时 image lane 请求 i2i 能力。"""
         project_path = prepare_files(tmp_path)
-        fake_pm = _FakePM(project_path)
+        fake_pm = _FakePM(project_path, factory=True)
         register_asset_sheet_claims(fake_pm)
         seed_current_storyboard(fake_pm)
         fake_generator = FakeGenerator(project_path)

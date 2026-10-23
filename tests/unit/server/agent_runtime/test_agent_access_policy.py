@@ -158,12 +158,12 @@ def test_write_edit_timeline_denied(policy: AgentAccessPolicy, tool: str, relati
     "relative", ["source/novel.txt", "source/episode_1.txt", "source/snapshots/novel.txt", "source/new.md"]
 )
 def test_write_source_denied(policy: AgentAccessPolicy, tool: str, relative: str) -> None:
-    """source/ 只能经服务命令写入，报错指向上传与编辑源文的工具。"""
+    """正式工件只能经质量检查后入库，拒绝提示指向工厂暂存和入库通道。"""
     cwd = _cwd(policy)
     allowed, reason = policy.check_path_access(str(cwd / relative), tool, cwd, user_id=_USER_ID)
     assert not allowed, f"{tool} {relative} 应被拒"
-    assert "upload_source" in (reason or "")
-    assert "edit_source_text" in (reason or "")
+    assert "drafts/short_drama/" in (reason or "")
+    assert "ingest_short_drama_artifacts" in (reason or "")
 
 
 @pytest.mark.parametrize("tool", ["Write", "Edit"])
@@ -182,15 +182,13 @@ def test_write_source_denied(policy: AgentAccessPolicy, tool: str, relative: str
     ],
 )
 def test_write_formal_script_plan_denied(policy: AgentAccessPolicy, tool: str, relative: str) -> None:
-    """三条路线的正式 script_plan 都不可用 Write/Edit 直改：它另有几条持同一把 per-path 锁的写入路径
-    （迁移 / Web 端保存 / 晋升），沙箱内的 Write/Edit 取不到锁，直改即丢失更新窗口。
-    报错要指向取回草稿的工具，否则 Agent 只知被拒、不知改道哪里。"""
+    """历史规划只供读取和迁移，拒绝提示引导使用短剧工厂。"""
     cwd = _cwd(policy)
     allowed, reason = policy.check_path_access(str(cwd / relative), tool, cwd, user_id=_USER_ID)
     assert not allowed, f"{tool} {relative} 应被拒"
     assert reason
-    assert "open_draft" in reason
-    assert "promote_draft" in reason
+    assert "历史读取和迁移" in reason
+    assert "短剧工厂" in reason
 
 
 def test_protected_script_plan_filenames_match_shared_constant() -> None:
@@ -238,7 +236,7 @@ def test_write_revisioned_draft_denied(policy: AgentAccessPolicy, tool: str, rel
     allowed, reason = policy.check_path_access(str(cwd / relative), tool, cwd, user_id=_USER_ID)
     assert not allowed, f"{tool} {relative} 应被拒"
     assert reason
-    assert "patch_draft" in reason
+    assert "短剧工厂" in reason
 
 
 @pytest.mark.parametrize("tool", ["Write", "Edit"])

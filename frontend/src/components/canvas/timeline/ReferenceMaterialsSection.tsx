@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Loader2, Sparkles } from "lucide-react";
 import { API, type FileUrlWidth } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -173,6 +173,13 @@ export function ReferenceMaterialsSection({
   const imageUrl = (path: string, width: FileUrlWidth = 1280) =>
     API.getFileUrl(projectName, path, fingerprints[path] ?? null, { width });
   const cellRatio = (plan?.video_aspect_ratio ?? aspectRatio).replace(":", " / ");
+  const columns = GRID_COLUMNS[plan?.cols ?? 2] ?? "grid-cols-2";
+  const cellWidth = 200;
+  const cellHeight = Math.round(cellWidth * (9 / 16));
+  const gridWidth = (plan?.cols ?? 2) * cellWidth;
+  const gridHeight = (plan?.rows ?? 2) * cellHeight;
+  const describeCell = (cell: ShotGridPlan["cells"][number]) =>
+    cell.prompt.trim() || cell.continuity_notes.trim();
   const showCells = plan?.status === "confirmed" && plan.cells.some((cell) => cell.image_path);
   const statusLabel = plan?.stale ? t("shot_materials_stale")
     : plan?.status === "confirmed" ? t("shot_materials_confirmed")
@@ -219,28 +226,62 @@ export function ReferenceMaterialsSection({
         </div>
       )}
       {showCells && plan ? (
-        <div className={`grid ${GRID_COLUMNS[plan.cols] ?? "grid-cols-2"} gap-2`}>
-          {plan.cells.map((cell) => (
-            <button key={cell.index} type="button" aria-label={t("shot_keyframe", { index: cell.index })}
-              onClick={() => { if (cell.image_path) setPreviewUrl(imageUrl(cell.image_path)); }}
-              className="focus-ring min-w-0 overflow-hidden rounded-md border border-border bg-muted/40 text-left">
-              <div className="relative aspect-(--cell-ratio) overflow-hidden bg-background"
-                style={{ "--cell-ratio": cellRatio } as CSSProperties}>
-                {cell.image_path ? <img src={imageUrl(cell.image_path, 640)} alt={t("shot_keyframe", { index: cell.index })}
-                  className="size-full object-contain" /> : null}
+        aspectRatio === "9:16" ? (
+          <div className="flex max-w-full items-stretch gap-2 overflow-x-auto pb-1">
+            {plan.cells.map((cell, index) => (
+              <div key={cell.index} className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={t("shot_keyframe", { index: cell.index })}
+                  onClick={() => { if (cell.image_path) setPreviewUrl(imageUrl(cell.image_path)); }}
+                  className="focus-ring relative w-[140px] overflow-hidden rounded-lg border border-border bg-muted/40 p-1.5 text-left shadow-sm"
+                >
+                  <div className="overflow-hidden rounded-md bg-background" style={{ aspectRatio: cellRatio }}>
+                    {cell.image_path ? (
+                      <img src={imageUrl(cell.image_path, 640)} alt={t("shot_keyframe", { index: cell.index })}
+                        className="size-full object-contain" />
+                    ) : null}
+                    <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">K{cell.index}</span>
+                  </div>
+                  <div className="px-2 py-1.5">
+                    <p className="line-clamp-2 text-[11px] leading-4 text-muted-foreground">{describeCell(cell)}</p>
+                  </div>
+                </button>
+                {index < plan.cells.length - 1 ? <ArrowRight aria-hidden className="shrink-0 text-muted-foreground" /> : null}
               </div>
-              <div className="flex flex-col gap-1 px-2 py-1.5">
-                <span className="text-xs font-medium text-foreground">K{cell.index}</span>
-                <span className="text-xs text-muted-foreground">{cell.continuity_notes}</span>
-                <p className="line-clamp-2 text-xs text-muted-foreground">{cell.prompt}</p>
-              </div>
-            </button>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            className={`grid ${columns} gap-2 overflow-hidden rounded-md border border-border bg-muted/20 p-2`}
+            style={{ width: gridWidth, maxWidth: "100%" }}
+          >
+            {plan.cells.map((cell) => (
+              <button
+                type="button"
+                aria-label={t("shot_keyframe", { index: cell.index })}
+                onClick={() => { if (cell.image_path) setPreviewUrl(imageUrl(cell.image_path)); }}
+                className="focus-ring min-w-0 overflow-hidden rounded-md border border-border bg-muted/40 text-left"
+              >
+                <div className="relative overflow-hidden bg-background" style={{ aspectRatio: cellRatio }}>
+                  {cell.image_path ? (
+                    <img src={imageUrl(cell.image_path, 640)} alt={t("shot_keyframe", { index: cell.index })}
+                      className="size-full object-contain" />
+                  ) : null}
+                  <span className="absolute left-1.5 top-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium text-white">K{cell.index}</span>
+                </div>
+                <div className="px-2 py-1.5">
+                  <p className="line-clamp-2 text-[11px] leading-4 text-muted-foreground">{describeCell(cell)}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )
       ) : plan?.composite_path ? (
         <button type="button" aria-label={t("shot_materials_preview_open")}
           onClick={() => { if (plan.composite_path) setPreviewUrl(imageUrl(plan.composite_path)); }}
-          className="focus-ring block max-w-full overflow-hidden rounded-md border border-border bg-muted/20">
+          className="focus-ring relative block overflow-hidden rounded-md border border-border bg-muted/20"
+          style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}>
           <img src={imageUrl(plan.composite_path)} alt={t("shot_materials_preview")} className="size-full object-contain" />
         </button>
       ) : null}

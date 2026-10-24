@@ -18,7 +18,14 @@ import pytest
 from fastapi import FastAPI
 from PIL import Image
 
+from lib.artifacts.artifact_manifest import (
+    ArtifactKey,
+    ArtifactManifest,
+    ArtifactManifestEntry,
+    ProjectArtifactManifestAdapter,
+)
 from lib.project.project_manager import ProjectManager
+from lib.script.grid.keyframe_parser import scene_revision_of
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from server.error_handlers import register_error_handlers
@@ -377,3 +384,68 @@ async def test_author_returns_exact_draft_without_writing_or_truncating(
     response = await grid_client.post(f"{BASE}/author-prompt", json=_payload())
     assert response.status_code == (200 if count == 4 else 502)
     assert not ShotGridManager(grid_projects.get_project_path(PROJECT)).list_all()
+
+
+def _save_generated_grid(project_path: Path, grid_id: str, scene: str) -> None:
+    """直接落一条「出图完成、尚未确认」的记录，并写上图与出图时的文本指纹。
+
+    不经 PUT 造记录：这里只验证 GET 的过期判定，保存口径由 PUT 自己的用例负责。产物清单按出图
+    提交的真实口径登记：``shot_grids`` 资源登记成这一镜的分镜图键，路径指向合成图本身。
+    """
+
+    composite = _write_composite(project_path, grid_id, 1280, 720)
+    ShotGridManager(project_path).save(
+        ShotGrid(
+            id=grid_id,
+            episode=1,
+            script_file=SCRIPT,
+            shot_id=SHOT,
+            rows=2,
+            cols=2,
+            prompt=PROMPT,
+            status="completed",
+            composite_path=composite,
+            scene_revision=scene_revision_of(scene),
+            # 未确认的合成图不该被拿去比规范期望，写不写基准都不影响判定。
+            image_basis={"kind": "grid", "kind_version": 1, "digest": "sha256-v1:" + "0" * 64},
+        )
+    )
+    ArtifactManifest(ProjectArtifactManifestAdapter(project_path)).register_entry_transactionally(
+        ArtifactKey.episode_storyboard(1, SHOT),
+        ArtifactManifestEntry(artifact_path=composite, basis_digest="sha256-v1:" + "1" * 64),
+    )
+
+
+async def test_completed_grid_is_not_stale(grid_client: httpx.AsyncClient, grid_projects: ProjectManager) -> None:
+    """刚出完图、尚未确认的宫格不算过期。
+
+    回归点：未确认的合成图没有对应的规范期望，拿它跟分镜图的期望比对只会得到「不等」，
+    表现为「刚生成完就过期」，连带确认入口一起锁死。
+    """
+
+    _save_generated_grid(grid_projects.get_project_path(PROJECT), "shot_grid_0000000000f1", SCENE)
+
+    response = await grid_client.get(BASE, params={"script_file": SCRIPT, "shot_id": SHOT})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["stale"] is False
+
+
+async def test_scene_change_marks_the_grid_stale(grid_client: httpx.AsyncClient, grid_projects: ProjectManager) -> None:
+    """出图后镜头文本改了才判过期：这是 stale 唯一要回答的问题。"""
+
+    project_path = grid_projects.get_project_path(PROJECT)
+    _save_generated_grid(project_path, "shot_grid_0000000000e2", SCENE)
+
+    edited = SCENE.replace("白瓷酒盏刚刚滚落", "青铜酒盏刚刚滚落")
+    script_path = project_path / "scripts" / SCRIPT
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    script["scenes"][0]["image_prompt"]["scene"] = edited
+    script_path.write_text(json.dumps(script, ensure_ascii=False), encoding="utf-8")
+
+    response = await grid_client.get(BASE, params={"script_file": SCRIPT, "shot_id": SHOT})
+
+    assert response.status_code == 200
+    assert response.json()["stale"] is True

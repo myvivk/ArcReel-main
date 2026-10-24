@@ -126,11 +126,17 @@ def get_shot_grid(project_name: str, script_file: str, shot_id: str, request: Re
     result["stale"] = shot is None or (
         grid.scene_revision is not None and grid.scene_revision != scene_revision_of(shot_scene_text(shot))
     )
-    if grid.image_basis and grid.composite_path:
+    # 「过期」只回答一件事：这份上图还是不是按当前的输入出的。
+    #
+    # 产物比对只在宫格已确认时才做：确认会把合成图登记成这一镜的分镜图（``storyboards/<grid>/contact.png``），
+    # 那时拿它去比分镜图的规范期望才有意义。未确认的合成图没有对应的规范期望——拿 ``shot_grids/<grid>.png``
+    # 去比，只会得到「路径不同 / 基准不同」，把刚出完图的宫格一律判成过期，连带确认入口一起锁死。
+    if grid.status == "confirmed" and grid.image_basis:
         project = project_manager.load_project(project_name)
         resolver = active_artifact_currency_resolver(project_manager.get_project_path(project_name), project)
         comparison = resolver.compare(
-            ArtifactKey.episode_storyboard(grid.episode, grid.shot_id), artifact_path=grid.composite_path
+            ArtifactKey.episode_storyboard(grid.episode, grid.shot_id),
+            artifact_path=f"storyboards/{grid.id}/contact.png",
         )
         result["stale"] = result["stale"] or comparison.status in {ArtifactStatus.STALE, ArtifactStatus.BLOCKED}
     if grid.composite_path:
@@ -267,9 +273,8 @@ def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Tran
         return {"success": True, "grid": get_shot_grid(project_name, grid.script_file, grid.shot_id, request)}
     if grid.status != "completed" or not grid.composite_path:
         raise HTTPException(status_code=409, detail=t("shot_grid_not_ready"))
-    current_view = get_shot_grid(project_name, grid.script_file, grid.shot_id, request)
-    if current_view is None or current_view["stale"]:
-        raise HTTPException(status_code=409, detail=t("shot_grid_not_ready"))
+    # 不再拿 GET 的 stale 当确认门槛：它表达的是「输入相对出图时变了」，其中提示词这一条由下方切分事务
+    # 里的 scene_revision 复核兜住；资产变化不该阻止用户确认一张已经出好的图。
 
     composite = safe_join(project_path, grid.composite_path)
     count = grid.rows * grid.cols

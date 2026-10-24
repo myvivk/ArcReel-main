@@ -23,7 +23,8 @@ def _response(*ids: str) -> str:
                 {
                     "scene_id": scene_id,
                     "image_prompt": {
-                        "scene": "【镜头1】男人推开木门。 【镜头2】男人走到窗前。",
+                        "scene": "【镜头1｜中景】平视机位，缓推。男人眉头微蹙，伸手推开门板，指节抵在木门上微微发白，"
+                        "肩头随着门轴的阻力向后一顿；门轴吱呀作响，门后透进一束冷白的晨光，在门槛上拖出一道斜长的影子，灰尘在光柱里缓缓翻飞。",
                         "composition": {"shot_type": "Medium Shot", "lighting": "日光", "ambiance": "安静"},
                     },
                 }

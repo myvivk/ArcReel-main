@@ -163,7 +163,6 @@ ignore_imports = [
     "lib.backends.backend_assembly.specs -> lib.custom_provider.builtin_definitions",
     "lib.backends.backend_assembly.specs -> lib.custom_provider.declarative_backend",
     "lib.backends.backend_assembly.specs -> lib.custom_provider.endpoints",
-    "lib.project.project_manager -> lib.backends.text_backends.base",
     "lib.backends.text_generator -> lib.backends.text_backends.base",
     "lib.backends.text_generator -> lib.backends.text_backends.factory",
     # 中间模块反向引用 custom_provider（provider_id 解析与自定义供应商记账）

@@ -1774,6 +1774,7 @@ export default {
   'prompt_authoring_open': 'Write prompts',
   'prompt_authoring_open_image': 'Write storyboard prompt',
   'prompt_authoring_open_video': 'Write video prompt',
+  'prompt_authoring_assets_blocked': '{{count}} assets in this episode still lack a description; complete them before writing storyboard prompts: {{assets}}',
   'prompt_authoring_title': 'Write prompts',
   'prompt_authoring_desc': 'Write prompts for the selected part of this episode. Storyboard prompts come first; video prompts are written after reference materials are confirmed.',
   'prompt_authoring_field_label': 'Prompt type',

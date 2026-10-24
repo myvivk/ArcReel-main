@@ -37,10 +37,11 @@ def _services(tmp_path: Path) -> Services:
 
 
 def _request(package):
-    return ToolRequest(IngestShortDramaArtifactsRequest(artifacts=[
-        {"path": path, "content_base64": base64.b64encode(raw).decode("ascii")}
-        for path, raw in package
-    ]))
+    return ToolRequest(
+        IngestShortDramaArtifactsRequest(
+            artifacts=[{"path": path, "content_base64": base64.b64encode(raw).decode("ascii")} for path, raw in package]
+        )
+    )
 
 
 async def test_agent_ingests_original_artifact_bytes_without_native_script(tmp_path):

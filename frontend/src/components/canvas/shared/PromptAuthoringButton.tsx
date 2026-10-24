@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { PenLine } from "lucide-react";
 import { promptAuthoringResourceId } from "@/actions/generation";
 import { Button } from "@/components/ui/button";
+import { useFactoryEpisodeSource } from "@/components/canvas/episode-page/useFactoryEpisodeSource";
 import {
   usePromptAuthoringStore,
   type PromptAuthoringField,
@@ -36,12 +37,26 @@ export function PromptAuthoringButton({
   const { t } = useTranslation("dashboard");
   const open = usePromptAuthoringStore((s) => s.open);
   const busy = useActiveResourceIds("text_episode_script", projectName).has(promptAuthoringResourceId(episode));
+  // 分镜提示词入口前置资产完整性检查（D-10 第 0 步）：缺登记 / 缺描述时置灰并提示去资产页补齐。
+  const isImageAuthoring = defaultFields?.length === 1 && defaultFields[0] === "image_prompt";
+  const sourceState = useFactoryEpisodeSource(projectName, episode, isImageAuthoring);
+  const missingAssets = isImageAuthoring ? (sourceState.value?.assets_missing_description ?? []) : [];
+  const assetsBlocked = missingAssets.length > 0;
+  const disabled = busy || assetsBlocked;
+  const title = busy
+    ? t("prompt_authoring_busy")
+    : assetsBlocked
+      ? t("prompt_authoring_assets_blocked", {
+          count: missingAssets.length,
+          assets: missingAssets.map((asset) => asset.name).join("、"),
+        })
+      : undefined;
   return (
     <Button
       variant={variant}
       size="sm"
-      disabled={busy}
-      title={busy ? t("prompt_authoring_busy") : undefined}
+      disabled={disabled}
+      title={title}
       onClick={() => open({
         projectName, episode, scope, currentEntryId, defaultRewrite, defaultFields, lockFields,
       })}

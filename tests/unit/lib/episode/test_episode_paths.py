@@ -41,10 +41,6 @@ def test_episode_drafts_dir():
     assert episode_paths.episode_drafts_dir(Path("/p"), 2) == Path("/p/drafts/episode_2")
 
 
-
-
-
-
 def test_gate_only_json_and_web_also_md():
     """gate 只认结构化 .json；web 读取兼认旧版 .md（既有语义差异，见 ADR 0041）。"""
     # gate 的登记表不含任何 .md
@@ -64,9 +60,9 @@ def test_script_plan_path_follows_reference_video_across_content_modes(tmp_path)
             episode_paths.episode_drafts_dir(tmp_path, 1) / episode_paths.REFERENCE_VIDEO_SCRIPT_PLAN_FILENAME
         )
     # 未挂 rv 的项目沿用 content_mode 既有文件名，不受影响
-    assert legacy_script_plans.script_plan_path(tmp_path, {"content_mode": "narration", "episodes": [{"episode": 1}]}, 1) == (
-        episode_paths.episode_drafts_dir(tmp_path, 1) / episode_paths.script_plan_filename("narration")
-    )
+    assert legacy_script_plans.script_plan_path(
+        tmp_path, {"content_mode": "narration", "episodes": [{"episode": 1}]}, 1
+    ) == (episode_paths.episode_drafts_dir(tmp_path, 1) / episode_paths.script_plan_filename("narration"))
     # ad 优先于 generation_mode：即便挂 rv 也无结构化 script_plan（与 gate/web 同口径，见上一测试）
     assert (
         legacy_script_plans.script_plan_path(

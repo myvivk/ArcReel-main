@@ -19,8 +19,7 @@ slots:
   style_description: 项目风格描述
   aspect_ratio: 画面比例（如 16:9）
   aspect_ratio_label: 画面比例的文字说明（竖屏构图 / 横屏构图 / "<比例> 构图"），由代码按比例产出
-  assets: 出场资产外观，对象 {characters, scenes, props}，每项是 [{name, appearance}] 列表（尖括号已中和）；调用方不提供资产块时传 null
-  scenes_content: 工厂 AI 分镜的内容投影，含口播、原文锚和已确认的参考素材
+  scenes_content: 工厂 AI 分镜的内容投影，含出场资产名字清单、口播、原文锚和已确认的参考素材
   episode: 集号
   instructions: 附加指令正文；无时传 null
 protected: false
@@ -39,13 +38,7 @@ protected: false
 
 {{ partial("shared/text_style") }}
 
-{% if assets %}
-{{ partial("shared/lists/asset_appearance_blocks") }}
-
-{{ partial("shared/asset_appearance_note") }}
-
-{% endif %}
-分镜内容中的「口播」与「原文锚」仅供理解戏剧节奏与语境，不要复制进视觉字段。
+分镜内容中的「出场资产」只有名字清单，不附外观描述：外观一致性由该资产的参考图承载，画面描述不抄资产登记外观，只写本镜头可见的动作与神态。「口播」与「原文锚」仅供理解戏剧节奏与语境，不要复制进视觉字段。
 
 <shots>
 {{ scenes_content }}

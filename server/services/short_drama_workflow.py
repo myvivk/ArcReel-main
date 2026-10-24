@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import itertools
 import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +28,7 @@ from lib.script.script_models import DramaEpisodeScript
 from lib.script.short_drama_import import (
     STORY_SCENE_WINDOW_SECONDS,
     ParsedEpisode,
+    assets_missing_description,
     beat_catalog,
     convert_planned_scenes,
     parse_short_drama_episode,
@@ -39,6 +38,12 @@ from lib.script.short_drama_source import (
     ShortDramaSourceConflict,
     load_short_drama_source,
     short_drama_source_relative_path,
+)
+from lib.script.shot_prompt_standard import (
+    CAMERA_MOTIONS,
+    CAMERA_POSITIONS,
+    SHOT_SIZES,
+    lint_shot_prompt,
 )
 
 
@@ -83,66 +88,10 @@ class SceneRewriteResult(BaseModel):
 
 
 #: 规划缓存的格式版本：校验口径变了就换版本，避免复用旧口径产出的规划。
-_PLAN_CACHE_VERSION = "v3"
+_PLAN_CACHE_VERSION = "v4"
 #: 一次规划最多调用几次文本模型：首轮 + 带拒绝原因的返修轮。校验不通过就继续让 AI 改写优化，
 #: 所有轮次都失败则拒绝提交，不交付机械切分结果。
 _PLAN_ATTEMPTS = 5
-
-#: 镜头首行必须是真实镜头语言，不是「景别 / 机位 / 运镜」这类占位字面量。
-_SHOT_SIZE_WORDS = ("大远景", "远景", "全景", "中远景", "中景", "中近景", "近景", "大特写", "特写")
-_CAMERA_POSITION_WORDS = (
-    "平视",
-    "俯拍",
-    "仰拍",
-    "俯视",
-    "仰视",
-    "过肩",
-    "主观",
-    "侧拍",
-    "正拍",
-    "斜侧",
-    "顶拍",
-)
-_CAMERA_MOTION_WORDS = (
-    "固定",
-    "推",
-    "拉",
-    "摇",
-    "移",
-    "跟",
-    "升",
-    "降",
-    "环绕",
-    "手持",
-    "变焦",
-    "晃动",
-)
-#: 具体动作判定词表：覆盖短剧里常见的肢体 / 表情 / 手部 / 移动动作。校验只要求镜头块
-#: 里出现其中任意一个，词表过窄会把合法提示词误判成「没有动作」，逼出无谓返修甚至
-#: 让整次规划失败——所以宁可宽，不可窄。
-_ACTION_WORDS = re.compile(
-    "推|拉|拽|拎|抬|举|落|放|递|接|抛|扔|丢|掷|挥|挥动|摆|摇|晃|"
-    "抓|握|攥|捏|掐|拧|撕|扯|拔|抽|插|按|压|掰|挑|解|系|扣|摘|戴|"
-    "敲|砸|摔|拍|推门|掀|踢|踩|踏|跺|踹|撞|抵|顶|撑|挡|拦|护|"
-    "走|跑|奔|冲|退|撤|追|逃|跟|随|跃|跳|爬|翻|滚|潜|游|飞|"
-    "站|坐|跪|蹲|躺|卧|靠|倚|俯身|弯腰|起身|起立|站起|坐下|跪下|转身|回头|侧身|"
-    "抬头|低头|转头|回首|逼近|靠近|凑近|后退|贴近|顿住|停住|僵住|定住|"
-    "看|望|盯|瞥|瞪|瞧|瞄|扫视|打量|凝视|注视|仰望|俯瞰|环顾|"
-    "睁|闭|眨|眯|皱眉|挑眉|蹙眉|咧嘴|抿|咬|嚼|吞|咽|喘|吸|呼|屏息|叹|吐|"
-    "笑|哭|泣|哽咽|颤抖|发抖|哆嗦|瑟缩|缩|蜷|瘫|软|"
-    "点头|摇头|颔首|鞠躬|挥手|招手|握手|拥抱|搂|抱|揽|挽|扶|搀|牵|拉住|拽住|"
-    "打开|合上|关上|翻开|合拢|点亮|熄灭|点|燃|吹|"
-    "说话|开口|喊|叫|吼|吼道|低声|轻声|念|读|问|答|应|"
-    "想|忆|想起|记起|思索|沉思"
-)
-_EMOTION_WORDS = re.compile(
-    "眼|眉|眸|神色|神情|表情|脸|面色|目光|笑|哭|泣|怒|惊|惧|怯|悲|痛|"
-    "恨|冷|暖|紧|颤|抖|慌|恐|急|忧|焦|愣|怔|僵|屏息|叹|喘|哽|咬|抿|"
-    "坚定|迟疑|犹豫|压声|软|疲|累|困|兴奋|欣喜|放松|羞|傲|愧|疑|不甘|失落"
-)
-#: 镜头块起点：``【镜头1】`` 是规范写法，模型的 ``【镜头 1】`` / ``[镜头1]`` 变体同样认。
-_SHOT_MARK = r"【?\s*镜头\s*\d+\s*】?"
-_SHOT_BLOCK = re.compile(rf"{_SHOT_MARK}.*?(?={_SHOT_MARK}|$)", flags=re.S)
 
 _PLANNING_STRENGTH_HINTS = {
     1: "保守：只做视觉化与格式落地，不改动作顺序、不碰台词。",
@@ -150,56 +99,43 @@ _PLANNING_STRENGTH_HINTS = {
     3: "增强：可调整动作分配与台词节奏，但 utterances 仍逐字照抄原稿。",
 }
 
+#: ``image_prompt`` 的格式约定（D-3 / D-10 统一标准）：规划与按分镜重写共用同一份指令文案，
+#: 景别 / 机位 / 运镜词表取自 :mod:`lib.script.shot_prompt_standard` 的单一真相源，与校验闸同源。
+_IMAGE_PROMPT_FORMAT_RULES = (
+    "5. image_prompt：单段多行文本，每个镜头一段，镜头之间空一行，格式固定（示例）：",
+    "【镜头1｜中景】平视机位，缓推。沈昭@[沈昭]站在床侧，左手把一张 A4 白纸举到台灯下，纸面被灯光穿透，"
+    "签名栏的字迹透出淡红；床头监护仪亮着绿色波形线，周敏@[周敏]卧在床上，双眼闭着，呼吸平缓。",
+    f"  - 每段以「【镜头N｜景别】」起头，N 从 1 连续递增，只有一个镜头也写【镜头1】；"
+    f"景别只能取 {'/'.join(SHOT_SIZES)}。",
+    f"  - 景别之后的首句写机位与运镜（如「平视机位，缓推。」）：机位只能取 {'/'.join(CAMERA_POSITIONS)}；"
+    f"运镜只能取 {'/'.join(CAMERA_MOTIONS)}。不要照抄“景别、机位、运镜”这几个字。",
+    "  - 正文是连贯叙述句：主体（实名 + 具体动作 + 神态）→ 环境道具细节 → 光线氛围一笔，各占一层；"
+    "不写台词，只写画面看得见的内容。",
+    "  - 资产引用只写「名字@[登记名]」（衍生写「角色/衍生@[角色/衍生]」），只能引用 assets 清单里的名字；"
+    "禁止“角色@[...]”这类泛化前缀，禁止把资产外观整份抄进正文；每段第一个主体写实名，句内后续才可用代词。",
+    "  - 镜头数由内容决定：12–15 秒一幕常见 3–5 个，平静对话幕 2 个也够，动作/对峙密集幕 4–6 个；"
+    "禁止把同一个动作拆成雷同镜头凑数。",
+    "  - 不要写 Reference_Images、Style、Avoid、视觉参考 等最终包装字段。",
+)
+
 
 class _PlanRejected(ValueError):
     """AI 规划未通过结构 / 丰满度校验，可将原因回喂模型返修。"""
 
 
-def _shot_header(block: str) -> str:
-    """镜头块首行：景别 / 机位 / 运镜按模板写在行首。"""
-    return next((line.strip() for line in block.splitlines() if line.strip()), "")
-
-
-def _lint_shot_block(block: str, assets: dict[str, dict[str, str]]) -> str | None:
-    """镜头块不合格的原因；合格返回 ``None``。"""
-    if len(block.strip()) < 70:
-        return "镜头块过短，内容不够丰满"
-    subject = next((line for line in block.splitlines() if line.startswith("画面主体：")), "")
-    environment = next((line for line in block.splitlines() if line.startswith("环境道具：")), "")
-    if not subject or not _ACTION_WORDS.search(subject):
-        return "镜头块没有具体动作"
-    if not _EMOTION_WORDS.search(subject):
-        return "镜头块缺具体神态或情绪"
-    if not environment.removeprefix("环境道具：").strip(" 。"):
-        return "镜头块缺具体环境与光影描写"
-    if any(word in block for word in ("一位人物", "一处场景", "气氛紧张", "人物站着")):
-        return "镜头块包含空泛占位描写"
-    names = {name for group in assets.values() for name in group}
-    anchors = re.findall(r"(?:(风格锚))?@\[([^]\n]+)\]", block)
-    if not any(anchor.split("/", 1)[0] in names for _style, anchor in anchors):
-        return "镜头块没有引用任何已登记资产锚点"
-    if any(not style and anchor.split("/", 1)[0] not in names for style, anchor in anchors):
-        return "镜头块引用了未登记资产"
-    header = _shot_header(block)
-    if (
-        not any(word in header for word in _SHOT_SIZE_WORDS)
-        or not any(word in header for word in _CAMERA_POSITION_WORDS)
-        or not any(word in header for word in _CAMERA_MOTION_WORDS)
-    ):
-        return "镜头首行缺景别、机位或运镜（须写成「中景，平视机位，缓推。」）"
-    if "视觉参考：" not in block:
-        return "镜头块缺视觉参考行"
-    return None
-
-
 def _normalize_image_prompt(text: str) -> str:
     """提示词标准化：统一镜头标记写法与行尾空白，让校验、存储与展示同一口径。
 
-    模型常把 ``【镜头1】`` 写成 ``【镜头 1】`` / ``[镜头1]`` / ``[镜头 1]``；这些变体
+    模型常把 ``【镜头1｜中景】`` 写成 ``【镜头 1| 中景 】`` / ``[镜头1]``；这些变体
     语义相同，直接在入库前统一成规范形，而不是让下游各消费方各自兼容。
     """
+
+    def _canon_mark(match: re.Match[str]) -> str:
+        shot_size = (match.group(2) or "").strip()
+        return f"【镜头{match.group(1)}｜{shot_size}】" if shot_size else f"【镜头{match.group(1)}】"
+
     text = text.replace("\r\n", "\n")
-    text = re.sub(r"[\[【]\s*镜头\s*(\d+)\s*[\]】]", lambda match: f"【镜头{match.group(1)}】", text)
+    text = re.sub(r"[\[【]\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?[\]】]", _canon_mark, text)
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
@@ -215,24 +151,17 @@ def _normalize_plan(plan: ScenePlanResult) -> ScenePlanResult:
     )
 
 
-def _validate_shot_blocks(blocks: list[str], assets: dict[str, dict[str, str]]) -> None:
-    for block in blocks:
-        if problem := _lint_shot_block(block, assets):
-            raise _PlanRejected(problem)
-    # 剥掉镜头编号后比较所有组合，编号变化和非相邻重复均不能绕过凑数检查。
-    bodies = [re.sub(r"【镜头\d+】", "", block).strip() for block in blocks]
-    for left, right in itertools.combinations(bodies, 2):
-        if SequenceMatcher(None, left, right, autojunk=False).ratio() >= 0.92:
-            raise _PlanRejected("有语义高度重复的凑数镜头")
+def _registered_names(assets: dict[str, list[str]]) -> set[str]:
+    """资产名字清单摊平成登记名集合（格式闸的登记与出场判定同用这一份）。"""
+    return {name for group in assets.values() for name in group}
 
 
-def _validate_plan_quality(plan: ScenePlanResult, assets: dict[str, dict[str, str]]) -> None:
-    """结构与丰满度同为交付闸，不合格时整体返修。"""
+def _validate_plan_quality(plan: ScenePlanResult, assets: dict[str, list[str]]) -> None:
+    """结构与丰满度同为交付闸，不合格时整体返修（校验口径见 ``lint_shot_prompt``）。"""
+    names = _registered_names(assets)
     for scene_index, scene in enumerate(plan.scenes, 1):
-        blocks = _SHOT_BLOCK.findall(scene.image_prompt)
-        if not blocks:
-            raise _PlanRejected(f"scene {scene_index} 的 image_prompt 里没有【镜头N】分镜块")
-        _validate_shot_blocks(blocks, assets)
+        if problem := lint_shot_prompt(scene.image_prompt, registered_names=names, allowed_names=names):
+            raise _PlanRejected(f"scene {scene_index}：{problem}")
 
 
 def _validate_plan_coverage(plan: ScenePlanResult, beats: list[dict[str, Any]]) -> None:
@@ -247,27 +176,28 @@ def _validate_plan_coverage(plan: ScenePlanResult, beats: list[dict[str, Any]]) 
 
 
 def _validate_rewrite(
-    rewrite: SceneRewriteResult, requested: list[tuple[str, list[dict[str, Any]]]], assets: dict[str, dict[str, str]]
+    rewrite: SceneRewriteResult, requested: list[tuple[str, list[dict[str, Any]]]], assets: dict[str, list[str]]
 ) -> None:
-    """按分镜重写稿的护栏：scene_id 一一对应、时长落窗口、镜头块过丰满度校验。"""
+    """按分镜重写稿的护栏：scene_id 一一对应、时长落窗口、提示词过格式闸。"""
     requested_ids = [scene_id for scene_id, _beats in requested]
     returned_ids = [scene.scene_id for scene in rewrite.scenes]
     if returned_ids != requested_ids:
         raise _PlanRejected(f"scene_id 必须与待重写的分镜一一对应（期望 {requested_ids}，实际 {returned_ids}）")
+    names = _registered_names(assets)
     for (scene_id, _beats), scene in zip(requested, rewrite.scenes, strict=True):
         low, high = STORY_SCENE_WINDOW_SECONDS
         if not low <= scene.duration_seconds <= high:
             raise _PlanRejected(f"分镜 {scene_id} 时长 {scene.duration_seconds} 秒不在 {low}–{high} 秒窗口内")
-        blocks = _SHOT_BLOCK.findall(_normalize_image_prompt(scene.image_prompt))
-        if not blocks:
-            raise _PlanRejected(f"分镜 {scene_id} 的 image_prompt 里没有【镜头N】分镜块")
-        _validate_shot_blocks(blocks, assets)
+        if problem := lint_shot_prompt(
+            _normalize_image_prompt(scene.image_prompt), registered_names=names, allowed_names=names
+        ):
+            raise _PlanRejected(f"分镜 {scene_id}：{problem}")
 
 
 def _rewrite_prompt(
     *,
     requested: list[tuple[str, list[dict[str, Any]]]],
-    assets: dict[str, dict[str, str]],
+    assets: dict[str, list[str]],
     planning_strength: int,
     previous_prompts: dict[str, str],
     rejection: str | None,
@@ -282,21 +212,9 @@ def _rewrite_prompt(
             "2. duration_seconds：取 12–15 的整数。",
             "3. scene_description：改写成镜头可读的画面（具体动作 + 神态 + 环境），只写画面看得见的内容，不写台词。",
             "4. utterances 里的台词不归你管，不要输出；image_prompt 覆盖的画面必须仍承载输入 beats 的剧情。",
-            "5. image_prompt：单段多行文本，每个镜头 4 行，镜头之间空一行，格式固定：",
-            "【镜头1】中景，平视机位，缓推。",
-            "画面主体：沈昭@[沈昭/将断头金簪从掌心缓缓抽出，血珠滚落]，沈婉@[沈婉/跪坐一侧，眼底伪怯转冷]。",
-            "环境道具：暗殿@[暗殿/残并蒂莲屏风]，朱红漆案、铜醮香炉，喜烛暖橙光斑落在鎏金雕面。",
-            "视觉参考：风格锚@[短剧/暗殿对峙质感]",
-            "  - 首行必须是「<景别>，<机位>，<运镜>。」：景别只能取 大远景/远景/全景/中景/近景/特写/大特写；"
-            "机位只能取 平视/俯拍/仰拍/过肩/主观/侧拍；运镜只能取 固定/推/拉/摇/移/跟/升/降/环绕/手持。"
-            "不要照抄“景别、机位、运镜”这几个字。",
-            "  - 画面主体必须写具体动作 + 神态，且至少引用一个已登记资产锚点"
-            "（角色@[名字/锚点]、场景@[名字/锚点]、道具@[名字/锚点]）；禁止“一位人物”“气氛紧张”这类空泛占位。",
-            "  - 镜头数由内容决定：12–15 秒一幕常见 3–5 个，平静对话幕 2 个也够，"
-            "动作/对峙密集幕 4–6 个；禁止把同一个动作拆成雷同镜头凑数。",
-            "  - 视觉参考行只写文本引用（风格锚或已登记资产），不要描述像素级参考图。",
+            *_IMAGE_PROMPT_FORMAT_RULES,
             f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
-            f"assets={json.dumps(assets, ensure_ascii=False)}",
+            f"assets={json.dumps(assets, ensure_ascii=False)}（已登记的出场资产名字清单，引用 token 只能写这些名字）",
             "待重写的分镜（old_image_prompt 只作参考，可整体重写）：",
         ]
     )
@@ -322,7 +240,7 @@ async def _request_rewrite(
     *,
     project_name: str,
     requested: list[tuple[str, list[dict[str, Any]]]],
-    assets: dict[str, dict[str, str]],
+    assets: dict[str, list[str]],
     planning_strength: int,
     previous_prompts: dict[str, str],
 ) -> SceneRewriteResult:
@@ -366,33 +284,35 @@ async def _request_rewrite(
     raise _PlanRejected(rejection or "AI 返回的分镜重写不可用")
 
 
-def _asset_context(project: dict[str, Any], parsed: ParsedEpisode) -> dict[str, dict[str, str]]:
-    """只把已登记资产的名字与外观传给分镜模型。"""
+def _asset_context(project: dict[str, Any], parsed: ParsedEpisode) -> dict[str, list[str]]:
+    """本集源稿提到、且已登记的资产名字清单；只给名字与登记状态，不喂外观描述（D-10）。
+
+    外观一致性由参考图体系承载：喂了外观，模型就会把它整份抄进提示词正文。
+    """
     mentioned = {
         "character": {name for block in parsed.blocks for name in block.characters},
         "scene": {block.location for block in parsed.blocks if block.location},
         "prop": {name for block in parsed.blocks for name in block.props},
     }
-    context: dict[str, dict[str, str]] = {"character": {}, "scene": {}, "prop": {}}
+    context: dict[str, list[str]] = {}
     for asset_type, bucket_name in (
         ("character", "characters"),
         ("scene", "scenes"),
         ("prop", "props"),
     ):
         registered = project.get(bucket_name) or {}
-        for name in sorted(mentioned[asset_type]):
-            key = resolve_asset_key(registered, name)
-            entry = registered.get(key) if key else None
-            description = str(entry.get("description") or "").strip() if isinstance(entry, dict) else ""
-            if description:
-                context[asset_type][name] = description
+        context[asset_type] = sorted(
+            name
+            for name in mentioned[asset_type]
+            if isinstance(registered, Mapping) and resolve_asset_key(registered, name)
+        )
     return context
 
 
 def _plan_prompt(
     *,
     beats: list[dict[str, Any]],
-    assets: dict[str, dict[str, str]],
+    assets: dict[str, list[str]],
     planning_strength: int,
     rejection: str | None,
 ) -> str:
@@ -408,22 +328,10 @@ def _plan_prompt(
             "3. scene.scene_description：把这些拍改写成镜头可读的画面（具体动作 + 神态 + 环境），"
             "只写画面看得见的内容，不写台词。",
             "4. scene.utterances：逐字照抄输入拍里的台词（dialogue 带 speaker，画外音 voiceover），不得改字、不得增删。",
-            "5. scene.image_prompt：单段多行文本，每个镜头 4 行，镜头之间空一行，格式固定：",
-            "【镜头1】中景，平视机位，缓推。",
-            "画面主体：沈昭@[沈昭/将断头金簪从掌心缓缓抽出，血珠滚落]，沈婉@[沈婉/跪坐一侧，眼底伪怯转冷]。",
-            "环境道具：暗殿@[暗殿/残并蒂莲屏风]，朱红漆案、铜醮香炉，喜烛暖橙光斑落在鎏金雕面。",
-            "视觉参考：风格锚@[短剧/暗殿对峙质感]",
-            "  - 首行必须是「<景别>，<机位>，<运镜>。」：景别只能取 大远景/远景/全景/中景/近景/特写/大特写；"
-            "机位只能取 平视/俯拍/仰拍/过肩/主观/侧拍；运镜只能取 固定/推/拉/摇/移/跟/升/降/环绕/手持。"
-            "不要照抄“景别、机位、运镜”这几个字。",
-            "  - 画面主体必须写具体动作 + 神态，且至少引用一个已登记资产锚点"
-            "（角色@[名字/锚点]、场景@[名字/锚点]、道具@[名字/锚点]）；禁止“一位人物”“气氛紧张”这类空泛占位。",
-            "  - 镜头数由内容决定：12–15 秒一幕常见 3–5 个，平静对话幕 2 个也够，"
-            "动作/对峙密集幕 4–6 个；禁止把同一个动作拆成雷同镜头凑数。",
-            "  - 视觉参考行只写文本引用（风格锚或已登记资产），不要描述像素级参考图。",
+            *_IMAGE_PROMPT_FORMAT_RULES,
             "6. characters_in_scene / scenes / props：只填资产清单或 beats 里出现过的原名，不翻译、不新造；video_prompt 一律不输出。",
             f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
-            f"assets={json.dumps(assets, ensure_ascii=False)}",
+            f"assets={json.dumps(assets, ensure_ascii=False)}（已登记的出场资产名字清单，引用 token 只能写这些名字）",
             f"beats={json.dumps(beats, ensure_ascii=False)}",
         ]
     )
@@ -436,7 +344,7 @@ async def _request_plan(
     *,
     project_name: str,
     beats: list[dict[str, Any]],
-    assets: dict[str, dict[str, str]],
+    assets: dict[str, list[str]],
     planning_strength: int,
 ) -> ScenePlanResult:
     """调用文本模型产出规划；结构 / 丰满度不合格时带原因返修一轮，仍不合格抛 :class:`_PlanRejected`。"""
@@ -472,7 +380,7 @@ async def _request_plan(
 
 
 def _read_cached_plan(
-    cache_path: Path, beats: list[dict[str, Any]], assets: dict[str, dict[str, str]]
+    cache_path: Path, beats: list[dict[str, Any]], assets: dict[str, list[str]]
 ) -> ScenePlanResult | None:
     """读规划缓存；读不出或已不合当前校验口径就当没缓存。"""
     try:
@@ -567,31 +475,6 @@ def _load_current_script(projects: ProjectManager, project_name: str, episode: i
         return projects.load_script(project_name, script_file)
     except FileNotFoundError:
         return None
-
-
-def assets_missing_description(project: Mapping[str, Any], markdown: str) -> list[dict[str, str]]:
-    """分镜前置检查：本集源稿引用的资产里，缺外观描述的清单。
-
-    未登记或描述为空均阻断；源稿写明外观不能替代资产步骤的登记与描述规范化。
-    """
-    parsed = parse_short_drama_episode(markdown)
-    mentioned = {
-        "character": sorted({name for block in parsed.blocks for name in block.characters}),
-        "scene": sorted({block.location for block in parsed.blocks if block.location}),
-        "prop": sorted({name for block in parsed.blocks for name in block.props}),
-    }
-    missing: list[dict[str, str]] = []
-    for asset_type, bucket_name in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
-        bucket = project.get(bucket_name) or {}
-        for name in mentioned[asset_type]:
-            key = resolve_asset_key(bucket, name) if isinstance(bucket, Mapping) else None
-            entry = bucket.get(key) if isinstance(bucket, Mapping) and key else None
-            if not isinstance(entry, Mapping):
-                missing.append({"type": asset_type, "name": name, "reason": "unregistered"})
-                continue
-            if not str(entry.get("description") or "").strip():
-                missing.append({"type": asset_type, "name": name, "reason": "existing_blank"})
-    return missing
 
 
 def _scene_prompt_text(scene: Mapping[str, Any]) -> str:
@@ -876,7 +759,6 @@ async def import_short_drama_episode(
 __all__ = [
     "ShortDramaImportResult",
     "ShortDramaWorkflowError",
-    "assets_missing_description",
     "import_short_drama_episode",
     "script_has_media_artifacts",
 ]

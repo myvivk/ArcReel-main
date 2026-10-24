@@ -20,10 +20,6 @@ def _storyboard_structured(style: Any, style_description: Any) -> str:
     return render_storyboard_image_prompt({"scene": "林清坐在窗边"}, style=style, style_description=style_description)
 
 
-
-
-
-
 _ENTRIES: dict[str, Callable[[Any, Any], str]] = {
     "asset": _asset,
     "storyboard-text": _storyboard_text,

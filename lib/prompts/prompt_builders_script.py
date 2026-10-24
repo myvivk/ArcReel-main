@@ -2,8 +2,6 @@
 
 from collections.abc import Mapping
 
-from lib.project.asset_types import ALIASES_FIELD
-from lib.prompts.prompt_rules.asset_appearance import iter_asset_appearances
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.grid.shot_models import ShotGrid
@@ -118,34 +116,6 @@ def render_drama_content_for_prompt_authoring(
     return "\n\n".join(blocks)
 
 
-def _asset_aliases(bucket: dict | None, name: str) -> list[str]:
-    """资产表条目的别名；衍生引用名不是表里的键，取不到别名。"""
-    entry = (bucket or {}).get(name)
-    aliases = entry.get(ALIASES_FIELD) if isinstance(entry, dict) else None
-    if not isinstance(aliases, list):
-        return []
-    return [_neutralize_tags(alias) for alias in aliases if isinstance(alias, str) and alias.strip()]
-
-
-def _project_asset_appearances(characters: dict | None, scenes: dict | None, props: dict | None) -> dict:
-    """资产外观、别名与引用名的键齐全投影；动态尖括号中和后作为模版数据。"""
-    return {
-        key: [
-            {
-                "name": _neutralize_tags(name),
-                "aliases": _asset_aliases(bucket, name),
-                "appearance": _neutralize_tags(appearance) or None,
-            }
-            for name, appearance in iter_asset_appearances(asset_type, bucket)
-        ]
-        for key, asset_type, bucket in (
-            ("characters", "character", characters),
-            ("scenes", "scene", scenes),
-            ("props", "prop", props),
-        )
-    }
-
-
 def build_drama_prompt(
     style: str,
     style_description: str,
@@ -153,9 +123,6 @@ def build_drama_prompt(
     episode: int,
     aspect_ratio: str = "16:9",
     target_language: str = "中文",
-    characters: dict | None = None,
-    scenes: dict | None = None,
-    props: dict | None = None,
     instructions: str | None = None,
 ) -> str:
     """构建剧情演绎 prompt_authoring（视觉层）prompt。
@@ -166,8 +133,8 @@ def build_drama_prompt(
     LLM 输出按 scene_id 与 script_plan 内容对齐、由后端合并；不再按 source_kind 分支、不再识别口播、
     不再标注资产或时长——这些都是 script_plan 的职责。
 
-    ``characters`` / ``scenes`` / ``props`` 注入出场资产的外观描述（project.json 各 bucket），
-    供视觉字段写服装 / 材质 / 陈设细节时取材；三者都为 None 时不渲染资产块。
+    上下文不喂资产外观描述（D-10，2026-10-24 评审拍板）：出场资产在 ``scenes_content`` 里只有
+    名字清单，外观一致性由资产参考图承载——喂了外观，模型就会把它整份抄进提示词正文。
     """
     return builtin_templates.render(
         "text/drama_prompt_authoring",
@@ -175,11 +142,6 @@ def build_drama_prompt(
         style_description=style_description,
         aspect_ratio=aspect_ratio,
         aspect_ratio_label={"9:16": "竖屏构图", "16:9": "横屏构图"}.get(aspect_ratio, f"{aspect_ratio} 构图"),
-        assets=(
-            _project_asset_appearances(characters, scenes, props)
-            if characters is not None or scenes is not None or props is not None
-            else None
-        ),
         scenes_content=scenes_content,
         episode=episode,
         target_language=target_language,

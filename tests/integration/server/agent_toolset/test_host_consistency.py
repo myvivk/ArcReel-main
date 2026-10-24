@@ -693,9 +693,7 @@ async def test_a_text_generation_dry_run_returns_the_same_prompt_in_both_hosts(
         "source_text": "男人推门，走到窗边。",
         "generated_assets": {},
     }
-    source = replace_short_drama_source(
-        seeded_projects, "demo", 1, "# 第1集\n男人推门，走到窗边。\n"
-    )
+    source = replace_short_drama_source(seeded_projects, "demo", 1, "# 第1集\n男人推门，走到窗边。\n")
     (seeded_projects.get_project_path("demo") / "scripts" / "episode_1.json").write_text(
         json.dumps(
             {

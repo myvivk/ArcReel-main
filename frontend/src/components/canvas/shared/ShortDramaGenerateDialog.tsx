@@ -46,6 +46,11 @@ export interface OriginalScriptBrief {
   tone: string;
   /** 篇幅档位：标准 / 长档 / 漫剧（short-drama-factory 的制式）。 */
   format: ShortDramaFormat;
+  /**
+   * 批量续写：题材/档位/简报已在首写确定，指令要求沿用 source/short_drama/ 已有设定，
+   * 不再把空表单字段当成新立项。
+   */
+  continuation?: boolean;
 }
 
 /** 各档位篇幅说明，写入交给 Agent 的指令。 */
@@ -61,6 +66,7 @@ const FORMAT_LENGTH: Record<ShortDramaFormat, string> = {
  * `ingest_short_drama_artifacts` 原样落盘为七类工厂工件。纯函数，便于测试。
  * 不把旧脚本生产入口（`import_short_drama_script` / `import_short_drama_series` /
  * `generate_episode_script`）作为交付手段。目标集由前端在提交时透明建好，用户无感。
+ * 续写（`continuation`）不重填题材/档位，明确要求沿用已有系列工件。
  */
 export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   const episodes = b.episodes;
@@ -70,16 +76,30 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   const rangeLabel = single
     ? `第 ${episodes[0]} 集`
     : `第 ${sortedEpisodes.join("、")} 集（共 ${episodes.length} 集）`;
+  const continuation = Boolean(b.continuation);
   const lines = [
-    "请使用 short-drama-factory 技能，按工厂独立链路原创短剧剧本并落盘到当前项目（剧情演绎 drama 模式）。严禁绕回旧脚本生产入口。",
+    continuation
+      ? "请使用 short-drama-factory 技能，按工厂独立链路**续写**短剧剧本并落盘到当前项目（剧情演绎 drama 模式）。严禁绕回旧脚本生产入口。本批不得重新立项：题材、篇幅档位、人物设定与全剧结构一律沿用 source/short_drama/ 已有工件。"
+      : "请使用 short-drama-factory 技能，按工厂独立链路原创短剧剧本并落盘到当前项目（剧情演绎 drama 模式）。严禁绕回旧脚本生产入口。",
     "",
-    "【创意简报】",
-    `- 题材 / 类型：${b.genre.trim()}`,
-    `- 核心梗概：${b.brief.trim()}`,
-    `- 风格基调：${toneLine}`,
-    `- 篇幅：${FORMAT_LENGTH[b.format]}`,
-    `- 本次目标集：${rangeLabel}`,
   ];
+  if (continuation) {
+    lines.push(
+      "【续写任务】",
+      `- 本次目标集：${rangeLabel}`,
+      "- 先读取人物圣经、全剧大纲、连续性台账、分集规划及此前集正文；冲突以已交付系列工件与台账为准。",
+      "- 不要根据空简报改题材或档位；系列级工件仅在缺失时补齐，台账有变化必须提交新版。",
+    );
+  } else {
+    lines.push(
+      "【创意简报】",
+      `- 题材 / 类型：${b.genre.trim()}`,
+      `- 核心梗概：${b.brief.trim()}`,
+      `- 风格基调：${toneLine}`,
+      `- 篇幅：${FORMAT_LENGTH[b.format]}`,
+      `- 本次目标集：${rangeLabel}`,
+    );
+  }
   {
     const total = b.totalEpisodes;
     const last = Math.max(...episodes);
@@ -87,7 +107,9 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
     lines.push(
       "",
       "【全剧规划】",
-      `- 全剧规划总集数为 ${total} 集：据此重新规划四幕与付费墙位置，不要套用默认的 60/80/100 长档结构。`,
+      continuation
+        ? `- 全剧规划总集数为 ${total} 集（首写已定，本批不得改动）：据此铺排四幕与付费墙，不要套用默认的 60/80/100 长档结构。`
+        : `- 全剧规划总集数为 ${total} 集：据此重新规划四幕与付费墙位置，不要套用默认的 60/80/100 长档结构。`,
       `- 本次写作范围：${rangeLabel}。`,
       reachesEnd
         ? "- 本批次写到全剧结尾：最后一集必须收尾闭环、兑现情绪契约，主线不留未收束的悬钩。"
@@ -239,7 +261,7 @@ interface DialogProps {
  * 剧情演绎「AI 原创剧本」：填题材与创意简报，交给内嵌 Agent 用 short-drama-factory 原创并自动导入。
  * - 集页入口（request.episode > 0）：选定一个已存在的目标集，单集导入。
  * - 空项目入口（request.episode === 0，创建模式）：不显示目标集号；提交时透明建好对应集数再导入，用户无感；
- *   需要多集时由「连写集数」控制。
+ *   需要多集时由「连写集数」控制。账本已有集时视为续写：仅连写集数可改，其余规划锁定。
  * 不需要先准备小说或源文——故事由 Agent 按简报原创；视觉层留空待后续生成。
  */
 function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
@@ -264,13 +286,25 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   // 续写约束：本次续写后累计集数不得超过项目规划总集数。
   // 「已存在集数」取当前最大集号（集号连续时即已有集数）；有末尾空白集时从空白集开始续写。
   const maxEpisode = ledger.reduce((max, entry) => Math.max(max, entry.episode), 0);
+  const isContinuation = createMode && maxEpisode > 0;
+  // 续写锁定首写已落库的总集数；缺省时至少不低于已有集数，避免把规划误写成 1。
+  const plannedTotal = isContinuation
+    ? Math.max(projectTotal && projectTotal >= 1 ? projectTotal : 0, maxEpisode)
+    : total;
+  const maxWritableCount = isContinuation
+    ? Math.min(100, reusable.length + Math.max(0, plannedTotal - maxEpisode))
+    : 100;
   const reusedCount = createMode ? Math.min(reusable.length, Number(count)) : 0;
   const newEpisodeCount = Math.max(0, Number(count) - reusedCount);
   const startEpisode = createMode ? reusable[0] ?? maxEpisode + 1 : Number(episode);
   const projectedTotal = maxEpisode + newEpisodeCount;
-  const overflow = createMode && Number.isFinite(total) && total >= 1 && projectedTotal > total;
+  const overflow =
+    createMode && Number.isFinite(plannedTotal) && plannedTotal >= 1 && projectedTotal > plannedTotal;
+  const atCapacity = isContinuation && maxWritableCount < 1;
 
-  const canSubmit = genre.trim().length > 0 && count >= 1 && !overflow;
+  const canSubmit = isContinuation
+    ? count >= 1 && !overflow && !atCapacity
+    : genre.trim().length > 0 && count >= 1 && !overflow;
 
   const storyController = useRef(new AbortController());
   useEffect(() => {
@@ -302,8 +336,8 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       }
       return;
     }
-    // 总集数与建集都成功并刷新后才把指令交给 Agent；失败时保留简报供重试。
-    if (createMode && total !== projectTotal) {
+    // 首写才允许改 total_episodes；续写沿用项目已定规划，不在此改写。
+    if (createMode && !isContinuation && total !== projectTotal) {
       try {
         await API.updateProject(request.projectName, { total_episodes: total }, { signal });
         const refreshed = await refreshAfterWrite(request.projectName, t);
@@ -347,8 +381,15 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     }
     if (signal.aborted) return;
     const prompt = buildOriginalShortDramaPrompt({
-      episodes, genre, brief, tone, format,
-      totalEpisodes: createMode ? total : Math.max(projectTotal ?? maxEpisode, ...episodes),
+      episodes,
+      genre,
+      brief,
+      tone,
+      format,
+      totalEpisodes: createMode
+        ? plannedTotal
+        : Math.max(projectTotal ?? maxEpisode, ...episodes),
+      continuation: isContinuation,
     }) +
       (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);
@@ -367,59 +408,107 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       <DialogContent showCloseButton>
         <DialogHeader>
           <DialogTitle>{t("short_drama_generate_title")}</DialogTitle>
-          <DialogDescription>{t("short_drama_generate_desc")}</DialogDescription>
+          <DialogDescription>
+            {isContinuation ? t("short_drama_generate_continuation_desc") : t("short_drama_generate_desc")}
+          </DialogDescription>
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-3 @sm/canvas:flex-row @sm/canvas:gap-4">
               {createMode ? (
-                <>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
-                    <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
-                    <SuggestField
-                      id={`${fieldId}-genre`}
-                      value={genre}
-                      onChange={setGenre}
-                      placeholder={t("short_drama_generate_genre_placeholder")}
-                      optionsKey="short_drama_genre_options"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
-                    <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
-                    <input
-                      id={`${fieldId}-count`}
-                      type="number"
-                      min={1}
-                      max={100}
-                      className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
-                      value={count}
-                      onChange={(event) => {
-                        const raw = Number(event.target.value);
-                        const next = Math.min(100, Math.max(1, Number.isFinite(raw) ? Math.floor(raw) : 1));
-                        // 连写集数上调时同步抬高总集数下限，避免总集数小于本批数量
-                        setCount(next);
-                        if (total < next) setTotal(next);
-                      }}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
-                    <Label htmlFor={`${fieldId}-total`}>{t("short_drama_generate_total_label")}</Label>
-                    <input
-                      id={`${fieldId}-total`}
-                      type="number"
-                      min={count}
-                      max={100}
-                      className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
-                      value={total}
-                      onChange={(event) => {
-                        const raw = Number(event.target.value);
-                        // 总集数下限为连写集数：HTML min 只管步进按钮，键入必须在这里拦
-                        const next = Math.min(100, Math.max(Number(count), Number.isFinite(raw) ? Math.floor(raw) : Number(count)));
-                        setTotal(next);
-                      }}
-                    />
-                  </div>
-                </>
+                isContinuation ? (
+                  <>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-existing`}>{t("short_drama_generate_existing_label")}</Label>
+                      <input
+                        id={`${fieldId}-existing`}
+                        type="number"
+                        readOnly
+                        className="h-9 w-32 rounded-md border border-input bg-muted px-3 text-sm tabular-nums text-muted-foreground"
+                        value={maxEpisode}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
+                      <input
+                        id={`${fieldId}-count`}
+                        type="number"
+                        min={1}
+                        max={Math.max(1, maxWritableCount)}
+                        disabled={atCapacity}
+                        className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+                        value={count}
+                        onChange={(event) => {
+                          const raw = Number(event.target.value);
+                          const capped = Math.max(1, maxWritableCount);
+                          const next = Math.min(
+                            capped,
+                            Math.max(1, Number.isFinite(raw) ? Math.floor(raw) : 1),
+                          );
+                          setCount(next);
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-total`}>{t("short_drama_generate_total_label")}</Label>
+                      <input
+                        id={`${fieldId}-total`}
+                        type="number"
+                        readOnly
+                        className="h-9 w-32 rounded-md border border-input bg-muted px-3 text-sm tabular-nums text-muted-foreground"
+                        value={plannedTotal}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
+                      <SuggestField
+                        id={`${fieldId}-genre`}
+                        value={genre}
+                        onChange={setGenre}
+                        placeholder={t("short_drama_generate_genre_placeholder")}
+                        optionsKey="short_drama_genre_options"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-count`}>{t("short_drama_generate_count_label")}</Label>
+                      <input
+                        id={`${fieldId}-count`}
+                        type="number"
+                        min={1}
+                        max={100}
+                        className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+                        value={count}
+                        onChange={(event) => {
+                          const raw = Number(event.target.value);
+                          const next = Math.min(100, Math.max(1, Number.isFinite(raw) ? Math.floor(raw) : 1));
+                          // 连写集数上调时同步抬高总集数下限，避免总集数小于本批数量
+                          setCount(next);
+                          if (total < next) setTotal(next);
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/3">
+                      <Label htmlFor={`${fieldId}-total`}>{t("short_drama_generate_total_label")}</Label>
+                      <input
+                        id={`${fieldId}-total`}
+                        type="number"
+                        min={count}
+                        max={100}
+                        className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+                        value={total}
+                        onChange={(event) => {
+                          const raw = Number(event.target.value);
+                          // 总集数下限为连写集数：HTML min 只管步进按钮，键入必须在这里拦
+                          const next = Math.min(100, Math.max(Number(count), Number.isFinite(raw) ? Math.floor(raw) : Number(count)));
+                          setTotal(next);
+                        }}
+                      />
+                    </div>
+                  </>
+                )
               ) : (
                 <>
                   <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
@@ -451,15 +540,17 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
               )}
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${fieldId}-format`}>{t("short_drama_generate_format_label")}</Label>
-              <FormatSelect id={`${fieldId}-format`} value={format} onChange={setFormat} />
-            </div>
+            {!isContinuation && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${fieldId}-format`}>{t("short_drama_generate_format_label")}</Label>
+                <FormatSelect id={`${fieldId}-format`} value={format} onChange={setFormat} />
+              </div>
+            )}
 
-            {createMode && (
+            {createMode && !isContinuation && (
               <p className="text-xs text-muted-foreground">{t("short_drama_generate_create_hint")}</p>
             )}
-            {createMode && (
+            {createMode && !isContinuation && (
               <p className="text-xs text-muted-foreground">{t("short_drama_generate_total_hint")}</p>
             )}
             {createMode && reusable.length > 0 && (
@@ -467,50 +558,67 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                 {t("short_drama_generate_reuse_hint", { count: Math.min(reusable.length, count) })}
               </p>
             )}
-            {createMode && (
+            {isContinuation && (
               <p className="text-xs text-muted-foreground">
                 {t("short_drama_generate_existing_hint", {
                   existing: maxEpisode,
                   start: startEpisode,
                   projected: projectedTotal,
-                  planned: total,
+                  planned: plannedTotal,
                 })}
+              </p>
+            )}
+            {atCapacity && (
+              <p className="text-xs text-destructive">
+                {t("short_drama_generate_at_capacity", { planned: plannedTotal })}
               </p>
             )}
             {overflow && (
               <p className="text-xs text-destructive">
-                {t("short_drama_generate_overflow", { projected: projectedTotal, planned: total })}
+                {t(
+                  isContinuation
+                    ? "short_drama_generate_overflow_continuation"
+                    : "short_drama_generate_overflow",
+                  { projected: projectedTotal, planned: plannedTotal },
+                )}
               </p>
             )}
 
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
-                <span className="text-xs tabular-nums text-muted-foreground">{brief.length}/1000</span>
-              </div>
-              <Textarea
-                id={`${fieldId}-brief`}
-                value={brief}
-                maxLength={1000}
-                onChange={(event) => setBrief(event.target.value)}
-                placeholder={t("short_drama_generate_brief_placeholder")}
-                className="min-h-28"
-              />
-            </div>
+            {!isContinuation && (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor={`${fieldId}-brief`}>{t("short_drama_generate_brief_label")}</Label>
+                    <span className="text-xs tabular-nums text-muted-foreground">{brief.length}/1000</span>
+                  </div>
+                  <Textarea
+                    id={`${fieldId}-brief`}
+                    value={brief}
+                    maxLength={1000}
+                    onChange={(event) => setBrief(event.target.value)}
+                    placeholder={t("short_drama_generate_brief_placeholder")}
+                    className="min-h-28"
+                  />
+                </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={`${fieldId}-tone`}>{t("short_drama_generate_tone_label")}</Label>
-              <SuggestField
-                id={`${fieldId}-tone`}
-                value={tone}
-                onChange={setTone}
-                placeholder={t("short_drama_generate_tone_placeholder")}
-                optionsKey="short_drama_tone_options"
-              />
-              {createMode && count > 1 && (
-                <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>
-              )}
-            </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${fieldId}-tone`}>{t("short_drama_generate_tone_label")}</Label>
+                  <SuggestField
+                    id={`${fieldId}-tone`}
+                    value={tone}
+                    onChange={setTone}
+                    placeholder={t("short_drama_generate_tone_placeholder")}
+                    optionsKey="short_drama_tone_options"
+                  />
+                  {createMode && count > 1 && (
+                    <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>
+                  )}
+                </div>
+              </>
+            )}
+            {isContinuation && count > 1 && (
+              <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>
+            )}
           </div>
         </DialogBody>
         <DialogFooter>

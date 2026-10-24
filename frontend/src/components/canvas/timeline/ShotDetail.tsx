@@ -647,8 +647,6 @@ function ShotDetailContent({
             ariaLabel={t("detail_video_prompt_title")}
             value={videoText}
             onChange={(next) => setField("video_prompt", next)}
-            cellCount={plan && ["completed", "confirmed"].includes(plan.status) ? plan.cells.length : 0}
-            durationSeconds={fields.duration_seconds}
             readOnly={editingBlocked}
             placeholder={t("detail_video_prompt_placeholder")}
           />

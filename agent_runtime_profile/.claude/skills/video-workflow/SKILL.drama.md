@@ -34,8 +34,11 @@ Read 只补充已选动作需要的内容，不按文件存在性或聊天记忆
 ## 提示词与参考素材
 
 `author_prompts`：使用 `generate-script`，独立写 `fields=["image_prompt"]`。
-`generate_shot_grids`：在 Web 分镜详情的参考素材区按镜生成、审阅和确认 K 帧。
+`generate_shot_grids`：先用 `configure_shot_grid` 写这一镜的规格（2×2 / 2×3 / 3×3）与逐格镜头文本，
+需要时先调 `author_shot_grid_prompt` 写格；再调 `mcp__arcreel__generate_shot_grids` 出图（省略 `shot_ids`
+只补缺，点名不传空数组）。
 每镜保存完整联系表和逐格关系，此步骤不能用一张独立分镜图代替。
+K 帧是否可用由用户在分镜详情逐镜确认；工具不代替确认，已确认的宫格也不能走批量重做。
 `author_video_prompts`：K 帧确认后，用 `generate-script` 独立写 `fields=["video_prompt"]`。
 `generate_storyboards` 只用于用户点名的工厂视觉图操作，走 `generate-storyboard`，不改变 K 帧依赖。
 

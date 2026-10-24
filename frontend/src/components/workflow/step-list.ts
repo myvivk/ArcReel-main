@@ -307,10 +307,31 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
     case "generate_asset_sheets":
       return { ...base, primary: [{ key: "asset-batch", label: t("workflow:act_asset_batch", { count: action.requested_ids.length }), kind: "ai", intent: { type: "asset_batch", episodeId: ctx.episodeId } }] };
     case "generate_shot_grids":
-    case "generate_videos": {
-      const kind = action.type === "generate_videos" ? "videos" : "shot-grids";
-      return { ...base, primary: [{ key: "batch", label: t("dashboard:batch_generate_" + kind), kind: "ai", intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind } }] };
-    }
+      return {
+        ...base,
+        detail: t("workflow:next_detail_generate_shot_grids", { count: action.requested_ids.length }),
+        primary: [
+          agentAct(t, t("workflow:agent_prefill_generate_shot_grids", { episodeRef: ctx.episodeRef })),
+          {
+            key: "batch",
+            label: t("dashboard:batch_generate_shot-grids"),
+            kind: "ai",
+            intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind: "shot-grids" },
+          },
+        ],
+      };
+    case "generate_videos":
+      return {
+        ...base,
+        primary: [
+          {
+            key: "batch",
+            label: t("dashboard:batch_generate_videos"),
+            kind: "ai",
+            intent: { type: "storyboard_batch", episodeId: ctx.episodeId, kind: "videos" },
+          },
+        ],
+      };
     case "create_edit_timeline":
       return { ...base, instruction: { initial: "", persist: null }, primary: editActs(facts, ctx) };
     case "configure_provider":

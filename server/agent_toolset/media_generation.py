@@ -12,7 +12,13 @@ from typing import Any, overload
 
 from pydantic import BaseModel
 
-from server.agent_toolset.declaration import BLOCKED, READ_CHECK, ScopedHandler, ToolDeclaration
+from server.agent_toolset.declaration import (
+    BLOCKED,
+    READ_CHECK,
+    TEXT_OUTPUT_TRUNCATED_NOTE,
+    ScopedHandler,
+    ToolDeclaration,
+)
 from server.media_tools.assets import (
     GenerateAssetsRequest,
     ListPendingAssetsRequest,
@@ -27,6 +33,14 @@ from server.media_tools.context import (
 )
 from server.media_tools.image_edits import EditImagesRequest, edit_images
 from server.media_tools.narration_audio import GenerateNarrationAudioRequest, generate_narration_audio
+from server.media_tools.shot_grids import (
+    AuthorShotGridPromptRequest,
+    ConfigureShotGridRequest,
+    GenerateShotGridsRequest,
+    author_shot_grid_prompt,
+    configure_shot_grid,
+    generate_shot_grids,
+)
 from server.media_tools.storyboards import GenerateStoryboardsRequest, generate_storyboards
 from server.media_tools.videos import GenerateVideosRequest, generate_videos
 
@@ -152,6 +166,53 @@ GENERATE_NARRATION_AUDIO = generation_tool(
     handler=generate_narration_audio,
 )
 
+AUTHOR_SHOT_GRID_PROMPT = ToolDeclaration(
+    name="author_shot_grid_prompt",
+    description=(
+        "为单个分镜写参考素材的逐格镜头文本，不落盘、不入队（调用文本模型一次）。"
+        "输入取自分镜的 image_prompt.scene、该分镜登记资产与项目画风；输出按「第N格（景别）：画面描述」"
+        "逐行给出，可直接作为 configure_shot_grid 的 prompt。"
+        "文本只在本次回执里：没有调用 configure_shot_grid 就不会改变任何记录，用户取消也不会留下半截状态。"
+        + TEXT_OUTPUT_TRUNCATED_NOTE
+    ),
+    request_model=AuthorShotGridPromptRequest,
+    migration=BLOCKED,
+    domain_key="shot_grid_prompt",
+    handler=author_shot_grid_prompt,
+)
+
+CONFIGURE_SHOT_GRID = ToolDeclaration(
+    name="configure_shot_grid",
+    description=(
+        "配置单个分镜的参考素材宫格：规格（2×2 / 2×3 / 3×3）与逐格镜头文本，不付费、不入队。"
+        "只写配置记录，出图另调 generate_shot_grids。prompt 每格一行「第1格（景别）：画面描述」，"
+        "格数必须等于 rows×cols；留空表示出图时从 image_prompt.scene 现解析镜头序列。"
+        "已确认的宫格锁定规格（换规格须先在分镜详情取消确认），生成中的宫格拒绝改写。"
+        "配置写在当前这一镜的 ShotGrid 记录上，用户在分镜详情的「配置参考素材」弹窗里能看到同一份内容。"
+    ),
+    request_model=ConfigureShotGridRequest,
+    migration=BLOCKED,
+    domain_key="shot_grid",
+    handler=configure_shot_grid,
+)
+
+GENERATE_SHOT_GRIDS = generation_tool(
+    name="generate_shot_grids",
+    description=(
+        "为工厂分镜生成参考素材 K 帧宫格（付费生成，宫格图写入项目 shot_grids/），不代替用户确认。"
+        "按 ShotGrid 里已配置的单镜规格与逐格镜头文本出图；没有配置的分镜统一 2×2、逐格文本从 "
+        "image_prompt.scene 现解析。"
+        "只补缺：省略 shot_ids 时只选还没有可用参考素材的分镜。"
+        "已确认参考素材的分镜不能在这里重做，须先在分镜详情取消确认。"
+        "引用了未登记名称、所引用主体还没有资产图、或没有可用逐格文本的分镜逐个记为 blocked。"
+        "生成完成后请用户在分镜详情逐镜确认 K 帧，确认前视频提示词与视频都不能用这批素材。"
+        "终态结果的 generation_result 按 requested / succeeded / failed / blocked 逐 ID 给出结局，"
+        "每个失败项带稳定 code 与下一步动作。"
+    ),
+    request_model=GenerateShotGridsRequest,
+    handler=generate_shot_grids,
+)
+
 GENERATE_VIDEOS = generation_tool(
     name="generate_videos",
     description=(
@@ -179,6 +240,9 @@ MEDIA_GENERATION_TOOLS = (
     LIST_PENDING_ASSETS,
     GENERATE_ASSETS,
     GENERATE_STORYBOARDS,
+    AUTHOR_SHOT_GRID_PROMPT,
+    CONFIGURE_SHOT_GRID,
+    GENERATE_SHOT_GRIDS,
     EDIT_IMAGES,
     GENERATE_NARRATION_AUDIO,
     GENERATE_VIDEOS,

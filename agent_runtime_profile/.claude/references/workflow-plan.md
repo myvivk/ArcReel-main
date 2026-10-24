@@ -31,7 +31,7 @@
 | `plan_short_drama_storyboards` | Web AI 分镜从规范工厂源稿生成视觉派生状态，支持全量和指定范围。 |
 | `author_prompts` | generate_episode_script，独立 fields=["image_prompt"]。 |
 | `generate_storyboards` | 用户点名的工厂单图生成，经 generate_storyboards；不能替代 K 帧确认。 |
-| `generate_shot_grids` | Web 分镜详情按镜生成并确认参考素材 K 帧，保存完整联系表和逐格关系。 |
+| `generate_shot_grids` | configure_shot_grid 逐镜定规格与逐格文本（可先 author_shot_grid_prompt），再 generate_shot_grids 出图；K 帧确认留给用户在分镜详情完成。 |
 | `author_video_prompts` | 已确认 K 帧后 generate_episode_script，独立 fields=["video_prompt"]。 |
 | `generate_videos` | generate_videos；整批准入 admitted 后入队。 |
 | `create_edit_timeline` | 按 edit-video 新建本集剪辑时间线，按用户要求剪辑、预览和导出。 |

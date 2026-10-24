@@ -518,12 +518,17 @@ def plan_shot_grid_batch(
     episode: int,
     project_path: Path,
     resolver: ArtifactCurrencyResolver,
+    requested_ids: Sequence[str] | None = None,
+    honor_configured: bool = False,
 ) -> ShotGridBatchPlan:
-    """选出这一批的参考素材目标并逐项判准入；只选没有可用参考素材的分镜。
+    """选出这一批的参考素材目标并逐项判准入；``requested_ids`` 为 ``None`` 时只选没有可用参考素材的分镜。
 
     规格统一 2×2、逐格文本从 ``image_prompt.scene`` 现解析（ADR 0099 五 / D-11）：这里只做
     结构判定，不写盘也不建任务，落记录发生在提交时。已确认的宫格整条不进候选——它已经有了
     用户认过的参考素材，重做只能单个走分镜详情（R7）。
+
+    ``honor_configured`` 只给 Agent 入口：已在单镜配置里写好逐格文本（``ShotGrid.prompt``）的
+    分镜不再要求 ``image_prompt.scene`` 能解析出镜头序列，提交时也保留那份规格与文本。
     """
 
     items, id_field, char_field, scene_field, prop_field = get_storyboard_items(script)
@@ -542,7 +547,7 @@ def plan_shot_grid_batch(
             for unit_id in items_by_id
             if unit_id not in confirmed
         ],
-        requested_ids=None,
+        requested_ids=requested_ids,
         resolver=resolver,
     )
     builder = GenerationResultBuilder.from_selection(SHOT_GRID_BATCH_OPERATION, selection)
@@ -563,7 +568,7 @@ def plan_shot_grid_batch(
         )
         if problem is not None:
             reference_blocked.add(state.unit_id)
-        else:
+        elif not (honor_configured and _grid_prompt_configured(grids.get(state.unit_id))):
             scene_text = shot_scene_text(item)
             try:
                 parse_scene_shots(scene_text)
@@ -606,6 +611,48 @@ def plan_shot_grid_batch(
     )
 
 
+def load_shot_grid_script(projects: ProjectManager, project_name: str, script_file: str) -> EpisodeStoryboardScript:
+    """按剧本纯文件名读取工厂派生状态（Agent 入口按剧本寻址，不经分集账本）。"""
+
+    project = projects.load_project(project_name)
+    script = projects.load_script(project_name, script_file)
+    episode = resolve_artifact_episode(project=project, script=script, script_filename=script_file) or (
+        int(script["episode"]) if is_int(script.get("episode")) else 1
+    )
+    require_factory_script(projects.get_project_path(project_name), project, script, episode)
+    return EpisodeStoryboardScript(
+        project=project,
+        project_path=projects.get_project_path(project_name),
+        script=script,
+        script_file=script_file,
+        episode=episode,
+    )
+
+
+async def _mark_active_shot_grids(
+    queue: GenerationQueue | None,
+    *,
+    project_name: str,
+    loaded: EpisodeStoryboardScript,
+    plan: ShotGridBatchPlan,
+    user_id: str,
+) -> ShotGridBatchPlan:
+    """活动任务按宫格记录 ID 探：shot_grid 任务的 resource_id 是宫格 id，不是分镜 id。"""
+
+    active_grid_ids = await _active_resource_ids(
+        queue,
+        project_name=project_name,
+        task_type="shot_grid",
+        script_file=loaded.script_file,
+        resource_ids=list(plan.grid_ids.values()),
+        user_id=user_id,
+    )
+    generating = plan.generating | frozenset(
+        unit_id for unit_id, grid_id in plan.grid_ids.items() if grid_id in active_grid_ids
+    )
+    return replace(plan, generating=generating)
+
+
 async def load_shot_grid_batch_plan(
     projects: ProjectManager,
     queue: GenerationQueue | None,
@@ -630,27 +677,61 @@ async def load_shot_grid_batch_plan(
         return loaded, plan
 
     loaded, plan = await asyncio.to_thread(_read)
-    # 活动任务按宫格记录 ID 探：shot_grid 任务的 resource_id 是宫格 id，不是分镜 id。
-    active_grid_ids = await _active_resource_ids(
-        queue,
-        project_name=project_name,
-        task_type="shot_grid",
-        script_file=loaded.script_file,
-        resource_ids=list(plan.grid_ids.values()),
-        user_id=user_id,
+    return loaded, await _mark_active_shot_grids(
+        queue, project_name=project_name, loaded=loaded, plan=plan, user_id=user_id
     )
-    generating = plan.generating | frozenset(
-        unit_id for unit_id, grid_id in plan.grid_ids.items() if grid_id in active_grid_ids
-    )
-    return loaded, replace(plan, generating=generating)
 
 
-def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> dict[str, ShotGrid]:
+async def load_shot_grid_batch_plan_for_script(
+    projects: ProjectManager,
+    queue: GenerationQueue | None,
+    *,
+    project_name: str,
+    script_file: str,
+    user_id: str,
+    requested_ids: Sequence[str] | None = None,
+    honor_configured: bool = False,
+) -> tuple[EpisodeStoryboardScript, ShotGridBatchPlan]:
+    """按剧本名规划一批参考素材：Agent 入口点名分镜、并保留已配置的单镜规格与逐格文本。"""
+
+    def _read() -> tuple[EpisodeStoryboardScript, ShotGridBatchPlan]:
+        loaded = load_shot_grid_script(projects, project_name, script_file)
+        resolver = active_artifact_currency_resolver(loaded.project_path, loaded.project)
+        plan = plan_shot_grid_batch(
+            project=loaded.project,
+            script=loaded.script,
+            script_file=loaded.script_file,
+            episode=loaded.episode,
+            project_path=loaded.project_path,
+            resolver=resolver,
+            requested_ids=requested_ids,
+            honor_configured=honor_configured,
+        )
+        return loaded, plan
+
+    loaded, plan = await asyncio.to_thread(_read)
+    return loaded, await _mark_active_shot_grids(
+        queue, project_name=project_name, loaded=loaded, plan=plan, user_id=user_id
+    )
+
+
+def _grid_prompt_configured(grid: ShotGrid | None) -> bool:
+    """这条宫格记录已经带了单镜配置的逐格文本（``ShotGrid.prompt``），出图不再回退到 scene。"""
+
+    return grid is not None and bool(grid.prompt.strip())
+
+
+def write_shot_grid_records(
+    plan: ShotGridBatchPlan, *, project_path: Path, honor_configured: bool = False
+) -> dict[str, ShotGrid]:
     """就地创建或更新这一批的宫格记录：规格统一 2×2，逐格文本从 scene 现解析。
 
     只在提交时写盘——规划不落记录，用户取消确认框不会留下半截状态。已在生成中的目标不动
     原记录：它的复合图、任务与依据都归那个任务，改写会让跑着的任务失去落点，入队时按原样
     并入即可（同一个 resource_id 命中去重键）。
+
+    ``honor_configured``（Agent 入口）保留已配置过的规格、逐格文本与留证，只重置本次出图的
+    临时状态；批量入口不开这个开关，整集重做仍按 ``image_prompt.scene`` 重解析（ADR 0099 D-11）。
     """
 
     manager = ShotGridManager(project_path)
@@ -661,8 +742,6 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
         existing = grids.get(unit_id)
         if unit_id in plan.generating or (existing is not None and existing.status in {"generating", "confirmed"}):
             continue
-        scene_text = shot_scene_text(items_by_id[unit_id])
-        frames = parse_scene_shots(scene_text).shots
         grid = existing or ShotGrid.create(
             episode=plan.episode,
             script_file=plan.script_file,
@@ -670,10 +749,13 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
             rows=SHOT_GRID_BATCH_ROWS,
             cols=SHOT_GRID_BATCH_COLS,
         )
-        grid.rows, grid.cols = SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS
-        grid.prompt = ""
-        # 留证与拼装出口读到的序列同一个：执行期再从 scene 现解析一次（D-1 / D-3）。
-        grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
+        if not (honor_configured and _grid_prompt_configured(existing)):
+            scene_text = shot_scene_text(items_by_id[unit_id])
+            frames = parse_scene_shots(scene_text).shots
+            grid.rows, grid.cols = SHOT_GRID_BATCH_ROWS, SHOT_GRID_BATCH_COLS
+            grid.prompt = ""
+            # 留证与拼装出口读到的序列同一个：执行期再从 scene 现解析一次（D-1 / D-3）。
+            grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
         grid.status = "draft"
         grid.composite_path = None
         grid.task_id = None
@@ -686,25 +768,15 @@ def _write_shot_grid_records(plan: ShotGridBatchPlan, *, project_path: Path) -> 
     return prepared
 
 
-async def submit_shot_grid_batch(
-    plan: ShotGridBatchPlan,
-    *,
-    project_name: str,
-    project_path: Path,
-    queue: GenerationQueue,
-    source: str,
-    user_id: str,
-) -> tuple[GenerationBatchReadModel, list[EnqueuedTask], list[BatchTaskResult]]:
-    """把一次参考素材规划作为一个持久批次提交，不等待结果。"""
+def shot_grid_task_specs(plan: ShotGridBatchPlan, prepared: Mapping[str, ShotGrid], *, source: str) -> list[TaskSpec]:
+    """把已落记录的宫格换成入队 spec：任务上只带 scene 原文快照，逐格文本由执行期现解析。"""
 
-    prepared = await run_sync_transaction(_write_shot_grid_records, plan, project_path=project_path)
     items_by_id = {str(item[plan.id_field]): item for item in plan.items if item.get(plan.id_field)}
-    specs = [
+    return [
         TaskSpec.from_request(
             task_type="shot_grid",
             media_type="image",
             resource_id=grid.id,
-            # 任务上只带 scene 原文快照：逐格文本由执行期从同一处现解析（D-1 / D-3）。
             prompt=shot_scene_text(items_by_id[unit_id]),
             script_file=plan.script_file,
             extra_payload={"shot_grid_id": grid.id},
@@ -713,6 +785,24 @@ async def submit_shot_grid_batch(
         )
         for unit_id, grid in prepared.items()
     ]
+
+
+async def submit_shot_grid_batch(
+    plan: ShotGridBatchPlan,
+    *,
+    project_name: str,
+    project_path: Path,
+    queue: GenerationQueue,
+    source: str,
+    user_id: str,
+    honor_configured: bool = False,
+) -> tuple[GenerationBatchReadModel, list[EnqueuedTask], list[BatchTaskResult]]:
+    """把一次参考素材规划作为一个持久批次提交，不等待结果。"""
+
+    prepared = await run_sync_transaction(
+        write_shot_grid_records, plan, project_path=project_path, honor_configured=honor_configured
+    )
+    specs = shot_grid_task_specs(plan, prepared, source=source)
     requested, blocked = build_generation_batch_admission(
         preflight=plan.preflight,
         pending_ids=[unit_id for unit_id in plan.target_ids if unit_id in prepared],
@@ -968,12 +1058,16 @@ __all__ = [
     "estimate_storyboard_video_batch_cost",
     "load_episode_storyboard_script",
     "load_shot_grid_batch_plan",
+    "load_shot_grid_batch_plan_for_script",
+    "load_shot_grid_script",
     "load_storyboard_image_batch_plan",
     "load_storyboard_video_batch_plan",
     "plan_shot_grid_batch",
     "plan_storyboard_image_batch",
+    "shot_grid_task_specs",
     "storyboard_image_prompt",
     "submit_shot_grid_batch",
     "submit_storyboard_image_batch",
     "submit_storyboard_video_batch",
+    "write_shot_grid_records",
 ]

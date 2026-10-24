@@ -23,7 +23,8 @@
 - 工件交付：只调用 `ingest_short_drama_artifacts`，七类工件按 UTF-8 原文 Base64 提交；质量检查失败则返修。
 - 本集资产和 AI 分镜：在 Web 单集页面的对应步骤执行。资产描述从工厂工件准备，AI 分镜读取规范源稿。
 - 视觉提示词：使用 `/generate-script`，经 `generate_episode_script` 写入派生状态。
-- K 帧：在分镜详情的参考素材区生成、审阅和确认，每镜独立，保存完整图片关系。
+- K 帧：用 `configure_shot_grid` 逐镜定规格与逐格文本，再用 `generate_shot_grids` 出图；
+  确认必须留在分镜详情由用户完成，工具不替用户点确认。
 - 视频：使用 `/generate-video`，由服务端冻结输入、验证能力并入队。
 - 声音：保留角色绑定、参考音频和旁白 TTS；声音能力不取决于旧项目路线。
 - 剪辑与导出：使用 `/edit-video`，保留 BGM、字幕、预览、成片和剪映草稿。

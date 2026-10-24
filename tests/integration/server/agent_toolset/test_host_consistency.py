@@ -55,6 +55,10 @@ from server.agent_toolset.edit_timelines import (
 from server.agent_toolset.embedded import embedded_server
 from server.agent_toolset.envelope import json_value
 from server.agent_toolset.generation_batches import CANCEL_GENERATION_BATCH, GET_GENERATION_BATCH
+from server.agent_toolset.media_generation import (
+    AUTHOR_SHOT_GRID_PROMPT,
+    CONFIGURE_SHOT_GRID,
+)
 from server.agent_toolset.orientation import GET_PROMPT_PREVIEW, GET_VIDEO_CAPABILITIES
 from server.agent_toolset.project_entry import CREATE_PROJECT
 from server.agent_toolset.remote import LONG_TASK_NOTE, remote_tool
@@ -106,6 +110,9 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "list_pending_assets": {"type": "character"},
     "generate_assets": {"type": "character", "names": ["张三"]},
     "generate_storyboards": {"script": "episode_1.json"},
+    "author_shot_grid_prompt": {"script": "episode_1.json", "shot_id": "E1S01"},
+    "configure_shot_grid": {"script": "episode_1.json", "shot_id": "E1S01"},
+    "generate_shot_grids": {"script": "episode_1.json"},
     "edit_images": {"resource_type": "character", "edits": [{"id": "张三", "instruction": "把头发改成红色"}]},
     "generate_narration_audio": {"script": "episode_1.json", "segment_ids": ["E1S01"]},
     "generate_episode_script": {"episode_id": 1, "dry_run": True},
@@ -526,6 +533,9 @@ _PROBLEM_ON_SAMPLE = frozenset(
         RESTORE_REVISION.name,
         # 测试项目只登记了一个角色，没有可并入的保留方。
         MERGE_ASSET.name,
+        # 测试项目不是工厂派生状态：参考素材的读写都在工厂项目内才能成立。
+        AUTHOR_SHOT_GRID_PROMPT.name,
+        CONFIGURE_SHOT_GRID.name,
         # 测试项目没有登记整本源文的文件。
     }
 )

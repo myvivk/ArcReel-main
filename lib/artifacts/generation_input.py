@@ -373,8 +373,6 @@ def storyboard_image_input(
     )
 
 
-
-
 def asset_sheet_input(
     project: Mapping[str, Any],
     *,

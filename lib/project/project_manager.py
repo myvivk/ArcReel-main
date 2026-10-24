@@ -566,8 +566,7 @@ class ProjectManager:
         mode = data.get("content_mode") if isinstance(data, dict) else None
         if mode is not None and mode not in ("drama", "narration", "ad"):
             raise ValueError(
-                f"project {project_dir.name}: invalid content_mode={mode!r} "
-                "(unknown historical content mode)"
+                f"project {project_dir.name}: invalid content_mode={mode!r} (unknown historical content mode)"
             )
         return "drama"
 

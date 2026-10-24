@@ -431,8 +431,6 @@ def test_projection_failure_codes_are_machine_encodable_in_all_locales(code: str
         assert code in MESSAGES[locale], f"{locale} 缺少 {code}"
 
 
-
-
 @pytest.mark.parametrize("code", sorted(VIDEO_REQUEST_FACTS_FAILURE_CODES))
 def test_video_request_facts_failure_codes_are_machine_encodable_in_all_locales(code: str) -> None:
     assert FAILURE_CODE_KEYS[code] == code

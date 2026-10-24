@@ -1777,6 +1777,7 @@ export default {
   'prompt_authoring_open': 'Viết prompt',
   'prompt_authoring_open_image': 'Viết prompt phân cảnh',
   'prompt_authoring_open_video': 'Viết prompt video',
+  'prompt_authoring_assets_blocked': '{{count}} tài sản trong tập này còn thiếu mô tả; hãy hoàn thiện trước khi viết prompt phân cảnh: {{assets}}',
   'prompt_authoring_title': 'Viết prompt',
   'prompt_authoring_desc': 'Viết prompt cho phần được chọn của tập này. Prompt phân cảnh viết trước; prompt video viết sau khi vật liệu tham chiếu được xác nhận.',
   'prompt_authoring_field_label': 'Loại prompt',

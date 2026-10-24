@@ -1773,6 +1773,7 @@ export default {
   'prompt_authoring_open': '编写提示词',
   'prompt_authoring_open_image': '编写分镜提示词',
   'prompt_authoring_open_video': '编写视频提示词',
+  'prompt_authoring_assets_blocked': '本集 {{count}} 个资产缺外观描述，请先补齐再编写分镜提示词：{{assets}}',
   'prompt_authoring_title': '编写提示词',
   'prompt_authoring_desc': '按所选内容为本集正式脚本补写提示词。分镜提示词先写，视频提示词在参考素材确认后再写。',
   'prompt_authoring_field_label': '编写内容',

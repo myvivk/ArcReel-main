@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from lib.infra.api_errors import ConflictError, NotFoundError, UnprocessableError
 from lib.infra.async_thread import run_sync_transaction
 from lib.project.project_manager import get_project_manager
+from lib.script.short_drama_import import assets_missing_description
 from lib.script.short_drama_source import load_short_drama_source, short_drama_source_relative_path
 from lib.short_drama_ingest import (
     ShortDramaArtifactError,
@@ -21,7 +22,6 @@ from lib.short_drama_ingest import (
 from server.auth import CurrentUser
 from server.services.short_drama_workflow import (
     ShortDramaWorkflowError,
-    assets_missing_description,
     import_short_drama_episode,
 )
 from server.tool_runtime import (

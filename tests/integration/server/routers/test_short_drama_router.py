@@ -265,10 +265,13 @@ def test_reimport_requires_confirmation_when_media_exists(monkeypatch, tmp_path:
 
     with client:
         revision = _save_source(client)
-        assert client.post(
-            "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
-            json={"source_revision": revision},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/v1/projects/demo/episodes/1/short-drama-source/reimport",
+                json={"source_revision": revision},
+            ).status_code
+            == 200
+        )
         script = manager.load_script("demo", "episode_1.json")
         script["scenes"][0]["generated_assets"]["storyboard_image"] = "storyboards/scene_E1S1.png"
         manager.save_script("demo", script, "episode_1.json")
@@ -285,18 +288,17 @@ def test_reimport_requires_confirmation_when_media_exists(monkeypatch, tmp_path:
     assert confirmed.status_code == 200
 
 
-def _shot_prompt(header: str = "【镜头1】中景，平视机位，缓推。") -> str:
+def _shot_prompt(header: str = "【镜头1｜中景】平视机位，缓推。") -> str:
     return "\n".join(
         [
             header,
-            "画面主体：林夏@[林夏/抓住门把手，压声屏息]。",
-            "环境道具：旧公寓@[旧公寓/水泥楼道声控灯忽明忽暗]。",
-            "视觉参考：风格锚@[短剧/雨夜逼仄质感]",
+            "林夏@[林夏]攥紧门把手，侧耳贴门屏息，指节因用力而发白；",
+            "旧公寓@[旧公寓]的水泥楼道里声控灯忽明忽暗，铁门@[铁门]的锈迹映出她绷紧的侧脸，一缕冷光扫过门缝。",
         ]
     )
 
 
-def _plan_payload(markdown: str, *, header: str = "【镜头1】中景，平视机位，缓推。", group_size: int = 10) -> str:
+def _plan_payload(markdown: str, *, header: str = "【镜头1｜中景】平视机位，缓推。", group_size: int = 10) -> str:
     """按源稿 beats 生成一份结构合规的规划回复。"""
     beats = beat_catalog(parse_short_drama_episode(markdown))
     groups = [
@@ -354,7 +356,7 @@ def test_smart_reimport_writes_ai_shot_prompts(monkeypatch, tmp_path: Path) -> N
     assert model.require_complete == [True]
     script = manager.load_script("demo", "episode_1.json")
     for scene in script["scenes"]:
-        assert scene["image_prompt"].startswith("【镜头1】中景，平视机位，缓推。")
+        assert scene["image_prompt"].startswith("【镜头1｜中景】平视机位，缓推。")
         assert scene["video_prompt"] is None
         assert scene["pending_authoring"] is True
 
@@ -375,15 +377,21 @@ def test_smart_reimport_never_falls_back_after_exhausted_retries(monkeypatch, tm
         )
 
     assert imported.status_code == 422, imported.text
-    assert "镜头首行缺景别、机位或运镜" in imported.json()["detail"]
+    assert "缺景别" in imported.json()["detail"]
     assert len(model.requests) == 5
     assert "上一轮输出未通过校验" in model.requests[1].prompt
     # 报错即回滚：正式脚本里没有半成品，也没有「回落骨架」的 mode 留痕。
     assert not (manager.get_project_path("demo") / "scripts" / "episode_1.json").exists()
 
 
-@pytest.mark.parametrize("header", ["【镜头1】中景，缓推。", "【镜头1】中景，平视机位。"])
-def test_smart_reimport_requires_both_camera_position_and_motion(monkeypatch, tmp_path, header):
+@pytest.mark.parametrize(
+    ("header", "problem"),
+    [
+        ("【镜头1｜中景】缓推。", "缺机位"),
+        ("【镜头1｜中景】平视机位。", "缺运镜"),
+    ],
+)
+def test_smart_reimport_requires_both_camera_position_and_motion(monkeypatch, tmp_path, header, problem):
     client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     model = FakeTextGenerator(*([_plan_payload(MARKDOWN, header=header)] * 5))
     monkeypatch.setattr(TextGenerator, "create", model.create)
@@ -394,7 +402,7 @@ def test_smart_reimport_requires_both_camera_position_and_motion(monkeypatch, tm
             json={"source_revision": revision},
         )
     assert response.status_code == 422
-    assert "机位或运镜" in response.json()["detail"]
+    assert problem in response.json()["detail"]
     assert len(model.requests) == 5
     assert not (manager.get_project_path("demo") / "scripts/episode_1.json").exists()
 
@@ -437,7 +445,7 @@ def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: 
     """校验不通过就带原因返修、让 AI 继续优化，而非放宽闸门；多轮后通过即落盘 AI 提示词。"""
     client, manager = _client(monkeypatch, tmp_path, assets_ready=True)
     broken = _plan_payload(MARKDOWN, header="【镜头1】景别，机位，运镜。")
-    good = _plan_payload(MARKDOWN, header="【镜头1】中景，平视机位，缓推。")
+    good = _plan_payload(MARKDOWN, header="【镜头1｜中景】平视机位，缓推。")
     model = FakeTextGenerator(broken, good)
     monkeypatch.setattr(TextGenerator, "create", model.create)
 
@@ -456,7 +464,7 @@ def test_smart_reimport_keeps_refining_until_plan_passes(monkeypatch, tmp_path: 
     assert len(model.requests) == 2
     assert "上一轮输出未通过校验" in model.requests[1].prompt
     script = manager.load_script("demo", "episode_1.json")
-    assert script["scenes"][0]["image_prompt"].startswith("【镜头1】中景，平视机位，缓推。")
+    assert script["scenes"][0]["image_prompt"].startswith("【镜头1｜中景】平视机位，缓推。")
 
 
 def test_smart_reimport_reuses_cached_plan(monkeypatch, tmp_path: Path) -> None:
@@ -508,9 +516,9 @@ def test_same_source_preserves_manual_prompt_and_media(monkeypatch, tmp_path: Pa
 @pytest.mark.parametrize(
     "broken_prompt",
     [
-        _shot_prompt() + "\n\n" + _shot_prompt().replace("【镜头1】", "【镜头2】"),
-        _shot_prompt().replace("林夏@[林夏/抓住门把手，压声屏息]", "风格锚@[短剧/气氛]"),
-        _shot_prompt().replace("林夏@[林夏/抓住门把手，压声屏息]", "路人@[路人/抓住门把手，压声屏息]"),
+        _shot_prompt() + "\n\n" + _shot_prompt().replace("【镜头1｜中景】", "【镜头2｜中景】"),
+        _shot_prompt().replace("林夏@[林夏]", "风格锚@[短剧/气氛]"),
+        _shot_prompt().replace("林夏@[林夏]", "路人@[路人]"),
     ],
 )
 def test_bad_shot_content_is_repaired_before_any_visual_state_is_written(
@@ -545,7 +553,7 @@ def _rewrite_payload(scene_ids: list[str]) -> str:
                     "scene_id": scene_id,
                     "duration_seconds": 13,
                     "scene_description": "林夏攥紧门把手，侧耳贴门，屏息听门外动静。",
-                    "image_prompt": _shot_prompt(header="【镜头1】特写，仰拍，缓拉。"),
+                    "image_prompt": _shot_prompt(header="【镜头1｜特写】仰拍机位，缓拉。"),
                 }
                 for scene_id in scene_ids
             ]
@@ -584,9 +592,9 @@ def test_reimport_regenerates_selected_scenes_only(monkeypatch, tmp_path: Path) 
     assert len(script["scenes"]) == first["scenes"]
     rewritten = next(scene for scene in script["scenes"] if scene["scene_id"] == "E1S2")
     untouched = next(scene for scene in script["scenes"] if scene["scene_id"] == "E1S1")
-    assert rewritten["image_prompt"].startswith("【镜头1】特写，仰拍，缓拉。")
+    assert rewritten["image_prompt"].startswith("【镜头1｜特写】仰拍机位，缓拉。")
     assert rewritten["duration_seconds"] == 13
-    assert untouched["image_prompt"].startswith("【镜头1】中景，平视机位，缓推。")
+    assert untouched["image_prompt"].startswith("【镜头1｜中景】平视机位，缓推。")
     assert untouched["duration_seconds"] == 12
     # 未选中的分镜连 source_text 都不动：已生成的媒体与手动编辑因此不会丢。
     assert bool(rewritten["source_text"])

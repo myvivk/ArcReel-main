@@ -186,28 +186,14 @@ class TestPromptAuthoringPromptGuards:
         assert "后缀" in text
         assert "两位序号" not in text
 
-    def test_drama_injects_asset_appearance_when_provided(self):
-        """drama prompt_authoring 传入资产 bucket 时渲染外观词典；缺描述的资产退化为纯名字。"""
-        text = build_drama_prompt(
-            style="动漫",
-            style_description="日漫半厚涂",
-            scenes_content="### E2S01（时长 4 秒）\n视觉改编：xxx",
-            episode=2,
-            characters={"主角": {"description": "X"}},
-            scenes={"庙宇": {"description": "Y"}},
-            props={"玉佩": {}},
-        )
-        assert "- 主角：X" in text
-        assert "- 庙宇：Y" in text
-        assert "- 玉佩" in text
-
     def test_prompt_authoring_standardizes_storyboard_asset_mentions(self):
-        """prompt_authoring 生成 image_prompt.scene 时，产出用户可见的标准镜头内容与资产 token。"""
+        """prompt_authoring 生成 image_prompt.scene 时，产出统一标准格式（D-10）与受控资产 token。"""
         text = self._drama_prompt()
-        assert "`【镜头1】`" in text
-        assert "只有一个镜头也写 `【镜头1】`" in text
-        assert "族少乙@[族少乙]" in text
-        assert "`@[登记名]` 是机器可解析的引用 token" in text
+        assert "`【镜头1｜中景】`" in text
+        assert "景别必填" in text
+        assert "林清@[林清]" in text
+        assert "只能写出场资产清单里的名字" in text
+        assert "不要把资产登记外观整份抄进正文" in text
         assert "生成端按参考图顺序把它换成「图N」并随请求发送对应参考图" in text
         assert "不要在 image_prompt.scene 中写 `Reference_Images`" in text
 
@@ -219,11 +205,13 @@ class TestPromptAuthoringPromptGuards:
         assert "覆盖完整时长且不重叠" in text
         assert "不要写成最终模型里的 `Action`" in text
 
-    def test_drama_omits_asset_block_without_assets(self):
-        """兼容旧调用：不传资产参数时 drama prompt_authoring 不渲染资产块与取材注记。"""
+    def test_drama_prompt_never_injects_asset_appearances(self):
+        """上下文不含资产外观（D-10，2026-10-24 拍板）：喂外观必被抄进正文，外观一致性由参考图承载。"""
         text = self._drama_prompt()
         assert "<characters>" not in text
         assert "资产外观以上述描述为准" not in text
+        # 出场资产在内容投影里只有名字清单，模板声明这一点让模型不自行取材外观词典
+        assert "只有名字清单，不附外观描述" in text
 
 
 #: 一个带衍生的角色表：候选块要列出 `姜月茴/劲装`，其外观是本体描述加上这一段变化。

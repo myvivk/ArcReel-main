@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from lib.project.asset_types import resolve_asset_key
+
 # ---------------------------------------------------------------------------
 # 解析：Markdown → 中间结构
 # ---------------------------------------------------------------------------
@@ -418,6 +420,32 @@ def scene_beat_groups(parsed: ParsedEpisode, script_scenes: list[Mapping[str, An
     if cursor != len(raws):
         raise ValueError("现有分镜未覆盖源稿全部内容，请整体重新分镜")
     return groups
+
+
+def assets_missing_description(project: Mapping[str, Any], markdown: str) -> list[dict[str, str]]:
+    """分镜前置检查：本集源稿引用的资产里，缺外观描述的清单。
+
+    未登记或描述为空均阻断；源稿写明外观不能替代资产步骤的登记与描述规范化。AI 分镜入口与
+    提示词编写入口（D-10 第 0 步）用同一判定，不提供第二个口径。
+    """
+    parsed = parse_short_drama_episode(markdown)
+    mentioned = {
+        "character": sorted({name for block in parsed.blocks for name in block.characters}),
+        "scene": sorted({block.location for block in parsed.blocks if block.location}),
+        "prop": sorted({name for block in parsed.blocks for name in block.props}),
+    }
+    missing: list[dict[str, str]] = []
+    for asset_type, bucket_name in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+        bucket = project.get(bucket_name) or {}
+        for name in mentioned[asset_type]:
+            key = resolve_asset_key(bucket, name) if isinstance(bucket, Mapping) else None
+            entry = bucket.get(key) if isinstance(bucket, Mapping) and key else None
+            if not isinstance(entry, Mapping):
+                missing.append({"type": asset_type, "name": name, "reason": "unregistered"})
+                continue
+            if not str(entry.get("description") or "").strip():
+                missing.append({"type": asset_type, "name": name, "reason": "existing_blank"})
+    return missing
 
 
 def referenced_asset_names(script: Mapping[str, Any]) -> dict[str, list[str]]:

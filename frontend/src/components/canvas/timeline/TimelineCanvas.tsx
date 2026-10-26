@@ -6,7 +6,6 @@ import { ShotSplitView } from "./ShotSplitView";
 import { StoryboardBatchDialog } from "./StoryboardBatchDialog";
 import { EmptyScriptState } from "./EmptyScriptState";
 import type { InsertShotHandler } from "./ShotStructureActions";
-import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { ShortDramaStoryboardButton } from "@/components/canvas/shared/ShortDramaStoryboardButton";
 import { FactoryStoryboardStart } from "@/components/canvas/shared/FactoryStoryboardStart";
@@ -44,7 +43,12 @@ interface TimelineCanvasProps extends EpisodeCanvasContext {
   /** 移除分镜，resolve 为是否成功 */
   onRemoveShot?: (itemId: string, scriptFile?: string) => Promise<boolean>;
   onGenerateStoryboard?: (segmentId: string, scriptFile?: string) => void;
-  onGenerateVideo?: (segmentId: string, scriptFile?: string) => void | Promise<void>;
+  onGenerateVideo?: (
+    segmentId: string,
+    scriptFile?: string,
+    seed?: number | null,
+    frameMode?: "first_last" | "reference",
+  ) => void | Promise<void>;
   onGenerateNarration?: (segmentId: string, scriptFile?: string) => void;
   onGenerateEpisodeNarration?: (scriptFile?: string) => void;
   durationOptions?: number[];
@@ -157,6 +161,16 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
         />
       );
     }
+    if (projectData && editorContentMode === "drama" && !demoReadOnly) {
+      return (
+        <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <EpisodeHeaderActions>
+            <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+          </EpisodeHeaderActions>
+          <p className="text-sm text-muted-foreground">{t("timeline_script_not_ready")}</p>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         {t("select_episode_hint")}
@@ -182,7 +196,8 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     ? (segId: string) => onGenerateStoryboard(segId, scriptFile)
     : undefined;
   const handleGenVid = onGenerateVideo
-    ? (segId: string) => onGenerateVideo(segId, scriptFile)
+    ? (segId: string, _scriptFile?: string, seed?: number | null, frameMode?: "first_last" | "reference") =>
+        onGenerateVideo(segId, scriptFile, seed, frameMode)
     : undefined;
   const handleGenNarration = onGenerateNarration
     ? (segId: string) => onGenerateNarration(segId, scriptFile)
@@ -193,11 +208,10 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   if (!importedShortDrama && !demoReadOnly) {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
-        <p className="text-sm text-muted-foreground">{t("timeline_no_editable_segments")}</p>
-        <div className="flex flex-wrap gap-2">
+        <EpisodeHeaderActions>
           <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-          <ShortDramaImportButton projectName={projectName} episode={episode} />
-        </div>
+        </EpisodeHeaderActions>
+        <p className="text-sm text-muted-foreground">{t("timeline_no_editable_segments")}</p>
         <pre className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
           {JSON.stringify(episodeScript, null, 2)}
         </pre>
@@ -212,7 +226,6 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
           {!demoReadOnly && (
             <>
               <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-              <ShortDramaImportButton projectName={projectName} episode={episode} />
             </>
           )}
           {!demoReadOnly && importedShortDrama && (
@@ -221,6 +234,7 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
               episode={episode}
               storyboardCount={segments.length}
               sceneIds={segments.map((segment) => getScriptItemId(segment, editorContentMode))}
+              agentOnly
             />
           )}
           <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />

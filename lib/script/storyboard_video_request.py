@@ -15,14 +15,28 @@ from lib.infra.path_safety import safe_join
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key
 from lib.prompts.prompt_utils import utterances_to_dialogue
 from lib.script.grid.shot_models import ShotGrid
+from lib.script.grid.video_prompt_targets import video_prompt_body_text
+from lib.script.shot_prompt_standard import dialogue_line_problem
 from lib.script.storyboard_sequence import StoryboardVideoSlots, find_storyboard_item, resolve_storyboard_image_ref
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.reference_audio import resolve_reference_audio_paths
 from lib.speech.voice_settings import VoiceRenderSettings
 
 
+def validate_storyboard_video_prompt(item: Mapping[str, Any]) -> None:
+    """视频提示词不得出现台词原句：画面只写动作/神态/环境，台词只由 utterances 承载。
+
+    在最终请求组装处（``storyboard_asset_links`` 的调用方）硬拦：新编写产物由编写任务
+    直接返回可修复错误，存量脏数据也会在计费前被拒，而不是把台词送进视频模型。
+    """
+    problem = dialogue_line_problem(video_prompt_body_text(item), label="video_prompt.action")
+    if problem:
+        raise ValueError(problem)
+
+
 def storyboard_asset_links(project: Mapping[str, Any], item: Mapping[str, Any], project_name: str) -> str:
     """Link referenced identities to their entries in the project's asset table."""
+    validate_storyboard_video_prompt(item)
     links: list[str] = []
     for spec in ASSET_SPECS.values():
         bucket = project.get(spec.bucket_key)
@@ -70,7 +84,13 @@ def storyboard_frame_evidence(
                     raise ValueError("confirmed keyframe has no contact sheet")
                 rows, cols = binding.get("rows"), binding.get("cols")
                 if type(rows) is not int or type(cols) is not int or rows < 1 or cols < 1:
-                    raise ValueError("confirmed keyframe has invalid grid dimensions")
+                    # 旧宫格绑定只写了 ``layout``（如 ``2x2``），没有 rows/cols；按布局反推，
+                    # 避免存量项目一生成视频就报「invalid grid dimensions」。
+                    layout = binding.get("layout")
+                    match = re.fullmatch(r"(\d+)\s*[x×]\s*(\d+)", layout.strip()) if isinstance(layout, str) else None
+                    if match is None:
+                        raise ValueError("confirmed keyframe has invalid grid dimensions")
+                    rows, cols = int(match.group(1)), int(match.group(2))
                 entry["grid"] = {
                     "id": binding["grid_id"],
                     "rows": rows,

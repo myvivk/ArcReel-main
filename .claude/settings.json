@@ -2,8 +2,6 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(uv run python -m pytest:*)",
-      "Bash(uv run pytest:*)",
       "Bash(uv run python scripts/gate.py:*)",
       "Bash(uv run ruff check:*)",
       "Bash(uv run ruff format:*)",
@@ -13,8 +11,6 @@
       "Bash(uv sync:*)",
       "Bash(uv lock:*)",
       "Bash(pnpm build:*)",
-      "Bash(pnpm test:*)",
-      "Bash(pnpm check:*)",
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm dev:*)",
       "Bash(git status:*)",
@@ -55,6 +51,19 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:docs.claude.com)",
       "WebFetch(domain:github.com)"
+    ],
+    "deny": [
+      "Bash(uv run python -m pytest:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm run test:*)",
+      "Bash(pnpm check:*)",
+      "Bash(pnpm run check:*)",
+      "Bash(pnpm e2e)",
+      "Bash(pnpm e2e:*)",
+      "Bash(pnpm run e2e:*)",
+      "Bash(pnpm exec vitest:*)",
+      "Bash(pnpm exec playwright:*)"
     ]
   },
   "hooks": {

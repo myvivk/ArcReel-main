@@ -187,10 +187,16 @@ export function MediaCard({
             </AspectFrame>
           </PreviewableImageFrame>
         ) : (
-          <div className="w-full max-w-[450px] overflow-hidden rounded-lg ring-1 ring-border">
+          <div
+            className={
+              aspectRatio === "16:9"
+                ? "w-full overflow-hidden rounded-lg ring-1 ring-border"
+                : "w-full max-w-[450px] overflow-hidden rounded-lg ring-1 ring-border"
+            }
+          >
             <AspectFrame
               ratio={aspectRatio}
-              className="h-[265px] w-full max-w-[450px]"
+              className={aspectRatio === "16:9" ? "w-full" : "h-[265px] w-full max-w-[450px]"}
             >
               <PresentationPlayer
                 key={`${segmentId}:${assetFp ?? "current"}`}

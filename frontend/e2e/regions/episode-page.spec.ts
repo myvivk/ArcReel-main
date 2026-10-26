@@ -223,7 +223,6 @@ defineRegionScenarios("集页页头", [
       // 批量动作不在 tab 列表里
       await expect(viewTabs(page).getByRole("button")).toHaveCount(0);
     },
-    screenshot: { name: "episode-page-header", target: header },
   },
   {
     name: "工厂集提供提示词、参考素材与视频制作入口",

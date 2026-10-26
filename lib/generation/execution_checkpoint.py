@@ -597,8 +597,11 @@ class _VideoSubmissionCheckpoint:
                 raise ValueError("reference checkpoint contains storyboard media")
         else:
             roles = tuple(item.role for item in self.media)
-            if roles.count("start_image") != 1 or roles.count("end_image") > 1:
-                raise ValueError("storyboard checkpoint requires one start image and at most one end image")
+            # 首尾帧模式恰好一张首帧；参考图模式没有首帧，但必须有参考图。
+            if roles.count("start_image") > 1 or roles.count("end_image") > 1:
+                raise ValueError("storyboard checkpoint allows at most one start image and one end image")
+            if roles.count("start_image") == 0 and "reference_image" not in roles:
+                raise ValueError("storyboard checkpoint requires a start image or reference images")
             allowed_roles = {"start_image", "end_image", "reference_image"}
             if self.schema_version == _SCHEMA_VERSION:
                 allowed_roles.add("reference_audio")

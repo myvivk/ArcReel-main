@@ -26,6 +26,7 @@ from server.agent_runtime.event_log import (
     REPLAYED_USER_ECHO_ENTRY_UUID_KEY,
     REPLAYED_USER_ECHO_KEY,
     EventLogStore,
+    build_quality_gate_entry,
     build_user_entry,
 )
 from server.agent_runtime.failure_observation import (
@@ -53,6 +54,7 @@ from server.agent_runtime.result_status import resolve_result_status
 from server.agent_runtime.sdk_frames import CommandLifecycle
 from server.agent_runtime.session_actor import SessionActor, SessionCommand
 from server.agent_runtime.session_store import SessionMetaStore
+from server.agent_runtime.tool_progress import ProgressReporter, QualityGateRound
 from server.agent_runtime.usage_extraction import (
     extract_assistant_cost,
     extract_text_token_usage,
@@ -675,6 +677,7 @@ class SessionManager:
         locale: str = DEFAULT_LOCALE,
         stderr: Callable[[str], None] | None = None,
         session_id: str | None = None,
+        tool_progress: ProgressReporter | None = None,
     ) -> Any:
         """委派给 ``OptionsAssembler.build``——SessionManager 不再直接构建 options 与
         hook，仅调用装配器；凭证注入、prompt 装配、hook 工厂均由装配器持有。"""
@@ -685,6 +688,7 @@ class SessionManager:
             locale=locale,
             stderr=stderr,
             session_id=session_id,
+            tool_progress=tool_progress,
         )
 
     def _build_session_store(self):
@@ -714,6 +718,23 @@ class SessionManager:
             project_name_provider=lambda: managed.project_name,
             broadcast=managed.channel.broadcast,
         )
+
+    def _build_tool_progress(self, managed_ref: list["ManagedSession | None"]) -> ProgressReporter:
+        """构建注入工具宿主的逐轮进度回调。
+
+        回调在工具执行期间被质量闸调用：把每轮结果定型为 ``system/quality_gate_round``
+        条目，经会话写入点落库并广播（SSE ``entry``），用户据此实时看到「第 N/5 轮」。
+        经 ``managed_ref`` 现取会话：options 先于 ``ManagedSession`` 构建，而工具调用
+        发生在会话就绪之后；管道缺失（启动失败/单测）时静默丢弃，不影响工具结果。
+        """
+
+        async def _report(round_: QualityGateRound) -> None:
+            managed = managed_ref[0]
+            if managed is None or managed.entry_pipeline is None:
+                return
+            await managed.entry_pipeline.append_progress_entry(build_quality_gate_entry(round_))
+
+        return _report
 
     def _make_actor_message_callback(
         self,
@@ -844,6 +865,7 @@ class SessionManager:
                 can_use_tool=await self._build_can_use_tool_callback(temp_id, managed_ref),
                 locale=locale,
                 stderr=startup_stderr,
+                tool_progress=self._build_tool_progress(managed_ref),
             )
         except Exception as exc:
             sdk_stderr = startup_stderr.render()
@@ -1242,6 +1264,7 @@ class SessionManager:
                 locale=locale,
                 stderr=startup_stderr,
                 session_id=None if resumable else meta.id,
+                tool_progress=self._build_tool_progress(managed_ref),
             )
         except Exception as exc:
             sdk_stderr = startup_stderr.render()

@@ -40,7 +40,7 @@ from lib.prompts.prompt_builders_script import (
     build_drama_prompt,
     render_drama_content_for_prompt_authoring,
 )
-from lib.script.grid.keyframe_parser import keyframe_reference_problems, shot_scene_text
+from lib.script.grid.keyframe_parser import format_action_segments, keyframe_reference_problems, shot_scene_text
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
 from lib.script.grid.shot_models import ShotGrid
 from lib.script.grid.video_prompt_targets import (
@@ -63,14 +63,14 @@ from lib.script.script_models import (
 )
 from lib.script.script_revision import content_fingerprint, formal_script_filename
 from lib.script.script_skeleton import resolve_declared_kind, resolve_kind_items
-from lib.script.short_drama_import import assets_missing_description
+from lib.script.short_drama_import import assets_missing_description, fragment_scene_names, scene_place_name
 from lib.script.short_drama_source import (
     ShortDramaSource,
     load_short_drama_source,
     short_drama_source_relative_path,
 )
-from lib.script.shot_prompt_standard import lint_shot_prompt
-from lib.speech.speech_composition import require_script_unit_admitted
+from lib.script.shot_prompt_standard import handoff_problem, lint_shot_prompt
+from lib.speech.speech_composition import require_script_unit_admitted, speech_policy_for_project
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,7 @@ def _visual_field_instruction(targets: "PromptAuthoringTargets") -> str | None:
         return (
             "本次只编写 video_prompt（视频提示词）。输入里有分镜提示词与该分镜已确认宫格的逐格文本"
             "（K0→Kn）：按 K0→Kn 的时序写「怎么动」，不复述每格已经写死的静帧外观、姿态与服装；"
+            "每个时间段单独一行（如「0-3秒：…」换行「3-6秒：…」），不要连写成一段；"
             "只引用真实存在的 K（正文出现的 K 编号必须小于格数），台词不进 action；"
             "不写 BGM、画面比例、时长与模型参数，也不要输出 image_prompt 或改写分镜提示词。"
         )
@@ -436,7 +437,9 @@ class ScriptGenerator:
 
         if targets.kind == "scenes":
             for scene in targets.entries:
-                require_script_unit_admitted("scenes", scene, ignore_marker=True)
+                require_script_unit_admitted(
+                    "scenes", scene, ignore_marker=True, policy=speech_policy_for_project(self.project_json)
+                )
         logger.info(
             "正在为第 %d 集编写提示词（%s，%d/%d 个条目）...",
             episode,
@@ -459,14 +462,47 @@ class ScriptGenerator:
         frozen_images = await asyncio.to_thread(image_digests)
         base_prompt = await self._build_visual_prompt(episode, targets, instructions, video_inputs=video_inputs)
         registered = self._registered_asset_names()
-        authoring_fields = {field for entry in targets.selection.entries for field in entry.fields}
         rejection: str | None = None
-        visual: list[dict] = []
+        visual_by_id: dict[str, dict] = {}
+        pending_entry: str | None = None
         for _attempt in range(_PROMPT_AUTHORING_ATTEMPTS):
-            prompt = (
-                base_prompt
-                if rejection is None
-                else (f"{base_prompt}\n\n上一轮输出未通过校验：{rejection}。请修正后重新输出完整 {targets.kind}。")
+            if pending_entry is None:
+                prompt = (
+                    base_prompt
+                    if rejection is None
+                    else (f"{base_prompt}\n\n上一轮输出未通过校验：{rejection}。请修正后重新输出完整 {targets.kind}。")
+                )
+                result = await self._generate_text(
+                    TextGenerationRequest(
+                        prompt=prompt,
+                        response_schema=_visual_response_schema(targets),
+                        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+                    )
+                )
+                try:
+                    parsed = self._parse_visual_layer(result.text, targets)
+                    visual_by_id = self._index_visual_layer(parsed, targets)
+                except ValueError as exc:
+                    rejection = str(exc)
+                    continue
+                visual = [visual_by_id[entry_id] for entry_id in targets.ids]
+                failures = self._authored_visual_failures(
+                    visual, targets, registered, video_inputs=video_inputs, episode=episode
+                )
+                if failures:
+                    pending_entry, rejection = failures[0]
+                    continue
+                break
+
+            # 局部修复：只重发失败条目；成功条目原样保留在 visual_by_id。
+            prompt = self._build_visual_repair_prompt(
+                episode=episode,
+                targets=targets,
+                entry_id=pending_entry,
+                old_visual=visual_by_id[pending_entry],
+                rejection=rejection or "未通过校验",
+                instructions=instructions,
+                video_inputs=video_inputs,
             )
             result = await self._generate_text(
                 TextGenerationRequest(
@@ -475,14 +511,28 @@ class ScriptGenerator:
                     max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
                 )
             )
-            # 结构 / 视频正文校验的错误直接上抛（不返修）：只有分镜提示词的格式闸带原因返修。
-            visual = self._parse_visual_layer(result.text, targets, video_inputs=video_inputs)
-            if "image_prompt" not in authoring_fields:
-                break
             try:
-                self._lint_authored_visual_layer(visual, targets, registered)
+                parsed = self._parse_visual_layer(result.text, targets)
             except ValueError as exc:
-                rejection = str(exc)
+                rejection = f"分镜 {pending_entry} 局部修复结构不合格：{exc}"
+                continue
+            if len(parsed) != 1 or str(parsed[0].get(targets.id_field, "")) != pending_entry:
+                rejection = f"分镜 {pending_entry} 局部修复只允许返回该条目一项"
+                continue
+            replacement = parsed[0]
+            failures = self._authored_visual_failures(
+                [replacement], targets, registered, video_inputs=video_inputs, episode=episode
+            )
+            if failures:
+                rejection = f"分镜 {pending_entry} 局部修复不合格：{failures[0][1]}"
+                continue
+            visual_by_id[pending_entry] = replacement
+            visual = [visual_by_id[entry_id] for entry_id in targets.ids]
+            failures = self._authored_visual_failures(
+                visual, targets, registered, video_inputs=video_inputs, episode=episode
+            )
+            if failures:
+                pending_entry, rejection = failures[0]
                 continue
             break
         else:
@@ -537,6 +587,50 @@ class ScriptGenerator:
             episode,
             instructions,
             video_inputs=video_inputs,
+        )
+        return _with_field_scope(prompt, targets)
+
+    def _build_visual_repair_prompt(
+        self,
+        *,
+        episode: int,
+        targets: PromptAuthoringTargets,
+        entry_id: str,
+        old_visual: Mapping[str, Any],
+        rejection: str,
+        instructions: str | None,
+        video_inputs: Mapping[str, ShotGrid] | None,
+    ) -> str:
+        """单 entry 局部修复 prompt：只渲染该条目内容 + 旧视觉层 + 失败原因。"""
+        entry = next(item for item in targets.entries if str(item[targets.id_field]) == entry_id)
+        fields = targets.fields_of(entry_id)
+        repair_lines = [
+            "# 本次为局部修复",
+            f"只重写条目 {entry_id}；其他条目上一轮已通过校验，原样保留，不要输出。",
+            f"输出 {targets.kind} 数组且只包含 {entry_id} 一项，不要输出其他 {targets.id_field}。",
+            f"该条目上一轮未通过校验：{rejection}",
+        ]
+        if "image_prompt" in fields:
+            repair_lines.append(f"旧 image_prompt.scene：\n{shot_scene_text(old_visual)}")
+        if "video_prompt" in fields:
+            repair_lines.append(f"旧 video_prompt：\n{video_prompt_body_text(old_visual)}")
+        repair_instructions = "\n".join(repair_lines)
+        if instructions:
+            repair_instructions = f"{instructions}\n\n{repair_instructions}"
+        repair_video_inputs = (
+            {entry_id: video_inputs[entry_id]} if video_inputs is not None and entry_id in video_inputs else None
+        )
+        entry_for_prompt = dict(entry)
+        if "video_prompt" in fields:
+            # 视频局部修复的 K 帧上下文必须基于本轮已生成的 image_prompt；原条目可能还是 None。
+            current_image = old_visual.get("image_prompt")
+            if current_image is not None:
+                entry_for_prompt["image_prompt"] = current_image
+        prompt = self._build_drama_prompt_authoring_prompt(
+            [entry_for_prompt],
+            episode,
+            repair_instructions,
+            video_inputs=repair_video_inputs,
         )
         return _with_field_scope(prompt, targets)
 
@@ -626,24 +720,17 @@ class ScriptGenerator:
         self,
         response_text: str,
         targets: PromptAuthoringTargets,
-        *,
-        video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> list[dict]:
-        """按骨架种类严格校验视觉层响应，返回逐条目视觉层 dict（id + image_prompt + video_prompt）。"""
+        """按骨架种类严格校验视觉层响应，返回逐条目视觉层 dict（id + image_prompt + video_prompt）。
+
+        video_prompt 的正文/K 引用语义校验不在这里做：调用方要逐 entry 收集失败并做局部修复，
+        不能因为一个 entry 的正文错误直接让整批失败。
+        """
         text = strip_json_code_fences(response_text)
         try:
             data = json.loads(text)
         except json.JSONDecodeError as e:
             raise ValueError(f"提示词编写视觉层 JSON 解析失败: {e}") from e
-        if video_inputs is not None and isinstance(data, dict):
-            raw_items = data.get(targets.kind)
-            if isinstance(raw_items, list):
-                for raw in raw_items:
-                    if not isinstance(raw, dict):
-                        continue
-                    grid = video_inputs.get(str(raw.get(targets.id_field, "")))
-                    if grid is not None:
-                        self._validate_video_prompt_body(raw, grid)
         try:
             validated = _visual_response_schema(targets).model_validate(data)
         except ValidationError as e:
@@ -658,26 +745,126 @@ class ScriptGenerator:
             names.update(name for name in bucket if isinstance(name, str) and name.strip())
         return names
 
+    def _index_visual_layer(self, visual_items: list[dict], targets: PromptAuthoringTargets) -> dict[str, dict]:
+        """把整批视觉层按 id 建索引；缺、多、重直接判整批结构失败（可整批重试）。"""
+        id_field = targets.id_field
+        visual_by_id: dict[str, dict] = {}
+        for item in visual_items:
+            if not isinstance(item, dict):
+                raise ValueError("视觉层条目不是对象")
+            entry_id = str(item.get(id_field, ""))
+            if not entry_id:
+                raise ValueError(f"视觉层条目缺少 {id_field}")
+            if entry_id in visual_by_id:
+                raise ValueError(f"视觉层 {id_field} 重复: {entry_id}")
+            visual_by_id[entry_id] = item
+        missing = [entry_id for entry_id in targets.ids if entry_id not in visual_by_id]
+        if missing:
+            raise ValueError(f"视觉层缺少本次编写的条目: {missing}")
+        extra = sorted(set(visual_by_id) - set(targets.ids))
+        if extra:
+            raise ValueError(f"视觉层含本次编写范围之外的 {id_field}: {extra}")
+        return visual_by_id
+
+    def _fragment_gap(self, entry_id: str, prompt: str, targets: PromptAuthoringTargets, episode: int) -> str | None:
+        """本集第一镜必须写出碎片空间：没有冷光/叠影/画外声，后面视频就没有这个画面。"""
+
+        fragments = self._fragment_scenes(episode)
+        if not fragments:
+            return None
+        scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        if not isinstance(scenes, list) or not scenes or not isinstance(scenes[0], Mapping):
+            return None
+        if str(scenes[0].get(targets.id_field)) != entry_id:
+            return None
+        if any(scene_place_name(name) in prompt for name in fragments):
+            return None
+        if any(marker in prompt for marker in ("冷光", "叠影", "闪回", "画外", "虚影", "残影")):
+            return None
+        places = "、".join(scene_place_name(name) for name in fragments)
+        return f"没有写出本集的碎片空间（{places}）：首镜必须有冷光 / 叠影 / 画外声，不能省略。"
+
+    def _authored_visual_failures(
+        self,
+        visual: list[dict],
+        targets: PromptAuthoringTargets,
+        registered: set[str],
+        *,
+        video_inputs: Mapping[str, ShotGrid] | None,
+        episode: int | None = None,
+    ) -> list[tuple[str, str]]:
+        """逐 entry 校验 image_prompt/video_prompt，返回 ``(entry_id, 可回喂原因)``。
+
+        image_prompt 走标准分镜提示词 lint；video_prompt 走 K 引用/包装字段/正文非空校验。
+        失败只记录该 entry，调用方据此只对它做局部修复，成功条目原样保留。
+        """
+        original_by_id = {str(item[targets.id_field]): item for item in targets.entries}
+        authored_by_id = {str(item[targets.id_field]): item for item in visual}
+        characters = {str(name) for name in (self.project_json.get("characters") or {})}
+        script_scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        order: list[str] = []
+        stored: dict[str, Mapping[str, Any]] = {}
+        if isinstance(script_scenes, list):
+            for scene in script_scenes:
+                if isinstance(scene, Mapping):
+                    entry_id = str(scene.get(targets.id_field))
+                    order.append(entry_id)
+                    stored[entry_id] = scene
+        failures: list[tuple[str, str]] = []
+        for item in visual:
+            entry_id = str(item[targets.id_field])
+            fields = targets.fields_of(entry_id)
+            original = original_by_id[entry_id]
+            if "image_prompt" in fields:
+                scene_text = shot_scene_text(item)
+                if not scene_text.strip():
+                    failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt.scene 为空"))
+                    continue
+                if problem := lint_shot_prompt(
+                    scene_text,
+                    registered_names=registered,
+                    allowed_names=_entry_asset_names(original),
+                    character_names=characters,
+                ):
+                    failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 未通过标准分镜提示词校验：{problem}"))
+                    continue
+                if entry_id in order and (position := order.index(entry_id)) > 0:
+                    previous_id = order[position - 1]
+                    previous_item = authored_by_id.get(previous_id) or stored.get(previous_id)
+                    previous_prompt = shot_scene_text(previous_item) if isinstance(previous_item, Mapping) else ""
+                    if not previous_prompt.strip():
+                        failures.append(
+                            (
+                                entry_id,
+                                f"分镜 {entry_id} 的前一条分镜（{previous_id}）还没有 image_prompt："
+                                f"{translate('prompt_authoring_previous_missing')}",
+                            )
+                        )
+                        continue
+                    if problem := handoff_problem(previous_prompt, scene_text, character_names=characters):
+                        failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 未接住上一分镜：{problem}"))
+                        continue
+                if episode is not None and (gap := self._fragment_gap(entry_id, scene_text, targets, episode)):
+                    failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt {gap}"))
+                    continue
+            if "video_prompt" in fields:
+                grid = video_inputs.get(entry_id) if video_inputs is not None else None
+                if grid is None:
+                    failures.append((entry_id, translate("video_prompt_grid_unconfirmed")))
+                    continue
+                try:
+                    self._validate_video_prompt_body(item, grid)
+                except ValueError as exc:
+                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 未通过校验：{exc}"))
+        return failures
+
     def _lint_authored_visual_layer(
         self, visual: list[dict], targets: PromptAuthoringTargets, registered: set[str]
     ) -> None:
-        """编写产物的格式闸（D-10）：与 AI 分镜同一套标准分镜提示词校验（``lint_shot_prompt``）。
-
-        token 硬闸的出场判定取自条目已有的结构化资产清单：清单决定参考图列表，token 落在清单内
-        才能被渲染成「图N」。不合格抛 ``ValueError``，由调用方带原因回喂返修。
-        """
-        original_by_id = {str(item[targets.id_field]): item for item in targets.entries}
-        for item in visual:
-            entry_id = str(item[targets.id_field])
-            if "image_prompt" not in targets.fields_of(entry_id):
-                continue
-            scene_text = shot_scene_text(item)
-            if not scene_text.strip():
-                raise ValueError(f"分镜 {entry_id} 的 image_prompt.scene 为空")
-            if problem := lint_shot_prompt(
-                scene_text, registered_names=registered, allowed_names=_entry_asset_names(original_by_id[entry_id])
-            ):
-                raise ValueError(f"分镜 {entry_id} 的 image_prompt 未通过标准分镜提示词校验：{problem}")
+        """兼容入口：只做 image_prompt 逐 entry 校验，首个失败抛 ``ValueError``。"""
+        failures = self._authored_visual_failures(visual, targets, registered, video_inputs=None)
+        if failures:
+            raise ValueError(failures[0][1])
 
     @staticmethod
     def _merge_visual_layer(targets: PromptAuthoringTargets, visual_items: list[dict], episode: int) -> list[dict]:
@@ -729,12 +916,25 @@ class ScriptGenerator:
             grid = video_inputs.get(entry_id) if video_inputs is not None else None
             if grid is None:
                 raise PromptAuthoringTargetError(translate("video_prompt_grid_unconfirmed"))
+            self._format_video_prompt_lines(item)
             self._validate_video_prompt_body(item, grid)
             assets = item.get("generated_assets")
             if not isinstance(assets, dict):
                 assets = {}
                 item["generated_assets"] = assets
             assets["video_prompt_basis"] = video_prompt_basis_for(grid)
+
+    @staticmethod
+    def _format_video_prompt_lines(item: dict[str, Any]) -> None:
+        """视频提示词写回前把时间段拆成一行一段：编辑器与视频输入都按行识别时间段。"""
+
+        value = item.get("video_prompt")
+        if isinstance(value, dict):
+            action = value.get("action")
+            if isinstance(action, str):
+                value["action"] = format_action_segments(action)
+        elif isinstance(value, str):
+            item["video_prompt"] = format_action_segments(value)
 
     @staticmethod
     def _validate_video_prompt_body(item: Mapping[str, Any], grid: ShotGrid) -> None:
@@ -800,10 +1000,18 @@ class ScriptGenerator:
         video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> str:
         """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求本次字段。"""
+        scenes_content = render_drama_content_for_prompt_authoring(content_scenes, video_inputs=video_inputs)
+        # 碎片空间必须写在分镜内容之前：放在结尾的事实块里，模型会当作可选背景直接省掉。
+        if fragments := self._fragment_scenes(episode):
+            places = "、".join(scene_place_name(name) for name in fragments)
+            scenes_content = (
+                f"【本集碎片空间】{places}：只作压在画面里的冷光 / 叠影 / 画外声，"
+                "必须出现在首镜；它不是本幕空间，也不占场景名额。\n\n" + scenes_content
+            )
         prompt = build_drama_prompt(
             style=self.project_json.get("style", ""),
             style_description=self.project_json.get("style_description", ""),
-            scenes_content=render_drama_content_for_prompt_authoring(content_scenes, video_inputs=video_inputs),
+            scenes_content=scenes_content,
             episode=episode,
             aspect_ratio=self._resolve_aspect_ratio(),
             # 输出语言与 script_plan（normalize）同取项目 source_language，避免非中文项目 script_plan 内容与 prompt_authoring 视觉割裂
@@ -814,7 +1022,59 @@ class ScriptGenerator:
         self._artifact_basis = ArtifactBasisDescriptor.from_basis(
             build_episode_script_basis(project=self.project_json, story_context=context)
         )
-        return prompt + ("\n\n" + context if context else "")
+        extras = [context, self._prop_scene_facts(content_scenes, episode)]
+        return prompt + "".join(f"\n\n{part}" for part in extras if part)
+
+    def _fragment_scenes(self, episode: int) -> list[str]:
+        """本集出现、却未写进 ``[场景]`` 的地点（碎片空间），按登记名返回。"""
+
+        path = self.project_path / short_drama_source_relative_path(episode)
+        if not path.is_file():
+            return []
+        scenes = self.project_json.get("scenes")
+        if not isinstance(scenes, Mapping):
+            return []
+        return fragment_scene_names(scenes.keys(), path.read_text(encoding="utf-8"))
+
+    def _prop_scene_facts(self, content_scenes: list, episode: int) -> str:
+        """本集角色 / 场景 / 道具事实 + 碎片空间，只作画面依据、不供抄写。
+
+        编写路径此前只拿得到资产名字，模型只能按常识补道具形状——「白绫盘成同心结」就是
+        这么来的（登记写的是同心结系在末端）。碎片空间（冷宫这类只作声画碎片的地点）单独
+        列一行：它们不在本幕 ``scenes`` 里，不列出来模型就当作不存在，直接省掉。
+        """
+        wanted: dict[str, list[str]] = {"characters": [], "scenes": [], "props": []}
+        for entry in content_scenes:
+            if not isinstance(entry, Mapping):
+                continue
+            for key in wanted:
+                values = entry.get(key)
+                if not isinstance(values, list):
+                    continue
+                for name in values:
+                    if isinstance(name, str) and name.strip() and name not in wanted[key]:
+                        wanted[key].append(name)
+        lines: list[str] = []
+        is_scene = False
+        for key, label in (("characters", "角色"), ("scenes", "场景"), ("props", "道具")):
+            bucket = self.project_json.get(key) or {}
+            if not isinstance(bucket, Mapping):
+                continue
+            for name in wanted[key]:
+                record = bucket.get(name)
+                description = record.get("description") if isinstance(record, Mapping) else None
+                if isinstance(description, str) and description.strip():
+                    lines.append(f"- {label}・{name}：{description.strip()}")
+                    is_scene = is_scene or key == "scenes"
+        if fragments := self._fragment_scenes(episode):
+            lines.append("碎片空间（只作压在画面里的光/声/叠影，不是本幕空间）：" + "、".join(fragments))
+            is_scene = True
+        if not lines:
+            return ""
+        note = "道具的形状与来路、场景的陈设、人物的穿戴与持物以此为准；这里没写的细节不得写成既成事实。"
+        if is_scene:
+            note += "碎片空间必须在首镜出现（冷光、叠影、画外声），不得省略，也不得把发生在那里的动作搬进本幕空间。"
+        return "【本集角色、场景与道具事实（只作画面依据，不要抄写外观）】\n" + "\n".join(lines) + "\n" + note
 
     def prompt_overwrite(
         self,
@@ -834,10 +1094,42 @@ class ScriptGenerator:
         targets = self._load_prompt_authoring_targets(episode, filename, entry_ids, rewrite=rewrite, fields=fields)
         if targets is not None:
             self._require_assets_ready(episode, fields)
+            self._require_previous_prompt(targets)
             self._video_prompt_inputs(targets, episode)
             _require_overwrite_acknowledged(targets, baseline, overwrite_revision)
         elif self._video_prompt_source({}, episode) is not None:
             raise PromptAuthoringTargetError(translate("video_prompt_storyboard_missing"))
+
+    def _require_previous_prompt(self, targets: PromptAuthoringTargets) -> None:
+        """写 image_prompt 时必须等上一条先有提示词：没有邻居可接就拒绝，不静默放行。
+
+        批量重写内部按顺序产出，前一条在同批里已经有了；这里挡的是「跳过上一段、直接写下一段」
+        ——那样首镜没有可承接的对象，接不上也查不出来。
+        """
+        scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        if not isinstance(scenes, list):
+            return
+        order: list[str] = []
+        stored: dict[str, Mapping[str, Any]] = {}
+        for scene in scenes:
+            if isinstance(scene, Mapping):
+                entry_id = str(scene.get(targets.id_field))
+                order.append(entry_id)
+                stored[entry_id] = scene
+        for item in targets.entries:
+            entry_id = str(item[targets.id_field])
+            if "image_prompt" not in targets.fields_of(entry_id) or entry_id not in order:
+                continue
+            position = order.index(entry_id)
+            if position == 0:
+                continue
+            previous_id = order[position - 1]
+            previous = stored.get(previous_id)
+            previous_prompt = shot_scene_text(previous) if isinstance(previous, Mapping) else ""
+            if not previous_prompt.strip():
+                raise PromptAuthoringTargetError(
+                    f"{translate('prompt_authoring_previous_missing')}（{previous_id} → {entry_id}）"
+                )
 
     async def build_prompt(
         self,

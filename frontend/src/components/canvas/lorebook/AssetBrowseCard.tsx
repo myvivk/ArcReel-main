@@ -1,13 +1,11 @@
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Combine,
   History,
   ImageUp,
   Images,
   Landmark,
   Layers,
-  Library,
   Maximize2,
   MoreHorizontal,
   Package,
@@ -18,7 +16,6 @@ import {
   User,
 } from "lucide-react";
 import { API } from "@/api";
-import { AddToLibraryDialog, type LibraryImportPreview } from "@/components/assets/AddToLibraryDialog";
 import { CrossfadeImage } from "@/components/canvas/shared/CrossfadeImage";
 import { ImageEditDialog } from "@/components/canvas/timeline/ImageEditButton";
 import { VersionTimeMachine } from "@/components/canvas/timeline/VersionTimeMachine";
@@ -39,7 +36,6 @@ import { errMsg } from "@/utils/async";
 import { isAssetBusy, rejectIfAssetBusy } from "./assetBusyGuard";
 import { VERSION_RESOURCE, type GalleryAsset, type GalleryMarker } from "./gallery-model";
 import { GalleryStatusMarker } from "./GalleryStatusMarker";
-import { MergeAssetDialog } from "./MergeAssetDialog";
 import { ProjectAssetDeleteDialog } from "./ProjectAssetDeleteDialog";
 import { useStaleRegenerateConfirm } from "./useStaleRegenerateConfirm";
 import type { AssetSheetStatusRow } from "@/types";
@@ -50,7 +46,7 @@ export const ASSET_TYPE_ICON: Record<AssetSheetType, typeof User> = {
   prop: Package,
 };
 
-type DialogKey = "image-edit" | "versions" | "library" | "merge" | "delete";
+type DialogKey = "image-edit" | "versions" | "delete";
 
 export interface AssetBrowseCardProps {
   projectName: string;
@@ -64,8 +60,6 @@ export interface AssetBrowseCardProps {
   busy?: boolean;
   /** 只读展示（引导演示项目）：菜单只保留查看大图，没有删除。 */
   readOnly: boolean;
-  /** 入库预览的内容；商品不入资产库，不传。 */
-  libraryPreview?: LibraryImportPreview;
   /** 点卡片：打开该资产的详情。需传稳定引用。 */
   onOpen: (name: string) => void;
   /** 「查看大图」。需传稳定引用。 */
@@ -75,8 +69,6 @@ export interface AssetBrowseCardProps {
   onReload?: () => Promise<unknown> | void;
   /** 卡片上的上传、版本恢复或删除开始与结束时回报，画廊据此禁用同一资产的其他写入入口。需传稳定引用。 */
   onWritingChange?: (name: string, writing: boolean) => void;
-  /** 画廊里所有卡片在途的本地写入，供合并对话框判断保留方是否被占用。 */
-  writingNames?: ReadonlySet<string>;
 }
 
 /**
@@ -90,14 +82,12 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
   generating,
   busy: externalBusy = false,
   readOnly,
-  libraryPreview,
   onOpen,
   onView,
   onGenerate,
   onRestoreVersion,
   onReload,
   onWritingChange,
-  writingNames,
 }: AssetBrowseCardProps) {
   const { t } = useTranslation(["assets", "dashboard"]);
   const titleId = useId();
@@ -126,8 +116,6 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
     onWritingChange(name, true);
     return () => onWritingChange(name, false);
   }, [writing, name, onWritingChange]);
-  // 合并只开放带别名、与资产库互通的类型；商品不传入库预览。
-  const mergeable = libraryPreview !== undefined;
   const describable = asset.description.trim().length > 0;
   const staleConfirm = useStaleRegenerateConfirm({
     projectName,
@@ -219,10 +207,6 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
                       <ImageUp aria-hidden />
                       {t("assets:upload_sheet")}
                     </DropdownMenuItem>
-                    <DropdownMenuItem disabled={busy || !imageUrl} onClick={() => openGuarded("image-edit")}>
-                      <PenLine aria-hidden />
-                      {t("dashboard:image_edit_action")}
-                    </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => setDialog("versions")}>
                       <History aria-hidden />
                       {t("assets:gallery_menu_versions")}
@@ -230,21 +214,6 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
                   </>
                 )}
               </DropdownMenuGroup>
-              {!readOnly && libraryPreview && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem disabled={busy} onClick={() => openGuarded("library")}>
-                      <Library aria-hidden />
-                      {t("assets:add_to_library")}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem disabled={busy} onClick={() => openGuarded("merge")}>
-                      <Combine aria-hidden />
-                      {t("assets:merge_into")}
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </>
-              )}
               {!readOnly && (
                 <>
                   <DropdownMenuSeparator />
@@ -276,8 +245,7 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
             onChange={(event) => void handleUpload(event)}
           />
           {staleConfirm.dialog}
-          <ImageEditDialog
-            open={dialog === "image-edit"}
+          <ImageEditDialog            open={dialog === "image-edit"}
             onOpenChange={closeDialog}
             projectName={projectName}
             resourceType={type}
@@ -306,31 +274,7 @@ export const AssetBrowseCard = memo(function AssetBrowseCard({
             name={name}
             busy={externalBusy || generating || uploading || restoring}
             onDeletingChange={setDeleting}
-            onMergeInstead={mergeable ? () => openGuarded("merge") : undefined}
           />
-          {libraryPreview && (
-            <>
-              <AddToLibraryDialog
-                open={dialog === "library"}
-                onOpenChange={closeDialog}
-                resourceType={type}
-                resourceId={name}
-                projectName={projectName}
-                preview={libraryPreview}
-                busy={busy}
-              />
-              <MergeAssetDialog
-                open={dialog === "merge"}
-                onOpenChange={closeDialog}
-                projectName={projectName}
-                assetType={type}
-                name={name}
-                description={asset.description}
-                busy={busy}
-                writingNames={writingNames}
-              />
-            </>
-          )}
         </>
       )}
     </article>

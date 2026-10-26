@@ -234,15 +234,11 @@ describe("workflow-store", () => {
     expect(maxInFlight).toBe(2);
   });
 
-  it("求解带上本次请求的已确认档位", async () => {
+  it("求解只带目标集，不再携带已确认档位", async () => {
     const spy = vi.spyOn(API, "getWorkflowPlan").mockResolvedValue(makePlan());
     const store = useWorkflowStore.getState();
     store.confirmDurations({ E1U1: 8 });
     await useWorkflowStore.getState().refreshPlan("proj", 1);
-    expect(spy).toHaveBeenCalledWith(
-      "proj",
-      { episode_id: 1, confirmed_request_durations: { E1U1: 8 } },
-      expect.anything(),
-    );
+    expect(spy).toHaveBeenCalledWith("proj", { episode_id: 1 }, expect.anything());
   });
 });

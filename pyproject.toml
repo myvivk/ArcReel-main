@@ -49,6 +49,7 @@ dependencies = [
     "arcreel-market-core",
     # 随包分发的 ffmpeg，经 lib/infra/ffmpeg.py 的查找器取用；不依赖系统 ffmpeg / ffprobe。
     "imageio-ffmpeg>=0.6.0",
+    "tzdata>=2026.5",
 ]
 
 [dependency-groups]
@@ -267,6 +268,7 @@ DEP002 = [
     "lxml",             # BeautifulSoup 的 lxml / lxml-xml 解析器后端
     "mutmut",           # 变异测试 CLI，源码不 import 它；变异后的模块只在 mutants/ 副本里 import
     "pytest-testmon",   # pytest 插件，经 entry point 加载；按改动选测试，用法见 docs/agents/testing.md
+    "tzdata",           # zoneinfo 的 IANA 时区数据库（Windows 无系统库时由 importlib.resources 读取）
 ]
 # DEP004（import 了 dev 依赖）——tests/ 与 scripts/ 在扫描范围内，deptry 无法按目录区分
 # dev 与生产文件，故逐项列出它们正当 import 的测试框架包；其余 dev 依赖仍受本规则守护。

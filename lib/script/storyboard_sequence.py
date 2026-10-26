@@ -5,7 +5,7 @@ Helpers for storyboard sequence ordering and dependency planning.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -56,14 +56,42 @@ class StoryboardVideoSlots:
     end: StoryboardFrameSource | None
     cell_count: int
     continues_previous: bool
+    #: 参考图模式：所有帧都按 reference_image 按序下发，不发首/尾帧。
+    reference_only: bool = False
 
     @property
     def frames(self) -> tuple[tuple[str, StoryboardFrameSource], ...]:
+        if self.reference_only:
+            frames: list[tuple[str, StoryboardFrameSource]] = []
+            # 参考图模式只送分镜格；首帧来自上一镜视频时那是一条视频，不能当参考图。
+            if self.start.kind != "video_last_frame":
+                frames.append(("reference_image", self.start))
+            frames.extend(("reference_image", frame) for frame in self.references)
+            return tuple(frames)
         return (
             ("start_image", self.start),
             *(("reference_image", frame) for frame in self.references),
             *((("end_image", self.end),) if self.end is not None else ()),
         )
+
+
+def apply_storyboard_frame_mode(
+    slots: StoryboardVideoSlots,
+    mode: str,
+) -> StoryboardVideoSlots:
+    """按本次帧模式收缩槽位。
+
+    ``first_last``：只留首帧与尾帧，K1/K2 等中间参考图全部丢掉——供应商不接受
+    「参考图 + 首尾帧」混用时，这是保证起止承接的模式。
+    ``reference``：所有帧（含首/尾）都按参考图按序下发，不再声明首/尾帧。
+    """
+
+    if mode == "reference":
+        references = list(slots.references)
+        if slots.end is not None:
+            references.append(slots.end)
+        return replace(slots, references=tuple(references), end=None, reference_only=True)
+    return replace(slots, references=(), reference_only=False)
 
 
 def resolve_storyboard_video_slots(

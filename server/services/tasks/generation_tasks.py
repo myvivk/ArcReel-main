@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from arcreel_market_core.video_backend_contract import VideoCapabilityError
 from lib.artifacts.artifact_activation import (
@@ -48,6 +48,7 @@ from lib.config.service import DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS
 from lib.db.base import DEFAULT_USER_ID
 from lib.generation.execution_checkpoint import (
     ProviderMediaInput,
+    ProviderMediaRole,
     StagedProviderMedia,
     StoryboardSubmissionCheckpoint,
     checkpoint_version_metadata,
@@ -100,6 +101,7 @@ from lib.script.script_editor import resolve_items
 from lib.script.script_models import resolve_content_mode
 from lib.script.script_skeleton import SKELETON_ENTITY_TYPES, SKELETON_ITEM_LABEL_KEYS, resolve_script_kind
 from lib.script.storyboard_sequence import (
+    apply_storyboard_frame_mode,
     find_storyboard_item,
     get_storyboard_items,
 )
@@ -126,7 +128,7 @@ from lib.speech.narration_delivery import (
     register_narration_audio_transactionally,
 )
 from lib.speech.speech_artifact_provenance import build_video_duration_basis
-from lib.speech.speech_composition import SpeechAdmissionError, admit_script_unit
+from lib.speech.speech_composition import SpeechAdmissionError, admit_script_unit, speech_policy_for_project
 from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import input_refusal_error
 from server.services.currency.video_artifact_currency import (
@@ -999,6 +1001,10 @@ async def execute_video_task(
         resolver=currency_resolver,
         claims=formal_input_claims,
     )
+    frame_mode = payload.get("frame_mode")
+    slots = apply_storyboard_frame_mode(
+        slots, frame_mode if frame_mode in {"first_last", "reference"} else "first_last"
+    )
     frozen_frames = await asyncio.to_thread(
         storyboard_frame_evidence,
         slots,
@@ -1006,14 +1012,21 @@ async def execute_video_task(
         items=storyboard_items,
         id_field=storyboard_id_field,
     )
-    provider_start_image = slots.start.path
-    if slots.start.kind == "video_last_frame":
-        tail_path = safe_join(project_path, f".cache/video-continuity/{sha256_file(slots.start.path)}.png")
-        if await extract_video_last_frame(slots.start.path, tail_path) is None:
-            raise ValueError("previous video ending frame could not be extracted")
-        provider_start_image = tail_path
-    provider_end_image = slots.end.path if slots.end is not None else None
-    reference_images = [frame.path for frame in slots.references]
+    if slots.reference_only:
+        # 参考图模式：所有帧按序作为 reference_image，不发首/尾帧。
+        provider_start_image = None
+        provider_end_image = None
+        reference_images = [frame.path for _, frame in slots.frames]
+    else:
+        provider_start_image = slots.start.path
+        if slots.start.kind == "video_last_frame":
+            tail_path = safe_join(project_path, f".cache/video-continuity/{sha256_file(slots.start.path)}.png")
+            if await extract_video_last_frame(slots.start.path, tail_path) is None:
+                raise ValueError("previous video ending frame could not be extracted")
+            provider_start_image = tail_path
+        provider_end_image = slots.end.path if slots.end is not None else None
+        reference_images = [frame.path for frame in slots.references]
+    basis_storyboard_image = provider_start_image or (reference_images[0] if reference_images else slots.start.path)
     audio_inputs = await asyncio.to_thread(
         resolve_storyboard_audio_inputs,
         project=project,
@@ -1066,7 +1079,7 @@ async def execute_video_task(
         ).digest
 
     def _current_visual_basis_digest() -> str:
-        return _visual_basis_digest_for(provider_start_image, provider_end_image)
+        return _visual_basis_digest_for(basis_storyboard_image, provider_end_image)
 
     visual_basis_digest = await asyncio.to_thread(_current_visual_basis_digest)
 
@@ -1142,7 +1155,9 @@ async def execute_video_task(
     checkpoint_hook: Callable[[], Awaitable[Mapping[str, object] | None]] | None = _admit_before_submit
     staged_media: tuple[StagedProviderMedia, ...] = ()
     if task_id is not None:
-        artifact_speech_preparation = admit_script_unit(script_kind, item).preparation
+        artifact_speech_preparation = admit_script_unit(
+            script_kind, item, policy=speech_policy_for_project(project)
+        ).preparation
         artifact_speech = freeze_video_speech_facts(
             artifact_speech_preparation,
             characters=project.get("characters"),
@@ -1158,37 +1173,51 @@ async def execute_video_task(
                 }
             )
         )
-        media_inputs = [
-            ProviderMediaInput(
-                path=provider_start_image,
-                role="start_image",
-                logical_type="video" if slots.start.kind == "video_last_frame" else "storyboard",
-                logical_name=slots.start.resource_id,
-                kind=slots.start.kind
-                if slots.start.keyframe_index is None
-                else f"grid_cell_{slots.start.keyframe_index}",
+        media_inputs: list[ProviderMediaInput] = []
+        if slots.reference_only:
+            media_inputs.extend(
+                ProviderMediaInput(
+                    path=image,
+                    role=cast(ProviderMediaRole, role),
+                    logical_type="storyboard_grid",
+                    logical_name=f"{resource_id}:K{frame.keyframe_index}",
+                    kind=f"grid_cell_{frame.keyframe_index}" if frame.keyframe_index is not None else "storyboard",
+                )
+                for (role, frame), image in zip(slots.frames, reference_images, strict=True)
             )
-        ]
-        media_inputs.extend(
-            ProviderMediaInput(
-                path=image,
-                role="reference_image",
-                logical_type="storyboard_grid",
-                logical_name=f"{resource_id}:K{frame.keyframe_index}",
-                kind=f"grid_cell_{frame.keyframe_index}",
-            )
-            for frame, image in zip(slots.references, reference_images, strict=True)
-        )
-        if provider_end_image is not None:
+        else:
+            assert provider_start_image is not None
             media_inputs.append(
                 ProviderMediaInput(
-                    path=provider_end_image,
-                    role="end_image",
-                    logical_type="storyboard",
-                    logical_name=resource_id,
-                    kind=f"grid_cell_{slots.end.keyframe_index}" if slots.end is not None else "last_frame",
+                    path=provider_start_image,
+                    role="start_image",
+                    logical_type="video" if slots.start.kind == "video_last_frame" else "storyboard",
+                    logical_name=slots.start.resource_id,
+                    kind=slots.start.kind
+                    if slots.start.keyframe_index is None
+                    else f"grid_cell_{slots.start.keyframe_index}",
                 )
             )
+            media_inputs.extend(
+                ProviderMediaInput(
+                    path=image,
+                    role="reference_image",
+                    logical_type="storyboard_grid",
+                    logical_name=f"{resource_id}:K{frame.keyframe_index}",
+                    kind=f"grid_cell_{frame.keyframe_index}",
+                )
+                for frame, image in zip(slots.references, reference_images, strict=True)
+            )
+            if provider_end_image is not None:
+                media_inputs.append(
+                    ProviderMediaInput(
+                        path=provider_end_image,
+                        role="end_image",
+                        logical_type="storyboard",
+                        logical_name=resource_id,
+                        kind=f"grid_cell_{slots.end.keyframe_index}" if slots.end is not None else "last_frame",
+                    )
+                )
         media_inputs.extend(
             ProviderMediaInput(
                 path=path,
@@ -1215,10 +1244,11 @@ async def execute_video_task(
                     },
                 )
             )
-            provider_start_image = safe_join(
-                project_path,
-                next(media.staged_locator for media in staged_media if media.role == "start_image"),
-                require_file=True,
+            staged_start = next((media for media in staged_media if media.role == "start_image"), None)
+            provider_start_image = (
+                safe_join(project_path, staged_start.staged_locator, require_file=True)
+                if staged_start is not None
+                else None
             )
             staged_end = next((media for media in staged_media if media.role == "end_image"), None)
             provider_end_image = (
@@ -1237,13 +1267,13 @@ async def execute_video_task(
                 if media.role == "reference_audio"
             ]
             visual_basis_digest = await asyncio.to_thread(
-                _visual_basis_digest_for, provider_start_image, provider_end_image
+                _visual_basis_digest_for, basis_storyboard_image, provider_end_image
             )
             artifact_visual_basis = await asyncio.to_thread(
                 lambda: build_storyboard_video_artifact_visual_basis(
                     resource_id=resource_id,
                     visual_prompt=requested_visual_prompt,
-                    storyboard_image=provider_start_image,
+                    storyboard_image=basis_storyboard_image,
                     end_frame_image=provider_end_image,
                     aspect_ratio=aspect_ratio,
                     frame_evidence=frozen_frames,

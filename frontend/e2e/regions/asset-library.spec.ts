@@ -1,14 +1,11 @@
 import type { Locator, Page } from "@playwright/test";
-import { loadRecordedResponses, recordedKey } from "../support/recorded.ts";
-import { clearAgentOverlay, waitForEntrance } from "../support/region-helpers.ts";
+import { waitForEntrance } from "../support/region-helpers.ts";
 import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
 // 资产库：铺满档的页面外壳，类型标签带计数，网格滚动到底自动加载下一页；点卡片打开右侧详情 Sheet。
-// 项目画廊里的「从资产库导入」选择器与「加入资产库」预览对话框也在这里探测。
 
 const LIBRARY_PATH = "/app/assets";
-const GALLERY_PATH = "/app/projects/demo/characters";
 const FIRST_PAGE = "GET /api/v1/assets?limit=60&type=character";
 const SECOND_PAGE = "GET /api/v1/assets?limit=60&offset=60&type=character";
 const UPDATED_AT = "2025-12-28T06:30:00Z";
@@ -16,11 +13,6 @@ const UPDATED_AT = "2025-12-28T06:30:00Z";
 const LONG_NAME = "旧城茶馆二楼临窗座位上总在午后出现的说书先生";
 const LONG_DESCRIPTION =
   "四十岁上下，瘦高，穿洗得发白的灰布长衫，袖口磨出了毛边；左眼角有一颗痣，说话时习惯用折扇轻敲桌面。每天午后准时出现在茶馆二楼临窗的位置，讲到紧要处会突然停下喝茶，让听众干着急。年轻时据说在码头扛过包，后来不知怎么成了说书人，没人知道他的真名。";
-
-// 项目事件流是 SSE，没有录制；按不可重试的状态拒绝，画廊停在录制的项目数据上。
-const EVENT_STREAM: ApiOverrides = {
-  "GET /api/v1/projects/demo/events/stream": { status: 404, body: { detail: "页面级套件不回放事件流" } },
-};
 
 function asset(index: number, overrides: Record<string, unknown> = {}) {
   return {
@@ -79,32 +71,6 @@ async function openDetail(page: Page, name: string): Promise<Locator> {
   return sheet;
 }
 
-// 内联 SVG 资产图：getFileUrl 原样使用 data: 地址，不发请求。
-const SHEET_SVG = `data:image/svg+xml,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720"><rect width="1280" height="720" fill="#2a2d3a"/><circle cx="640" cy="300" r="120" fill="#5b5f7a"/><rect x="460" y="440" width="360" height="200" rx="40" fill="#5b5f7a"/></svg>',
-)}`;
-
-// 画廊里有一个角色，供「加入资产库」预览。
-function projectWithCharacter() {
-  const recorded = loadRecordedResponses().get(recordedKey("GET", "/api/v1/projects/demo"));
-  if (!recorded) throw new Error("没有录制 GET /api/v1/projects/demo");
-  const body = structuredClone(recorded.body) as { project: Record<string, unknown> };
-  body.project.characters = {
-    林夕: {
-      description: "二十出头的旧城茶馆老板娘，短发，常穿靛蓝布衫。",
-      character_sheet: SHEET_SVG,
-      voice_style: "温和、语速偏慢",
-      reference_audio: "characters/refs_audio/林夕.wav",
-      derivatives: { 夜行装: { description: "换上深色长袍与斗笠。" }, 便装: { description: "灰色短褂。" } },
-    },
-  };
-  return { status: recorded.status, body };
-}
-
-async function galleryReady(page: Page) {
-  await page.getByRole("button", { name: "从资产库选择" }).first().waitFor();
-}
-
 defineRegionScenarios("资产库", [
   {
     name: "类型标签显示当前搜索下各类型的数量，网格铺满内容区",
@@ -114,7 +80,6 @@ defineRegionScenarios("资产库", [
       await expect(page.getByRole("tab", { name: /场景\s*1/ })).toBeVisible();
       await expect(page.getByRole("button", { name: "林夕", exact: true })).toBeVisible();
     },
-    screenshot: { name: "asset-library", target: (page) => page.getByRole("main") },
   },
   {
     name: "条目多且文字长时，滚动到底自动加载下一页",
@@ -149,7 +114,6 @@ defineRegionScenarios("资产库", [
       await expect(close).toBeInViewport({ ratio: 1 });
       await sheet.getByRole("heading", { name: LONG_NAME }).scrollIntoViewIfNeeded();
     },
-    screenshot: { name: "asset-library-detail", target: (page) => page.getByRole("dialog") },
   },
   {
     name: "在详情里进入编辑后，保存栏固定在 Sheet 底部",
@@ -167,56 +131,20 @@ defineRegionScenarios("资产库", [
     },
   },
   {
-    name: "从卡片菜单打开「应用到项目」对话框",
+    name: "资产库不提供新增资产与应用到项目入口",
     path: LIBRARY_PATH,
     ready: libraryReady,
     act: async (page) => {
+      await expect(page.getByRole("button", { name: "新增资产" })).toHaveCount(0);
       await page.getByRole("button", { name: "「林夕」的更多操作" }).click();
-      await page.getByRole("menuitem", { name: "应用到项目…" }).click();
-      const dialog = page.getByRole("dialog", { name: "把「林夕」应用到项目" });
-      await dialog.waitFor();
-      await expect(dialog.getByRole("button", { name: "应用", exact: true })).toBeInViewport({ ratio: 1 });
+      const menu = page.getByRole("menu");
+      await menu.waitFor();
+      await expect(menu.getByRole("menuitem", { name: "编辑" })).toBeVisible();
+      await expect(menu.getByRole("menuitem", { name: "应用到项目…" })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      const sheet = await openDetail(page, "林夕");
+      await expect(sheet.getByRole("button", { name: "应用到项目…" })).toHaveCount(0);
     },
-    screenshot: { name: "asset-library-apply", target: (page) => page.getByRole("dialog") },
-  },
-  {
-    name: "画廊「从资产库导入」：条目多时只有正文滚动，显示匹配总数",
-    path: GALLERY_PATH,
-    api: { ...EVENT_STREAM, ...MANY_ASSETS },
-    ready: galleryReady,
-    act: async (page) => {
-      await clearAgentOverlay(page);
-      await page.getByRole("button", { name: "从资产库选择" }).first().click();
-      const dialog = page.getByRole("dialog", { name: "从资产库选择角色" });
-      await dialog.waitFor();
-      await expect(dialog.getByText("匹配 75 个角色")).toBeVisible();
-      const last = dialog.getByRole("button", { name: new RegExp(`${LONG_NAME} 75`) });
-      await dialog.getByRole("button", { name: new RegExp(`${LONG_NAME} 60`) }).scrollIntoViewIfNeeded();
-      await expect(last).toBeAttached();
-      await last.scrollIntoViewIfNeeded();
-      await expect(dialog.getByRole("button", { name: "取消" })).toBeInViewport({ ratio: 1 });
-      await dialog.getByRole("searchbox").scrollIntoViewIfNeeded();
-    },
-    screenshot: { name: "asset-library-picker", target: (page) => page.getByRole("dialog") },
-  },
-  {
-    name: "画廊「加入资产库」：只读预览，重名时提供覆盖",
-    path: GALLERY_PATH,
-    api: {
-      ...EVENT_STREAM,
-      "GET /api/v1/projects/demo": projectWithCharacter(),
-    },
-    ready: galleryReady,
-    act: async (page) => {
-      await clearAgentOverlay(page);
-      await page.getByRole("button", { name: "「林夕」的更多操作" }).click();
-      await page.getByRole("menuitem", { name: "加入资产库" }).click();
-      const dialog = page.getByRole("dialog", { name: "加入资产库：林夕" });
-      await dialog.waitFor();
-      await expect(dialog.getByRole("button", { name: "覆盖已有" })).toBeInViewport({ ratio: 1 });
-      await expect(dialog.getByText("2 个衍生")).toBeVisible();
-    },
-    screenshot: { name: "asset-library-add-preview", target: (page) => page.getByRole("dialog") },
   },
   {
     name: "删除失败原因很长：正文可聚焦并用键盘滚动，取消仍可达",

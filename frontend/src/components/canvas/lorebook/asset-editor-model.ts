@@ -11,13 +11,6 @@ export interface AssetFields {
   voiceStyle: string;
 }
 
-/** 新建资产时多一个名称。 */
-export interface NewAssetFields extends AssetFields {
-  name: string;
-}
-
-export const EMPTY_ASSET_FIELDS: AssetFields = { description: "", voiceStyle: "" };
-
 export function assetFieldsOf(type: AssetSheetType, asset: GalleryAssetSource): AssetFields {
   return {
     description: asset.description ?? "",
@@ -50,17 +43,5 @@ export function updateAssetFields(
       return API.updateProjectScene(projectName, name, patch);
     case "prop":
       return API.updateProjectProp(projectName, name, patch);
-  }
-}
-
-export function createAsset(projectName: string, type: AssetSheetType, fields: NewAssetFields): Promise<unknown> {
-  const name = fields.name.trim();
-  switch (type) {
-    case "character":
-      return API.addCharacter(projectName, name, fields.description, fields.voiceStyle);
-    case "scene":
-      return API.addProjectScene(projectName, name, fields.description);
-    case "prop":
-      return API.addProjectProp(projectName, name, fields.description);
   }
 }

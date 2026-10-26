@@ -4,7 +4,7 @@ import { clearAgentOverlay, viewport, waitForEntrance } from "../support/region-
 import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
-// 资产画廊：工具栏（筛选、批量生成、新增）+ 按画布宽度加列的浏览卡网格；点卡片打开右侧详情 Sheet，
+// 资产画廊：工具栏（筛选、批量生成）+ 按画布宽度加列的浏览卡网格；点卡片打开右侧详情 Sheet，
 // 次要操作收在卡片的「更多」里。
 
 const PATH = "/app/projects/demo/characters";
@@ -287,7 +287,6 @@ defineRegionScenarios("资产画廊", [
         expect(await columnCount(page)).toBe(2);
       }
     },
-    screenshot: { name: "asset-gallery", target: (page) => page.getByRole("region", { name: "角色" }) },
   },
   {
     name: "条目多且名字与描述很长：卡片不撑破网格，工具栏留在顶部",
@@ -300,7 +299,8 @@ defineRegionScenarios("资产画廊", [
       const last = page.getByRole("article", { name: `${LONG_NAME} 40` });
       await last.scrollIntoViewIfNeeded();
       await expect(last).toBeInViewport();
-      await expect(page.getByRole("button", { name: "添加角色" })).toBeInViewport({ ratio: 1 });
+      // 工具栏（标题与筛选）吸在滚动区顶部，长列表滚到底也还在视口里
+      await expect(page.getByRole("heading", { name: /^角色/ })).toBeInViewport({ ratio: 1 });
     },
   },
   {
@@ -324,9 +324,9 @@ defineRegionScenarios("资产画廊", [
     ready: galleryReady,
     act: async (page) => {
       const menu = await openMenu(page, "林夕");
-      await expect(menu.getByRole("menuitem", { name: "并入…" })).toBeVisible();
+      await expect(menu.getByRole("menuitem", { name: "版本历史" })).toBeVisible();
+      await expect(menu.getByRole("menuitem", { name: "并入…" })).toHaveCount(0);
     },
-    screenshot: { name: "asset-gallery-menu", target: (page) => page.getByRole("menu") },
   },
   {
     name: "从菜单打开版本历史",
@@ -357,20 +357,6 @@ defineRegionScenarios("资产画廊", [
     },
   },
   {
-    name: "从菜单打开「并入…」",
-    path: PATH,
-    api: BASE,
-    ready: galleryReady,
-    act: async (page) => {
-      const menu = await openMenu(page, "林夕");
-      await menu.getByRole("menuitem", { name: "并入…" }).click();
-      const dialog = page.getByRole("alertdialog");
-      await dialog.waitFor();
-      await waitForEntrance(dialog);
-      await expect(dialog.getByRole("button", { name: "取消" })).toBeInViewport({ ratio: 1 });
-    },
-  },
-  {
     name: "点卡片打开详情 Sheet",
     path: PATH,
     api: {
@@ -389,17 +375,16 @@ defineRegionScenarios("资产画廊", [
     },
   },
   {
-    name: "删除有引用的资产：确认框写明被哪些集引用，并可改为并入",
+    name: "删除有引用的资产：确认框写明被哪些集引用",
     path: PATH,
     api: DELETE_API,
     ready: galleryReady,
     act: async (page) => {
       const dialog = await openDeleteDialog(page);
       await expect(dialog.getByText(/^被「茶馆开张」等 3 集共 9 处引用/)).toBeVisible();
-      await expect(dialog.getByRole("button", { name: "改为并入…" })).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "改为并入…" })).toHaveCount(0);
       await expect(dialog.getByRole("button", { name: "删除" })).toBeEnabled();
     },
-    screenshot: { name: "asset-gallery-delete", target: (page) => page.getByRole("alertdialog") },
   },
   {
     name: "删除被很多集引用的资产：只有影响清单滚动，按钮留在视野里",
@@ -411,7 +396,7 @@ defineRegionScenarios("资产画廊", [
       const list = dialog.getByRole("region", { name: "删除角色「林夕」？" });
       await expect(list.getByRole("listitem")).toHaveCount(30);
       await expect(dialog.getByRole("button", { name: "删除" })).toBeInViewport({ ratio: 1 });
-      await expect(dialog.getByRole("button", { name: "改为并入…" })).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole("button", { name: "改为并入…" })).toHaveCount(0);
     },
   },
   {

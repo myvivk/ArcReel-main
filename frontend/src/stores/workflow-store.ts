@@ -80,10 +80,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => {
       try {
         const plan = await API.getWorkflowPlan(
           curProject,
-          {
-            episode_id: curEpisode,
-            confirmed_request_durations: get().confirmedDurations,
-          },
+          { episode_id: curEpisode },
           { signal },
         );
         if (signal.aborted) {

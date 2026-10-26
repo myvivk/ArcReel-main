@@ -130,6 +130,27 @@ def _issue(code, message, line=None):
     return f"{code} 第{line}行 {message}" if line else f"{code} {message}"
 
 
+def _declared_character_names(text):
+    """``[人物]`` 行里声明的角色名（去掉括号内的身份/外观）。"""
+    names = []
+    for line in text.splitlines():
+        if not line.strip().startswith("[人物]"):
+            continue
+        for token in re.split(r"[、，,]", line.split("：", 1)[-1]):
+            name = token.split("（")[0].strip()
+            if name:
+                names.append(name)
+    return names
+
+
+#: 有施动者意味的词：动作行里出现它，就不算「只有标签」。
+_AGENT_WORDS = ("他", "她", "它", "众人", "门外", "画外", "有人", "一只手", "指", "掌", "拳")
+
+
+def _has_agent(body):
+    return any(word in body for word in _AGENT_WORDS)
+
+
 def net_chars(text):
     """剧本文本体量: 仅计
         - 对白行台词
@@ -426,6 +447,32 @@ def validate(text, prev_texts=(), profile="auto", bible=None):
                 warns.append(f"E8 台词与前集复读: {dd[:16]}…")
 
     fails.extend(f"E10 合规一票否决类直观描写「{w}」" for w in REDLINE_WORDS if w in text)
+
+    # E16 场景行唯一：同一场景重复登记会把场景数算虚，导入时被判超限。
+    declared_scenes = [
+        line.strip().split("：", 1)[-1].split("｜", 1)[0].strip()
+        for line in text.splitlines()
+        if line.strip().startswith("[场景]")
+    ]
+    duplicated = {name for name in declared_scenes if name and declared_scenes.count(name) > 1}
+    if duplicated:
+        fails.append(f"E16 [场景] 行重复登记同一场景: {'、'.join(sorted(duplicated))}")
+
+    # E15 动作行可拍性：只写标签、没有「谁 + 做什么 + 可见结果」的动作行，下游画面只能靠猜。
+    label_lines = [
+        body
+        for body in (
+            re.sub(r"^△\s*", "", line.strip()).strip("。 ")
+            for line in text.splitlines()
+            if line.strip().startswith("△")
+        )
+        if body
+        and len(body) < 8
+        and not any(n in body for n in _declared_character_names(text))
+        and not _has_agent(body)
+    ]
+    if label_lines:
+        warns.append(f"E15 动作行偏短、多半只有标签没有可见结果: {'；'.join(label_lines[:3])}")
 
     return fails, warns, nc
 

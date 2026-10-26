@@ -194,6 +194,10 @@ export interface ProjectData {
   default_duration?: number | null;     // 新分镜的默认视频时长（秒），空值即由 AI 按内容决定；ad 项目不持有
   episode_target_duration?: number | null;  // 单集成片目标时长（秒）软偏好，空值即未设目标；ad 项目不持有
   total_episodes?: number | null;  // 全剧规划总集数（集）软偏好，空值即未设；ad 项目不持有
+  /** 短剧工厂系列设定：首次交稿写入，之后弹窗只读复用。 */
+  short_drama_genre?: string | null;
+  short_drama_tone?: string | null;
+  short_drama_format?: "standard" | "long" | "manju" | null;
   /** 仅 ad：目标总时长（秒）。 */
   target_duration?: number;
   /** 仅 ad：创作诉求短文本（可空）。 */
@@ -220,7 +224,10 @@ export interface ProjectData {
   image_provider_i2i?: string | null;
   /** 生成模式，创建时锁定、之后不可更改。 */
   generation_mode?: GenerationRoute;
-  /** 多宫格分镜装配开关；仅分镜图生视频有意义，随时可切。 */
+  /**
+   * @deprecated 宫格装配未实现。该布尔只作为 v4→v5 迁移的历史遗留字段存在，
+   * 读写都不参与任何判定；新代码不得使用。
+   */
   grid_storyboard?: boolean;
   video_generate_audio?: boolean | null;
   /** 角色声音绑定方式：prompt（默认，按 voice_style 提示词软约束）/ reference_audio（挂角色参考音频）。 */

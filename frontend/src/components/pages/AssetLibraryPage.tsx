@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { useTranslation } from "react-i18next";
-import { Loader2, Plus, Search } from "lucide-react";
-import { ApplyToProjectDialog } from "@/components/assets/ApplyToProjectDialog";
+import { Loader2, Search } from "lucide-react";
 import { AssetCard, type AssetCardAction } from "@/components/assets/AssetCard";
-import { AssetCreateDialog } from "@/components/assets/AssetCreateDialog";
 import { AssetDetailSheet, type AssetSheetMode } from "@/components/assets/AssetDetailSheet";
 import { ASSET_TYPE_ICON, ASSET_TYPES } from "@/components/assets/asset-type-icons";
 import { DeleteAssetDialog } from "@/components/assets/DeleteAssetDialog";
@@ -25,6 +23,7 @@ function isAssetType(value: string | null): value is AssetType {
 
 /**
  * 全局资产库：铺满档的页面外壳，类型标签显示当前搜索下各类型的匹配数，网格滚动到底时自动加载下一页。
+ * 资产由各集生成后汇总到这里，页面只浏览与维护已有资产，不提供新增或应用到项目的入口。
  * 当前类型与搜索词记在地址的 `tab`、`q` 参数里。点卡片打开详情 Sheet，在详情里点「编辑」才进入表单。
  */
 export function AssetLibraryPage() {
@@ -67,11 +66,9 @@ export function AssetLibraryPage() {
 
   const searchTerm = urlQ.trim();
   const pages = useAssetPages({ type: activeTab, q: searchTerm });
-  const { add, update, remove } = pages;
+  const { update, remove } = pages;
 
   const [detail, setDetail] = useState<{ id: string; mode: AssetSheetMode } | null>(null);
-  const [creatingType, setCreatingType] = useState<AssetType | null>(null);
-  const [applyTarget, setApplyTarget] = useState<Asset | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Asset | null>(null);
   const detailAsset = detail ? (pages.items.find((asset) => asset.id === detail.id) ?? null) : null;
   // 选中的资产离开当前结果（改名后不再匹配、被删除、换了搜索词）时详情随之关闭；
@@ -81,16 +78,8 @@ export function AssetLibraryPage() {
   const handleCardAction = useCallback((action: AssetCardAction, asset: Asset) => {
     if (action === "open") setDetail({ id: asset.id, mode: "view" });
     else if (action === "edit") setDetail({ id: asset.id, mode: "edit" });
-    else if (action === "apply") setApplyTarget(asset);
     else setDeleteTarget(asset);
   }, []);
-
-  const createButton = (
-    <Button onClick={() => setCreatingType(activeTab)}>
-      <Plus aria-hidden data-icon="inline-start" />
-      {t("add_asset")}
-    </Button>
-  );
 
   return (
     <PageShell
@@ -101,21 +90,18 @@ export function AssetLibraryPage() {
           title={t("library_title")}
           subtitle={t("library_subtitle")}
           actions={
-            <>
-              <InputGroup className="w-56">
-                <InputGroupAddon>
-                  <Search aria-hidden />
-                </InputGroupAddon>
-                <InputGroupInput
-                  type="search"
-                  aria-label={t("search_label")}
-                  placeholder={t("search_placeholder")}
-                  value={q}
-                  onChange={(event) => setInput({ urlQ, value: event.target.value })}
-                />
-              </InputGroup>
-              {createButton}
-            </>
+            <InputGroup className="w-56">
+              <InputGroupAddon>
+                <Search aria-hidden />
+              </InputGroupAddon>
+              <InputGroupInput
+                type="search"
+                aria-label={t("search_label")}
+                placeholder={t("search_placeholder")}
+                value={q}
+                onChange={(event) => setInput({ urlQ, value: event.target.value })}
+              />
+            </InputGroup>
           }
         />
       }
@@ -143,7 +129,6 @@ export function AssetLibraryPage() {
                 type={type}
                 pages={pages}
                 searchTerm={searchTerm}
-                createButton={createButton}
                 onCardAction={handleCardAction}
               />
             )}
@@ -156,12 +141,9 @@ export function AssetLibraryPage() {
         mode={detail?.mode ?? "view"}
         onModeChange={(mode) => setDetail((prev) => (prev ? { ...prev, mode } : prev))}
         onClose={() => setDetail(null)}
-        onApply={setApplyTarget}
         onDelete={setDeleteTarget}
         onChanged={update}
       />
-      <AssetCreateDialog type={creatingType} onClose={() => setCreatingType(null)} onCreated={add} />
-      <ApplyToProjectDialog asset={applyTarget} onClose={() => setApplyTarget(null)} />
       <DeleteAssetDialog asset={deleteTarget} onClose={() => setDeleteTarget(null)} onDeleted={remove} />
     </PageShell>
   );
@@ -171,13 +153,11 @@ function LibraryPanel({
   type,
   pages,
   searchTerm,
-  createButton,
   onCardAction,
 }: {
   type: AssetType;
   pages: AssetPages;
   searchTerm: string;
-  createButton: ReactNode;
   onCardAction: (action: AssetCardAction, asset: Asset) => void;
 }) {
   const { t } = useTranslation("assets");
@@ -215,7 +195,6 @@ function LibraryPanel({
         </span>
         <p className="text-base font-medium">{t(`library_empty_${type}`)}</p>
         <p className="max-w-sm text-sm text-muted-foreground">{t("library_empty_hint")}</p>
-        {createButton}
       </div>
     );
   }

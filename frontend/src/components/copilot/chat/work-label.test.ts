@@ -63,4 +63,15 @@ describe("segmentWorkBlocks", () => {
       [true, [3]],
     ]);
   });
+
+  it("treats quality-gate round rows as work blocks so they pack with the tool row", () => {
+    const blocks: ContentBlock[] = [
+      { type: "tool_use", id: "tu-plan", name: "mcp__arcreel__plan_short_drama_storyboards" },
+      { type: "gate_round", attempt: 1, max_attempts: 5, outcome: "rejected", reason: "scene 2：镜头3 块过短" },
+      { type: "gate_round", attempt: 2, max_attempts: 5, outcome: "passed" },
+    ];
+    expect(segmentWorkBlocks(blocks).map((segment) => [segment.work, segment.items.map((item) => item.index)])).toEqual([
+      [true, [0, 1, 2]],
+    ]);
+  });
 });

@@ -125,6 +125,8 @@ describe("StudioCanvasRouter edit view mounts", () => {
   });
 
   it("creates a timeline from the empty state without opening the assistant, then offers render", async () => {
+    const status = makeStatus({ operations: { create_edit_timeline: { state: "admitted" } } });
+    useWorkflowStore.setState({ plan: makePlan({ status }), planKey: "demo::1" });
     vi.spyOn(API, "listEditTimelines")
       .mockResolvedValueOnce({ timelines: [] })
       .mockResolvedValue({ timelines: [SUMMARY] });
@@ -142,15 +144,16 @@ describe("StudioCanvasRouter edit view mounts", () => {
     expect(useAppStore.getState().assistantPanelOpen).toBe(false);
   });
 
-  it("disables the empty-state actions when the workflow refuses to create an edit timeline", async () => {
+  it("hides the empty-state actions and states the refusal when the workflow refuses to create an edit timeline", async () => {
     vi.spyOn(API, "listEditTimelines").mockResolvedValue({ timelines: [] });
     const status = makeStatus({ operations: { create_edit_timeline: { state: "refused", reason: "no_available_video" } } });
     useWorkflowStore.setState({ plan: makePlan({ status }), planKey: "demo::1" });
 
     renderEditView(makeScript(null));
 
-    expect(await screen.findByRole("button", { name: "新建剪辑时间线" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "交给 Agent 剪辑" })).toBeDisabled();
+    expect(await screen.findByText("需要先生成视频")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新建剪辑时间线" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "交给 Agent 剪辑" })).not.toBeInTheDocument();
   });
 
   it("blocks render on a blocking issue and links to the issue list", async () => {

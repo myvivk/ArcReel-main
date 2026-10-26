@@ -205,7 +205,9 @@ def build_video_speech_basis(
     speaker_order: list[str] = []
     for utterance in preparation.utterances:
         if utterance.owner is not SpeechOwner.CHARACTER:
-            raise ValueError("character speech preparation contains a non-character utterance")
+            # 后期配音项目允许同一分镜台词 + 画外音并存；画外音不进视频原生音轨，
+            # 视频声音依据只算角色台词（画外音文字变化也不该让视频过期）。
+            continue
         speaker = asset_name_comparison_key(utterance.speaker or "")
         text = _canonical_text(utterance.text)
         if not speaker or not text:

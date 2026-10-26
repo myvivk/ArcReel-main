@@ -33,6 +33,7 @@ export interface ContentBlock {
     | "tool_result"
     | "skill_invocation"
     | "task_progress"
+    | "gate_round"
     | "interrupt_notice"
     | "question_answer"
     | "agent_failure"
@@ -65,6 +66,14 @@ export interface ContentBlock {
   usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
   // question_answer fields（AskUserQuestion 答复：问题 → 所选选项）
   answers?: Record<string, string>;
+  // gate_round fields（质量闸逐轮结果：第 N/5 轮 / 拒绝或通过 / 质量闸原文）
+  gate?: string;
+  episode?: number;
+  attempt?: number;
+  max_attempts?: number;
+  outcome?: "rejected" | "passed";
+  reason?: string;
+  elapsed_ms?: number;
   // agent_failure block（写入点定型的 Agent 故障观测）
   failure?: FailureObservation;
 }
@@ -135,6 +144,14 @@ export interface TimelineEntry {
   skill_args?: string | null;
   // question_answer 条目字段（AskUserQuestion 答复的结构化答案）
   answers?: Record<string, string> | null;
+  // system / quality_gate_round 条目字段（质量闸逐轮结果）
+  gate?: string | null;
+  episode?: number | null;
+  attempt?: number | null;
+  max_attempts?: number | null;
+  outcome?: "rejected" | "passed" | null;
+  reason?: string | null;
+  elapsed_ms?: number | null;
   // agent_turn_failure 系统条目
   failure?: FailureObservation;
 }

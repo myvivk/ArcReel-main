@@ -377,6 +377,21 @@ export function createTimelineProjector(): TimelineProjector {
         }
         return;
       }
+      if (entry.subtype === "quality_gate_round") {
+        // 质量闸逐轮结果：每轮一条独立工序行，随 SSE 到达实时追加；
+        // 最终 tool_result 只回填工具块，不会覆盖这些行。
+        attachSystemBlock(fold, entry, {
+          type: "gate_round",
+          gate: entry.gate ?? undefined,
+          episode: entry.episode ?? undefined,
+          attempt: entry.attempt ?? undefined,
+          max_attempts: entry.max_attempts ?? undefined,
+          outcome: entry.outcome ?? undefined,
+          reason: entry.reason ?? undefined,
+          elapsed_ms: entry.elapsed_ms ?? undefined,
+        });
+        return;
+      }
       if (entry.subtype !== "task_started" && entry.subtype !== "task_progress" && entry.subtype !== "task_notification") {
         return;
       }

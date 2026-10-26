@@ -96,7 +96,7 @@ export function ShotDetailLayout({
       {header}
       <div ref={detailRef} className="@container/shot-detail flex min-h-0 flex-1 flex-col">
         <div
-          className="relative grid min-h-0 flex-1 auto-rows-max grid-cols-[minmax(0,1fr)] content-start overflow-y-auto bg-background [scrollbar-gutter:stable] @min-[480px]/shot-detail:grid-cols-[minmax(0,1fr)_300px] @min-[480px]/shot-detail:grid-rows-[minmax(0,1fr)] @min-[480px]/shot-detail:content-stretch @min-[480px]/shot-detail:overflow-visible @min-[860px]/shot-detail:grid-cols-[minmax(0,1fr)_var(--shot-media-percent)]"
+          className="relative grid min-h-0 flex-1 auto-rows-max grid-cols-[minmax(0,1fr)] content-start overflow-y-auto bg-background [scrollbar-gutter:stable] @min-[480px]/shot-detail:grid-cols-[minmax(0,1fr)_300px] @min-[480px]/shot-detail:grid-rows-[minmax(0,1fr)] @min-[480px]/shot-detail:content-stretch @min-[480px]/shot-detail:overflow-visible @min-[860px]/shot-detail:grid-cols-[minmax(0,1fr)_minmax(505px,var(--shot-media-percent))]"
           style={{
             "--shot-media-percent": `${mediaPercent}%`,
           } as CSSProperties}

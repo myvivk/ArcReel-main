@@ -107,6 +107,7 @@ updates:
           - "packaging"
           - "portalocker"
           - "socksio"
+          - "tzdata"
         update-types:
           - "minor"
           - "patch"

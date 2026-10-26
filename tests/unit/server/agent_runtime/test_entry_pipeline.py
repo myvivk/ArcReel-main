@@ -461,3 +461,59 @@ class TestReplayedUserEchoLink:
 
         await pipeline.handle_message({"type": "assistant", "uuid": "a-1", "content": [{"type": "text", "text": "x"}]})
         assert [e["uuid"] for e in store.entries] == ["a-1"]
+
+
+class TestAppendProgressEntry:
+    """质量闸进度条目：工具执行期间独立写入并广播，失败不打断工具。"""
+
+    @staticmethod
+    def _entry(uuid: str = "gate-1") -> dict[str, Any]:
+        return {
+            "type": "system",
+            "subtype": "quality_gate_round",
+            "gate": "storyboard_plan",
+            "episode": 1,
+            "attempt": 1,
+            "max_attempts": 5,
+            "outcome": "rejected",
+            "reason": "scene 2：镜头3 块过短",
+            "elapsed_ms": 241_234,
+            "uuid": uuid,
+            "timestamp": "2026-10-25T08:42:41.204Z",
+        }
+
+    async def test_appends_and_broadcasts_entry(self):
+        pipeline, store, broadcasts = _make_pipeline()
+
+        await pipeline.append_progress_entry(self._entry())
+
+        assert len(store.entries) == 1
+        assert store.entries[0]["seq"] == 0
+        assert store.entries[0]["subtype"] == "quality_gate_round"
+        assert broadcasts == [{"type": "log_entry", "session_id": "s1", "entry": store.entries[0]}]
+
+    async def test_without_session_id_is_noop(self):
+        pipeline, store, broadcasts = _make_pipeline(session_id=None)
+
+        await pipeline.append_progress_entry(self._entry())
+
+        assert store.entries == []
+        assert broadcasts == []
+
+    async def test_store_failure_is_swallowed(self):
+        class _FailingStore(_RecordingStore):
+            async def append(self, session_id, entries, *, client_key=None):
+                raise RuntimeError("db down")
+
+        store = _FailingStore()
+        broadcasts: list[dict] = []
+        pipeline = SessionEntryPipeline(
+            store,
+            session_id_provider=lambda: "s1",
+            broadcast=broadcasts.append,
+        )
+
+        await pipeline.append_progress_entry(self._entry())
+
+        assert broadcasts == []
+        assert store.entries == []

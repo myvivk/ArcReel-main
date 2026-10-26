@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import type { LibraryImportPreview } from "@/components/assets/AddToLibraryDialog";
 import type { Character } from "@/types";
 import { AssetGallery } from "./AssetGallery";
 
@@ -10,17 +9,9 @@ interface Props {
   onRestoreCharacterVersion?: () => Promise<unknown> | void;
   onRefreshProject?: () => Promise<unknown> | void;
   generatingCharacterNames?: Set<string>;
-  /** 只读展示（引导演示项目）：不渲染新增、入库、生成、上传入口。 */
+  /** 只读展示（引导演示项目）：不渲染生成、上传、删除等改写入口。 */
   readOnly?: boolean;
 }
-
-const libraryPreview = (character: Character): LibraryImportPreview => ({
-  description: character.description,
-  voiceStyle: character.voice_style ?? "",
-  hasReferenceAudio: Boolean(character.reference_audio),
-  sheetPath: character.character_sheet,
-  derivativeCount: Object.keys(character.derivatives ?? {}).length,
-});
 
 export function CharactersPage({
   projectName,
@@ -43,7 +34,6 @@ export function CharactersPage({
       onGenerate={onGenerateCharacter}
       onRestoreVersion={onRestoreCharacterVersion}
       onReload={onRefreshProject}
-      libraryPreview={libraryPreview}
     />
   );
 }

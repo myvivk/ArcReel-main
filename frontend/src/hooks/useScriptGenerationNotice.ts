@@ -6,16 +6,18 @@ import type { ContentBlock, Turn } from "@/types";
 
 /**
  * 剧本生成是分钟级的 LLM 文本生成，Agent 调用开始时必须立即提供进度反馈，避免用户误以为
- * 卡死。本 hook 监听 Agent 会话流，识别到剧本生成类工具调用开始时弹一条瞬时 toast
- * （过程性提示，无需持久回看），告知该步骤耗时较长。
+ * 卡死。本 hook 监听 Agent 会话流，识别到长耗时文本生成类工具调用开始时弹一条瞬时 toast
+ * （过程性提示，无需持久回看），告知该步骤耗时较长。AI 分镜另有逐轮质量校验条目实时可见，
+ * toast 只负责补上「刚开始还没到第一轮」的那段空窗。
  *
  * 工具名是 SDK 注册后的全限定名 mcp__arcreel__<id>，与 ToolCallWithResult 的解析口径
  * 一致。仅覆盖剧本/脚本规划类文本生成工具；媒体生成等长耗时工具已有任务队列 HUD。
  */
-const SCRIPT_GENERATION_TOOL_NAMES = new Set([
-  "mcp__arcreel__generate_episode_script",
-  "mcp__arcreel__generate_short_drama_factory",
-]);
+const NOTICE_KEYS: Record<string, string> = {
+  "mcp__arcreel__generate_episode_script": "script_generation_notice_toast",
+  "mcp__arcreel__generate_short_drama_factory": "script_generation_notice_toast",
+  "mcp__arcreel__plan_short_drama_storyboards": "storyboard_generation_notice_toast",
+};
 
 function collectBlocks(turns: Turn[], draftTurn: Turn | null): ContentBlock[] {
   const blocks: ContentBlock[] = [];
@@ -61,18 +63,18 @@ export function useScriptGenerationNotice(): void {
     }
 
     for (const block of blocks) {
+      const noticeKey = block.type === "tool_use" && block.name ? NOTICE_KEYS[block.name] : undefined;
       if (
         block.type === "tool_use" &&
         block.id &&
-        block.name &&
-        SCRIPT_GENERATION_TOOL_NAMES.has(block.name) &&
+        noticeKey &&
         block.result === undefined &&
         block.is_error === undefined &&
         !completedToolUseIds.has(block.id) &&
         !notifiedRef.current.has(block.id)
       ) {
         notifiedRef.current.add(block.id);
-        useAppStore.getState().pushToast(tRef.current("script_generation_notice_toast"), "info");
+        useAppStore.getState().pushToast(tRef.current(noticeKey), "info");
       }
     }
   }, [turns, draftTurn, sessionStatus]);

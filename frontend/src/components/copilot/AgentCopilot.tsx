@@ -12,6 +12,7 @@ import type { ImagePayload } from "@/types";
 import { voidCall } from "@/utils/async";
 import { AgentComposer, type AgentComposerHandle } from "./AgentComposer";
 import { AgentQuestionnaire } from "./AgentQuestionnaire";
+import { FactoryRunBoard } from "./FactoryRunBoard";
 import { SessionHistory, sessionTitle } from "./SessionHistory";
 import { TodoProgress } from "./TodoProgress";
 import { MessageFlow, type MessageFlowHandle } from "./chat/MessageFlow";
@@ -156,14 +157,18 @@ export function AgentCopilot() {
       {historyOpen ? (
         <SessionHistory onPick={handlePickSession} onDelete={deleteSession} onClose={() => setHistoryOpen(false)} />
       ) : (
-        <MessageFlow
-          key={currentSessionId ?? "draft"}
-          ref={flowRef}
-          onSubmitEdit={handleSubmitEdit}
-          // 改写失败时原始输入留在仍开着的编辑器里，重试由它的「重新发送」发起：
-          // 卡片这里给重试只会重放主输入框的无关内容（为空时更是毫无反应）
-          onRetryStartup={startupFailureOrigin === "rewrite" ? undefined : () => composerRef.current?.send()}
-        />
+        <>
+          {/* 工厂链路运行时出现的只读编排板：当前工件、每件状态与耗时，来自会话时间线。 */}
+          <FactoryRunBoard turns={turns} draftTurn={draftTurn} active={isRunning || sending} />
+          <MessageFlow
+            key={currentSessionId ?? "draft"}
+            ref={flowRef}
+            onSubmitEdit={handleSubmitEdit}
+            // 改写失败时原始输入留在仍开着的编辑器里，重试由它的「重新发送」发起：
+            // 卡片这里给重试只会重放主输入框的无关内容（为空时更是毫无反应）
+            onRetryStartup={startupFailureOrigin === "rewrite" ? undefined : () => composerRef.current?.send()}
+          />
+        </>
       )}
 
       <TodoProgress turns={turns} draftTurn={draftTurn} />

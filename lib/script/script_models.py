@@ -216,6 +216,10 @@ class GeneratedAssets(BaseModel):
     video_prompt_basis: SkipJsonSchema[dict[str, object] | None] = Field(
         default=None, description="写这条视频提示词时所用宫格的指纹"
     )
+    # 逐镜参考素材宫格绑定（grid_id / layout / composite_path / cell_paths / confirmed_at）。
+    # 由 ShotGrid 确认流程写入；extra="forbid" 要求先声明，否则任何剧本保存都会以
+    # extra_forbidden 拒整集。
+    shot_grid: SkipJsonSchema[dict[str, object] | None] = Field(default=None, description="逐镜参考素材宫格绑定")
 
 
 def get_generated_assets(item: dict) -> dict:

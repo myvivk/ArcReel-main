@@ -29,6 +29,7 @@ from server.agent_runtime.failure_observation import build_turn_failure_observat
 from server.agent_runtime.keyed_locks import KeyedLocks
 from server.agent_runtime.message_serialization import utc_now_iso
 from server.agent_runtime.result_status import result_indicates_error
+from server.agent_runtime.tool_progress import QUALITY_GATE_ROUND_SUBTYPE, QualityGateRound
 from server.agent_runtime.turn_schema import _stringify_content, normalize_content
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ ENTRY_SUBTYPE_QUESTION_ANSWER = "question_answer"
 ENTRY_SUBTYPE_AGENT_TURN_FAILURE = "agent_turn_failure"
 ENTRY_SUBTYPE_COMPACT_SUMMARY = "compact_summary"
 ENTRY_SUBTYPE_SUBAGENT_OUTCOME = "subagent_outcome"
+ENTRY_SUBTYPE_QUALITY_GATE_ROUND = QUALITY_GATE_ROUND_SUBTYPE
 
 SYSTEM_SUBTYPE_SKILL_INVOCATION = "skill_invocation"
 
@@ -143,6 +145,23 @@ def build_interrupt_entry(
 
 def is_interrupt_entry(entry: dict[str, Any]) -> bool:
     return entry.get("type") == ENTRY_TYPE_SYSTEM and entry.get("subtype") == ENTRY_SUBTYPE_INTERRUPT
+
+
+def build_quality_gate_entry(round_: QualityGateRound) -> dict[str, Any]:
+    """把质量闸的一轮结果定型为系统事件条目。
+
+    live-only：只写事件日志（用户时间线读源），不写 SDK transcript——UI 专有
+    条目进 transcript 会被 resume 回喂给 Agent（ADR 0048）。主 Agent 侧的轮次
+    摘要另由工具结果 ``planning_rounds`` 承载。
+    """
+    entry: dict[str, Any] = {
+        "type": ENTRY_TYPE_SYSTEM,
+        "subtype": ENTRY_SUBTYPE_QUALITY_GATE_ROUND,
+        **round_.as_dict(),
+        "uuid": f"gate-{uuid4().hex}",
+        "timestamp": utc_now_iso(),
+    }
+    return entry
 
 
 def _blocks_text(blocks: list[dict[str, Any]]) -> str:

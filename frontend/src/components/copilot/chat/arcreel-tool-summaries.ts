@@ -54,6 +54,7 @@ export const ARCREEL_TOOL_SUMMARIES: Record<string, Summarize> = {
   render_final_cut: (i, f) => f.revision(i.revision),
   export_jianying_draft: (i, f) => f.revision(i.revision),
   generate_episode_script: (i, f) => f.items(i.entry_ids) || f.episode(i.episode_id),
+  plan_short_drama_storyboards: (i, f) => f.episode(i.episode_id) || f.list(i.regenerate_scene_ids),
   generate_script_plan: (i, f) => f.episode(i.episode_id),
   import_short_drama_script: (i, f) => f.episode(i.episode_id),
   import_short_drama_series: (i, f) => f.list(f.field(i.episodes, "episode_id")),

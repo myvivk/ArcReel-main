@@ -478,6 +478,78 @@ describe("projectEntriesToTurns", () => {
     expect(orphan("stopped", null)[1].content[0].task_info?.task_status).toBe("stopped");
   });
 
+  it("projects each quality_gate_round entry as its own gate_round row, surviving the final tool_result", () => {
+    const turns = projectEntriesToTurns([
+      entry({
+        type: "assistant",
+        content: [{ type: "tool_use", id: "tu-plan", name: "mcp__arcreel__plan_short_drama_storyboards", input: {} }],
+        uuid: "a-1",
+      }),
+      entry({
+        type: "system",
+        subtype: "quality_gate_round",
+        gate: "storyboard_plan",
+        episode: 1,
+        attempt: 1,
+        max_attempts: 5,
+        outcome: "rejected",
+        reason: "scene 2：镜头3 块过短",
+        elapsed_ms: 241_234,
+        uuid: "gate-1",
+      }),
+      entry({
+        type: "system",
+        subtype: "quality_gate_round",
+        gate: "storyboard_plan",
+        episode: 1,
+        attempt: 2,
+        max_attempts: 5,
+        outcome: "passed",
+        reason: null,
+        elapsed_ms: 153_000,
+        uuid: "gate-2",
+      }),
+      entry({ type: "tool_result", tool_use_id: "tu-plan", content: '{"script":{}}', uuid: "tr-1" }),
+    ]);
+
+    expect(turns).toHaveLength(1);
+    const rows = turns[0].content.filter((block) => block.type === "gate_round");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      gate: "storyboard_plan",
+      attempt: 1,
+      max_attempts: 5,
+      outcome: "rejected",
+      reason: "scene 2：镜头3 块过短",
+      elapsed_ms: 241_234,
+    });
+    expect(rows[1]).toMatchObject({ attempt: 2, outcome: "passed", reason: undefined });
+    // tool_result 只回填工具块，不覆盖逐轮行
+    expect(turns[0].content[0].result).toBe('{"script":{}}');
+  });
+
+  it("keeps all five rejected rounds when every quality-gate attempt fails", () => {
+    const gateEntries = Array.from({ length: 5 }, (_, index) =>
+      entry({
+        type: "system",
+        subtype: "quality_gate_round",
+        gate: "storyboard_plan",
+        episode: 1,
+        attempt: index + 1,
+        max_attempts: 5,
+        outcome: "rejected",
+        reason: `scene 4：镜头1 缺神态（第 ${index + 1} 轮）`,
+        elapsed_ms: 10_000,
+        uuid: `gate-${index + 1}`,
+      }),
+    );
+    const turns = projectEntriesToTurns(gateEntries);
+
+    const rows = turns.flatMap((turn) => turn.content).filter((block) => block.type === "gate_round");
+    expect(rows).toHaveLength(5);
+    expect(rows.at(-1)).toMatchObject({ attempt: 5, outcome: "rejected" });
+  });
+
   it("projects a compaction summary as a compact_summary block in a system turn, not a user message", () => {
     const turns = projectEntriesToTurns([
       entry({

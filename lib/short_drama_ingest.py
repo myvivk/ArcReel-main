@@ -31,6 +31,9 @@ class _ArtifactManager(Protocol):
     ) -> AbstractContextManager[tuple[Path, dict[str, Any], ExitStack]]: ...
 
 
+#: Agent 用 Write 暂存待检原文的目录（相对项目根）。入库工具按路径读取，避免把大段 Base64 抄进工具参数。
+DRAFT_ARTIFACT_ROOT = "drafts/short_drama"
+
 _ARTIFACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("character-bible", re.compile(r"^character-bible\.md$")),
     ("series-outline", re.compile(r"^series-outline\.md$")),
@@ -110,6 +113,24 @@ def _safe_path(root: Path, relative: str) -> Path:
         if current.is_symlink() or current.is_junction():
             raise ShortDramaArtifactError(f"工件路径不能经过符号链接：{relative}")
     return resolved
+
+
+def read_draft_artifact(project_dir: Path, path: str) -> bytes:
+    """读取 Agent 暂存到 ``drafts/short_drama/`` 的待检工件原始字节。
+
+    入库工具默认按相对路径读取暂存文件，Agent 不需要把 132KB 级原文编码成 Base64
+    再抄进工具参数。路径仍只允许七类标准相对路径，并拒绝越界与符号链接。
+    """
+    classify_short_drama_artifact(path)
+    draft = _safe_path(_safe_path(project_dir, DRAFT_ARTIFACT_ROOT), path)
+    try:
+        return draft.read_bytes()
+    except FileNotFoundError as exc:
+        raise ShortDramaArtifactError(
+            f"暂存工件不存在：{DRAFT_ARTIFACT_ROOT}/{path}；请先用 Write 按相同相对路径暂存待检原文"
+        ) from exc
+    except OSError as exc:
+        raise ShortDramaArtifactError(f"暂存工件读取失败：{DRAFT_ARTIFACT_ROOT}/{path}（{exc}）") from exc
 
 
 def _restore(path: Path, raw: bytes | None) -> None:
@@ -264,10 +285,12 @@ def _register_sources(
 
 
 __all__ = [
+    "DRAFT_ARTIFACT_ROOT",
     "ShortDramaArtifact",
     "ShortDramaArtifactError",
     "classify_short_drama_artifact",
     "decode_artifact_content",
     "ingest_short_drama_artifacts",
     "load_short_drama_artifacts",
+    "read_draft_artifact",
 ]

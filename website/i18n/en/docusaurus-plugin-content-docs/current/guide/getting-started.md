@@ -225,7 +225,7 @@ Prepare a strong text model, an image model, and a video model. Start with a few
 
 Choose **AI original script** from the welcome page or overview. Enter the creative brief, genre, and length target, then hand it to the Agent. The factory supports new stories, continuations, and consecutive episodes. Every batch must pass doctor refinement, machine checks, repair, and compliance checks before saving seven Markdown artifact types unchanged.
 
-For an existing delivery, choose **Import script** and upload its artifact directory. Every episode needs a plan, source text, machine report, and compliance report; existing series artifacts can be reused. A single episode or novel file cannot replace a complete directory.
+For an existing delivery, put its artifact directory in the project working directory and hand it to the ArcReel Agent for as-is ingestion. Every episode needs a plan, source text, machine report, and compliance report; existing series artifacts can be reused. A single episode or novel file cannot replace a complete directory.
 
 Read the character bible, series outline, ledger, and episode plans in **Story planning**, and the episode text in **Script**. These are read-only; revisions return to the factory quality workflow.
 

@@ -28,6 +28,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
+import { useShortDramaGenerateStore } from "@/stores/short-drama-generate-store";
 import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
 import type { ProjectData, StoryboardBatchKind } from "@/types";
@@ -98,6 +99,7 @@ const CLOSES_POPOVER = new Set<StepAct["intent"]["type"]>([
   "storyboard_batch",
   "view_unit",
   "route",
+  "open_factory_generate",
 ]);
 
 interface Props {
@@ -115,8 +117,9 @@ interface Props {
  * 集页的制作进度（步骤清单），挂在集页页头第一行的行尾。
  *
  * 它投影后端给出的制作状态：每行一类内容的现状，建议的下一步就地展开在所属行，入口按
- * 「交给 Agent」为主、直接 AI 调用为次。界面不自行推断下一步；准入不满足的入口照常显示，
- * 悬停说明原因。过期、缺描述这类提醒只挂在对应行。
+ * 「交给 Agent」为主、直接 AI 调用为次。界面不自行推断下一步；剪辑入口与剪辑视图同一口径，
+ * 准入不成立或读不到制作状态时不渲染、改为说明原因，其余准入不满足的入口照常显示，悬停说明原因。
+ * 过期、缺描述这类提醒只挂在对应行。
  *
  * 页头只放一枚入口：制作进度 · 一句话现状 · 阻断数；点开是非模态弹层，弹层是唯一的滚动区。
  * 计划的刷新也由它驱动，页头的批量补齐按钮读同一份计划。
@@ -253,6 +256,9 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
         case "route":
           setLocation(intent.path);
           return;
+        case "open_factory_generate":
+          useShortDramaGenerateStore.getState().open({ projectName, episode: episodeId });
+          return;
         default:
           break;
       }
@@ -354,7 +360,7 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             <PopoverDescription>{headline}</PopoverDescription>
           </PopoverHeader>
 
-          {error && (
+          {error && shown && (
             <p className="text-xs text-muted-foreground" role="status">
               {t("plan_refresh_failed")}
             </p>
@@ -392,9 +398,20 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
             </ol>
           ) : (
             !shown && (
-              <p className="text-xs text-muted-foreground">
-                {loading ? t("plan_loading") : t("plan_unavailable")}
-              </p>
+              <div className="flex flex-col items-start gap-2" role="status">
+                <p className="text-xs text-muted-foreground">
+                  {loading ? t("plan_loading") : t("plan_unavailable")}
+                </p>
+                {error && !loading && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => void refreshPlan(projectName, episode)}
+                  >
+                    {t("plan_retry")}
+                  </Button>
+                )}
+              </div>
             )
           )}
         </PopoverContent>

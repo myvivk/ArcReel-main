@@ -64,7 +64,6 @@ MESSAGES = {
         "Dự án quảng cáo/phim ngắn không có episode_target_duration "
         "(tổng thời lượng mỗi tập được hoạch định theo ngân sách target_duration)"
     ),
-    "val_ad_no_grid_storyboard": "Dự án quảng cáo/phim ngắn không hỗ trợ phân cảnh đa lưới (grid_storyboard)",
     "val_ad_episodes_single": "Dự án quảng cáo/phim ngắn phải luôn có đúng một mục tập (tập 1)",
     "val_ad_shots_missing": "Kịch bản ad thiếu mảng shots",
     "val_ad_duration_drift": (

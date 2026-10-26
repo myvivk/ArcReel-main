@@ -95,13 +95,13 @@ import type {
   VideoCapabilities,
   EpisodeItemRef} from "@/types";
 
-import type { SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
+import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
 import type {
   PresentationReadModel,
   PresentationRequestOptions,
   PresentationResourceType,
 } from "@/types/presentation";
-import type { Asset, AssetType, AssetCreatePayload, AssetListPage, AssetUpdatePayload } from "@/types/asset";
+import type { Asset, AssetType, AssetListPage, AssetUpdatePayload } from "@/types/asset";
 import type { AgentMemoryOverview, AgentMemoryScope } from "@/types/agent-memory";
 import type { EpisodeNextStep, WorkflowPlan, WorkflowPlanRequest, WorkflowStatus } from "@/types/workflow";
 import type {
@@ -159,12 +159,10 @@ import {
 import type {
   AgentProfileStatus,
   AssetDeletionPreview,
-  AssetMergeResult,
   AssetRenameResult,
   AssistantEntriesStreamOptions,
   CreateProjectPayload,
   EpisodeScriptSnapshot,
-  MergeableAssetType,
   ProjectAssetType,
   ProjectEventStreamOptions,
   ScriptEditCommand,
@@ -188,11 +186,8 @@ export {
 export type {
   AgentProfileStatus,
   AssetDeletionPreview,
-  AssetMergeEpisodeImpact,
-  AssetMergeResult,
   AssetRenameResult,
   LoginResponse,
-  MergeableAssetType,
   ProjectAssetType,
   ProjectEventStreamOptions,
   UsageRecordsQuery,
@@ -336,16 +331,6 @@ class API {
 
   static async getShortDramaArtifacts(projectName: string, options: { signal?: AbortSignal } = {}): Promise<{ artifacts: StoryPlanningArtifacts["episode_plans"] }> {
     return this.request(`/projects/${encodeURIComponent(projectName)}/short-drama/artifacts`, options);
-  }
-
-  static async importShortDramaArtifacts(
-    projectName: string,
-    artifacts: Array<{ path: string; content_base64: string }>,
-  ): Promise<{ artifacts: Array<{ path: string; revision: string; kind: string; episode: number | null }> }> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/short-drama/import-artifacts`, {
-      method: "POST",
-      body: JSON.stringify({ artifacts }),
-    });
   }
 
   static async getStoryContext(projectName: string, episode: number, options: { signal?: AbortSignal } = {}): Promise<{ context: string }> {
@@ -853,25 +838,6 @@ class API {
 
   // ==================== 角色管理 ====================
 
-  static async addCharacter(
-    projectName: string,
-    name: string,
-    description: string,
-    voiceStyle: string = ""
-  ): Promise<SuccessResponse> {
-    return this.request(
-      `/projects/${encodeURIComponent(projectName)}/characters`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          description,
-          voice_style: voiceStyle,
-        }),
-      }
-    );
-  }
-
   static async updateCharacter(
     projectName: string,
     charName: string,
@@ -1089,20 +1055,6 @@ class API {
 
   // ==================== 项目场景管理 ====================
 
-  static async addProjectScene(
-    projectName: string,
-    name: string,
-    description: string
-  ): Promise<SuccessResponse> {
-    return this.request(
-      `/projects/${encodeURIComponent(projectName)}/scenes`,
-      {
-        method: "POST",
-        body: JSON.stringify({ name, description }),
-      }
-    );
-  }
-
   static async updateProjectScene(
     projectName: string,
     sceneName: string,
@@ -1118,20 +1070,6 @@ class API {
   }
 
   // ==================== 项目道具管理 ====================
-
-  static async addProjectProp(
-    projectName: string,
-    name: string,
-    description: string
-  ): Promise<SuccessResponse> {
-    return this.request(
-      `/projects/${encodeURIComponent(projectName)}/props`,
-      {
-        method: "POST",
-        body: JSON.stringify({ name, description }),
-      }
-    );
-  }
 
   static async updateProjectProp(
     projectName: string,
@@ -1165,31 +1103,6 @@ class API {
       {
         method: "POST",
         body: JSON.stringify({ new_name: newName, dry_run: options.dryRun ?? false }),
-        signal: options.signal,
-      }
-    );
-  }
-
-  /**
-   * 把项目内资产并入同类型的 `target`（只开放角色、场景、道具）。`dryRun: true` 只返回按集列出的
-   * 影响预览，预览与执行共用后端同一次扫描，确认框数字与实际执行一致。
-   */
-  static async mergeProjectAsset(
-    projectName: string,
-    assetType: MergeableAssetType,
-    name: string,
-    target: string,
-    options: { asDerivative?: boolean; dryRun?: boolean; signal?: AbortSignal } = {}
-  ): Promise<AssetMergeResult> {
-    return this.request(
-      `/projects/${encodeURIComponent(projectName)}/${ASSET_TYPE_PATH[assetType]}/${encodeURIComponent(name)}/merge`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          target,
-          as_derivative: options.asDerivative ?? false,
-          dry_run: options.dryRun ?? false,
-        }),
         signal: options.signal,
       }
     );
@@ -1537,8 +1450,7 @@ class API {
   }
 
   /**
-   * 取本次请求的权威工作流计划。无副作用：不入队、不写项目，
-   * `confirmed_request_durations` 只作用于这一次求解。
+   * 取本次请求的权威工作流计划。无副作用：不入队、不写项目。
    */
   static async getWorkflowPlan(
     projectName: string,
@@ -1736,6 +1648,8 @@ class API {
     prompt: string | Record<string, unknown>,
     scriptFile: string,
     durationSeconds: number = 4,
+    seed: number | null = null,
+    frameMode: "first_last" | "reference" = "first_last",
   ): Promise<{ success: boolean; task_id: string; deduped: boolean; message: string }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/generate/video/${encodeURIComponent(segmentId)}`,
@@ -1745,6 +1659,8 @@ class API {
           prompt,
           script_file: scriptFile,
           duration_seconds: durationSeconds,
+          seed,
+          frame_mode: frameMode,
         }),
       }
     );
@@ -2958,6 +2874,14 @@ class API {
     });
   }
 
+  /** 关弹窗或 AI 生成返回时留下输入框里的文本；只存草稿，不动生成状态（D-5）。 */
+  static async saveShotGridDraft(projectName: string, payload: SaveShotGridDraftPayload): Promise<ShotGridPlan> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/shot-grids/draft`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
   /** 仅返回可编辑的逐格文本；确定前不写盘、不入队。 */
   static async authorShotGridPrompt(
     projectName: string,
@@ -3019,26 +2943,6 @@ class API {
     return this.request<{ asset: Asset }>(`/assets/${encodeURIComponent(id)}`);
   }
 
-  static async createAsset(payload: AssetCreatePayload & { image?: File }) {
-    const form = new FormData();
-    form.append("type", payload.type);
-    form.append("name", payload.name);
-    form.append("description", payload.description ?? "");
-    form.append("voice_style", payload.voice_style ?? "");
-    if (payload.image) form.append("image", payload.image);
-    const endpoint = "/assets";
-    const url = `${API_BASE}${endpoint}`;
-    const response = await fetch(url, withAuth(endpoint, { method: "POST", body: form }));
-    if (!response.ok) {
-      handleUnauthorized(response);
-      const error = (await response.json().catch(() => ({ detail: response.statusText }))) as {
-        detail?: string;
-      };
-      throw new Error(typeof error.detail === "string" ? error.detail : i18n.t("errors:request_failed"));
-    }
-    return response.json() as Promise<{ asset: Asset }>;
-  }
-
   static async updateAsset(id: string, patch: AssetUpdatePayload) {
     return this.request<{ asset: Asset }>(`/assets/${encodeURIComponent(id)}`, {
       method: "PATCH",
@@ -3064,34 +2968,6 @@ class API {
 
   static async deleteAsset(id: string): Promise<void> {
     return this.request(`/assets/${encodeURIComponent(id)}`, { method: "DELETE" });
-  }
-
-  static async addAssetFromProject(payload: {
-    project_name: string;
-    resource_type: AssetType;
-    resource_id: string;
-    override_name?: string;
-    overwrite?: boolean;
-  }) {
-    return this.request<{ asset: Asset }>(`/assets/from-project`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  }
-
-  static async applyAssetsToProject(payload: {
-    asset_ids: string[];
-    target_project: string;
-    conflict_policy: "skip" | "overwrite" | "rename";
-  }) {
-    return this.request<{
-      succeeded: Array<{ id: string; name: string }>;
-      skipped: Array<{ id: string; name: string }>;
-      failed: Array<{ id: string; reason: string }>;
-    }>(`/assets/apply-to-project`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
   }
 
   static getGlobalAssetUrl(path: string | null, fp?: string | null): string | null {

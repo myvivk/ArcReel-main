@@ -45,7 +45,11 @@ from lib.project.project_manager import ProjectManager, resolve_episode_script_b
 from lib.project.project_schema import parse_project_schema_version
 from lib.project.resource_paths import resource_relative_path
 from lib.script.script_editor import resolve_items
-from lib.script.storyboard_sequence import resolve_storyboard_video_inputs, resolve_storyboard_video_slots
+from lib.script.storyboard_sequence import (
+    apply_storyboard_frame_mode,
+    resolve_storyboard_video_inputs,
+    resolve_storyboard_video_slots,
+)
 from lib.script.storyboard_video_request import storyboard_asset_links, storyboard_frame_evidence
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.narration_config import PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION, project_tts_settings
@@ -56,7 +60,7 @@ from lib.speech.speech_artifact_provenance import (
     build_video_speech_basis,
     project_character_voice_evidence,
 )
-from lib.speech.speech_composition import admit_script_unit
+from lib.speech.speech_composition import admit_script_unit, speech_policy_for_project
 
 
 def build_current_audio_artifact_basis(
@@ -137,6 +141,7 @@ def project_video_basis_components(
     shape: VideoExecutionShape,
     storyboard_items: Sequence[Any] | None = None,
     id_field: str | None = None,
+    frame_mode: str = "first_last",
 ) -> VideoBasisComponents:
     """Project the current script item through ``shape`` into the three video basis components.
 
@@ -145,7 +150,7 @@ def project_video_basis_components(
     depends on. Raises ``ValueError`` naming what could not be projected.
     """
 
-    admission = admit_script_unit(skeleton_kind, item)
+    admission = admit_script_unit(skeleton_kind, item, policy=speech_policy_for_project(project))
     if not admission.allowed:
         raise ValueError("script unit is not admitted for speech composition")
 
@@ -179,8 +184,14 @@ def project_video_basis_components(
                     or ("shot_id" if "shot_id" in item else "segment_id" if "segment_id" in item else "scene_id"),
                     resource_id=resource_id,
                 )
-                storyboard = slots.start.path
-                end_frame = slots.end.path if slots.end is not None else None
+                slots = apply_storyboard_frame_mode(slots, frame_mode)
+                if slots.reference_only:
+                    frames = [frame for _, frame in slots.frames]
+                    storyboard = frames[0].path if frames else slots.start.path
+                    end_frame = None
+                else:
+                    storyboard = slots.start.path
+                    end_frame = slots.end.path if slots.end is not None else None
                 frame_evidence = storyboard_frame_evidence(
                     slots,
                     project_path=project_path,
@@ -269,6 +280,11 @@ def build_current_video_artifact_basis(
     )
     if item is None:
         return None
+    raw_media = version_metadata.get("execution_provider_media")
+    media_roles = (
+        [entry.get("role") for entry in raw_media if isinstance(entry, dict)] if isinstance(raw_media, list) else []
+    )
+    frame_mode = "reference" if "start_image" not in media_roles and "reference_image" in media_roles else "first_last"
     try:
         shape = VideoExecutionShape.from_version_record(artifact_currency, version_metadata)
         components = project_video_basis_components(
@@ -280,6 +296,7 @@ def build_current_video_artifact_basis(
             resource_id=resource_id,
             shape=shape,
             storyboard_items=items,
+            frame_mode=frame_mode,
             id_field=id_field,
         )
         if parse_project_schema_version(project) < 16:

@@ -10,6 +10,12 @@ import { makePlan, makeStatus } from "@/test/factories";
 import type { EditTimelineReadout, EditTimelineSummary } from "@/types/edit-timeline";
 import { EditTimelineEmptyState } from "./EditTimelineEmptyState";
 
+/** 制作状态里本集「新建剪辑时间线」的准入成立：本集已有可用视频。 */
+function admitCreate(projectName: string, episode: number) {
+  const status = makeStatus({ operations: { create_edit_timeline: { state: "admitted" } } });
+  useWorkflowStore.setState({ plan: makePlan({ status }), planKey: `${projectName}::${episode}` });
+}
+
 /** 制作状态里本集「新建剪辑时间线」的准入不成立：还没有可用视频。 */
 function refuseCreate(projectName: string, episode: number) {
   const status = makeStatus({ operations: { create_edit_timeline: { state: "refused", reason: "no_available_video" } } });
@@ -61,6 +67,7 @@ describe("EditTimelineEmptyState", () => {
   });
 
   it("按脚本新建剪辑时间线并刷新项目，不打开 Agent 面板", async () => {
+    admitCreate("demo", 2);
     const result = created("完整版");
     const create = vi.spyOn(API, "createEditTimeline").mockResolvedValue(result);
     const onCreated = vi.fn();
@@ -77,6 +84,7 @@ describe("EditTimelineEmptyState", () => {
   });
 
   it("新建后项目刷新失败时提示，新时间线照常选中（剪辑视图自行重读时间线）", async () => {
+    admitCreate("demo", 2);
     vi.mocked(useProjectsStore.getState().refreshProject).mockRestore();
     vi.spyOn(API, "getProject").mockRejectedValue(new Error("offline"));
     const result = created("完整版");
@@ -94,6 +102,7 @@ describe("EditTimelineEmptyState", () => {
   });
 
   it("显示名与「剪辑」行同一规则：集内已有「完整版」时加序号", async () => {
+    admitCreate("demo", 2);
     vi.mocked(API.listEditTimelines).mockResolvedValue({ timelines: [summary("完整版")] });
     const create = vi.spyOn(API, "createEditTimeline").mockResolvedValue(created("完整版 2"));
 
@@ -104,6 +113,7 @@ describe("EditTimelineEmptyState", () => {
   });
 
   it("交给 Agent 剪辑只预填请求并打开面板", async () => {
+    admitCreate("demo", 3);
     const create = vi.spyOn(API, "createEditTimeline");
 
     render(<EditTimelineEmptyState projectName="demo" episode={3} onCreated={vi.fn()} />);
@@ -115,27 +125,33 @@ describe("EditTimelineEmptyState", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("制作状态拒绝新建剪辑时间线时两个按钮都不可点，并说明需要先生成视频", () => {
+  it("制作状态拒绝新建剪辑时间线时不给出入口，并说明需要先生成视频", () => {
     refuseCreate("demo", 1);
     render(<EditTimelineEmptyState projectName="demo" episode={1} onCreated={vi.fn()} />);
 
-    expect(screen.getByRole("button", { name: "交给 Agent 剪辑" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "新建剪辑时间线" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "交给 Agent 剪辑" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新建剪辑时间线" })).not.toBeInTheDocument();
     expect(screen.getByText("需要先生成视频")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "新建剪辑时间线" }).parentElement).toHaveAttribute(
-      "title",
-      "需要先生成视频",
-    );
+  });
+
+  it("读不到本集制作状态时不给出入口，也不猜能不能剪", () => {
+    render(<EditTimelineEmptyState projectName="demo" episode={1} onCreated={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "交给 Agent 剪辑" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新建剪辑时间线" })).not.toBeInTheDocument();
+    expect(screen.getByText("暂时读不到这一集的状态。")).toBeInTheDocument();
   });
 
   it("制作状态属于别的集时不采用它的准入", () => {
     refuseCreate("demo", 2);
     render(<EditTimelineEmptyState projectName="demo" episode={1} onCreated={vi.fn()} />);
 
-    expect(screen.getByRole("button", { name: "新建剪辑时间线" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "新建剪辑时间线" })).not.toBeInTheDocument();
+    expect(screen.queryByText("需要先生成视频")).not.toBeInTheDocument();
   });
 
   it("新建失败时提示原因", async () => {
+    admitCreate("demo", 1);
     vi.spyOn(API, "createEditTimeline").mockRejectedValue(new Error("集（id=1）已有名为「完整版」的剪辑时间线"));
     const onCreated = vi.fn();
 

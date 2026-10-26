@@ -11,6 +11,7 @@ node_modules / .venv / .git / .worktrees 等十几万个文件，单核 CPU 50%+
 
 import asyncio
 import logging
+import mimetypes
 import os
 import platform
 import shutil
@@ -876,6 +877,11 @@ app.add_middleware(ResponseCompressionMiddleware)
 # 挂载条件必须检查 index.html 而非目录：app.frontend 在启动期校验 fallback 文件，
 # 构建产物不完整时会抛 RuntimeError 拖垮整个应用（含全部 API）
 frontend_dist_dir = PROJECT_ROOT / "frontend" / "dist"
+
+# .svg 的 MIME 取自运行环境：Windows 注册表可能把它登记成 image/svg，浏览器不按
+# SVG 解码，<img> 显示为破图。先初始化再登记标准类型，避免首次 guess_type() 调用
+# init() 时又读回注册表的值。Linux 上登记的是同一个值，行为不变。
+mimetypes.add_type("image/svg+xml", ".svg")
 
 if (frontend_dist_dir / "index.html").is_file():
 

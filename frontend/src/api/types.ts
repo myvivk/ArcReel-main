@@ -16,9 +16,6 @@ import type { SseStreamError } from "@/utils/sse-stream";
 /** 项目内四类资产（与后端 ASSET_SPECS 的 asset_type 对齐）。 */
 export type ProjectAssetType = "character" | "scene" | "prop";
 
-/** 可以合并的资产类型：带别名的类型，商品不开放（与后端 MERGEABLE_ASSET_TYPES 对齐）。 */
-export type MergeableAssetType = ProjectAssetType;
-
 /** 资产级联重命名的影响报告（dry_run 预览与执行同一结构）。 */
 export interface AssetRenameResult {
   success: boolean;
@@ -28,33 +25,6 @@ export interface AssetRenameResult {
   episodes: number;
   references: number;
   files: number;
-}
-
-/** 资产合并对一集的影响：各处改写的引用数，以及将过期的分镜图与视频数。 */
-export interface AssetMergeEpisodeImpact {
-  episode: number;
-  script_plan: number;
-  script: number;
-  draft: number;
-  prompt_text: number;
-  speaker: number;
-  storyboards: number;
-  videos: number;
-}
-
-/** 资产合并的影响报告（dry_run 预览与执行同一结构）。 */
-export interface AssetMergeResult {
-  success: boolean;
-  dry_run: boolean;
-  source: string;
-  target: string;
-  as_derivative: boolean;
-  aliases_added: string[];
-  derivative_created: string | null;
-  derivatives_moved: string[];
-  derivatives_folded: string[];
-  references: number;
-  episodes: AssetMergeEpisodeImpact[];
 }
 
 /** 删除资产前的引用预览（`DELETE …?dry_run=true`）：与重命名同一套扫描，按集号升序列出。 */

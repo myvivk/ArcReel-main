@@ -2,7 +2,8 @@ import { createContext, useContext, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 /**
- * 页头第二行右侧的动作插槽。`undefined` 表示不在集页里，`null` 表示插槽节点还没挂上。
+ * 页头右上角的动作插槽（视图 tab 下方的独立一行）。`undefined` 表示不在集页里，
+ * `null` 表示插槽节点还没挂上。
  */
 const EpisodeHeaderSlotContext = createContext<HTMLElement | null | undefined>(undefined);
 

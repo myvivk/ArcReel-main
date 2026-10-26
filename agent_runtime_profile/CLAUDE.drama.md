@@ -19,9 +19,18 @@
 `mcp__arcreel__get_workflow_plan`。步骤和建议动作由服务端决定，不按目录或聊天记忆另建状态机。
 用户点名操作时先读 `status.operations`；拒绝时转述稳定原因并处理对应输入。
 
+一个回合只执行一个工作流动作（`next_action`）。动作完成、刷新计划并汇报后，立即结束本回合，
+不要再调用工具或开始下一个动作；`继续` 也只推进一步，下一步必须等用户新的消息。
+`prepare_episode_assets` 由 Agent 执行：读工厂源稿/人物圣经，用 `patch_project` 登记角色、场景、道具和叙事式描述；
+先不生成资产图，登记完成后刷新计划并结束本轮。若刷新后只剩已登记且有描述、仅缺图的项目，
+改用 `generate_assets`：先报缺失 ID 与数量，等用户确认后再入队。
+AI 分镜用 `plan_short_drama_storyboards`：新分镜默认全量、强度 2；部分重写传 `regenerate_scene_ids`；
+全量覆盖或已有分镜图/视频时，先取得用户同意（媒体影响用 `confirm_artifacts=true`）。
+付费生成（资产图 / 分镜图 / 视频）先报本批 ID 与数量，得到用户明确同意后才入队。
+
 - 工厂正文：使用 `/short-drama-factory`。所有正文交给强文本模型，Agent 组装 prompt、运行机检并入库。
-- 工件交付：只调用 `ingest_short_drama_artifacts`，七类工件按 UTF-8 原文 Base64 提交；质量检查失败则返修。
-- 本集资产和 AI 分镜：在 Web 单集页面的对应步骤执行。资产描述从工厂工件准备，AI 分镜读取规范源稿。
+- 工件交付：只调用 `ingest_short_drama_artifacts`；七类工件先用 Write 原样暂存到 `drafts/short_drama/`，交稿时只传相对路径，工具读取暂存原文。质量检查失败则返修。
+- 本集资产：由 Agent 按工厂工件登记与描述，先不生成图。`[场景]` 行只代表「完整场景」（机检 ≤2），钩子、情绪流变、回忆、台词里出现的地点同样要登记为场景资产——分镜侧会自动把「已登记但未写进 `[场景]`」的地点识别为碎片空间，不需要为它们改源稿。AI 分镜：用 `plan_short_drama_storyboards` 从规范源稿生成，Agent 不自行改写分镜。
 - 视觉提示词：使用 `/generate-script`，经 `generate_episode_script` 写入派生状态。
 - K 帧：用 `configure_shot_grid` 逐镜定规格与逐格文本，再用 `generate_shot_grids` 出图；
   确认必须留在分镜详情由用户完成，工具不替用户点确认。

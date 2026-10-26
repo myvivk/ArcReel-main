@@ -1,10 +1,9 @@
-import { useId, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-import type { EpisodeView, EpisodeViewTab } from "./episode-view";
+import type { EpisodeView } from "./episode-view";
 
 /** 视图 tab 的元素 id，视图区以它作为无障碍名。 */
 export function episodeViewTabId(view: EpisodeView): string {
@@ -12,31 +11,11 @@ export function episodeViewTabId(view: EpisodeView): string {
 }
 
 /**
- * 置灰的视图 tab：目前只在资产——该集既没有正式脚本也没有工厂源稿、无资产可抽时出现，
- * 悬停与读屏都说明「脚本生成后可用」。置灰的 tab 不接收指针事件，提示挂在外层；
- * 方向键仍能聚焦到它，焦点进入时同样显示提示。
- */
-function DisabledViewTab({ view, label }: { view: EpisodeView; label: string }) {
-  const { t } = useTranslation("dashboard");
-  const hintId = useId();
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="flex h-full" />}>
-        <TabsTrigger value={view} id={episodeViewTabId(view)} disabled aria-describedby={hintId}>
-          {label}
-        </TabsTrigger>
-        <span id={hintId} className="sr-only">
-          {t("episode_view_needs_script")}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>{t("episode_view_needs_script")}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-/**
- * 集页页头，两行共约 85px：第一行是集头与行尾的制作进度入口，第二行是视图 tab 与当前视图的动作插槽。
- * 动作由各视图经 `EpisodeHeaderActions` 放进插槽，页头不认识具体动作。
+ * 集页页头，三行：第一行是集头与行尾的制作进度入口，第二行是视图 tab，
+ * 第三行是当前视图在右上角的动作（批量补齐、编写提示词、出片等）。动作由各视图经
+ * `EpisodeHeaderActions` 放进插槽，页头不认识具体动作。
+ *
+ * 页签不按流程进度置灰：还没到那一步时，视图内的空状态说明缺什么，动作入口仍留在右上角。
  */
 export function EpisodePageHeader({
   head,
@@ -51,7 +30,7 @@ export function EpisodePageHeader({
   head: ReactNode;
   /** 制作进度入口；演示项目没有。 */
   progress: ReactNode;
-  tabs: EpisodeViewTab[];
+  tabs: EpisodeView[];
   view: EpisodeView;
   onViewChange: (view: EpisodeView) => void;
   /** 「分镜」tab 的名称：参考生视频项目称「视频单元」。 */
@@ -79,21 +58,17 @@ export function EpisodePageHeader({
       <div className="flex h-10 items-center gap-3 px-4">
         <Tabs value={view} onValueChange={(next: EpisodeView) => onViewChange(next)} className="shrink-0">
           <TabsList aria-label={t("episode_view_aria")}>
-            {tabs.map((tab) =>
-              tab.disabled ? (
-                <DisabledViewTab key={tab.view} view={tab.view} label={label[tab.view]} />
-              ) : (
-                <TabsTrigger key={tab.view} value={tab.view} id={episodeViewTabId(tab.view)}>
-                  {label[tab.view]}
-                </TabsTrigger>
-              ),
-            )}
+            {tabs.map((tab) => (
+              <TabsTrigger key={tab} value={tab} id={episodeViewTabId(tab)}>
+                {label[tab]}
+              </TabsTrigger>
+            ))}
           </TabsList>
         </Tabs>
-        {/* 动作多到放不下时横向滚动；插槽靠右，溢出时从左端开始滚，不裁掉第一个动作。 */}
-        <div className="relative flex min-w-0 flex-1 overflow-x-auto scroll-fade-x">
-          <div ref={onActionsSlot} className="ml-auto flex shrink-0 items-center gap-1.5" />
-        </div>
+      </div>
+      {/* 动作行始终显示，动作多到放不下时横向滚动。 */}
+      <div className="relative flex min-h-10 items-center overflow-x-auto px-4 scroll-fade-x">
+        <div ref={onActionsSlot} className="ml-auto flex shrink-0 items-center gap-1.5" />
       </div>
     </header>
   );

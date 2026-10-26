@@ -10,6 +10,7 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { SkillChip } from "./SkillChip";
 import { SubagentCard } from "./SubagentCard";
 import { TaskProgressBlock } from "./TaskProgressBlock";
+import { GateRoundRow } from "./GateRoundRow";
 import { AgentFailureCard } from "./AgentFailureCard";
 import { CompactionMarker } from "./CompactionMarker";
 
@@ -25,6 +26,7 @@ import { CompactionMarker } from "./CompactionMarker";
 //   thinking         -> ThinkingBlock (single line; streaming or summary)
 //   skill_invocation -> SkillChip (standalone, no anchoring tool_use)
 //   task_progress    -> TaskProgressBlock (in-place updated task state)
+//   gate_round       -> GateRoundRow（质量闸逐轮：第 N/5 轮 · 拒绝原因 / 通过）
 //   interrupt_notice -> 分隔线「已停止，这一轮的回复没有完成」
 //   question_answer  -> QuestionAnswerBlock (AskUserQuestion answer)
 //   agent_failure    -> AgentFailureCard（一句话结论，原始信息折叠在「详情」里）
@@ -108,6 +110,9 @@ export function ContentBlockRenderer({ block, index, streaming, announce }: Cont
           block={block}
         />
       );
+
+    case "gate_round":
+      return <GateRoundRow key={block.id ?? `block-${index}`} block={block} />;
 
     case "interrupt_notice":
       return <InterruptNoticeBlock key={block.id ?? `block-${index}`} />;

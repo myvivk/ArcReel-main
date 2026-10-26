@@ -4,6 +4,12 @@
 `next_action` 和 `next_alternatives`。REST 与 MCP 共用同一序列化。
 步骤适用性、顺序、进度和操作准入以服务端为准，不由 Agent 重算。
 
+## 回合边界
+
+Agent 每回合只执行一个动作：完成 `next_action` 后刷新计划、汇报并**结束本轮**，
+不依据刷新后的 `next_action` 在同一回合继续执行。用户说「继续 / 下一步」只推进一步。
+`next_action` 只是建议，不构成自动继续的授权。Web 步骤只导航，付费生成先报 ID 与数量并等用户确认。
+
 ## 四条状态轴
 
 - 步骤：`completed / ready / active / blocked / pending / skipped`。
@@ -26,9 +32,9 @@
 | `none` | 无变更；有 blocker 就展示原因。检查 issues 和完成状态。 |
 | `collect_project_input` | 使用 short-drama-factory 完成内容质量闭环并入库七类工件，或 Web 工件目录导入。 |
 | `create_episode` | Web 分集页新建工厂集账本，再交付工件。 |
-| `prepare_episode_assets` | Web 本集资产步骤按工件准备角色、场景、道具和描述。 |
-| `generate_asset_sheets` | generate_assets 按目标集补齐缺图；描述或引用缺口按逐 ID 问题处理。 |
-| `plan_short_drama_storyboards` | Web AI 分镜从规范工厂源稿生成视觉派生状态，支持全量和指定范围。 |
+| `prepare_episode_assets` | Agent 用 patch_project 按工厂工件登记角色、场景、道具与叙事描述；先不生成资产图；只剩缺图时改用 generate_assets。 |
+| `generate_asset_sheets` | generate_assets 按目标集补齐缺图；先报缺失 ID 与数量，用户确认后入队。 |
+| `plan_short_drama_storyboards` | plan_short_drama_storyboards 从规范工厂源稿生成视觉派生状态：新分镜默认全量、强度 2；部分重写传 regenerate_scene_ids；全量重写或已有媒体先确认。集页入口改为「交给 Agent」。 |
 | `author_prompts` | generate_episode_script，独立 fields=["image_prompt"]。 |
 | `generate_storyboards` | 用户点名的工厂单图生成，经 generate_storyboards；不能替代 K 帧确认。 |
 | `generate_shot_grids` | configure_shot_grid 逐镜定规格与逐格文本（可先 author_shot_grid_prompt），再 generate_shot_grids 出图；K 帧确认留给用户在分镜详情完成。 |

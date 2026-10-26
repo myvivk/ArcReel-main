@@ -27,13 +27,6 @@ export interface AssetListPage {
   counts: Record<AssetType, number>;
 }
 
-export interface AssetCreatePayload {
-  type: AssetType;
-  name: string;
-  description?: string;
-  voice_style?: string;
-}
-
 export interface AssetUpdatePayload {
   name?: string;
   description?: string;

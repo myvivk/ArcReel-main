@@ -68,6 +68,11 @@ class TextGenerator:
         return self.backend.model
 
     @property
+    def provider_id(self) -> str:
+        """当前 backend 的注册表 provider_id；用于按供应商选择结构化输出策略。"""
+        return self._provider_id
+
+    @property
     def max_output_tokens(self) -> int:
         """本生成器每次请求实际生效的输出上限（单位 token）。"""
         return self._max_output_tokens

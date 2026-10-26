@@ -25,6 +25,7 @@ from lib.project.asset_types import resolve_asset_key
 from lib.project.story_plan_docs import marker_asset_names
 from lib.references.reference_catalog import build_reference_catalog, split_derivative_reference
 from lib.script.script_references import payload_reference_names
+from lib.script.short_drama_import import fragment_scene_names
 
 #: 故事规划名字按类型的分组键；与源稿标记行、登记口径同一三类。
 _STORY_PLAN_TYPES: tuple[str, ...] = ("character", "scene", "prop")
@@ -64,6 +65,11 @@ def episode_referenced_assets(
         markers = marker_asset_names(source_markdown)
         for asset_type in _STORY_PLAN_TYPES:
             names.extend((asset_type, name) for name in markers.get(asset_type, ()))
+        # 碎片空间：已登记、在本集叙事里出现、却未用 [场景] 声明的地点（钩子 / 回忆里的旧地）。
+        # 它们同样要出资产图，否则分镜里只能靠文字硬编；口径与分镜侧的 fragment_scene_names 同源。
+        names.extend(
+            ("scene", name) for name in fragment_scene_names((project.get("scenes") or {}).keys(), source_markdown)
+        )
     if story_plan_names:
         for asset_type in _STORY_PLAN_TYPES:
             names.extend((asset_type, name) for name in story_plan_names.get(asset_type, ()))

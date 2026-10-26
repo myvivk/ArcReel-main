@@ -7,7 +7,6 @@ import type { ShotGridPlan } from "@/types/shot-grid";
 import { ShotDetailHeader } from "./ShotDetailHeader";
 import { ShotDetailLayout, ShotGroup, ShotSection } from "./ShotDetailLayout";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PartialSaveError, useEditUnit } from "@/components/shared/edit-unit/useEditUnit";
@@ -16,8 +15,8 @@ import { useStaysInEpisodeView } from "@/components/canvas/episode-page/EpisodeV
 import { PromptPreviewButton } from "@/components/shared/PromptPreviewButton";
 import { ReferencesSection } from "./ReferencesSection";
 import { ReferenceMaterialsSection } from "./ReferenceMaterialsSection";
-import { VideoPromptEditor } from "./VideoPromptEditor";
-import { PromptReferenceMenu } from "./PromptReferenceMenu";
+import { MentionTextarea } from "@/components/shared/mentions/MentionTextarea";
+import { buildMentionCandidates, SHOT_MENTION_KINDS } from "@/components/shared/mentions/mention-candidates";
 import { MediaCard } from "./MediaCard";
 import { EndFrameRow } from "./EndFrameRow";
 import { NotesDrawer } from "./NotesDrawer";
@@ -35,7 +34,9 @@ import { isContinuousIntegerRange } from "@/utils/duration_format";
 import { itemIdWithinEpisode } from "@/utils/episode-display";
 import { charactersFieldFor } from "@/utils/script-shape";
 import { isStructuredImagePrompt, isStructuredVideoPrompt } from "@/utils/prompt-shape";
+import { buildMentionLookup } from "@/utils/reference-mentions";
 import { PromptAuthoringButton } from "@/components/canvas/shared/PromptAuthoringButton";
+import { VideoGenerationDialog } from "./VideoGenerationDialog";
 
 type Segment = NarrationSegment | DramaScene | AdShot;
 type ContentMode = "narration" | "drama" | "ad";
@@ -60,7 +61,12 @@ interface ShotDetailProps {
   onRemoveShot?: (itemId: string) => Promise<boolean>;
   structurePending?: boolean;
   onGenerateStoryboard?: (segmentId: string) => void;
-  onGenerateVideo?: (segmentId: string) => void | Promise<void>;
+  onGenerateVideo?: (
+    segmentId: string,
+    scriptFile?: string,
+    seed?: number | null,
+    frameMode?: "first_last" | "reference",
+  ) => void | Promise<void>;
   onGenerateNarration?: (segmentId: string) => void;
   onRestoreStoryboard?: () => Promise<unknown> | void;
   onRestoreVideo?: () => Promise<unknown> | void;
@@ -132,10 +138,6 @@ function videoPromptText(prompt: ShotFields["video_prompt"]): string {
       .join("\n");
   }
   return prompt.action;
-}
-
-function storyboardAssetReferenceText(name: string): string {
-  return `${name}@[${name}]`;
 }
 
 function shotFieldsOf(segment: Segment, contentMode: ContentMode): ShotFields {
@@ -403,7 +405,19 @@ function ShotDetailContent({
     setValue((prev) => ({ ...prev, [key]: value }));
   const imageText = imagePromptText(fields.image_prompt);
   const videoText = videoPromptText(fields.video_prompt);
+  // 提示词里的 @ 引用：配色查全项目资产表（登记过就不该标红），候选只给本分镜的出场清单。
+  const project = useProjectsStore((state) => state.currentProjectData);
+  const mentionLookup = useMemo(() => buildMentionLookup(project), [project]);
+  const referenceNames = useMemo(
+    () => ({ characters: fields.characters, scenes: fields.scenes, props: fields.props }),
+    [fields.characters, fields.scenes, fields.props],
+  );
+  const mentionCandidates = useMemo(
+    () => buildMentionCandidates(project, referenceNames),
+    [project, referenceNames],
+  );
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
+  const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [materialsBusy, setMaterialsBusy] = useState(false);
   const [restoringMedia, setRestoringMedia] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
@@ -437,18 +451,15 @@ function ShotDetailContent({
 
   const generateVideo = () => {
     if (!onGenerateVideo || videoDisabled || isResourceBusy("video", projectName, segmentId) || gridBusy()) return;
-    void unit.saveAndGenerate(() => onGenerateVideo(segmentId));
-  };
-
-  const insertReference = (side: PromptSide, token: string) => {
-    if (editingBlocked) return;
-    const append = (text: string) => `${text}${text && !/\s$/.test(text) ? " " : ""}${token} `;
-    setValue((prev) => {
-      if (side === "image") {
-        return { ...prev, image_prompt: append(imagePromptText(prev.image_prompt)) };
-      }
-      return { ...prev, video_prompt: append(videoPromptText(prev.video_prompt)) };
-    });
+    if (contentMode !== "drama" || !scriptFile) {
+      void unit.saveAndGenerate(() => onGenerateVideo(segmentId));
+      return;
+    }
+    if (dirty) {
+      void unit.saveAndGenerate(() => setVideoDialogOpen(true));
+      return;
+    }
+    setVideoDialogOpen(true);
   };
 
   const promptActions = (side: PromptSide) => (
@@ -567,16 +578,6 @@ function ShotDetailContent({
         ) : null}
         <ShotSection title={t("detail_image_prompt_title")} icon={<ImageIcon aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
-            <PromptReferenceMenu
-              label={t("shot_insert_asset")}
-              disabled={editingBlocked}
-              groups={[
-                { label: t("references_badge_character"), items: fields.characters.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
-                { label: t("references_badge_scene"), items: fields.scenes.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
-                { label: t("references_badge_prop"), items: fields.props.map((name) => ({ label: name, token: storyboardAssetReferenceText(name) })) },
-              ]}
-              onSelect={(token: string) => insertReference("image", token)}
-            />
             {episode !== undefined && !readOnly ? (
               <PromptAuthoringButton
                 projectName={projectName}
@@ -590,13 +591,18 @@ function ShotDetailContent({
               />
             ) : null}
             {promptActions("image")}
+            <span className="text-xs text-subtle-foreground">{t("shot_mention_hint")}</span>
           </div>
-          <Textarea
-            aria-label={t("detail_image_prompt_title")}
+          <MentionTextarea
+            ariaLabel={t("detail_image_prompt_title")}
             value={imageText}
-            onChange={(event) => setField("image_prompt", event.target.value)}
+            onChange={(next) => setField("image_prompt", next)}
             readOnly={editingBlocked}
             placeholder={t("detail_image_prompt_placeholder")}
+            lookup={mentionLookup}
+            candidates={mentionCandidates}
+            kinds={SHOT_MENTION_KINDS}
+            projectName={projectName}
             className="max-h-none min-h-31"
           />
         </ShotSection>
@@ -611,25 +617,14 @@ function ShotDetailContent({
           disabled={saving || refreshPending || !!generatingStoryboard || !!generatingVideo}
           videoPromptFilled={videoText.trim().length > 0}
           saveFirst={dirty}
+          referenceNames={referenceNames}
           beforeGenerate={prepareGeneration}
           onPlanChange={setPlan}
           onBusyChange={setMaterialsBusy}
         />
         <ShotSection title={t("detail_video_prompt_title")} icon={<Film aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
-            <PromptReferenceMenu
-              label={t("shot_insert_material")}
-              disabled={editingBlocked}
-              groups={[{
-                label: t("shot_reference_materials"),
-                items: materials.map((cell) => ({
-                  label: t("shot_keyframe", { index: cell.index }),
-                  token: `K${cell.index}`,
-                })),
-              }]}
-              onSelect={(token: string) => insertReference("video", token)}
-            />
-            {episode !== undefined && !readOnly && materials.length > 0 ? (
+            {episode !== undefined && !readOnly && videoText.trim().length > 0 ? (
               <PromptAuthoringButton
                 projectName={projectName}
                 episode={episode}
@@ -642,13 +637,19 @@ function ShotDetailContent({
               />
             ) : null}
             {promptActions("video")}
+            <span className="text-xs text-subtle-foreground">{t("shot_mention_hint")}</span>
           </div>
-          <VideoPromptEditor
+          <MentionTextarea
             ariaLabel={t("detail_video_prompt_title")}
             value={videoText}
             onChange={(next) => setField("video_prompt", next)}
             readOnly={editingBlocked}
             placeholder={t("detail_video_prompt_placeholder")}
+            lookup={mentionLookup}
+            candidates={mentionCandidates}
+            kinds={SHOT_MENTION_KINDS}
+            projectName={projectName}
+            className="max-h-none min-h-28"
           />
         </ShotSection>
       </ShotGroup>
@@ -697,11 +698,30 @@ function ShotDetailContent({
   );
 
   return (
-    <ShotDetailLayout
-      header={header}
-      footer={<UnsavedChangesBar unit={unit} disabled={editingBlocked} className="mx-5 my-3 shrink-0" />}
-      main={main}
-      media={<div className="flex min-w-0 flex-col">{videoMedia}</div>}
-    />
+    <>
+      <ShotDetailLayout
+        header={header}
+        footer={<UnsavedChangesBar unit={unit} disabled={editingBlocked} className="mx-5 my-3 shrink-0" />}
+        main={main}
+        media={<div className="flex min-w-0 flex-col">{videoMedia}</div>}
+      />
+      {videoDialogOpen && contentMode === "drama" && scriptFile && onGenerateVideo ? (
+        <VideoGenerationDialog
+          open={videoDialogOpen}
+          onOpenChange={setVideoDialogOpen}
+          projectName={projectName}
+          segmentId={segmentId}
+          scriptFile={scriptFile}
+          scene={{ ...(segment as DramaScene), video_prompt: fields.video_prompt }}
+          characters={fields.characters}
+          cost={segCost?.estimate?.video ?? undefined}
+          generating={generatingVideo}
+          onSavePatch={async (patch) => (onUpdatePrompt ? onUpdatePrompt(segmentId, patch) : false)}
+          onGenerate={async (seed, frameMode) => {
+            await onGenerateVideo(segmentId, scriptFile, seed, frameMode);
+          }}
+        />
+      ) : null}
+    </>
   );
 }

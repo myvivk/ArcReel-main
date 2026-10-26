@@ -1,9 +1,9 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "wouter";
-import { Bot, ChevronDown, FileArchive, Library, Loader2, Plus, Search, Settings } from "lucide-react";
+import { Bot, ChevronDown, FileArchive, Loader2, Plus, Search, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { ROUTE_APP_ASSETS, ROUTE_APP_SETTINGS, settingsSectionPath } from "@/app-routes";
+import { ROUTE_APP_SETTINGS, settingsSectionPath } from "@/app-routes";
 import { BRAND } from "@/branding";
 import { PageHeader } from "@/components/shared/page-shell/PageHeader";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -27,9 +27,9 @@ interface LobbyHeaderProps {
   importing: boolean;
 }
 
-/** 大厅顶栏：品牌与搜索靠左；资产库、外部 Agent 接入、「新建项目」分体按钮与设置靠右。 */
+/** 大厅顶栏：品牌与搜索靠左；外部 Agent 接入、「新建项目」分体按钮与设置靠右。 */
 export function LobbyHeader({ query, onQueryChange, onCreate, onImport, importing }: LobbyHeaderProps) {
-  const { t } = useTranslation(["dashboard", "common", "assets"]);
+  const { t } = useTranslation(["dashboard", "common"]);
   const configComplete = useConfigStatusStore((s) => s.isComplete);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -48,10 +48,6 @@ export function LobbyHeader({ query, onQueryChange, onCreate, onImport, importin
     <PageHeader
       actions={
         <>
-          <Link href={ROUTE_APP_ASSETS} className={buttonVariants({ variant: "ghost" })}>
-            <Library aria-hidden data-icon="inline-start" />
-            {t("assets:library_title")}
-          </Link>
           <IconLink href={settingsSectionPath("external-agent")} label={t("dashboard:settings_external_agent")}>
             <Bot aria-hidden />
           </IconLink>

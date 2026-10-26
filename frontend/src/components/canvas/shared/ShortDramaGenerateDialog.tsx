@@ -3,7 +3,7 @@ import { API } from "@/api";
 import { errMsg } from "@/utils/async";
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import { useTranslation } from "react-i18next";
-import { Bot, ChevronDown, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Bot, ChevronDown, Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import {
@@ -60,6 +60,14 @@ const FORMAT_LENGTH: Record<ShortDramaFormat, string> = {
   manju: "漫剧档 60~90 秒",
 };
 
+/** 项目在创建时设定的单集目标时长决定篇幅档位；未设定时按标准档。 */
+function formatForDuration(seconds: number | null): ShortDramaFormat {
+  if (seconds == null) return "standard";
+  if (seconds >= 150) return "long";
+  if (seconds <= 90) return "manju";
+  return "standard";
+}
+
 /**
  * 把创意简报固化成一段交给 Agent 的指令：让内嵌 Agent 用 short-drama-factory 技能走工厂独立链路
  * 原创剧本——所有正文经 `generate_short_drama_factory` 交给文本模型写作与优化，通过
@@ -93,7 +101,7 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
   } else {
     lines.push(
       "【创意简报】",
-      `- 题材 / 类型：${b.genre.trim()}`,
+      `- 题材 / 类型：${b.genre.trim() || "按创意简报与项目视觉风格确定"}`,
       `- 核心梗概：${b.brief.trim()}`,
       `- 风格基调：${toneLine}`,
       `- 篇幅：${FORMAT_LENGTH[b.format]}`,
@@ -121,7 +129,7 @@ export function buildOriginalShortDramaPrompt(b: OriginalScriptBrief): string {
     "【工厂链路要求（必须遵守，不得阉割）】",
     "1. 先读取工厂 references / templates / examples 和 source/short_drama/ 已有的人物圣经、全剧大纲、台账、分集规划及此前集正文，续写沿用已有设定。所有工厂正文（人物圣经 / 全剧大纲 / 连续性台账 / 分集规划 / 集正文 / 机检报告 / 合规报告）一律由文本模型产出：按工件类型组装 prompt，调用 generate_short_drama_factory 生成 Markdown 原文；Agent 本人不写正文、不转写为 ArcReel JSON。",
     "2. 每集必须走完整质量闭环：初稿 → AI 医生精修（dialogue-doctor-anti-ai）→ 规则机检（validate_episode.py，长档 / 漫剧按对应档位）→ 失败项回喂文本模型返修 → 更新 ledger.md → 阶段性 validate_series.py → 合规检查（screenplay-compliance-rules.md，红线问题返修）。机检 / 合规通过的报告随工件保存，不得裸交失败件。",
-    "3. 每个单元或批次通过后立即用唯一交稿入口 ingest_short_drama_artifacts 把七类 Markdown 工件原样写入 source/short_drama/，不得等全剧写完：系列级工件（character-bible.md / series-outline.md / ledger.md）随首批提交并可跨批复用，台账有变化必须提交新版；每集必须同批包含分集规划、集正文、机检报告与合规报告。报告基于真实检查结果生成，以“结果: PASSED / FAILED”明确结论。传参为各工件的相对路径与 UTF-8 原文 Base64，不改写内容、不抽取到 story_plan、不登记资产、不调用 generate_episode_script。",
+    "3. 每个单元或批次通过后立即用唯一交稿入口 ingest_short_drama_artifacts 把七类 Markdown 工件原样写入 source/short_drama/，不得等全剧写完：系列级工件（character-bible.md / series-outline.md / ledger.md）随首批提交并可跨批复用，台账有变化必须提交新版；每集必须同批包含分集规划、集正文、机检报告与合规报告。报告基于真实检查结果生成，以“结果: PASSED / FAILED”明确结论。先把各工件最终原文用 Write 按相同相对路径暂存到 drafts/short_drama/，交稿工具每项只传相对路径、由服务端读取暂存字节，不要手抄 Base64；不改写内容、不抽取到 story_plan、不登记资产、不调用 generate_episode_script。",
     "4. 禁止把 import_short_drama_script / import_short_drama_series（旧导入会把工厂 Markdown 重写为原生剧本 JSON）或 generate_episode_script（旧视觉提示词生成）作为交付手段；视觉层留待后续独立制作步骤处理。",
     `5. 目标集 ${rangeLabel} 已由前端建好；工件路径用零填充集号（如 episodes/episode_${String(episodes[0]).padStart(2, "0")}.md）。`,
   );
@@ -266,27 +274,44 @@ interface DialogProps {
  */
 function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
   const { t } = useTranslation("dashboard");
+  const assistantBusy = useAssistantStore((state) => state.sending || state.sessionStatus === "running");
   const ledger = useEpisodeLedger();
-  const episodeMetas = useProjectsStore((s) => s.currentProjectData?.episodes);
+  const projectData = useProjectsStore((s) => s.currentProjectData);
+  const episodeMetas = projectData?.episodes;
+  const projectTargetDuration = projectData?.episode_target_duration ?? null;
+  // 首写时写进项目，之后只读复用；没有存过就说明尚未确定，本次仍可填写。
+  const storedGenre = (projectData?.short_drama_genre ?? "").trim();
+  const storedTone = (projectData?.short_drama_tone ?? "").trim();
+  const storedFormat = projectData?.short_drama_format ?? null;
   // 项目级「全剧规划总集数」：首次生成时落库，后续续写读回，避免每次打开弹窗都从 1 开始。
   const projectTotal = useProjectsStore((s) => s.currentProjectData?.total_episodes ?? null);
   // 创建模式下优先填末尾已有的空白集，避免留下永久空集让剧集从第 2 集才开始。
   const reusable = useMemo(() => trailingBlankEpisodes(episodeMetas), [episodeMetas]);
   const fieldId = useId();
   const createMode = request.episode === 0;
-  const [episode, setEpisode] = useState<number>(request.episode);
-  const [genre, setGenre] = useState("");
+  const episode = request.episode;
+  const [genre, setGenre] = useState(storedGenre);
   const [brief, setBrief] = useState("");
-  const [tone, setTone] = useState("");
+  const [tone, setTone] = useState(storedTone);
   const [count, setCount] = useState(1);
   const [total, setTotal] = useState<number>(projectTotal && projectTotal >= 1 ? projectTotal : 1);
-  const [format, setFormat] = useState<ShortDramaFormat>("standard");
+  const [format, setFormat] = useState<ShortDramaFormat>(() => storedFormat ?? formatForDuration(projectTargetDuration));
   const [submitting, setSubmitting] = useState(false);
 
   // 续写约束：本次续写后累计集数不得超过项目规划总集数。
   // 「已存在集数」取当前最大集号（集号连续时即已有集数）；有末尾空白集时从空白集开始续写。
   const maxEpisode = ledger.reduce((max, entry) => Math.max(max, entry.episode), 0);
-  const isContinuation = createMode && maxEpisode > 0;
+  const seriesStarted = Boolean(episodeMetas?.some((entry) => entry.source_origin === "own"));
+  const targetEpisodeMeta = episodeMetas?.find((entry) => entry.episode === episode);
+  // 从集页打开时目标是已经存在的集：重写会覆盖正文，并让下游视觉产物过期。
+  const rewriteRisk =
+    !createMode && Boolean(targetEpisodeMeta) && (targetEpisodeMeta?.source_origin === "own" || seriesStarted);
+  const seriesDefined = storedGenre.length > 0;
+  // 系列设定已经存在（项目里存过，或已交稿但没存过）就不再让改；没有则本次填写后写回项目。
+  const seriesLocked = seriesDefined || seriesStarted;
+  // 只有系列真正开始过（有设定或有工厂源稿）才算续写；只建了空集但没交过稿，仍是首写，
+  // 必须先把题材等系列设定填出来，不能直接以「沿用已有设定」交给 Agent。
+  const isContinuation = createMode && maxEpisode > 0 && seriesLocked;
   // 续写锁定首写已落库的总集数；缺省时至少不低于已有集数，避免把规划误写成 1。
   const plannedTotal = isContinuation
     ? Math.max(projectTotal && projectTotal >= 1 ? projectTotal : 0, maxEpisode)
@@ -302,9 +327,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     createMode && Number.isFinite(plannedTotal) && plannedTotal >= 1 && projectedTotal > plannedTotal;
   const atCapacity = isContinuation && maxWritableCount < 1;
 
-  const canSubmit = isContinuation
-    ? count >= 1 && !overflow && !atCapacity
-    : genre.trim().length > 0 && count >= 1 && !overflow;
+  const canSubmit = seriesLocked
+    ? true
+    : isContinuation
+      ? count >= 1 && !overflow && !atCapacity
+      : genre.trim().length > 0 && count >= 1 && !overflow;
 
   const storyController = useRef(new AbortController());
   useEffect(() => {
@@ -312,9 +339,27 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
     return () => storyController.current.abort();
   }, []);
   const handOff = async () => {
-    if (!canSubmit || submitting) return;
+    if (!canSubmit || submitting || assistantBusy) return;
     setSubmitting(true);
     const signal = storyController.current.signal;
+    // 首次交稿把系列设定写进项目：之后再打开就是只读值，避免逐批改题材破坏一致性。
+    if (!seriesLocked && genre.trim()) {
+      try {
+        await API.updateProject(request.projectName, {
+          short_drama_genre: genre.trim(),
+          short_drama_tone: tone.trim(),
+          short_drama_format: format,
+        }, { signal });
+        await refreshAfterWrite(request.projectName, t);
+        signal.throwIfAborted();
+      } catch (err) {
+        if (!signal.aborted) {
+          useAppStore.getState().pushToast(errMsg(err), "error");
+          setSubmitting(false);
+        }
+        return;
+      }
+    }
     // 创建模式：优先复用末尾的空白集，不够再补建；上下文取这批目标集之前的内容，
     // 保证连写从正确的位置接着写（填第 1 集时上下文为空，等于从头起故事）。
     const reused = createMode ? reusable.slice(0, Number(count)) : [];
@@ -389,8 +434,11 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       totalEpisodes: createMode
         ? plannedTotal
         : Math.max(projectTotal ?? maxEpisode, ...episodes),
-      continuation: isContinuation,
+      continuation: isContinuation || seriesStarted,
     }) +
+      (rewriteRisk
+        ? `\n\n【重写风险】第 ${episode} 集已有工厂正文或资产。重写会覆盖本集正文，并使本集资产、分镜、参考素材、视频提示词和视频过期或需要重做；已生成媒体不会自动删除。执行前先向用户确认。`
+        : "") +
       (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);
@@ -414,6 +462,12 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-4">
+            {rewriteRisk && (
+              <div className="flex gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm text-warn">
+                <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                <p>{t("short_drama_generate_rewrite_warning", { episode })}</p>
+              </div>
+            )}
             <div className="flex flex-col gap-3 @sm/canvas:flex-row @sm/canvas:gap-4">
               {createMode ? (
                 isContinuation ? (
@@ -512,39 +566,65 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
               ) : (
                 <>
                   <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
-                    <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
-                    <SuggestField
-                      id={`${fieldId}-genre`}
-                      value={genre}
-                      onChange={setGenre}
-                      placeholder={t("short_drama_generate_genre_placeholder")}
-                      optionsKey="short_drama_genre_options"
+                    <Label htmlFor={`${fieldId}-episode`}>{t("short_drama_generate_episode_label")}</Label>
+                    <input
+                      id={`${fieldId}-episode`}
+                      readOnly
+                      className="h-9 rounded-md border border-input bg-muted px-3 text-sm tabular-nums text-muted-foreground"
+                      value={episodeDisplayName(ledger, episode, t)}
                     />
                   </div>
-                  <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
-                    <Label htmlFor={`${fieldId}-episode`}>{t("short_drama_generate_episode_label")}</Label>
-                    <select
-                      id={`${fieldId}-episode`}
-                      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                      value={episode}
-                      onChange={(event) => setEpisode(Number(event.target.value))}
-                    >
-                      {ledger.map((ep) => (
-                        <option key={ep.episode} value={ep.episode}>
-                          {episodeDisplayName(ledger, ep.episode, t)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {!seriesLocked && (
+                    <div className="flex flex-col gap-1.5 @sm/canvas:w-1/2">
+                      <Label htmlFor={`${fieldId}-genre`}>{t("short_drama_generate_genre_label")}</Label>
+                      <SuggestField
+                        id={`${fieldId}-genre`}
+                        value={genre}
+                        onChange={setGenre}
+                        placeholder={t("short_drama_generate_genre_placeholder")}
+                        optionsKey="short_drama_genre_options"
+                      />
+                    </div>
+                  )}
                 </>
               )}
             </div>
 
-            {!isContinuation && (
+            {!isContinuation && !seriesLocked && (
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={`${fieldId}-format`}>{t("short_drama_generate_format_label")}</Label>
                 <FormatSelect id={`${fieldId}-format`} value={format} onChange={setFormat} />
               </div>
+            )}
+
+            {seriesLocked && (
+              <>
+                <div className="grid gap-3 @sm/canvas:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium">{t("short_drama_generate_genre_label")}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {storedGenre || t("short_drama_generate_follow_artifacts")}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium">{t("short_drama_generate_format_label")}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {t(FORMAT_ITEMS.find((item) => item.value === format)?.labelKey ?? "short_drama_format_standard")}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium">{t("short_drama_generate_tone_label")}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {storedTone || t("short_drama_generate_follow_artifacts")}
+                    </span>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {seriesDefined
+                    ? t("short_drama_generate_series_saved_hint")
+                    : t("short_drama_generate_series_locked_hint")}
+                </p>
+              </>
             )}
 
             {createMode && !isContinuation && (
@@ -601,19 +681,21 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
                   />
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor={`${fieldId}-tone`}>{t("short_drama_generate_tone_label")}</Label>
-                  <SuggestField
-                    id={`${fieldId}-tone`}
-                    value={tone}
-                    onChange={setTone}
-                    placeholder={t("short_drama_generate_tone_placeholder")}
-                    optionsKey="short_drama_tone_options"
-                  />
-                  {createMode && count > 1 && (
-                    <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>
-                  )}
-                </div>
+                {!seriesLocked && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={`${fieldId}-tone`}>{t("short_drama_generate_tone_label")}</Label>
+                    <SuggestField
+                      id={`${fieldId}-tone`}
+                      value={tone}
+                      onChange={setTone}
+                      placeholder={t("short_drama_generate_tone_placeholder")}
+                      optionsKey="short_drama_tone_options"
+                    />
+                    {createMode && count > 1 && (
+                      <span className="text-xs text-muted-foreground">{t("short_drama_generate_count_hint")}</span>
+                    )}
+                  </div>
+                )}
               </>
             )}
             {isContinuation && count > 1 && (
@@ -622,9 +704,13 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button onClick={() => void handOff()} disabled={!canSubmit || submitting}>
-            <Bot aria-hidden data-icon="inline-start" />
-            {t("short_drama_generate_submit")}
+          <Button onClick={() => void handOff()} disabled={!canSubmit || submitting || assistantBusy}>
+            {submitting || assistantBusy ? (
+              <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+            ) : (
+              <Bot aria-hidden data-icon="inline-start" />
+            )}
+            {t(assistantBusy ? "agent_handoff_busy" : "short_drama_generate_submit")}
           </Button>
         </DialogFooter>
       </DialogContent>

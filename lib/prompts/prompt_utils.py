@@ -15,6 +15,7 @@ from lib.project.asset_types import normalize_asset_bucket, normalize_asset_name
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from lib.prompts.reference_image_numbering import REFERENCE_IMAGES_KEY
+from lib.references.text_parser import mention_spans
 from lib.script.script_models import CameraMotion, ShotType
 
 if TYPE_CHECKING:
@@ -304,7 +305,31 @@ def render_storyboard_video_prompt(
     for section in (asset_links, audio, instruction):
         if section and section not in rendered:
             rendered = f"{rendered.rstrip()}\n\n{section}"
-    return normalize_video_prompt(rendered)
+    # 视频模型没有「按名字绑参考图」的通道：参考图由 K 帧槽位直接下发。正文里的
+    # ``@[名称]`` 去掉引用语法；前面已经写了同名裸名时不再重复补名。
+    return normalize_video_prompt(_strip_video_mentions(rendered))
+
+
+def _strip_video_mentions(text: str) -> str:
+    """去掉视频提示词里的 ``@[名称]`` 记号，保留正文里的裸名。
+
+    分镜提示词的常见写法是 ``沈昭@[沈昭]``（裸名 + 引用记号）：记号直接删掉即可，不能把
+    名字再补一遍，否则会变成「沈昭沈昭」。记号前没有同名裸名时补回名字，避免丢主体。
+    """
+
+    spans = mention_spans(text)
+    if not spans:
+        return text
+    parts: list[str] = []
+    last = 0
+    for start, end, name in spans:
+        prefix = text[last:start]
+        parts.append(prefix)
+        if not prefix.rstrip().endswith(name):
+            parts.append(name)
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def _storyboard_slot_declaration(slots: "StoryboardVideoSlots") -> str:
@@ -312,6 +337,19 @@ def _storyboard_slot_declaration(slots: "StoryboardVideoSlots") -> str:
     if not slots.cell_count:
         return ""
     parts: list[str] = []
+    if slots.reference_only:
+        keys = [f"K{frame.keyframe_index}" for _, frame in slots.frames if frame.keyframe_index is not None]
+        key_range = keys[0] if len(keys) == 1 else f"{keys[0]}–{keys[-1]}" if keys else ""
+        if key_range:
+            parts.append(f"The reference images are {key_range} in their supplied order.")
+        else:
+            parts.append("The supplied images are reference images in supplied order.")
+        if slots.continues_previous:
+            parts.append("The first reference image is the ending frame of the previous shot; continue from it.")
+        parts.append(
+            "No opening or ending frame is supplied; preserve character, setting and action continuity across the references."
+        )
+        return " ".join(parts)
     if slots.continues_previous:
         parts.append("The first frame is the ending frame of the previous shot; continue from it.")
         if slots.cell_count > 1:

@@ -1,6 +1,6 @@
 import { useCallback, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, FolderInput, ImagePlus, Loader2, Pencil, Trash2 } from "lucide-react";
+import { ChevronLeft, ImagePlus, Loader2, Pencil, Trash2 } from "lucide-react";
 import { API } from "@/api";
 import { SaveBar } from "@/components/shared/edit-unit/SaveBar";
 import { TruncatedText } from "@/components/shared/TruncatedText";
@@ -41,7 +41,6 @@ export function AssetDetailSheet({
   mode,
   onModeChange,
   onClose,
-  onApply,
   onDelete,
   onChanged,
 }: {
@@ -50,7 +49,6 @@ export function AssetDetailSheet({
   mode: AssetSheetMode;
   onModeChange: (mode: AssetSheetMode) => void;
   onClose: () => void;
-  onApply: (asset: Asset) => void;
   onDelete: (asset: Asset) => void;
   /** 保存或更换图片后的资产。 */
   onChanged: (asset: Asset) => void;
@@ -79,7 +77,6 @@ export function AssetDetailSheet({
             <AssetDetails
               asset={shown}
               onEdit={() => onModeChange("edit")}
-              onApply={() => onApply(shown)}
               onDelete={() => onDelete(shown)}
             />
           ))}
@@ -100,12 +97,10 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function AssetDetails({
   asset,
   onEdit,
-  onApply,
   onDelete,
 }: {
   asset: Asset;
   onEdit: () => void;
-  onApply: () => void;
   onDelete: () => void;
 }) {
   const { t, i18n } = useTranslation("assets");
@@ -180,10 +175,6 @@ function AssetDetails({
         <Button variant="destructive" className="mr-auto" onClick={onDelete}>
           <Trash2 aria-hidden data-icon="inline-start" />
           {t("delete")}
-        </Button>
-        <Button variant="outline" onClick={onApply}>
-          <FolderInput aria-hidden data-icon="inline-start" />
-          {t("apply_to_project")}
         </Button>
         <Button onClick={onEdit}>
           <Pencil aria-hidden data-icon="inline-start" />

@@ -53,7 +53,11 @@ from lib.prompts.prompt_builders import (
     build_scene_prompt,
     render_storyboard_image_prompt,
 )
-from lib.prompts.reference_image_numbering import PREVIOUS_STORYBOARD_ROLE, clamp_reference_images
+from lib.prompts.reference_image_numbering import (
+    PREVIOUS_STORYBOARD_ROLE,
+    STYLE_REFERENCE_ROLE,
+    clamp_reference_images,
+)
 from lib.references.reference_admission import SHEET_MISSING_CODE, UNREGISTERED_REFERENCE_CODE
 from lib.references.reference_catalog import ReferenceCatalog, build_reference_catalog
 from lib.script.storyboard_sequence import find_storyboard_item, get_storyboard_items
@@ -359,6 +363,11 @@ def storyboard_image_input(
     if index > 0 and not item.get("segment_break"):
         assembly.add_previous_storyboard(items[index - 1], id_field=id_field, episode=episode)
 
+    # 画风锚图：压住两次生图之间的色温、质感与光线漂移；项目没设参考图就略过。
+    style_image = project.get("style_image")
+    if isinstance(style_image, str) and style_image.strip():
+        assembly.add_style_reference(style_image.strip())
+
     if assembly.gaps:
         return InputRefused(reasons=tuple(assembly.gaps))
     return StoryboardImageInput(
@@ -623,7 +632,11 @@ class _Assembly:
         )
 
     def add_previous_storyboard(self, previous_item: object, *, id_field: str, episode: int) -> None:
-        """上一分镜图是系统推导的可选输入：不可用只是略去，不产生缺口。"""
+        """上一分镜图是系统推导的可选输入：不可用只是略去，不产生缺口。
+
+        优先取上一分镜宫格的**末格 Kn**——它才是下一段的真实起点，构图、色调、光向都比
+        整张拼图更贴近；末格不是独立登记产物，因此不带 claim。取不到再退回整张分镜图。
+        """
 
         if not isinstance(previous_item, Mapping):
             return
@@ -631,6 +644,22 @@ class _Assembly:
         assets = previous_item.get("generated_assets")
         if not previous_id or not isinstance(assets, Mapping):
             return
+        if (frame := _previous_frame_path(assets)) is not None:
+            observed = self._observation.observe(frame)
+            if observed is not None:
+                self._append(
+                    AssembledReference(
+                        visual=_visual(
+                            observed,
+                            role=PREVIOUS_STORYBOARD_ROLE,
+                            logical_type="storyboard",
+                            logical_id=previous_id,
+                            kind="grid_cell",
+                        ),
+                        artifact_path=observed.artifact_path,
+                    )
+                )
+                return
         declared = _declared_path(assets, "storyboard_image")
         if declared is None:
             return
@@ -647,6 +676,32 @@ class _Assembly:
                 claim=claim,
             )
         )
+
+    def add_style_reference(self, style_image: str) -> None:
+        """项目画风锚图：只读参考，缺文件就略去，不产生缺口。"""
+
+        observed = self._observation.observe(style_image)
+        if observed is None:
+            return
+        self._append(
+            AssembledReference(
+                visual=_visual(observed, role=STYLE_REFERENCE_ROLE, logical_type="style", logical_id="style"),
+                artifact_path=observed.artifact_path,
+            )
+        )
+
+
+def _previous_frame_path(assets: Mapping[str, Any]) -> str | None:
+    """上一分镜宫格的末格路径（``shot_grid.cell_paths`` 最后一项）；没有宫格返回 ``None``。"""
+
+    grid = assets.get("shot_grid")
+    if not isinstance(grid, Mapping):
+        return None
+    cells = grid.get("cell_paths")
+    if not isinstance(cells, list) or not cells:
+        return None
+    last = cells[-1]
+    return last.strip() if isinstance(last, str) and last.strip() else None
 
 
 def _declared_path(container: object, field: str) -> str | None:

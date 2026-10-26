@@ -33,6 +33,8 @@ from lib.infra.data_root_layout import DataRootLayout
 from lib.prompts.prompt_templates.builtin import builtin_templates
 from server.agent_runtime.agent_access_policy import AgentAccessPolicy
 from server.agent_runtime.arcreel_mcp import build_arcreel_mcp_server
+from server.agent_runtime.claude_cli_path import resolve_claude_cli_path
+from server.agent_runtime.tool_progress import ProgressReporter
 from server.auth import create_token, is_auth_enabled
 
 logger = logging.getLogger(__name__)
@@ -99,6 +101,7 @@ class OptionsAssembler:
         provider_env_loader: Callable[[], Awaitable[dict[str, str]]] | None = None,
         session_factory_provider: Callable[[], Any] | None = None,
         user_id_provider: Callable[[], str] | None = None,
+        resolve_cli_path: Callable[[], str | None] | None = None,
     ) -> None:
         self.data_root = Path(data_root)
         self.layout = DataRootLayout(self.data_root)
@@ -110,6 +113,7 @@ class OptionsAssembler:
         self._provider_env_loader = provider_env_loader
         self._session_factory_provider = session_factory_provider or (lambda: None)
         self._user_id_provider = user_id_provider or (lambda: DEFAULT_USER_ID)
+        self._resolve_cli_path = resolve_cli_path or resolve_claude_cli_path
         # session store 单例缓存：每个 assembler 一份，避免每次 build 都新建 store。
         self._cached_session_store: DbSessionStore | None = None
         self._session_store_resolved = False
@@ -252,6 +256,7 @@ class OptionsAssembler:
         locale: str = DEFAULT_LOCALE,
         stderr: Callable[[str], None] | None = None,
         session_id: str | None = None,
+        tool_progress: ProgressReporter | None = None,
     ) -> Any:
         """Build ClaudeAgentOptions for a session.
 
@@ -261,6 +266,9 @@ class OptionsAssembler:
 
         ``session_id`` 以预先指定的 id 开一个全新会话（无历史可 resume），
         与 ``resume_id`` 互斥——SDK 只在 ``fork_session`` 下才允许两者并存。
+
+        ``tool_progress`` 是注入 ArcReel in-process MCP server 的逐轮进度回调；
+        缺省 None 时工具行为不变（Web / 远程 / 单测）。
         """
         if not SDK_AVAILABLE:
             raise RuntimeError("claude_agent_sdk is not installed")
@@ -341,10 +349,14 @@ class OptionsAssembler:
             project_name=project_name,
             data_root=self.data_root,
             user_id=self._user_id_provider(),
+            report_progress=tool_progress,
         )
 
         return ClaudeAgentOptions(
             cwd=str(project_cwd),
+            # 显式指定原生 CLI：Windows 上 SDK 拒绝执行 npm 的 claude.cmd 包装脚本
+            # （cmd.exe 参数注入无法安全转义），该脚本只是转发到包内的 claude.exe。
+            cli_path=self._resolve_cli_path(),
             setting_sources=self._setting_sources,
             # 项目记忆：把原生 auto memory 的目录从「按 git 仓库根派生」重定向到项目目录内，
             # 否则同一台机器上所有 ArcReel 项目与开发者的交互会话共用一份 MEMORY.md。

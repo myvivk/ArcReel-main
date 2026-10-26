@@ -33,6 +33,26 @@ def test_build_arcreel_mcp_server_contains_all_tools(tmp_path: Path) -> None:
     assert "instance" in srv
 
 
+def test_build_arcreel_mcp_server_threads_progress_reporter(tmp_path: Path, monkeypatch) -> None:
+    """会话层注入的逐轮进度回调必须挂到内嵌宿主的 CallerContext 上。"""
+    captured: dict[str, object] = {}
+
+    def fake_embedded(declarations, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("server.agent_runtime.arcreel_mcp.embedded_server", fake_embedded)
+
+    async def reporter(round_) -> None:  # pragma: no cover - 只验证透传身份
+        raise AssertionError("不应在装配阶段调用")
+
+    build_arcreel_mcp_server(project_name="demo", data_root=tmp_path, report_progress=reporter)
+
+    caller = captured["caller"]
+    assert caller.report_progress is reporter
+    assert caller.source == "embedded"
+
+
 async def test_session_server_lists_every_catalogued_tool(tmp_path: Path) -> None:
     server = build_arcreel_mcp_server(project_name="demo", data_root=tmp_path)["instance"]
 

@@ -236,7 +236,7 @@ async function expectInViewport(page: Page, target: Locator) {
 
 defineRegionScenarios("剪辑视图", [
   {
-    name: "本集还没有剪辑时间线时显示两个入口",
+    name: "本集还没有剪辑时间线且不能剪辑时只说明原因，不给出入口",
     path: EDIT_PATH,
     api: API,
     ready: async (page) => {
@@ -244,8 +244,10 @@ defineRegionScenarios("剪辑视图", [
       await page.getByRole("heading", { name: "这一集还没有剪辑时间线" }).waitFor();
     },
     act: async (page) => {
-      await expect(page.getByRole("button", { name: "交给 Agent 剪辑" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "新建剪辑时间线" })).toBeVisible();
+      // 准入不成立（本集没有可用视频）：给出原因是「需要先生成视频」，两个入口都不出现
+      await expect(editView(page).getByText("需要先生成视频")).toBeVisible();
+      await expect(editView(page).getByRole("button", { name: "交给 Agent 剪辑" })).toHaveCount(0);
+      await expect(editView(page).getByRole("button", { name: "新建剪辑时间线" })).toHaveCount(0);
     },
   },
   {

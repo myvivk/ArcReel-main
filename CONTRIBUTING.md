@@ -27,6 +27,8 @@ uv run alembic upgrade head
 # 启动后端 (终端 1)
 # 注意：必须用 --reload-dir 限定监视目录，否则 watchfiles 会扫描
 # node_modules / .venv / .git / .worktrees 等数十万个文件，单核 CPU 占用超过 50%
+# Windows 原生开发另加 --loop server.dev_loop:proactor_loop_factory：
+# --reload 下 uvicorn 默认用 SelectorEventLoop，无法为内嵌 Agent 创建子进程
 uv run uvicorn server.app:app --reload --reload-dir server --reload-dir lib --port 1241
 
 # 启动前端 (终端 2)
@@ -62,7 +64,7 @@ pnpm check-consistency
 
 ## 测试
 
-开发循环与 push 前的完整闸门见 [`AGENTS.md`](https://github.com/ArcReel/ArcReel/blob/main/AGENTS.md)「工具链与校验」和 [`docs/agents/testing.md`](https://github.com/ArcReel/ArcReel/blob/main/docs/agents/testing.md)；CI 跑同一套检查。
+开发循环与 push 前的完整闸门见 [`AGENTS.md`](https://github.com/ArcReel/ArcReel/blob/main/AGENTS.md)「工具链与校验」和 [`docs/agents/testing.md`](https://github.com/ArcReel/ArcReel/blob/main/docs/agents/testing.md)。**本项目不运行测试（含下面的 Playwright e2e）**：不要执行 `pytest`、`vitest`、`pnpm test`、`pnpm e2e`，也不要编辑或新增测试文件；下面的页面级测试说明仅作存档。
 
 ### 前端页面级测试
 

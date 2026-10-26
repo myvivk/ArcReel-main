@@ -301,5 +301,4 @@ export interface WorkflowPlan {
 /** `POST /projects/{name}/workflow-plan` 的请求体。 */
 export interface WorkflowPlanRequest {
   episode_id?: number | null;
-  confirmed_request_durations?: Record<string, number>;
 }

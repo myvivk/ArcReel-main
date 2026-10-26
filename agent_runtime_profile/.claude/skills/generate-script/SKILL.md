@@ -6,7 +6,8 @@ description: 为工厂 AI 分镜的派生状态编写视觉提示词。用于补
 # 编写视觉提示词
 
 先调用 `mcp__arcreel__get_workflow_plan({"episode_id": N})`，使用目标集当前脚本名和 operation 准入。
-工厂源稿未入库、资产未准备或尚无 AI 分镜时，进入 Web 对应工厂步骤。
+工厂源稿未入库或资产未准备时进入 Web 对应工厂步骤；尚无 AI 分镜时先调用
+`mcp__arcreel__plan_short_drama_storyboards({"episode_id": N})`（或 Web「AI 分镜」），再回来写提示词。
 
 ## 工具调用
 

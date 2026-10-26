@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "wouter";
+import { Bot, Loader2 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AssetGallery } from "@/components/canvas/lorebook/AssetGallery";
-import { EpisodeAssetGenerateDialog } from "@/components/canvas/episode-page/EpisodeAssetGenerateDialog";
+import { EpisodeHeaderActions } from "@/components/canvas/episode-page/EpisodeHeaderActions";
+import { useAssistantStore } from "@/stores/assistant-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAssetSheetStatus } from "@/components/canvas/lorebook/useAssetSheetStatus";
 import { useActiveResourceIds } from "@/stores/tasks-store";
@@ -14,7 +16,6 @@ import { useAppStore } from "@/stores/app-store";
 import { API } from "@/api";
 import type { AssetSheetType, EpisodeReferencedAssets, ProjectData } from "@/types";
 import { errMsg } from "@/utils/async";
-import { episodeDisplayName } from "@/utils/episode-display";
 
 const TYPES: AssetSheetType[] = ["character", "scene", "prop"];
 
@@ -33,12 +34,12 @@ export function EpisodeAssetsView({
   projectData: ProjectData | null;
 }) {
   const { t } = useTranslation(["assets", "dashboard"]);
+  const assistantBusy = useAssistantStore((state) => state.sending || state.sessionStatus === "running");
   const snapshotRevision = useProjectsStore((state) => state.projectSnapshotRevisions[projectName] ?? 0);
   const [result, setResult] = useState<EpisodeReferencedAssets | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [activeType, setActiveType] = useState<AssetSheetType>("character");
-  const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -83,8 +84,6 @@ export function EpisodeAssetsView({
   }, [result]);
 
   const allPath = `/${bucketKeyOf(activeType)}`;
-  const scriptPath = `/episodes/${episode}`;
-  const episodeTitle = episodeDisplayName(projectData?.episodes ?? [], episode, t);
 
   if (error) {
     return (
@@ -116,21 +115,39 @@ export function EpisodeAssetsView({
   const all = projectData?.[bucketKeyOf(activeType)] ?? {};
   const total = Object.keys(all).length;
 
-  /** 页内唯一的「生成本集资产」入口：点开确认框，确认后才真正生成。 */
-  const generateButton = (
-    <Button variant="default" size="sm" disabled={!result.has_script} onClick={() => setDialogOpen(true)}>
-      {t("episode_assets_generate", { ns: "dashboard" })}
+  /** 资产步骤不再手动点生成：把登记、描述和缺图确认交给 Agent。 */
+  const handoffButton = (
+    <Button
+      variant="default"
+      size="sm"
+      disabled={!result.has_script || assistantBusy}
+      onClick={() => {
+        const prompt =
+          `请为本集（第 ${episode} 集）准备资产：读取 source/short_drama 的工厂源稿和人物圣经，` +
+          "用 patch_project 登记本集引用的角色、场景、道具和叙事式描述；先不要生成资产图。" +
+          "登记完成后，如果还有缺图，先报缺失 ID 与数量，等我确认后再生成。" +
+          "重新生成资产图会让使用它的分镜图、视频变为过期；已生成媒体保留但需重做。完成后刷新计划、汇报并结束本轮。";
+        useAssistantStore.getState().setInput(prompt);
+        useAppStore.getState().setAssistantPanelOpen(true);
+      }}
+    >
+      {assistantBusy ? (
+        <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+      ) : (
+        <Bot aria-hidden data-icon="inline-start" />
+      )}
+      {t(assistantBusy ? "agent_handoff_busy" : "episode_assets_handoff", { ns: "dashboard" })}
     </Button>
   );
 
   return (
     <Tabs value={activeType} onValueChange={(value) => setActiveType(value as AssetSheetType)} className="min-h-0 min-w-0 flex-1">
-      <header className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-4 py-2">
-        {generateButton}
+      <EpisodeHeaderActions>
+        {handoffButton}
         <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={allPath}>
           {t("episode_assets_all", { ns: "dashboard", type: title, count: total })}
         </Link>
-      </header>
+      </EpisodeHeaderActions>
       <div className="relative shrink-0 overflow-x-auto scroll-fade-x px-4">
         <TabsList variant="line" aria-label={t("episode_assets_types", { ns: "dashboard" })}>
           {TYPES.map((type) => {
@@ -165,9 +182,6 @@ export function EpisodeAssetsView({
             <>
               <p className="text-sm font-medium">{t("episode_assets_no_script", { ns: "dashboard" })}</p>
               <p className="text-sm text-muted-foreground">{t("episode_assets_no_script_hint", { ns: "dashboard" })}</p>
-              <Link className={buttonVariants({ size: "sm" })} href={scriptPath}>
-                {t("episode_assets_go_script", { ns: "dashboard" })}
-              </Link>
             </>
           )}
         </div>
@@ -183,20 +197,9 @@ export function EpisodeAssetsView({
           onRestoreVersion={handleRestoreVersion}
           statusRows={statuses.filter((row) => row.asset_type === activeType && Object.hasOwn(assets, row.name))}
           batchScope={{ episode_id: episode }}
-          hideAddActions
         />
       )}
       </TabsContent>
-      {dialogOpen && (
-        <EpisodeAssetGenerateDialog
-          projectName={projectName}
-          episode={episode}
-          episodeTitle={episodeTitle}
-          plan={result.plan}
-          onClose={() => setDialogOpen(false)}
-          onSubmitted={() => setRetry((value) => value + 1)}
-        />
-      )}
     </Tabs>
   );
 }

@@ -127,8 +127,8 @@ logger = logging.getLogger(__name__)
 PROJECT_SLUG_SANITIZER = re.compile(r"[^a-zA-Z0-9]+")
 
 # 生成模式（generation_mode）：二值必填，创建即定、之后不可变（可变性由 PATCH 模型结构保证）。
-# 宫格不是生成模式：它由独立的 grid_storyboard 布尔表达，仅 `storyboard` 生成模式有意义。
-# 存量三值 "grid" 已由 v4→v5 迁移重编码为 storyboard + grid_storyboard=true。
+# 宫格装配（grid_storyboard）未实现：该布尔只作为 v4→v5 迁移的历史遗留字段存在，读写都不参与判定；
+# 存量三值 "grid" 已在迁移里重编码为 storyboard。
 VALID_GENERATION_MODES: frozenset[str] = frozenset({"storyboard", "reference_video"})
 _DEFAULT_GENERATION_MODE = "storyboard"
 

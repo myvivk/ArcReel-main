@@ -38,7 +38,7 @@ const INITIAL: PagesState = {
   moreError: null,
 };
 
-/** 与后端搜索同口径（类型一致、名称包含搜索词，ASCII 不区分大小写），用于判断本地新建或更新的条目是否计入当前结果。 */
+/** 与后端搜索同口径（类型一致、名称包含搜索词，ASCII 不区分大小写），用于判断本地更新的条目是否计入当前结果。 */
 function matchesQuery(asset: Asset, { type, q }: AssetQuery): boolean {
   return (!type || asset.type === type) && (!q || asset.name.toLowerCase().includes(q.toLowerCase()));
 }
@@ -64,8 +64,6 @@ export interface AssetPages {
   loadMore: () => void;
   /** 重新加载首页（首页失败后）或下一页（翻页失败后）。 */
   retry: () => void;
-  /** 本地新建的条目：符合当前类型与搜索词时插到最前，并更新计数。 */
-  add: (asset: Asset) => void;
   /** 本地更新的条目：按更新时间排在最前，与后端排序一致。 */
   update: (asset: Asset) => void;
   remove: (asset: Asset) => void;
@@ -174,17 +172,6 @@ export function useAssetPages({ type, q }: { type?: AssetType; q: string }): Ass
     setReloadToken((n) => n + 1);
   }, [state.moreError]);
 
-  const add = useCallback(
-    (asset: Asset) =>
-      settleLocalChange((prev) => {
-        if (!prev.query || !matchesQuery(asset, { q: prev.query.q })) return prev;
-        const counts = bump(prev.counts, asset.type, 1);
-        if (!matchesQuery(asset, prev.query)) return { ...prev, counts };
-        return { ...prev, counts, items: [asset, ...prev.items], nextOffset: prev.nextOffset + 1, total: prev.total + 1 };
-      }),
-    [settleLocalChange],
-  );
-
   /** 只处理已加载的条目：未加载的条目已计入 total，插入或减计数都会让计数与列表错位。 */
   const update = useCallback(
     (asset: Asset) =>
@@ -229,7 +216,6 @@ export function useAssetPages({ type, q }: { type?: AssetType; q: string }): Ass
     hasMore,
     loadMore,
     retry,
-    add,
     update,
     remove,
   };

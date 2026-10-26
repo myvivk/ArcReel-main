@@ -12,6 +12,7 @@ from lib.references.text_parser import (
     speech_line_description,
     split_speech_line,
 )
+from lib.speech.narration_config import POST_PRODUCTION, project_narration_delivery
 
 
 class SpeechOwner(StrEnum):
@@ -166,11 +167,35 @@ class SpeechAdmissionError(ValueError):
         super().__init__(f"unit {admission.unit_id} speech admission blocked: {codes}")
 
 
+@dataclass(frozen=True, slots=True)
+class SpeechPolicy:
+    """Project-level delivery policy for one speech unit.
+
+    后期配音项目里画外音不进视频提示词、由字幕与后期音轨交付，因此允许同一单位里台词与
+    画外音并存；TTS 项目仍要求单一发声归属。
+    """
+
+    allow_character_and_narrator: bool = False
+
+
+STRICT_SPEECH_POLICY = SpeechPolicy()
+
+
+def speech_policy_for_project(project: Mapping[str, object]) -> SpeechPolicy:
+    """按项目旁白交付方式解析发声策略。"""
+
+    return SpeechPolicy(allow_character_and_narrator=project_narration_delivery(project) == POST_PRODUCTION)
+
+
 class SpeechComposition:
     """Derive unit-wide speech facts from a content-neutral snapshot."""
 
     @staticmethod
-    def prepare(snapshot: SpeechUnitSnapshot) -> SpeechPreparation:
+    def prepare(
+        snapshot: SpeechUnitSnapshot,
+        *,
+        policy: SpeechPolicy = STRICT_SPEECH_POLICY,
+    ) -> SpeechPreparation:
         problems = list(snapshot.problems)
         utterances: list[SpeechUtterance] = []
         for entry in snapshot.entries:
@@ -188,7 +213,7 @@ class SpeechComposition:
             )
 
         owners = {entry.owner for entry in utterances}
-        if owners == {SpeechOwner.CHARACTER, SpeechOwner.NARRATOR}:
+        if owners == {SpeechOwner.CHARACTER, SpeechOwner.NARRATOR} and not policy.allow_character_and_narrator:
             problems.append(
                 SpeechProblem(
                     code=SpeechProblemCode.MIXED_SPEECH,
@@ -201,9 +226,10 @@ class SpeechComposition:
 
         if problems:
             mode = None
-        elif owners == {SpeechOwner.CHARACTER}:
+        elif SpeechOwner.CHARACTER in owners:
+            # 混许画外音的单位，视频发声归属仍是角色台词；画外音不进视频提示词。
             mode = SpeechMode.CHARACTER_SPEECH
-        elif owners == {SpeechOwner.NARRATOR}:
+        elif SpeechOwner.NARRATOR in owners:
             mode = SpeechMode.NARRATOR_VOICEOVER
         else:
             mode = SpeechMode.SILENT
@@ -517,6 +543,7 @@ def admit_script_unit(
     unit: Mapping[str, object],
     *,
     ignore_marker: bool = False,
+    policy: SpeechPolicy = STRICT_SPEECH_POLICY,
 ) -> SpeechAdmission:
     """Evaluate one script unit through the adapter registered for its skeleton."""
 
@@ -527,7 +554,7 @@ def admit_script_unit(
     source = dict(unit)
     if ignore_marker:
         source.pop("needs_replan", None)
-    return SpeechAdmission(SpeechComposition.prepare(adapter(source)))
+    return SpeechAdmission(SpeechComposition.prepare(adapter(source), policy=policy))
 
 
 def require_script_unit_admitted(
@@ -535,10 +562,11 @@ def require_script_unit_admitted(
     unit: Mapping[str, object],
     *,
     ignore_marker: bool = False,
+    policy: SpeechPolicy = STRICT_SPEECH_POLICY,
 ) -> SpeechAdmission:
     """Return admission or raise a structured blocker before any side effect."""
 
-    admission = admit_script_unit(skeleton_kind, unit, ignore_marker=ignore_marker)
+    admission = admit_script_unit(skeleton_kind, unit, ignore_marker=ignore_marker, policy=policy)
     if not admission.allowed:
         raise SpeechAdmissionError(admission)
     return admission
@@ -581,6 +609,7 @@ def refresh_video_unit_replan_state(
 
 
 __all__ = [
+    "STRICT_SPEECH_POLICY",
     "SpeechAdmission",
     "SpeechAdmissionError",
     "SpeechComposition",
@@ -588,6 +617,7 @@ __all__ = [
     "SpeechInputUtterance",
     "SpeechMode",
     "SpeechOwner",
+    "SpeechPolicy",
     "SpeechPreparation",
     "SpeechProblem",
     "SpeechProblemAction",
@@ -602,5 +632,6 @@ __all__ = [
     "admit_script_unit",
     "refresh_video_unit_replan_state",
     "require_script_unit_admitted",
+    "speech_policy_for_project",
     "video_unit_replan_problems",
 ]

@@ -239,7 +239,8 @@ def marker_asset_names(text: str) -> dict[str, list[str]]:
     for block in parsed.blocks:
         for name in block.characters:
             _add("character", name)
-        _add("scene", block.location)
+        for name in block.locations:
+            _add("scene", name)
         for name in block.props:
             _add("prop", name)
     return collected

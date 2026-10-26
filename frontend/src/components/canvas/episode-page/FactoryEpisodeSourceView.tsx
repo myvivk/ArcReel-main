@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
-import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { EpisodeHeaderActions } from "./EpisodeHeaderActions";
 import type { useFactoryEpisodeSource } from "./useFactoryEpisodeSource";
 
@@ -25,27 +24,20 @@ export function FactoryEpisodeSourceView({
       </section>
     );
   }
-  const actions = (
-    <>
-      <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-      <ShortDramaImportButton projectName={projectName} episode={episode} />
-    </>
-  );
-  if (!source.exists || !source.value) {
-    return (
-      <section className="flex min-h-48 flex-col items-center justify-center gap-4 p-6">
-        <p className="text-sm text-muted-foreground">{t("timeline_script_not_ready")}</p>
-        <div className="flex flex-wrap gap-2">{actions}</div>
-      </section>
-    );
-  }
+  const actions = <ShortDramaGenerateButton projectName={projectName} episode={episode} />;
   return (
     <>
       <EpisodeHeaderActions>{actions}</EpisodeHeaderActions>
-      <article className="relative min-h-0 min-w-0 flex-1 overflow-y-auto p-6 [scrollbar-gutter:stable]">
-        <p className="mb-4 break-all font-mono text-xs text-muted-foreground">{source.value.path}</p>
-        <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">{source.value.markdown}</pre>
-      </article>
+      {!source.exists || !source.value ? (
+        <section className="flex min-h-48 flex-1 flex-col items-center justify-center gap-4 p-6">
+          <p className="text-sm text-muted-foreground">{t("timeline_script_not_ready")}</p>
+        </section>
+      ) : (
+        <article className="relative min-h-0 min-w-0 flex-1 overflow-y-auto p-6 [scrollbar-gutter:stable]">
+          <p className="mb-4 break-all font-mono text-xs text-muted-foreground">{source.value.path}</p>
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-foreground">{source.value.markdown}</pre>
+        </article>
+      )}
     </>
   );
 }

@@ -9,16 +9,10 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel, ConfigDict, Field
 
 from lib.infra.api_errors import ConflictError, NotFoundError, UnprocessableError
-from lib.infra.async_thread import run_sync_transaction
 from lib.project.project_manager import get_project_manager
 from lib.script.short_drama_import import assets_missing_description
 from lib.script.short_drama_source import load_short_drama_source, short_drama_source_relative_path
-from lib.short_drama_ingest import (
-    ShortDramaArtifactError,
-    decode_artifact_content,
-    ingest_short_drama_artifacts,
-    load_short_drama_artifacts,
-)
+from lib.short_drama_ingest import load_short_drama_artifacts
 from server.auth import CurrentUser
 from server.services.short_drama_workflow import (
     ShortDramaWorkflowError,
@@ -41,17 +35,6 @@ class ShortDramaReimportRequest(BaseModel):
     force_regenerate: bool = False
     #: 非空时只重生成这些分镜（scene_id），其余分镜原样保留；空/缺省 = 整体 AI 分镜。
     regenerate_scene_ids: list[str] = Field(default_factory=list)
-
-
-class ShortDramaArtifactItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    path: str = Field(min_length=1)
-    content_base64: str = Field(min_length=1)
-
-
-class ShortDramaArtifactImportRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    artifacts: list[ShortDramaArtifactItem] = Field(min_length=1)
 
 
 def short_drama_context(project_name: str, user_id: str) -> tuple[ProjectScope, CallerContext, Services]:
@@ -156,23 +139,3 @@ async def get_artifacts(project_name: str):
     except FileNotFoundError as exc:
         raise NotFoundError("project_not_found", name=project_name) from exc
     return {"artifacts": [artifact.as_dict() for artifact in artifacts]}
-
-
-@router.post("/projects/{project_name}/short-drama/import-artifacts")
-async def import_artifacts(project_name: str, req: ShortDramaArtifactImportRequest):
-    manager = get_project_manager()
-    try:
-        project = await asyncio.to_thread(manager.load_project, project_name)
-        if project.get("content_mode") != "drama":
-            raise UnprocessableError("short_drama_import_refused", reason="not a drama project")
-        artifacts = await run_sync_transaction(
-            ingest_short_drama_artifacts,
-            manager,
-            project_name,
-            [(item.path, decode_artifact_content(None, item.content_base64)) for item in req.artifacts],
-        )
-    except FileNotFoundError as exc:
-        raise NotFoundError("project_not_found", name=project_name) from exc
-    except ShortDramaArtifactError as exc:
-        raise UnprocessableError("short_drama_import_refused", reason=str(exc)).with_diagnostic(str(exc)) from exc
-    return {"artifacts": [artifact.as_dict(include_content=False) for artifact in artifacts]}

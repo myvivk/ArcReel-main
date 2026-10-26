@@ -5,7 +5,6 @@ import { MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 
 import { WORKSPACE_ROUTE_EPISODES } from "@/app-routes";
 import { ShortDramaGenerateButton, ShortDramaGenerateHost } from "@/components/canvas/shared/ShortDramaGenerateDialog";
-import { ShortDramaImportButton, ShortDramaImportHost } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -81,7 +80,6 @@ export function EpisodesView({ projectName }: { projectName: string }) {
               <p className="text-sm text-muted-foreground">{t("dashboard:no_episodes_yet")}</p>
               <div className="flex flex-wrap justify-center gap-2">
                 <ShortDramaGenerateButton projectName={projectName} episode={0} />
-                <ShortDramaImportButton projectName={projectName} />
               </div>
             </div>
           ) : (
@@ -142,7 +140,6 @@ export function EpisodesView({ projectName }: { projectName: string }) {
       {deletion.dialog}
       {batchDeletion.dialog}
       <ShortDramaGenerateHost projectName={projectName} episode={0} />
-      <ShortDramaImportHost projectName={projectName} />
     </div>
   );
 }

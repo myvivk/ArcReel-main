@@ -16,6 +16,7 @@ export type StepIntent =
   | { type: "asset_batch"; episodeId: number }
   | { type: "storyboard_batch"; episodeId: number; kind: StoryboardBatchKind }
   | { type: "create_edit_timeline" }
+  | { type: "open_factory_generate" }
   | { type: "view_unit"; unitId: string }
   | { type: "route"; path: string };
 export interface StepAct {
@@ -77,17 +78,29 @@ function withRunning(row: StepRowView): StepRowView {
 }
 
 
+/**
+ * 剪辑准入与剪辑视图同一套判定：只有制作状态明确 admitted 才算通过。
+ * 读不到这一操作（含整份计划取不到）时不猜可用，按「暂时读不到状态」处理。
+ */
+export function editAdmission(
+  t: TFunction,
+  operation: WorkflowOperation | undefined,
+): { admitted: boolean; reason: string | null } {
+  if (operation?.state === "admitted") return { admitted: true, reason: null };
+  return { admitted: false, reason: refusalReason(t, operation) ?? t("workflow:plan_unavailable") };
+}
+
+
 function editActs(facts: Facts, ctx: StepListContext): StepAct[] {
+  if (!editAdmission(ctx.t, facts.plan.status.operations?.create_edit_timeline).admitted) return [];
   const { t } = ctx;
-  const refusal = refusalReason(t, facts.plan.status.operations.create_edit_timeline);
   return [
-    agentAct(t, t("workflow:agent_prefill_create_edit_timeline", { episodeRef: ctx.episodeRef }), t("workflow:act_agent_edit"), refusal),
+    agentAct(t, t("workflow:agent_prefill_create_edit_timeline", { episodeRef: ctx.episodeRef }), t("workflow:act_agent_edit")),
     {
       key: "create-edit-timeline",
       label: t("workflow:act_create_edit_timeline"),
       kind: "ai",
       intent: { type: "create_edit_timeline" },
-      disabledReason: refusal,
     },
   ];
 }
@@ -127,9 +140,18 @@ function editRow(facts: Facts, ctx: StepListContext): StepRowView {
       act: openEditViewAct(ctx, "final-cut-stale-render", t("workflow:act_go_render"), stale[0].id),
     });
   }
-  // 剪辑是下一步时入口就地展开在下一步里；其余时候有正式脚本条目就常驻在本行，准入不满足时置灰。
+  // 剪辑是下一步时入口就地展开在下一步里；其余时候有正式脚本条目就常驻在本行。
+  // 准入不成立或读不到制作状态时两个入口都不出现，只说明原因——按不动的按钮与点了必被拒的按钮都不该在这里。
   const hasItems = content.formal_script === "present" && (content.script_item_count ?? 0) > 0;
-  const acts = hasItems && plan.next_action.type !== "create_edit_timeline" ? editActs(facts, ctx) : [];
+  const showInlineActs = hasItems && plan.next_action.type !== "create_edit_timeline";
+  const acts = showInlineActs ? editActs(facts, ctx) : [];
+  if (showInlineActs && acts.length === 0) {
+    notes.push({
+      key: "edit-admission",
+      tone: "info",
+      text: editAdmission(t, plan.status.operations?.create_edit_timeline).reason ?? t("workflow:plan_unavailable"),
+    });
+  }
   if (count > 0) acts.push(openEditViewAct(ctx, "open-edit-view", t("workflow:act_open_edit_view")));
   return {
     key: "edit",
@@ -292,20 +314,38 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
   const boardPath = "/" + WORKSPACE_ROUTE_EPISODES + "/" + ctx.episodeId + "?" + EPISODE_VIEW_PARAM + "=board";
   switch (action.type) {
     case "collect_project_input":
-      return { ...base, primary: [{ key: "factory", label: t("dashboard:short_drama_factory_generate"), kind: "nav", intent: { type: "route", path: "/" } }] };
+      return { ...base, primary: [{ key: "factory", label: t("dashboard:short_drama_generate_open"), kind: "ai", intent: { type: "open_factory_generate" } }] };
     case "prepare_episode_assets":
-      return { ...base, detail: t("workflow:next_detail_prepare_episode_assets"), primary: [{ key: "assets", label: t("workflow:act_open_assets_view"), kind: "nav", intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) } }] };
+      return {
+        ...base,
+        detail: t("workflow:next_detail_prepare_episode_assets"),
+        primary: [agentAct(t, t("workflow:agent_prefill_prepare_episode_assets", { episodeRef: ctx.episodeRef }))],
+        alternatives: [{ key: "assets", label: t("workflow:act_open_assets_view"), kind: "nav", intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) } }],
+      };
     case "plan_short_drama_storyboards":
-      return { ...base, detail: t("workflow:next_detail_plan_short_drama_storyboards"), primary: [{ key: "board", label: t("dashboard:short_drama_ai_storyboard"), kind: "nav", intent: { type: "route", path: boardPath } }] };
+      return {
+        ...base,
+        detail: t("workflow:next_detail_plan_short_drama_storyboards"),
+        primary: [agentAct(t, t("workflow:agent_prefill_plan_short_drama_storyboards", { episodeRef: ctx.episodeRef }))],
+        alternatives: [{ key: "board", label: t("dashboard:short_drama_ai_storyboard"), kind: "nav", intent: { type: "route", path: boardPath } }],
+      };
     case "author_prompts":
       return { ...base, instruction: { initial: ctx.savedPromptInstructions, persist: "prompt_authoring" }, primary: [
         { key: "agent", label: t("workflow:act_agent"), kind: "agent", intent: { type: "author_prompts_to_agent" } },
         ...(ctx.canAuthorPrompts ? [{ key: "author", label: t("workflow:act_author_prompts"), kind: "ai", intent: { type: "author_prompts" } } satisfies StepAct] : []),
       ] };
     case "author_video_prompts":
-      return { ...base, primary: [{ key: "video-prompts", label: t("workflow:act_author_video_prompts", { count: action.requested_ids.length }), kind: "ai", intent: { type: "open_video_prompts", entryIds: action.requested_ids } }] };
+      return {
+        ...base,
+        primary: [agentAct(t, t("workflow:agent_prefill_author_video_prompts", { episodeRef: ctx.episodeRef }))],
+        alternatives: [{ key: "video-prompts", label: t("workflow:act_author_video_prompts", { count: action.requested_ids.length }), kind: "ai", intent: { type: "open_video_prompts", entryIds: action.requested_ids } }],
+      };
     case "generate_asset_sheets":
-      return { ...base, primary: [{ key: "asset-batch", label: t("workflow:act_asset_batch", { count: action.requested_ids.length }), kind: "ai", intent: { type: "asset_batch", episodeId: ctx.episodeId } }] };
+      return {
+        ...base,
+        primary: [agentAct(t, t("workflow:agent_prefill_generate_asset_sheets", { episodeRef: ctx.episodeRef }))],
+        alternatives: [{ key: "asset-batch", label: t("workflow:act_asset_batch", { count: action.requested_ids.length }), kind: "ai", intent: { type: "asset_batch", episodeId: ctx.episodeId } }],
+      };
     case "generate_shot_grids":
       return {
         ...base,
@@ -323,7 +363,8 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
     case "generate_videos":
       return {
         ...base,
-        primary: [
+        primary: [agentAct(t, t("workflow:agent_prefill_generate_videos", { episodeRef: ctx.episodeRef }))],
+        alternatives: [
           {
             key: "batch",
             label: t("dashboard:batch_generate_videos"),
@@ -332,8 +373,11 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
           },
         ],
       };
-    case "create_edit_timeline":
+    case "create_edit_timeline": {
+      const admission = editAdmission(t, facts.plan.status.operations?.create_edit_timeline);
+      if (!admission.admitted) return { ...base, detail: admission.reason };
       return { ...base, instruction: { initial: "", persist: null }, primary: editActs(facts, ctx) };
+    }
     case "configure_provider":
       return { ...base, primary: [{ key: "settings", label: t("workflow:act_open_settings"), kind: "nav", intent: { type: "route", path: "~" + ROUTE_APP_SETTINGS } }] };
     case "wait_for_task":

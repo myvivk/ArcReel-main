@@ -322,6 +322,9 @@ def _storyboard_slots_valid(value: object, resource_id: object) -> bool:
             return False
         if frame["role"] != "start_image" and frame["resource_id"] != resource_id:
             return False
+    # 参考图模式：所有帧都按 reference_image 按序下发，没有 start_image/end_image。
+    if roles and all(role == "reference_image" for role in roles):
+        return not keys or keys == list(range(len(keys)))
     return (
         roles[0] == "start_image"
         and roles[1:]

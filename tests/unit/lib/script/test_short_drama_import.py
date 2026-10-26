@@ -11,6 +11,7 @@ from lib.script.short_drama_import import (
     parse_short_drama_episode,
     referenced_asset_descriptions,
     referenced_asset_names,
+    resolve_scene_assets,
     scene_beat_groups,
 )
 
@@ -92,10 +93,160 @@ def test_prop_references_only_attach_where_source_mentions_them():
 
 def test_parser_keeps_appearance_punctuation_and_catalog_order():
     parsed = parse_short_drama_episode(MARKDOWN)
-    assert parsed.blocks[1].prop_appearances == {"铁门": "锈迹斑斑，门轴下垂", "断椅": "木刺外翻，缺一条腿"}
+    assert len(parsed.blocks) == 2  # 不再保留开头的空块
+    assert parsed.blocks[0].prop_appearances == {"铁门": "锈迹斑斑，门轴下垂", "断椅": "木刺外翻，缺一条腿"}
     assert referenced_asset_descriptions(parsed) == {
         "character": {"林辰": "三十岁上下，寸头"},
         "scene": {"仓库": "水泥地，铁门单侧顶光"},
         "prop": {"铁门": "锈迹斑斑，门轴下垂", "断椅": "木刺外翻，缺一条腿"},
     }
     assert [beat["beat_id"] for beat in beat_catalog(parsed)] == [1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# 全集场景清单格式 + per-scene 资产解析
+# ---------------------------------------------------------------------------
+
+LIST_STYLE_MARKDOWN = """第【1】集：双景
+【本集时长】：30 秒
+[场景]：内景・绣楼・夜｜暖红烛火，绣榻与屏风
+[场景]：外景・前厅・夜｜冷夜长阶，朱门与公案
+[人物]：沈昭（主角｜藕荷色裙）、苏嬷嬷（嬷嬷｜灰布衫）、柳敬堂（老爷｜玄色官袍）、裴凛（护卫｜黑衣）
+[道具]：懿旨｜明黄绢底
+[道具]：白绫｜素白绸缎
+[道具]：旧红绳｜编绳发黑
+△ 沈昭躺在绣榻上，攥紧白绫。
+沈昭：门外是谁？
+△ 苏嬷嬷推门进入，双手捧着懿旨。
+苏嬷嬷：懿旨到了。
+△ 沈昭走进前厅。
+柳敬堂：跪下接旨。
+△ 柳敬堂举起懿旨。
+"""
+
+_LIST_GROUPS = [[1, 2, 3], [4, 5, 6, 7]]
+_LIST_PROMPTS = [
+    (
+        "【镜头1｜中景】平视机位，固定。沈昭@[沈昭]躺在内景・绣楼・夜@[内景・绣楼・夜]的绣榻上，"
+        "右手攥紧白绫@[白绫]，眉心紧蹙、目光警觉；苏嬷嬷@[苏嬷嬷]推门而入，手中懿旨@[懿旨]映着暖红烛火。"
+    ),
+    (
+        "【镜头1｜中景】平视机位，固定。沈昭@[沈昭]走进外景・前厅・夜@[外景・前厅・夜]，"
+        "肩背挺直、目光冷静；柳敬堂@[柳敬堂]立在公案后举起懿旨@[懿旨]，冷夜长阶上映着灯火。"
+    ),
+]
+_LIST_REGISTERED = {
+    "character": {"沈昭", "苏嬷嬷", "柳敬堂", "裴凛"},
+    "scene": {"内景・绣楼・夜", "外景・前厅・夜"},
+    "prop": {"懿旨", "白绫", "旧红绳"},
+}
+
+
+def test_list_style_scene_declarations_share_one_block_instead_of_swallowing_beats():
+    """两个 [场景] 连写是全集清单：不得各建空块，更不得把 57 个 beat 全归到后一个块。"""
+    parsed = parse_short_drama_episode(LIST_STYLE_MARKDOWN)
+
+    assert len(parsed.blocks) == 1
+    assert parsed.blocks[0].locations == ["内景・绣楼・夜", "外景・前厅・夜"]
+    assert [beat["block_id"] for beat in beat_catalog(parsed)] == [0] * 7
+
+
+def test_resolver_uses_prompt_scene_token_and_actual_beat_assets():
+    parsed = parse_short_drama_episode(LIST_STYLE_MARKDOWN)
+    resolved = resolve_scene_assets(
+        parsed,
+        _LIST_GROUPS,
+        _LIST_PROMPTS,
+        registered=_LIST_REGISTERED,
+    )
+
+    assert resolved[0].scenes == ("内景・绣楼・夜",)
+    assert resolved[0].characters_in_scene == ("沈昭", "苏嬷嬷")
+    assert resolved[0].props == ("懿旨", "白绫")
+    assert resolved[1].scenes == ("外景・前厅・夜",)
+    assert resolved[1].characters_in_scene == ("柳敬堂", "沈昭", "苏嬷嬷")
+    assert resolved[1].props == ("懿旨",)
+    # 裴凛只在 [人物] 声明、没在任何 beat 出场：不进入本集任一幕
+    assert all("裴凛" not in scene.characters_in_scene for scene in resolved)
+
+
+def test_convert_with_scene_assets_writes_the_gate_allowlist_into_the_script():
+    parsed = parse_short_drama_episode(LIST_STYLE_MARKDOWN)
+    resolved = resolve_scene_assets(parsed, _LIST_GROUPS, _LIST_PROMPTS, registered=_LIST_REGISTERED)
+    script = convert_planned_scenes(
+        parsed,
+        1,
+        _LIST_GROUPS,
+        [13, 14],
+        ["沈昭在绣楼惊醒。", "沈昭走进前厅受审。"],
+        _LIST_PROMPTS,
+        scene_assets=resolved,
+    )
+
+    first, second = script["scenes"]
+    assert first["scenes"] == ["内景・绣楼・夜"]
+    assert first["characters_in_scene"] == ["沈昭", "苏嬷嬷"]
+    assert first["props"] == ["懿旨", "白绫"]
+    assert "内景・绣楼・夜@[内景・绣楼・夜]" in first["image_prompt"]
+    assert second["scenes"] == ["外景・前厅・夜"]
+    assert second["characters_in_scene"] == ["柳敬堂", "沈昭", "苏嬷嬷"]
+    assert "内景・绣楼・夜" not in second["scenes"]
+
+
+def test_resolver_rejects_plan_scene_that_contradicts_prompt_token():
+    parsed = parse_short_drama_episode(LIST_STYLE_MARKDOWN)
+
+    with pytest.raises(ValueError, match="不一致"):
+        resolve_scene_assets(
+            parsed,
+            _LIST_GROUPS,
+            _LIST_PROMPTS,
+            registered=_LIST_REGISTERED,
+            plan_scenes=[{"scenes": ["外景・前厅・夜"]}, {"scenes": ["外景・前厅・夜"]}],
+        )
+
+
+def test_resolver_rejects_unregistered_plan_scene():
+    parsed = parse_short_drama_episode(LIST_STYLE_MARKDOWN)
+
+    with pytest.raises(ValueError, match="未登记场景"):
+        resolve_scene_assets(
+            parsed,
+            _LIST_GROUPS,
+            _LIST_PROMPTS,
+            registered=_LIST_REGISTERED,
+            plan_scenes=[{"scenes": ["不存在的场景"]}, {"scenes": ["外景・前厅・夜"]}],
+        )
+
+
+def test_resolver_reports_ambiguous_scene_without_token_or_plan():
+    parsed = parse_short_drama_episode(MARKDOWN)
+    prompts = ["【镜头1】近景，平视，固定。林辰@[林辰]攥住门把手，屏息。"]
+
+    with pytest.raises(ValueError, match="无法判定本幕场景"):
+        resolve_scene_assets(
+            parsed,
+            [[1, 2, 3, 4]],
+            prompts,
+            registered={
+                "character": {"林辰", "陈峰"},
+                "scene": {"仓库", "走廊"},
+                "prop": {"铁门", "断椅"},
+            },
+        )
+
+
+def test_resolver_falls_back_to_the_only_scene_of_a_single_scene_source():
+    parsed = parse_short_drama_episode(
+        "第【1】集：单景\n【本集时长】：15 秒\n[场景]：仓库｜水泥地\n[人物]：林辰（主角｜寸头）\n△ 林辰推门。\n"
+    )
+
+    resolved = resolve_scene_assets(
+        parsed,
+        [[1]],
+        ["【镜头1｜中景】平视机位，固定。林辰@[林辰]推门，眉峰紧拧，门外冷光切入仓库。"],
+        registered={"character": {"林辰"}, "scene": {"仓库"}, "prop": set()},
+    )
+
+    assert resolved[0].scenes == ("仓库",)
+    assert resolved[0].characters_in_scene == ("林辰",)

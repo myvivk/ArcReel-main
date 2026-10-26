@@ -4,23 +4,20 @@ import {
   type EpisodeViewFacts,
 } from "./episode-view";
 
-const FACTORY: EpisodeViewFacts = { hasScript: true, hasShortDramaSource: true, demo: false };
+const FACTORY: EpisodeViewFacts = { hasScript: true, demo: false };
 
 describe("factory episode navigation", () => {
   it("offers the four factory views in production order", () => {
-    expect(episodeViewTabs(FACTORY)).toEqual([
-      { view: "source", disabled: false },
-      { view: "assets", disabled: false },
-      { view: "board", disabled: false },
-      { view: "edit", disabled: false },
-    ]);
+    expect(episodeViewTabs(FACTORY)).toEqual(["source", "assets", "board", "edit"]);
   });
 
-  it("opens source before storyboarding and enables assets from Markdown", () => {
+  it("opens source before storyboarding and keeps the later views reachable without a script", () => {
     const source = { ...FACTORY, hasScript: false };
     expect(defaultEpisodeView(source)).toBe("source");
+    // 页签不按流程进度置灰：缺剧本时仍能进入资产、分镜与剪辑，由视图内的空状态说明下一步
     expect(resolveEpisodeView("assets", source)).toBe("assets");
-    expect(resolveEpisodeView("assets", { ...source, hasShortDramaSource: false })).toBe("source");
+    expect(resolveEpisodeView("board", source)).toBe("board");
+    expect(resolveEpisodeView("edit", source)).toBe("edit");
   });
 
   it.each(["plan", "setting", "grid", "unknown"])("removed URL view %s cannot restore an old workspace", (view) => {
@@ -30,7 +27,7 @@ describe("factory episode navigation", () => {
 
   it("keeps demo projects on the board", () => {
     const demo = { ...FACTORY, demo: true, hasScript: false };
-    expect(episodeViewTabs(demo)).toEqual([{ view: "board", disabled: false }]);
+    expect(episodeViewTabs(demo)).toEqual(["board"]);
     expect(defaultEpisodeView(demo)).toBe("board");
   });
 

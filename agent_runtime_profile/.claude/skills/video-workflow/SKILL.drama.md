@@ -25,10 +25,15 @@ Read 只补充已选动作需要的内容，不按文件存在性或聊天记忆
 
 ## 本集资产与 AI 分镜
 
-`prepare_episode_assets`：在 Web 单集「资产」步骤按工厂工件准备角色、场景、道具和描述。
-描述缺失时补齐对应资产，不回到原生规划。资产准备可以在视觉 JSON 尚未产生时执行。
+`prepare_episode_assets`：Agent 读取工厂源稿/人物圣经，用 `patch_project` 登记本集角色、场景、道具和叙事式描述；
+先不生成资产图，登记完成后刷新计划、汇报并结束本轮。资产准备可以在视觉 JSON 尚未产生时执行。
+若刷新后只剩已登记且有描述、仅缺图的项目，直接进入 `generate_asset_sheets`，不要再重复登记。
 `generate_asset_sheets`：调 `mcp__arcreel__generate_assets({"episode_id": N})`，按逐 ID 结果汇报。
-`plan_short_drama_storyboards`：在 Web 本集「AI 分镜」执行全量或指定范围重分镜。
+先报本批缺失 ID 与数量，得到用户明确同意后再入队；不得因计划 `requires_confirmation: false` 自动生成。
+`plan_short_drama_storyboards`：调 `mcp__arcreel__plan_short_drama_storyboards({"episode_id": N})`。
+新分镜默认全量、强度 2；部分重写传 `regenerate_scene_ids`；全量重写传 `force_regenerate=true`。
+已有分镜图/视频时先问用户，同意后传 `confirm_artifacts=true`。集页入口改为「交给 Agent」。
+质量由服务端结构与格式闸控制，失败按回执返修；Agent 不自行改分镜。
 源稿变化后必须更新视觉派生状态，再继续生成。
 
 ## 提示词与参考素材
@@ -64,4 +69,10 @@ K 帧是否可用由用户在分镜详情逐镜确认；工具不代替确认，
 
 分别陈述步骤进度、任务状态、供应商 checkpoint 与产物时效；任务成功不等于产物 current。
 `stale` 产物仍可用，是否重做由用户决定。已提交供应商的中断任务先恢复或查询，避免重复计费。
-完成动作后展示实际结果并刷新计划；已授权自动继续时直接推进，否则由用户选择下一创作动作。
+## 回合边界
+
+每轮只执行一个 `next_action`。动作完成后按顺序：刷新计划一次 → 展示实际结果与下一步 → 结束本轮。
+结束本轮后不再调用任何工具，也不开始下一个动作。用户说「继续 / 下一步」时，只执行下一个动作，
+完成后再次结束本轮；不得把「继续」理解为「把剩下的都做完」。
+`next_action` 和刷新后的计划只是建议，不构成自动继续的授权；Agent 不能自行认定「已授权自动继续」。
+Web 步骤只导航；付费生成先报 ID 与数量并等用户确认。

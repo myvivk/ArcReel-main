@@ -361,12 +361,9 @@ describe("API", () => {
       await API.updateProject("demo", { style: "Anime" });
       await API.deleteProject("demo");
 
-      await API.addCharacter("demo", "Hero", "brave");
       await API.updateCharacter("demo", "Hero", { description: "updated" });
 
-      await API.addProjectScene("demo", "Temple", "ancient");
       await API.updateProjectScene("demo", "Temple", { description: "dark" });
-      await API.addProjectProp("demo", "Sword", "rusty");
       await API.updateProjectProp("demo", "Sword", { description: "shiny" });
       await API.previewProjectAssetDeletion("demo", "character", "Hero");
       await API.renameProjectAsset("demo", "character", "Hero", "Knight");
@@ -412,22 +409,6 @@ describe("API", () => {
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo", {
         method: "DELETE",
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/characters", {
-        method: "POST",
-        body: JSON.stringify({
-          name: "Hero",
-          description: "brave",
-          voice_style: "",
-        }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/scenes", {
-        method: "POST",
-        body: JSON.stringify({ name: "Temple", description: "ancient" }),
-      });
-      expect(requestSpy).toHaveBeenCalledWith("/projects/demo/props", {
-        method: "POST",
-        body: JSON.stringify({ name: "Sword", description: "rusty" }),
       });
       expect(requestSpy).toHaveBeenCalledWith("/projects/demo/characters/Hero?dry_run=true", {
         method: "DELETE",
@@ -1193,45 +1174,6 @@ describe("API", () => {
       await API.listAssets({ type: "character" });
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining("/api/v1/assets"),
-        expect.anything()
-      );
-    });
-  });
-
-  describe("createAsset", () => {
-    it("POSTs multipart to /api/v1/assets", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(
-        mockResponse({ jsonData: { asset: { id: "x", type: "scene", name: "A", description: "", voice_style: "", image_path: null, source_project: null, updated_at: null } } }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-      const res = await API.createAsset({ type: "scene", name: "A", description: "d" });
-      expect(res.asset.id).toBe("x");
-    });
-  });
-
-  describe("addAssetFromProject", () => {
-    it("POSTs /api/v1/assets/from-project", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(
-        mockResponse({ jsonData: { asset: { id: "x", type: "character", name: "王", description: "", voice_style: "", image_path: null, source_project: "demo", updated_at: null } } }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-      await API.addAssetFromProject({ project_name: "demo", resource_type: "character", resource_id: "王" });
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/api/v1/assets/from-project"),
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-  });
-
-  describe("applyAssetsToProject", () => {
-    it("POSTs /api/v1/assets/apply-to-project", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(
-        mockResponse({ jsonData: { succeeded: [], skipped: [], failed: [] } }),
-      );
-      vi.stubGlobal("fetch", fetchMock);
-      await API.applyAssetsToProject({ asset_ids: ["1"], target_project: "demo", conflict_policy: "skip" });
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/api/v1/assets/apply-to-project"),
         expect.anything()
       );
     });

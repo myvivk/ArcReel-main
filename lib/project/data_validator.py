@@ -397,9 +397,6 @@ class DataValidator:
         if project.get(TOTAL_EPISODES_FIELD) is not None:
             errors.append(_m("val_ad_no_total_episodes"))
 
-        if project.get("grid_storyboard") is True:
-            errors.append(_m("val_ad_no_grid_storyboard"))
-
         episodes = project.get("episodes")
         if not isinstance(episodes, list) or (
             len(episodes) != 1 or not isinstance(episodes[0], dict) or episodes[0].get("episode") != 1
@@ -433,10 +430,6 @@ class DataValidator:
             errors.append(
                 _m("val_generation_mode_invalid", value=generation_mode, allowed=_allowed(self.VALID_GENERATION_MODES))
             )
-
-        grid_storyboard = project.get("grid_storyboard")
-        if grid_storyboard is not None and not isinstance(grid_storyboard, bool):
-            errors.append(_m("val_field_type_bool", field="grid_storyboard"))
 
         # 项目级语速覆盖（阅读单位 / 秒）：可选字段，缺省即回退语言默认；出现即须落在硬区间内。
         speech_rate = project.get(SPEECH_RATE_FIELD)

@@ -39,7 +39,8 @@ export function isWorkBlock(block: ContentBlock): boolean {
     block.type === "tool_result" ||
     block.type === "thinking" ||
     block.type === "skill_invocation" ||
-    block.type === "task_progress"
+    block.type === "task_progress" ||
+    block.type === "gate_round"
   );
 }
 

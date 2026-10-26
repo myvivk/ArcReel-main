@@ -1,8 +1,8 @@
 import { startTransition, useEffect, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { ChevronLeft, Download, Library, Loader2, Settings } from "lucide-react";
+import { ChevronLeft, Download, Loader2, Settings } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { ROUTE_APP_ASSETS, ROUTE_APP_PROJECTS, ROUTE_APP_SETTINGS, episodeEditViewPath } from "@/app-routes";
+import { ROUTE_APP_PROJECTS, ROUTE_APP_SETTINGS, episodeEditViewPath } from "@/app-routes";
 import { UsageHeaderEntry } from "@/components/usage/UsageHeaderEntry";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -26,10 +26,10 @@ import { WorkspaceNotifications } from "./WorkspaceNotificationsDrawer";
  * 工作区顶栏，三段：
  * - 左：回到项目大厅 + 项目切换器（演示项目另带「演示 · 只读」徽标）
  * - 中：ProjectStatusBar（集进度与项目层的下一步；数据升级失败时是迁移重试）
- * - 右：通知 / 使用记录 / 导出 / 资产库 / 全局设置 / Agent 面板开关
+ * - 右：通知 / 使用记录 / 导出 / 全局设置 / Agent 面板开关
  */
 export function GlobalHeader() {
-  const { t } = useTranslation(["dashboard", "common", "assets", "onboarding"]);
+  const { t } = useTranslation(["dashboard", "common", "onboarding"]);
   const [location, setLocation] = useLocation();
   const { currentProjectData, currentProjectName } = useProjectsStore();
   const setUsagePanelOpen = useAppStore((s) => s.setUsagePanelOpen);
@@ -139,9 +139,6 @@ export function GlobalHeader() {
             </TooltipContent>
           </Tooltip>
         </span>
-        <IconLink href={`~${ROUTE_APP_ASSETS}`} label={t("assets:library_title")}>
-          <Library aria-hidden />
-        </IconLink>
         <IconLink href={`~${ROUTE_APP_SETTINGS}`} label={t("dashboard:global_settings")}>
           <Settings aria-hidden />
           {!isConfigComplete && (

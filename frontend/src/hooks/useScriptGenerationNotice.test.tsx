@@ -66,6 +66,21 @@ describe("useScriptGenerationNotice", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it("fires the storyboard-specific notice for AI storyboard planning", () => {
+    useAssistantStore.setState({ sessionStatus: "running" });
+    const spy = vi.spyOn(useAppStore.getState(), "pushToast");
+    render(<Harness />);
+
+    act(() => {
+      useAssistantStore.setState({
+        draftTurn: assistantTurn(toolUse("mcp__arcreel__plan_short_drama_storyboards", "tu-sb-plan")),
+      });
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toContain("AI 分镜");
+  });
+
   it("does not fire for non-script tool calls", () => {
     useAssistantStore.setState({ sessionStatus: "running" });
     const spy = vi.spyOn(useAppStore.getState(), "pushToast");

@@ -185,7 +185,7 @@ Each shot’s references are consecutive K-frames of that shot. Video inputs pre
 
 ### What can I import? {#supported-source-formats}
 
-**Import script** accepts seven factory Markdown artifact types: character bible, series outline, ledger, and each episode’s plan, source, machine report, and compliance report. Each episode requires all four episode artifacts in the same batch. Both reports must explicitly pass, and import runs quality checks again.
+For an existing factory delivery, hand the seven factory Markdown artifact types to the ArcReel Agent for as-is ingestion: character bible, series outline, ledger, and each episode’s plan, source, machine report, and compliance report. Each episode requires all four episode artifacts in the same batch. Both reports must explicitly pass, and ingestion runs quality checks again.
 
 Ordinary novels, single Markdown files, PDF, DOCX, or EPUB cannot serve as factory deliveries. Use factory creation and quality checks to prepare complete artifacts. Historical source files remain in the project, but ordinary source uploads and native planning entries are removed.
 

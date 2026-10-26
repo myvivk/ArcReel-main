@@ -26,7 +26,7 @@ MCP 端点：
 
 安装完成后立即使用 `setup-arcreel-skills` skill，按其指引配置 MCP 端点、Bearer 访问令牌并验证连通；`video-workflow` 会在后续创作请求中按需触发。
 
-旧版外部 skills 可能引用已移除的普通源文、原生规划、通用草稿或参考单元工具。接线后重新获取 MCP 工具清单，以服务器当前声明为准；内容交稿仅使用 `generate_short_drama_factory` 和 `ingest_short_drama_artifacts`，提示词编写使用 `generate_episode_script`，一次只生成 `image_prompt` 或 `video_prompt`。
+旧版外部 skills 可能引用已移除的普通源文、原生规划、通用草稿或参考单元工具。接线后重新获取 MCP 工具清单，以服务器当前声明为准；内容交稿仅使用 `generate_short_drama_factory` 和 `ingest_short_drama_artifacts`，AI 分镜使用 `plan_short_drama_storyboards`，提示词编写使用 `generate_episode_script`，一次只生成 `image_prompt` 或 `video_prompt`。
 
 ## 4. 完成判据
 

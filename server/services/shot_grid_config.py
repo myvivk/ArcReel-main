@@ -45,7 +45,7 @@ SUPPORTED_LAYOUTS = {(2, 2), (2, 3), (3, 3)}
 
 _GENERATING_STATUSES = {"generating", "confirming"}
 
-_AUTHORED_SYSTEM_PROMPT = """你是分镜画师的提示词编辑助理。用户给你一个分镜的画面描述（镜头序列）和这一镜要画的格数，你为每一格写一段自包含的关键帧画面描述。只输出结构化结果，不写任何解释。"""
+_AUTHORED_SYSTEM_PROMPT = """你是分镜画师的提示词编辑助理。用户给你一个分镜的画面描述（镜头序列）和这一镜要画的格数，你为每一格写一段帧链中的关键帧画面：第 1 格是开始画面，最后一格是结束画面，中间各格是过程关键帧，后一格必须承接前一格的姿态、位置与视线。只输出结构化结果，不写任何解释。"""
 
 _AUTHORED_USER_TEMPLATE = """【分镜画面】
 {scene}
@@ -57,11 +57,12 @@ _AUTHORED_USER_TEMPLATE = """【分镜画面】
 {style}
 
 【任务】
-把上面这个分镜拆成 {count} 个关键帧，一格一个，按画面里的时间顺序排列。
+把上面这个分镜拆成 {count} 个关键瞬间，一格一个，按画面里的时间顺序排列。
 要求：
 - 恰好 {count} 个画面，一个不多一个不少
 - 景别从「远景、全景、中景、近景、特写」中选，同一分镜内要有明显变化
-- 每段是自包含的关键帧画面：主体姿态、表情、服装、环境、光线、氛围，用叙述句
+- 每格是一个关键瞬间：先承接上一格的姿态/位置/视线（第一格写起始状态），再写本格主体状态、环境、光线，用叙述句
+- 最后一格收在稳定状态（动作完成后的定姿），不要停在过程里
 - 资产直接写名字，不要写 @[] 之类的引用记号
 - 不得增删事件，所有格必须在同一时空里连续发生
 """
@@ -168,6 +169,46 @@ def save_grid_config(
     return grid
 
 
+def save_grid_draft(
+    projects: ProjectManager,
+    project_name: str,
+    *,
+    script_file: str,
+    episode: int,
+    shot_id: str,
+    rows: int,
+    cols: int,
+    prompt: str,
+) -> ShotGrid:
+    """把弹窗里还没点「确定」的逐格文本存成草稿（ADR 0099 D-5）。
+
+    只写 ``prompt``：``status`` / ``composite_path`` / ``task_id`` / ``image_basis`` / ``cells``
+    与 ``scene_revision`` 全部保持原样——草稿决定「下次打开弹窗回填什么」，不是一次提交，
+    因此既不会清掉已出的宫格图，也不会让「分镜提示词已变更」的提示提前消失。规格只在记录
+    尚不存在时按弹窗当前选择新建：已有记录的 ``rows/cols`` 与既成宫格图的切分口径绑定，
+    不能在草稿里被悄悄改掉。
+    """
+
+    _storyboard_shot(projects, project_name, script_file=script_file, episode=episode, shot_id=shot_id)
+    assert_layout(rows, cols)
+    manager = ShotGridManager(projects.get_project_path(project_name))
+    grid = manager.find(script_file=script_file, shot_id=shot_id)
+    if grid is None:
+        grid = ShotGrid.create(episode=episode, script_file=script_file, shot_id=shot_id, rows=rows, cols=cols)
+        grid.prompt = prompt
+        grid.updated_at = _now()
+        manager.save(grid)
+        return grid
+    if grid.prompt == prompt:
+        return grid
+
+    def write_prompt(current: ShotGrid) -> None:
+        current.prompt = prompt
+        current.updated_at = _now()
+
+    return manager.update_formal(grid.id, write_prompt) or grid
+
+
 def _shot_asset_lines(shot: dict[str, Any], char_field: str | None, scene_field: str, prop_field: str) -> str:
     """这一分镜登记的资产名单（名字 + 类型），按字段序。"""
 
@@ -189,6 +230,10 @@ def _shot_asset_lines(shot: dict[str, Any], char_field: str | None, scene_field:
             if isinstance(name, str) and name.strip()
         )
     return "\n".join(lines) if lines else "- （这一分镜没有登记资产）"
+
+
+#: 逐格提示词是单 shot 粒度：首次 + 最多两次带原因重试（rows/cols/输入固定）。
+_AUTHORED_GRID_ATTEMPTS = 3
 
 
 def _serialize_authored_frames(frames: list[_AuthoredFrame], count: int) -> str:
@@ -248,28 +293,47 @@ async def author_grid_cells(
     generator = await TextGenerator.create(
         TextTaskType.SCRIPT, project_name, purpose=CallPurpose.SCRIPT_GENERATION, user_id=user_id
     )
-    try:
-        result = await generator.generate(
-            TextGenerationRequest(
-                prompt=_AUTHORED_USER_TEMPLATE.format(
-                    scene=scene_text.strip(),
-                    assets=_shot_asset_lines(shot, char_field, scene_field, prop_field),
-                    style=(project.get("style") or "").strip() or "（未设置）",
-                    count=count,
-                ),
-                system_prompt=_AUTHORED_SYSTEM_PROMPT,
-                response_schema=_AuthoredGridPrompt,
-            ),
-            project_name=project_name,
+    base_prompt = _AUTHORED_USER_TEMPLATE.format(
+        scene=scene_text.strip(),
+        assets=_shot_asset_lines(shot, char_field, scene_field, prop_field),
+        style=(project.get("style") or "").strip() or "（未设置）",
+        count=count,
+    )
+    rejection: str | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, _AUTHORED_GRID_ATTEMPTS + 1):
+        prompt = (
+            base_prompt
+            if rejection is None
+            else (f"{base_prompt}\n\n上一轮输出未通过校验：{rejection}。请修正后重新输出 {count} 个关键帧。")
         )
-        authored = _AuthoredGridPrompt.model_validate_json(result.text)
-        return _serialize_authored_frames(authored.frames, count)
-    except (ValidationError, ValueError) as exc:
-        logger.warning("shot grid author-prompt rejected the model output: %s", exc)
-        raise BadGatewayError("shot_grid_author_failed") from exc
-    except Exception as exc:
-        logger.exception("shot grid author-prompt failed")
-        raise BadGatewayError("shot_grid_author_failed") from exc
+        try:
+            result = await generator.generate(
+                TextGenerationRequest(
+                    prompt=prompt,
+                    system_prompt=_AUTHORED_SYSTEM_PROMPT,
+                    response_schema=_AuthoredGridPrompt,
+                ),
+                project_name=project_name,
+            )
+        except Exception as exc:
+            logger.exception("shot grid author-prompt failed")
+            raise BadGatewayError("shot_grid_author_failed") from exc
+        try:
+            authored = _AuthoredGridPrompt.model_validate_json(result.text)
+            return _serialize_authored_frames(authored.frames, count)
+        except (ValidationError, ValueError) as exc:
+            last_error = exc
+            rejection = str(exc)
+            logger.warning(
+                "shot grid author-prompt rejected attempt %d/%d for %s: %s",
+                attempt,
+                _AUTHORED_GRID_ATTEMPTS,
+                shot_id,
+                exc,
+            )
+            continue
+    raise BadGatewayError("shot_grid_author_failed") from last_error
 
 
 __all__ = [
@@ -277,4 +341,5 @@ __all__ = [
     "assert_layout",
     "author_grid_cells",
     "save_grid_config",
+    "save_grid_draft",
 ]

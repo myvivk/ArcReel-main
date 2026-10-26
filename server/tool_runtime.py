@@ -133,6 +133,7 @@ from lib.workflow.workflow_plan import (
     WorkflowPlanRequest,
 )
 from lib.workflow.workflow_state import WorkflowRequestError
+from server.agent_runtime.tool_progress import ProgressReporter
 from server.request_types import (
     EPISODE_ID_DESCRIPTION,
     PositiveEpisode,
@@ -181,11 +182,15 @@ class CallerContext:
 
     ``source`` 决定长任务阻塞还是即返：``embedded`` 由 ``batch_waiter`` 入队并等到批次终态，
     ``mcp`` 与 Web 的 ``webui`` 提交后立即返回批次句柄、不需要等待器。
+
+    ``report_progress`` 是宿主注入的逐轮进度回调：只有内嵌 Agent 会话会注入（写事件日志
+    供用户实时看到质量闸返修）；Web / 远程 MCP / 单测保持 ``None``，行为不变。
     """
 
     user_id: str
     source: Literal["embedded", "mcp", "webui"]
     batch_waiter: BatchWaiter | None = None
+    report_progress: ProgressReporter | None = None
 
     def waiting_with(self, **options: Any) -> CallerContext:
         """给等待器绑定额外选项（如 ``on_enqueued`` / ``stop_on_failure``）；没有等待器时原样返回。"""
@@ -847,7 +852,13 @@ class ImportShortDramaArtifactItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     path: str = Field(description="source/short_drama/ 下的七类标准相对路径")
-    content_base64: str = Field(description="工件原始字节的 Base64 编码")
+    content_base64: str | None = Field(
+        default=None,
+        description=(
+            "可选：工件原始字节的 Base64 编码。省略时读取项目 drafts/short_drama/<path> 的暂存原文；"
+            "内嵌 Agent 应省略本字段，先把原文用 Write 暂存到同名相对路径。"
+        ),
+    )
 
 
 class IngestShortDramaArtifactsRequest(BaseModel):
@@ -866,11 +877,24 @@ async def ingest_short_drama_artifacts_tool(
         ShortDramaArtifactError,
         decode_artifact_content,
         ingest_short_drama_artifacts,
+        read_draft_artifact,
     )
+
+    def _load_payload() -> list[tuple[str, bytes]]:
+        project_dir = services.projects.get_project_path(scope.project_name)
+        payload: list[tuple[str, bytes]] = []
+        for item in request.value.artifacts:
+            raw = (
+                decode_artifact_content(None, item.content_base64)
+                if item.content_base64 is not None
+                else read_draft_artifact(project_dir, item.path)
+            )
+            payload.append((item.path, raw))
+        return payload
 
     try:
         await asyncio.to_thread(services.projects.load_project, scope.project_name)
-        payload = [(item.path, decode_artifact_content(None, item.content_base64)) for item in request.value.artifacts]
+        payload = await asyncio.to_thread(_load_payload)
         result = await _run_sync_transaction(
             ingest_short_drama_artifacts,
             services.projects,
@@ -884,6 +908,98 @@ async def ingest_short_drama_artifacts_tool(
     return ToolOutcome(
         value={"imported": len(result), "artifacts": [item.as_dict(include_content=False) for item in result]}
     )
+
+
+class PlanShortDramaStoryboardsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
+    planning_strength: int = Field(default=2, ge=1, le=3, description="内容优化强度 1–3；默认 2（标准）")
+    force_regenerate: bool = Field(
+        default=False,
+        description="全量重新分镜；已有分镜时覆盖前必须先取得用户同意",
+    )
+    regenerate_scene_ids: list[Annotated[str, Field(min_length=1)]] = Field(
+        default_factory=list,
+        description="只重写这些分镜 ID；空数组表示整体分镜",
+    )
+    confirm_artifacts: bool = Field(
+        default=False,
+        description="本集已有分镜图或视频时，用户确认这些产物会变为过期后才传 true",
+    )
+
+
+#: 工作流动作与工具问题的稳定映射；Agent 据此把拒绝转成下一步输入，而不是猜错误文案。
+_STORYBOARD_PROBLEM_ACTIONS = {
+    "short_drama_source_missing": "collect_project_input",
+    "short_drama_assets_not_ready": "prepare_episode_assets",
+    "short_drama_reimport_confirmation_required": "confirm_artifact_overwrite",
+    "short_drama_source_conflict": "refresh_plan",
+    "short_drama_script_conflict": "refresh_plan",
+}
+
+
+async def plan_short_drama_storyboards(
+    request: ToolRequest[PlanShortDramaStoryboardsRequest],
+    scope: ProjectScope,
+    caller: CallerContext,
+    services: Services,
+) -> ToolOutcome[Any]:
+    """AI 分镜 / 重新分镜：与 Web 按钮共用 ``import_short_drama_episode`` 同一套质量闸。
+
+    新分镜：空 ``regenerate_scene_ids``、``force_regenerate=false``。
+    部分重写：传 ``regenerate_scene_ids``，未选分镜与媒体原样保留。
+    全量重写：``force_regenerate=true``；已有媒体时还须 ``confirm_artifacts=true``。
+
+    质量不在 Agent 侧：结构、格式、源稿覆盖与返修全部由服务端校验，失败整批拒绝、不落盘。
+    内嵌会话宿主若注入了 ``report_progress``，每轮质量闸结果实时写入事件日志（用户可见），
+    同时整批轮次随结果 ``planning_rounds`` 返回给 Agent。
+    """
+    from lib.script.short_drama_source import load_short_drama_source
+    from server.services.short_drama_workflow import (
+        ShortDramaWorkflowError,
+        import_short_drama_episode,
+    )
+
+    value = request.value
+    try:
+        source = await asyncio.to_thread(
+            load_short_drama_source, services.projects, scope.project_name, value.episode_id
+        )
+        if source is None:
+            return ToolOutcome(
+                problem=ToolProblem(
+                    "short_drama_source_missing",
+                    "本集还没有工厂 Markdown 源稿；请先完成七类工件入库",
+                    action="collect_project_input",
+                )
+            )
+        result = await import_short_drama_episode(
+            project_name=scope.project_name,
+            episode=value.episode_id,
+            markdown=source.markdown,
+            projects=services.projects,
+            expected_source_revision=source.revision,
+            confirm_artifacts=value.confirm_artifacts,
+            planning_strength=value.planning_strength,
+            force_regenerate=value.force_regenerate,
+            regenerate_scene_ids=value.regenerate_scene_ids,
+            on_round=caller.report_progress,
+        )
+    except ShortDramaWorkflowError as exc:
+        return ToolOutcome(
+            problem=ToolProblem(
+                exc.code,
+                exc.detail,
+                action=_STORYBOARD_PROBLEM_ACTIONS.get(exc.code),
+                params=exc.params,
+            )
+        )
+    except FileNotFoundError as exc:
+        return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
+    except Exception as exc:
+        return ToolOutcome(problem=ToolProblem("short_drama_ai_planning_failed", str(exc)))
+    return ToolOutcome(value=result.as_dict())
 
 
 class ShortDramaFactoryGenRequest(BaseModel):
@@ -926,7 +1042,9 @@ async def generate_short_drama_factory(
             TextBackendRequest(
                 prompt=value.prompt,
                 system_prompt=value.system_prompt,
-                max_output_tokens=value.max_output_tokens,
+                # 工厂工件是长文本（整集规划/正文）：一律走后端默认上限，不采用调用方给的上限，
+                # 否则一次几千字的规划会在 8000/12000 这类小上限处被截断、整篇作废。
+                max_output_tokens=None,
             ),
             project_name=scope.project_name,
             require_complete=True,

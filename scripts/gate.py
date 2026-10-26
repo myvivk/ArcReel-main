@@ -5,9 +5,9 @@
     uv run python scripts/gate.py backend frontend     # 直接点名域
     uv run python scripts/gate.py --list               # 各域的触发路径与步骤
 
-完整闸门里的 pytest 与 vitest 都按整机核数并行；几个 worktree 同时跑时互相抢核，
-vitest 的 jsdom 用例会先超时。本脚本用机器级文件锁把各次闸门排成队：谁拿到锁谁独占
-整机跑完，排队的只打印等待信息。各域的命令与触发路径只在这里定义一次。
+完整闸门里的 pytest 与 vitest 已关闭：各域只跑静态检查，不执行测试。闸门仍按整机
+串行，几个 worktree 同时跑时互相抢核；本脚本用机器级文件锁把各次闸门排成队：谁拿到锁
+谁独占整机跑完，排队的只打印等待信息。各域的命令与触发路径只在这里定义一次。
 
 锁文件默认在用户目录下（同一台机器上的所有 worktree 都看得到），`ARCREEL_GATE_LOCK`
 可改路径。命令任一失败即停止并以其退出码退出，与 `&&` 串联一致。
@@ -43,7 +43,7 @@ class Step:
 
 
 UV = ("uv", "run")
-# 域名 → 步骤。`-n 4 --dist loadfile` 的取值理由见 pyproject.toml 的 pytest 配置注释。
+# 域名 → 步骤。测试步骤已关闭：闸门只跑静态检查，不跑 pytest / vitest。
 DOMAINS: dict[str, tuple[Step, ...]] = {
     "backend": (
         Step((*UV, "ruff", "check", ".")),
@@ -51,19 +51,19 @@ DOMAINS: dict[str, tuple[Step, ...]] = {
         Step((*UV, "basedpyright", "--warnings")),
         Step((*UV, "lint-imports")),
         Step((*UV, "deptry", "lib", "server", "alembic", "scripts", "tests")),
-        Step((*UV, "python", "-m", "pytest", "-n", "4", "--dist", "loadfile")),
     ),
-    "market-core": (
-        Step((*UV, "deptry", "src", "tests"), ROOT / "packages" / "arcreel-market-core"),
-        Step((*UV, "python", "-m", "pytest"), ROOT / "packages" / "arcreel-market-core"),
-    ),
+    "market-core": (Step((*UV, "deptry", "src", "tests"), ROOT / "packages" / "arcreel-market-core"),),
     "tests": (Step((*UV, "python", "scripts/audit_tests.py", "--check")),),
     "conventions": (Step((*UV, "python", "scripts/audit_conventions.py", "--check")),),
     "workflows": (
         Step((*UV, "pre-commit", "run", "--all-files", "actionlint")),
         Step((*UV, "pre-commit", "run", "--all-files", "zizmor")),
     ),
-    "frontend": (Step(("pnpm", "check"), ROOT / "frontend"),),
+    "frontend": (
+        Step(("pnpm", "typecheck"), ROOT / "frontend"),
+        Step(("pnpm", "lint"), ROOT / "frontend"),
+        Step(("pnpm", "knip"), ROOT / "frontend"),
+    ),
     "website": (Step(("pnpm", "check"), ROOT / "website"),),
 }
 

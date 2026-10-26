@@ -884,7 +884,7 @@ AgentAccessPolicy.PROTECTED_WRITE_RULES = (
         deny_message=(
             "访问被拒绝：source/ 下的正式工件不可直接写入。"
             "待检原文用 Write 暂存到 drafts/short_drama/，完成机检与合规后"
-            "通过 mcp__arcreel__ingest_short_drama_artifacts 原样入库。"
+            "通过 mcp__arcreel__ingest_short_drama_artifacts 按相对路径读取并原样入库。"
         ),
         sandbox_subpaths=("source",),
     ),

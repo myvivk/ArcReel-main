@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,7 @@ def _make_assembler(
     max_turns: int | None = None,
     provider_env_loader=None,
     user_id: str = DEFAULT_USER_ID,
+    resolve_cli_path: Callable[[], str | None] = lambda: None,
 ) -> OptionsAssembler:
     projects_root = (tmp_path / "projects").resolve()
     projects_root.mkdir(parents=True, exist_ok=True)
@@ -63,6 +65,7 @@ def _make_assembler(
         resolve_project_cwd=lambda name: projects_root / name,
         provider_env_loader=provider_env_loader,
         user_id_provider=lambda: user_id,
+        resolve_cli_path=resolve_cli_path,
     )
 
 
@@ -129,6 +132,24 @@ async def test_build_threads_injected_deps_into_options(tmp_path: Path) -> None:
     assert options.max_buffer_size == CLI_STDOUT_MAX_BUFFER_BYTES == 32 * 1024 * 1024
     # 会话状态帧：CLI 欠后续轮次时一直报 running，会话层据此保护会话不被断开
     assert options.env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_build_threads_resolved_cli_path_into_options(tmp_path: Path) -> None:
+    """build 把解析到的原生 CLI 路径装进 options.cli_path。"""
+    native_exe = r"D:\nodejs\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+
+    async def fake_loader():
+        return {"ANTHROPIC_API_KEY": "sk"}
+
+    assembler = _make_assembler(
+        tmp_path,
+        provider_env_loader=fake_loader,
+        resolve_cli_path=lambda: native_exe,
+    )
+    options = await assembler.build("demo")
+
+    assert options.cli_path == native_exe
 
 
 @pytest.mark.asyncio

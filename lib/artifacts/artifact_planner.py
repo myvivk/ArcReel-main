@@ -103,6 +103,7 @@ from lib.speech.speech_composition import (
     SpeechPreparation,
     SpeechUnitSnapshot,
     admit_script_unit,
+    speech_policy_for_project,
 )
 from lib.speech.speech_presentation import (
     PresentationMedia,
@@ -1353,7 +1354,7 @@ class TargetStatePlanner:
         audio_version = audio.get("current_version") if isinstance(audio, Mapping) else None
         effective = effective_unit_variant(
             narration,
-            admit_script_unit(episode.kind, item).mode,
+            admit_script_unit(episode.kind, item, policy=speech_policy_for_project(self.project)).mode,
             has_narration_audio=type(audio_version) is int and audio_version > 0,
         )
         presentation = self.current_presentation_bases.get(
@@ -1447,7 +1448,7 @@ class TargetStatePlanner:
 
         current_subtitle: ArtifactBasis | None = None
         current_presentation: ArtifactBasis | None = None
-        admission = admit_script_unit(episode.kind, item)
+        admission = admit_script_unit(episode.kind, item, policy=speech_policy_for_project(self.project))
         if admission.allowed:
             try:
                 current = materialize_speech_presentation(

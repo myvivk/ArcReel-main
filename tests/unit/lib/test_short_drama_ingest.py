@@ -8,6 +8,7 @@ from lib.short_drama_ingest import (
     ShortDramaArtifactError,
     classify_short_drama_artifact,
     ingest_short_drama_artifacts,
+    read_draft_artifact,
 )
 from tests.short_drama_support import factory_episode, factory_package
 
@@ -42,6 +43,33 @@ def test_rejects_unsafe_or_unknown_path() -> None:
         classify_short_drama_artifact("../project.json")
     with pytest.raises(ShortDramaArtifactError):
         classify_short_drama_artifact("episodes/episode_3.txt")
+
+
+def test_read_draft_artifact_reads_staged_bytes(tmp_path: Path) -> None:
+    draft = tmp_path / "demo/drafts/short_drama/character-bible.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_bytes(b"# bible\n")
+    assert read_draft_artifact(tmp_path / "demo", "character-bible.md") == b"# bible\n"
+
+
+def test_read_draft_artifact_rejects_missing_and_unsafe_paths(tmp_path: Path) -> None:
+    project = tmp_path / "demo"
+    (project / "drafts/short_drama").mkdir(parents=True)
+    with pytest.raises(ShortDramaArtifactError, match="暂存工件不存在"):
+        read_draft_artifact(project, "character-bible.md")
+    with pytest.raises(ShortDramaArtifactError):
+        read_draft_artifact(project, "../project.json")
+
+
+def test_read_draft_artifact_rejects_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "demo"
+    drafts = project / "drafts/short_drama"
+    drafts.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"secret")
+    (drafts / "character-bible.md").symlink_to(outside)
+    with pytest.raises(ShortDramaArtifactError):
+        read_draft_artifact(project, "character-bible.md")
 
 
 def test_ingest_preserves_utf8_bytes(tmp_path: Path) -> None:

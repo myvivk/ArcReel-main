@@ -32,13 +32,13 @@ const ready = async (page: Page) => { await main(page).getByRole("searchbox").wa
 
 defineRegionScenarios("工厂集目录", [
   {
-    name: "目录提供工厂生成、工件导入和新建集入口",
+    name: "目录提供工厂生成和新建集入口",
     path: PATH, api: API, ready,
     act: async (page) => {
       await clearAgentOverlay(page);
       await expect(main(page).getByRole("link", { name: /第 1 集/ })).toBeVisible();
       await expect(main(page).getByRole("button", { name: "新建一集", exact: true })).toBeVisible();
-      await expect(main(page).getByRole("button", { name: /导入工厂/ })).toBeVisible();
+      await expect(main(page).getByRole("button", { name: /工件目录|导入工厂/ })).toHaveCount(0);
       await expect(main(page).getByRole("button", { name: /上传原文|AI 规划分集/ })).toHaveCount(0);
     },
     screenshot: { name: "episodes-factory", target: main },

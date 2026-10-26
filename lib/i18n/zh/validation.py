@@ -58,7 +58,6 @@ MESSAGES = {
     "val_ad_target_duration_invalid": "target_duration 值无效: {value}，必须为正整数秒",
     "val_ad_no_default_duration": "广告/短片项目不持有 default_duration（分镜时长按 target_duration 预算逐个分镜规划）",
     "val_ad_no_episode_target_duration": "广告/短片项目不持有 episode_target_duration（整集体量按 target_duration 预算规划）",
-    "val_ad_no_grid_storyboard": "广告/短片项目不支持多宫格分镜（grid_storyboard）",
     "val_ad_episodes_single": "广告/短片项目 episodes 必须恒为第 1 集单条",
     "val_ad_shots_missing": "ad 脚本缺少 shots 数组",
     "val_ad_duration_drift": (

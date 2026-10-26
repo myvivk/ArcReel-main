@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import mimetypes
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,8 @@ async def test_hashed_assets_are_immutable_but_unhashed_public_files_are_not(
     bundle = "console.log('arcreel');\n" * 200
     (dist_dir / "assets" / "index-abc123.js").write_text(bundle, encoding="utf-8")
     (dist_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    # 模拟 Windows 注册表把 .svg 登记成 image/svg（浏览器不按 SVG 解码）：挂载时必须恢复标准类型。
+    monkeypatch.setitem(mimetypes.types_map, ".svg", "image/svg")
     monkeypatch.setattr(lib, "PROJECT_ROOT", tmp_path)
     importlib.reload(app_module)
 

@@ -279,7 +279,7 @@ describe("WorkflowPanel 剪辑", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("本集没有可用视频时剪辑入口不可点，悬停说明需要先生成视频", async () => {
+  it("本集没有可用视频时剪辑行不给出两个入口，只说明需要先生成视频", async () => {
     await renderExpanded(
       scenario({
         next: nextAction("generate_videos", { requested_ids: ["E1S01"] }),
@@ -288,10 +288,35 @@ describe("WorkflowPanel 剪辑", () => {
     );
     const row = screen.getByTestId("workflow-row-edit");
     for (const name of ["交给 Agent 剪辑", "新建剪辑时间线"]) {
-      const entry = within(row).getByRole("button", { name });
-      expect(entry).toHaveAttribute("aria-disabled", "true");
-      expect(entry).toHaveAttribute("title", "需要先生成视频");
+      expect(within(row).queryByRole("button", { name })).not.toBeInTheDocument();
     }
+    expect(within(row).getByText("需要先生成视频")).toBeInTheDocument();
+  });
+
+  it("读不到剪辑准入时同样不给出入口，按状态不可读说明", async () => {
+    await renderExpanded(
+      scenario({ next: nextAction("generate_videos", { requested_ids: ["E1S01"] }) }),
+    );
+    const row = screen.getByTestId("workflow-row-edit");
+    for (const name of ["交给 Agent 剪辑", "新建剪辑时间线"]) {
+      expect(within(row).queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(within(row).getByText("暂时读不到这一集的状态。")).toBeInTheDocument();
+  });
+
+  it("下一步是剪辑但准入不成立时，下一步区块只说明原因，不给入口与附加指令", async () => {
+    await renderExpanded(
+      scenario({
+        next: nextAction("create_edit_timeline"),
+        status: { operations: { create_edit_timeline: { state: "refused", reason: "no_available_video" } } },
+      }),
+    );
+    const next = within(screen.getByTestId("workflow-row-edit")).getByTestId("workflow-next-step");
+    for (const name of ["交给 Agent 剪辑", "新建剪辑时间线"]) {
+      expect(within(next).queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(within(next).getByText("需要先生成视频")).toBeInTheDocument();
+    expect(within(next).queryByRole("textbox")).not.toBeInTheDocument();
   });
 });
 
@@ -507,7 +532,7 @@ describe("WorkflowPanel 过期产物、任务与准入", () => {
     await waitFor(() =>
       expect(spy).toHaveBeenCalledWith(
         "proj",
-        expect.objectContaining({ confirmed_request_durations: { E1U1: 8, E1U2: 8 } }),
+        { episode_id: 1 },
         expect.anything(),
       ),
     );

@@ -11,6 +11,7 @@
 
 import asyncio
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,7 +45,7 @@ from lib.script.storyboard_sequence import (
 )
 from lib.speech.narration_config import NarrationConfigError, require_project_tts_generation
 from lib.speech.narration_delivery import canonical_narration_text
-from lib.speech.speech_composition import SpeechMode, admit_script_unit
+from lib.speech.speech_composition import SpeechMode, admit_script_unit, speech_policy_for_project
 from server.auth import CurrentUser
 from server.i18n import Translator
 from server.routers._validators import require_audio_switch_supported, require_video_bucket_capability
@@ -92,6 +93,9 @@ class GenerateVideoRequest(BaseModel):
     script_file: str
     duration_seconds: int | None = Field(default=None, gt=0)
     seed: int | None = None
+    # 分镜视频帧模式：first_last = K0 首帧 + K3 尾帧（K1/K2 不送）；
+    # reference = K0…Kn 全部按参考图按序送，不发首/尾帧。
+    frame_mode: Literal["first_last", "reference"] = "first_last"
 
 
 class GenerateTtsRequest(BaseModel):
@@ -219,7 +223,9 @@ async def generate_video(
         require_admitted_storyboard_references(project, [resolved[0]])
         # worker 执行时按剧本当前的 video_prompt 生成，入队 payload 里的请求 prompt 不参与执行；
         # 发声准入因此以盘上单元为准。
-        admission = admit_script_unit(resolve_script_kind(script), resolved[0])
+        admission = admit_script_unit(
+            resolve_script_kind(script), resolved[0], policy=speech_policy_for_project(project)
+        )
         if not admission.allowed:
             raise HTTPException(status_code=409, detail=admission.to_dict())
         # 同分镜图端点：按正式脚本的 video_prompt 判待生成，请求体里的 prompt 不能代替它。
@@ -258,6 +264,7 @@ async def generate_video(
     extra_payload: dict[str, object] = {
         "seed": req.seed,
         "duration_seconds": req.duration_seconds,
+        "frame_mode": req.frame_mode,
     }
     spec = TaskSpec.from_request(
         task_type="video",

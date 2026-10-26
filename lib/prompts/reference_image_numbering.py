@@ -32,8 +32,14 @@ REFERENCE_IMAGES_KEY = "Reference_Images"
 #: 上一分镜图在参考图证据里的角色名。
 PREVIOUS_STORYBOARD_ROLE = "previous_storyboard"
 
+#: 项目画风锚图在参考图证据里的角色名。
+STYLE_REFERENCE_ROLE = "style_reference"
+
 #: 上一分镜图的约束句，随类型声明行发给模型。
 PREVIOUS_STORYBOARD_REFERENCE_DESCRIPTION = "只参考构图与色调"
+
+#: 画风锚图的约束句。
+STYLE_REFERENCE_DESCRIPTION = "只参考色温、质感与光线"
 
 #: 参考图超限被去尾时的 warning key，与参考生视频路线共用同一条 i18n 文案。
 REFERENCE_IMAGES_CLAMPED_WARNING = "ref_too_many_images"
@@ -46,6 +52,7 @@ _TYPE_DESCRIPTIONS: dict[str, str] = {
     "prop": "道具参考图",
 }
 _PREVIOUS_STORYBOARD_DESCRIPTION = f"上一分镜图，{PREVIOUS_STORYBOARD_REFERENCE_DESCRIPTION}"
+_STYLE_REFERENCE_DESCRIPTION = f"画风参考图，{STYLE_REFERENCE_DESCRIPTION}"
 _EXTRA_DESCRIPTION = "补充参考图"
 
 
@@ -69,6 +76,8 @@ def _image_label(position: int) -> str:
 def _describe(slot: ReferenceImageSlot) -> str:
     if slot.role == PREVIOUS_STORYBOARD_ROLE:
         return _PREVIOUS_STORYBOARD_DESCRIPTION
+    if slot.role == STYLE_REFERENCE_ROLE:
+        return _STYLE_REFERENCE_DESCRIPTION
     if slot.logical_type in _TYPE_DESCRIPTIONS:
         return _TYPE_DESCRIPTIONS[slot.logical_type]
     return _EXTRA_DESCRIPTION
@@ -224,6 +233,8 @@ __all__ = [
     "PREVIOUS_STORYBOARD_ROLE",
     "REFERENCE_IMAGES_CLAMPED_WARNING",
     "REFERENCE_IMAGES_KEY",
+    "STYLE_REFERENCE_DESCRIPTION",
+    "STYLE_REFERENCE_ROLE",
     "ReferenceImageClamp",
     "ReferenceImageSlot",
     "clamp_reference_images",

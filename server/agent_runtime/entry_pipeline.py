@@ -365,6 +365,27 @@ class SessionEntryPipeline:
             return
         self._broadcast({"type": "log_entry", "session_id": session_id, "entry": authoritative})
 
+    async def append_progress_entry(self, entry: dict[str, Any]) -> None:
+        """工具执行期间写入一条进度系统条目并广播（用户经 SSE 实时看到）。
+
+        纯观测：会话 id 未就绪（新会话 init 之前）或落库失败都只记日志，
+        绝不打断正在跑的 MCP 工具调用；工具结果里的轮次摘要仍然完整。
+        """
+        session_id = self._session_id_provider()
+        if not session_id:
+            return
+        try:
+            appended = await self._append_with_retry(session_id, [entry])
+        except Exception:
+            logger.exception(
+                "质量闸进度条目写入事件日志失败 session_id=%s entry_uuid=%s",
+                session_id,
+                entry.get("uuid"),
+            )
+            return
+        for item in appended:
+            self._broadcast({"type": "log_entry", "session_id": session_id, "entry": item})
+
     async def append_interrupt(self) -> list[dict[str, Any]]:
         """中断动作的直接写入点（终态路径：SDK 回显不再经 inbox 到达时补写）。
 

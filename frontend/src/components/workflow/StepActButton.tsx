@@ -15,7 +15,8 @@ interface Props {
 /**
  * 下一步入口的统一形态，集页面板与顶栏弹层共用。主入口：「交给 Agent」实心、直接 AI 调用描边、
  * 跳转与手动为幽灵按钮；降为文字链时（`asLink`）一律是链接样式，破坏性操作始终是危险色。
- * 准入不满足时照常显示但不可点，悬停与读屏都给出原因。
+ * 带 disabledReason 的入口照常显示但不可点，悬停与读屏都给出原因；会新建任务的剪辑入口则在
+ * 准入不成立时由列表层直接不渲染。
  */
 export function StepActButton({ act, onRun, asLink = false, busy = false }: Props) {
   const reasonId = useId();

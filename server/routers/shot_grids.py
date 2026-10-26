@@ -3,7 +3,8 @@
 单分镜出图优先使用 ``ShotGrid.prompt``：弹窗仅在「确定」时落盘，
 POST /generate 与任务层都用它；``image_prompt.scene`` 仅作「prompt 为空」时的回退（整集批量
 走这条，不预存 prompt）。AI 生成提示词的同步端点 ``/author-prompt`` 把 scene + 资产 + 画风
-喂给模型，产出纯逐格文本回填弹窗输入框，落盘仍发生在用户点「确定」时。
+喂给模型，产出纯逐格文本回填弹窗输入框；前端在 AI 返回与关闭弹窗时把文本存成草稿
+（``PUT /draft``，D-5），「确定」才保存规格并入队。
 
 保存与逐格文本生成与 Agent 工具共用 :mod:`server.services.shot_grid_config` 的同一份判定；
 领域异常由 app 级 handler 翻成 HTTP 状态与本地化文案。
@@ -42,7 +43,7 @@ from lib.script.grid.keyframe_parser import (
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.grid.shot_prompt_builder import shot_grid_cells
+from lib.script.grid.shot_prompt_builder import cell_duplication_problem, shot_grid_cells
 from lib.script.grid.splitter import split_grid_image
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.auth import CurrentUser
@@ -50,6 +51,7 @@ from server.i18n import Translator
 from server.services.shot_grid_config import (
     author_grid_cells,
     save_grid_config,
+    save_grid_draft,
 )
 from server.services.tasks.formal_image_commit import get_aspect_ratio
 
@@ -79,6 +81,12 @@ class SaveShotGridRequest(_GridSpecRequest):
     prompt: str | None = Field(default=None, max_length=12000)
 
 
+class SaveShotGridDraftRequest(_GridSpecRequest):
+    """弹窗里还没点「确定」的逐格文本：只保存成草稿，不触发一次生成（ADR 0099 D-5）。"""
+
+    prompt: str = Field(default="", max_length=12000)
+
+
 class AuthorShotGridPromptRequest(_GridSpecRequest):
     pass
 
@@ -90,8 +98,7 @@ async def author_shot_grid_prompt(
     """同步生成逐格镜头文本，不落盘、不入队（ADR 0099 D-5）。
 
     输入是当前 ``image_prompt.scene`` + 该分镜登记资产（只给名字与类型）+ 项目画风 + 格数；
-    输出是纯逐格镜头文本，由前端回填弹窗输入框。落盘只发生在用户点「确定」时——AI 生成了但
-    用户取消，不会留下半截状态。
+    输出是纯逐格镜头文本，由前端回填弹窗输入框并立即存成草稿（D-5）；「确定」才保存规格并入队。
     """
 
     try:
@@ -158,6 +165,28 @@ def get_shot_grid_image(project_name: str, grid_id: str, t: Translator):
     return FileResponse(image_path, media_type="image/png")
 
 
+@router.put("/draft")
+def save_shot_grid_draft(project_name: str, req: SaveShotGridDraftRequest):
+    """把弹窗里未提交的逐格文本存成草稿，AI 生成返回与关闭弹窗时调用（ADR 0099 D-5）。
+
+    只写 ``prompt``：``status`` / ``composite_path`` / ``task_id`` / ``image_basis`` / ``cells``
+    与 ``scene_revision`` 全部保持原样，已出的宫格图不会被「看一眼再关闭」清掉；「确定并生成」
+    才把规格与文本作为一次提交（``PUT`` + ``POST /generate``）。
+    """
+
+    grid = save_grid_draft(
+        get_project_manager(),
+        project_name,
+        script_file=req.script_file,
+        episode=req.episode,
+        shot_id=req.shot_id,
+        rows=req.rows,
+        cols=req.cols,
+        prompt=req.prompt,
+    )
+    return grid.to_dict()
+
+
 @router.put("")
 def save_shot_grid(project_name: str, req: SaveShotGridRequest):
     """保存宫格规格与逐格镜头文本，在「确定」入队前落盘（ADR 0099 D-4）。
@@ -210,6 +239,33 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
             frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=t("shot_grid_scene_not_sequence")) from exc
+        # 镜头少于格数时，宫格是帧位（首帧/延续帧/尾帧），不是一镜一格：让模型按帧位写逐格文本，
+        # 而不是把末镜重复填空。失败才回退到机械对齐，保证出图不因文本调用失败而卡死。
+        if len(frames) < grid.rows * grid.cols:
+            try:
+                authored = await author_grid_cells(
+                    project_manager,
+                    project_name,
+                    script_file=script_file,
+                    episode=grid.episode,
+                    shot_id=shot_id,
+                    rows=grid.rows,
+                    cols=grid.cols,
+                    user_id=user.id,
+                )
+                authored_frames = parse_grid_prompt_cells(authored)
+                if len(authored_frames) == grid.rows * grid.cols:
+                    frames = authored_frames
+            except Exception as exc:
+                logger.warning("grid frame authoring failed for %s: %s", shot_id, exc)
+            if len(frames) < grid.rows * grid.cols:
+                raise HTTPException(
+                    status_code=422,
+                    detail="宫格逐格文本生成失败：镜头数不足，无法按帧位补齐（可重试或改用更小格数）",
+                )
+            problem = cell_duplication_problem(frames)
+            if problem:
+                raise HTTPException(status_code=422, detail=f"宫格逐格文本不合格：{problem}（可重试）")
     grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
     grid.composite_path = None
     grid.image_basis = None
@@ -331,6 +387,8 @@ def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Tran
                 assets["shot_grid"] = {
                     "grid_id": grid.id,
                     "layout": f"{grid.rows}x{grid.cols}",
+                    "rows": grid.rows,
+                    "cols": grid.cols,
                     "composite_path": composite_rel,
                     "cell_paths": paths,
                     "confirmed_at": grid.confirmed_at,

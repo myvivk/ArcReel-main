@@ -18,15 +18,19 @@ const emptyProject: ProjectData = {
 };
 
 describe("ShortDramaGenerateDialog", () => {
-  it("单集重写使用项目总集数及工厂上下文，交给独立生成与质量链路", async () => {
+  it("已开写的系列不再询问题材与档位，单集重写沿用系列设定", async () => {
     useProjectsStore.getState().setCurrentProject("demo", project);
     useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 7 });
     vi.spyOn(API, "getStoryContext").mockResolvedValue({ context: "【已有工厂台账】伏笔尚未回收" });
     render(<ShortDramaGenerateHost projectName="demo" episode={7} />);
-    fireEvent.change(screen.getByLabelText("题材 / 类型"), { target: { value: "悬疑" } });
+    expect(screen.queryByLabelText("题材 / 类型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("篇幅档位")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("风格基调（可选）")).not.toBeInTheDocument();
+    expect(screen.getByText(/系列设定已在首次交稿确定/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "交给 Agent 生成" }));
     await waitFor(() => expect(useShortDramaGenerateStore.getState().request).toBeNull());
     const prompt = useAssistantStore.getState().input;
+    expect(prompt).toContain("不得重新立项");
     expect(prompt).toContain("全剧规划总集数为 24 集");
     expect(prompt).toContain("本批次未达全剧结尾");
     expect(prompt).toContain("【已有工厂台账】伏笔尚未回收");
@@ -36,6 +40,62 @@ describe("ShortDramaGenerateDialog", () => {
     expect(prompt).toContain("合规检查");
     expect(prompt).toContain("每个单元或批次通过后立即");
     expect(prompt).toContain("ingest_short_drama_artifacts");
+  });
+
+  it("空项目首写仍可填写题材与篇幅档位", () => {
+    useProjectsStore.getState().setCurrentProject("demo", emptyProject);
+    useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 0 });
+    render(<ShortDramaGenerateHost projectName="demo" episode={0} />);
+    expect(screen.getByLabelText("题材 / 类型")).toBeInTheDocument();
+    expect(screen.getByLabelText("篇幅档位")).toBeInTheDocument();
+    expect(screen.queryByText(/系列设定/)).not.toBeInTheDocument();
+  });
+
+  it("只建了空集、还没交过稿时仍是首写，必须填题材才能交给 Agent", () => {
+    useProjectsStore.getState().setCurrentProject("demo", {
+      ...project,
+      short_drama_genre: null,
+      episodes: [{ episode: 1, title: "第一集", source_origin: "none", script_file: "" }],
+    });
+    useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 0 });
+    render(<ShortDramaGenerateHost projectName="demo" episode={0} />);
+    expect(screen.getByLabelText("题材 / 类型")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "交给 Agent 生成" })).toBeDisabled();
+  });
+
+  it("已保存的系列设定只读展示，不再提供选择", () => {
+    useProjectsStore.getState().setCurrentProject("demo", {
+      ...project,
+      short_drama_genre: "悬疑",
+      short_drama_tone: "冷冽压迫",
+      short_drama_format: "long",
+    });
+    useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 7 });
+    render(<ShortDramaGenerateHost projectName="demo" episode={7} />);
+    expect(screen.queryByLabelText("题材 / 类型")).not.toBeInTheDocument();
+    expect(screen.getByText("悬疑")).toBeInTheDocument();
+    expect(screen.getByText("冷冽压迫")).toBeInTheDocument();
+    expect(screen.getByText(/系列设定已保存到项目/)).toBeInTheDocument();
+  });
+
+  it("首写提交时把系列设定写回项目", async () => {
+    useProjectsStore.getState().setCurrentProject("demo", {
+      ...project,
+      episodes: [{ episode: 7, title: "第七集", source_origin: "none", script_file: "" }],
+    });
+    useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 7 });
+    const update = vi.spyOn(API, "updateProject").mockResolvedValue({ success: true, project: project });
+    vi.spyOn(API, "getStoryContext").mockResolvedValue({ context: "" });
+    vi.spyOn(useProjectsStore.getState(), "refreshProject").mockResolvedValue("success");
+    render(<ShortDramaGenerateHost projectName="demo" episode={7} />);
+    fireEvent.change(screen.getByLabelText("题材 / 类型"), { target: { value: "悬疑" } });
+    fireEvent.click(screen.getByRole("button", { name: "交给 Agent 生成" }));
+    await waitFor(() => expect(useShortDramaGenerateStore.getState().request).toBeNull());
+    expect(update).toHaveBeenCalledWith(
+      "demo",
+      expect.objectContaining({ short_drama_genre: "悬疑", short_drama_format: "standard" }),
+      expect.anything(),
+    );
   });
 
   it("最后一集要求收尾，长档与漫剧仍保留各自篇幅", () => {
@@ -80,9 +140,9 @@ describe("ShortDramaGenerateDialog", () => {
     expect(screen.getByLabelText("已有集数")).toHaveValue(7);
     expect(screen.getByLabelText("总集数")).toHaveValue(24);
     expect(screen.getByLabelText("总集数")).toHaveAttribute("readonly");
-    expect(screen.queryByLabelText("题材 / 类型")).toBeNull();
-    expect(screen.queryByLabelText("创意简报 / 梗概（可选）")).toBeNull();
-    expect(screen.getByText(/当前已存在 7 集/)).toBeTruthy();
+    expect(screen.queryByLabelText("题材 / 类型")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("创意简报 / 梗概（可选）")).not.toBeInTheDocument();
+    expect(screen.getByText(/当前已存在 7 集/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("连写集数"), { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: "交给 Agent 生成" }));
@@ -114,7 +174,7 @@ describe("ShortDramaGenerateDialog", () => {
     });
     useShortDramaGenerateStore.getState().open({ projectName: "demo", episode: 0 });
     render(<ShortDramaGenerateHost projectName="demo" episode={0} />);
-    expect(screen.getByText(/已达全剧规划总集数 7/)).toBeTruthy();
+    expect(screen.getByText(/已达全剧规划总集数 7/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "交给 Agent 生成" })).toBeDisabled();
   });
 

@@ -48,3 +48,13 @@ export interface SaveShotGridPayload {
   cols: number;
   prompt: string | null;
 }
+
+/** PUT 只保存逐格文本草稿：不动生成状态与既成宫格图（D-5）。 */
+export interface SaveShotGridDraftPayload {
+  script_file: string;
+  episode: number;
+  shot_id: string;
+  rows: number;
+  cols: number;
+  prompt: string;
+}

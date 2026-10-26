@@ -1,22 +1,19 @@
 import { Loader2, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 
 import { getProjectDisplayName } from "@/utils/project-display";
 
 /**
- * 空项目欢迎页：AI 原创剧本与工件目录导入。
+ * 空项目欢迎页：AI 原创剧本。
  * 不强制用户先建集——原创剧本在提交时由前端透明建好目标集再导入，用户全程无感。
  */
 export function WelcomeCanvas({
   projectTitle,
-  projectName,
   onOriginalScript,
   originalScriptBusy = false,
 }: {
   projectTitle: string | undefined;
-  projectName: string;
   /** 剧情演绎项目：从空白项目直接开启「AI 原创剧本」创建模式（提交时透明建集）。 */
   onOriginalScript?: () => void;
   /** 提交（建集）期间禁用按钮并显示加载态。 */
@@ -46,8 +43,6 @@ export function WelcomeCanvas({
           <p className="max-w-md text-xs leading-relaxed text-muted-foreground">{t("welcome_original_hint")}</p>
         </div>
       )}
-
-      <ShortDramaImportButton projectName={projectName} />
     </div>
   );
 }

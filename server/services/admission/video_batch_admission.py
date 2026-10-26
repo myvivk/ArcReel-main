@@ -60,7 +60,12 @@ from lib.script.grid.keyframe_parser import keyframe_reference_problems
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import StoryboardImageUnavailable, StoryboardVideoSlots
 from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
-from lib.speech.speech_composition import SpeechAdmission, SpeechAdmissionError, require_script_unit_admitted
+from lib.speech.speech_composition import (
+    SpeechAdmission,
+    SpeechAdmissionError,
+    require_script_unit_admitted,
+    speech_policy_for_project,
+)
 from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import reference_admission_problems
 from server.services.tasks.video_caps import (
@@ -586,7 +591,7 @@ def build_storyboard_video_specs(
             continue
 
         try:
-            require_script_unit_admitted(skeleton_kind, item)
+            require_script_unit_admitted(skeleton_kind, item, policy=speech_policy_for_project(project))
         except SpeechAdmissionError as exc:
             # 逐 ID 契约与既有 speech_admission 载荷并存：前者说「这个 ID 没做成、
             # 下一步做什么」，后者带着准入自己的完整定位信息。

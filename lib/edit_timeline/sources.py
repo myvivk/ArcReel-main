@@ -18,7 +18,7 @@ from lib.script.script_editor import ScriptEditError, resolve_items
 from lib.script.script_models import item_duration
 from lib.speech.audio_utils import probe_existing_audio_duration_seconds, probe_existing_video_duration_seconds
 from lib.speech.narration_config import USE_TTS, project_narration_delivery
-from lib.speech.speech_composition import SpeechMode, admit_script_unit
+from lib.speech.speech_composition import SpeechMode, admit_script_unit, speech_policy_for_project
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +106,7 @@ def load_episode_script_units(projects: ProjectManager, project_name: str, episo
         unit_id = item.get(id_field)
         if not isinstance(unit_id, str) or not unit_id:
             continue
-        admission = admit_script_unit(kind, item, ignore_marker=True)
+        admission = admit_script_unit(kind, item, ignore_marker=True, policy=speech_policy_for_project(project))
         units.append(
             ScriptUnit(
                 unit_id=unit_id,

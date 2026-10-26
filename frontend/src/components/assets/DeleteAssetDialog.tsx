@@ -16,7 +16,7 @@ import {
 import { errMsg } from "@/utils/async";
 import type { Asset } from "@/types/asset";
 
-/** 从资产库删除一个资产。删除不可恢复，已应用到项目里的副本不受影响。 */
+/** 从资产库删除一个资产。删除不可恢复，项目里已有的副本不受影响。 */
 export function DeleteAssetDialog({
   asset,
   onClose,

@@ -174,7 +174,7 @@ defineRegionScenarios("项目概览", [
     },
   },
   {
-    name: "空项目欢迎页：标题、工厂生成与工件导入入口",
+    name: "空项目欢迎页：标题与工厂生成入口",
     path: OVERVIEW_PATH,
     api: EMPTY_PROJECT,
     ready: async (page) => {

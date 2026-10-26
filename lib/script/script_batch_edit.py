@@ -48,7 +48,12 @@ from lib.script.script_revision import content_fingerprint_of_data
 from lib.script.script_structure_validator import validate_script_structure
 from lib.script.source_anchor import is_verbatim_source_anchor
 from lib.script.storyboard_mentions import storyboard_mention_warnings
-from lib.speech.speech_composition import SpeechAdmission, admit_script_unit, refresh_video_unit_replan_state
+from lib.speech.speech_composition import (
+    SpeechAdmission,
+    admit_script_unit,
+    refresh_video_unit_replan_state,
+    speech_policy_for_project,
+)
 
 _REVISION_PATTERN = r"^sha256-v1:[0-9a-f]{64}$"
 
@@ -314,8 +319,9 @@ class ScriptBatchEditor:
 
                 original = copy.deepcopy(candidate)
                 project = resolved_project["value"]
+                policy = speech_policy_for_project(project)
                 try:
-                    before_admissions = _admissions(original)
+                    before_admissions = _admissions(original, policy=policy)
                 except ScriptEditError as exc:
                     kind = exc.params.get("kind")
                     locations = (ScriptBatchEditLocation(path=(kind,)),) if isinstance(kind, str) else ()
@@ -346,6 +352,7 @@ class ScriptBatchEditor:
                             operation,
                             removed_items,
                             preserve_removed_assets=index not in fresh_insert_indexes,
+                            policy=policy,
                         )
                     except ScriptEditError as exc:
                         raise _AbortEdit(
@@ -375,6 +382,7 @@ class ScriptBatchEditor:
                     before_admissions=before_admissions,
                     speech_change=speech_change,
                     last_touch=last_touch,
+                    policy=policy,
                 )
                 if speech_problems:
                     raise _AbortEdit(
@@ -671,11 +679,11 @@ def _find_index(items: list[Any], id_field: str, item_id: str) -> int:
     raise ScriptEditError(f"item not found: {item_id}")
 
 
-def _admission_for(script: dict[str, Any], item_id: str) -> SpeechAdmission | None:
+def _admission_for(script: dict[str, Any], item_id: str, *, policy) -> SpeechAdmission | None:
     items, id_field, kind = resolve_items(script)
     for item in items:
         if isinstance(item, dict) and str(item.get(id_field)) == item_id:
-            return admit_script_unit(kind, item)
+            return admit_script_unit(kind, item, policy=policy)
     return None
 
 
@@ -685,17 +693,18 @@ def _apply_operation(
     removed_items: dict[str, dict[str, Any]],
     *,
     preserve_removed_assets: bool,
+    policy,
 ) -> tuple[str | None, SpeechAdmission | None, SpeechAdmission | None]:
     if isinstance(operation, UpdateOperation):
         item_id = operation.id
-        before = _admission_for(script, item_id)
+        before = _admission_for(script, item_id, policy=policy)
         items, id_field, kind = resolve_items(script)
         try:
             item_index = _find_index(items, id_field, item_id)
         except ScriptEditError as exc:
             raise _OperationApplyError(str(exc), location=("id",)) from exc
         item = items[item_index]
-        before_content_admission = admit_script_unit(kind, item, ignore_marker=True)
+        before_content_admission = admit_script_unit(kind, item, ignore_marker=True, policy=policy)
         for field, value in operation.fields.items():
             try:
                 patch_field(script, item_id, field, value)
@@ -712,13 +721,13 @@ def _apply_operation(
             if roots & {"text", "duration_seconds"}:
                 refresh_video_unit_replan_state(item)
         else:
-            after_content_admission = admit_script_unit(kind, item, ignore_marker=True)
+            after_content_admission = admit_script_unit(kind, item, ignore_marker=True, policy=policy)
             if (
                 after_content_admission.preparation != before_content_admission.preparation
                 and after_content_admission.allowed
             ):
                 item.pop("needs_replan", None)
-        return item_id, before, _admission_for(script, item_id)
+        return item_id, before, _admission_for(script, item_id, policy=policy)
 
     if isinstance(operation, InsertAfterOperation):
         items, id_field, kind = resolve_items(script)
@@ -759,7 +768,7 @@ def _apply_operation(
         if kind == "video_units":
             refresh_video_unit_replan_state(item)
         items.insert(insert_at, item)
-        return item_id, None, _admission_for(script, item_id)
+        return item_id, None, _admission_for(script, item_id, policy=policy)
 
     if isinstance(operation, MoveAfterOperation):
         if operation.after_id == operation.id:
@@ -769,7 +778,7 @@ def _apply_operation(
             source_index = _find_index(items, id_field, operation.id)
         except ScriptEditError as exc:
             raise _OperationApplyError(str(exc), location=("id",)) from exc
-        before = _admission_for(script, operation.id)
+        before = _admission_for(script, operation.id, policy=policy)
         item = items.pop(source_index)
         if operation.after_id is None:
             insert_at = 0
@@ -779,14 +788,14 @@ def _apply_operation(
             except ScriptEditError as exc:
                 raise _OperationApplyError(str(exc), location=("after_id",)) from exc
         items.insert(insert_at, item)
-        return operation.id, before, _admission_for(script, operation.id)
+        return operation.id, before, _admission_for(script, operation.id, policy=policy)
 
     items, id_field, _kind = resolve_items(script)
     try:
         index = _find_index(items, id_field, operation.id)
     except ScriptEditError as exc:
         raise _OperationApplyError(str(exc), location=("id",)) from exc
-    before = _admission_for(script, operation.id)
+    before = _admission_for(script, operation.id, policy=policy)
     removed_items[operation.id] = copy.deepcopy(items.pop(index))
     return operation.id, before, None
 
@@ -866,10 +875,10 @@ def _anchor_sources(project_dir: Path, project: Mapping[str, Any], episode: int 
     return [doc.text for doc in discover_sources(project_dir, project)]
 
 
-def _admissions(script: dict[str, Any]) -> dict[str, SpeechAdmission]:
+def _admissions(script: dict[str, Any], *, policy) -> dict[str, SpeechAdmission]:
     items, id_field, kind = resolve_items(script)
     return {
-        str(item.get(id_field)): admit_script_unit(kind, item)
+        str(item.get(id_field)): admit_script_unit(kind, item, policy=policy)
         for item in items
         if isinstance(item, dict) and isinstance(item.get(id_field), str)
     }
@@ -881,9 +890,10 @@ def _new_speech_problems(
     before_admissions: dict[str, SpeechAdmission],
     speech_change: dict[str, int],
     last_touch: dict[str, int],
+    policy,
 ) -> list[ScriptBatchEditProblem]:
     problems: list[ScriptBatchEditProblem] = []
-    for item_id, admission in _admissions(candidate).items():
+    for item_id, admission in _admissions(candidate, policy=policy).items():
         if admission.allowed:
             continue
         previous = before_admissions.get(item_id)

@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { FilePlus, Trash2 } from "lucide-react";
 import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaGenerateDialog";
-import { ShortDramaImportButton } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { Button } from "@/components/ui/button";
 
 export function EpisodesHeader({
@@ -19,7 +18,6 @@ export function EpisodesHeader({
       <span className="num text-xs text-muted-foreground">{t("episodes_view_episode_count", { count: episodeCount })}</span>
       <span className="flex-1" />
       <ShortDramaGenerateButton projectName={projectName} episode={0} />
-      <ShortDramaImportButton projectName={projectName} />
       <Button variant="ghost" size="sm" onClick={onCreate}>
         <FilePlus aria-hidden data-icon="inline-start" />{t("episode_create_title")}
       </Button>

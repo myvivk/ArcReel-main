@@ -1,7 +1,7 @@
 import { TruncatedText } from "@/components/shared/TruncatedText";
 import { memo, useId } from "react";
 import { useTranslation } from "react-i18next";
-import { FolderInput, Layers, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Layers, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,10 +16,10 @@ import type { Asset } from "@/types/asset";
 import { ASSET_TYPE_ICON } from "./asset-type-icons";
 import { AssetThumb } from "./AssetThumb";
 
-export type AssetCardAction = "open" | "edit" | "apply" | "delete";
+export type AssetCardAction = "open" | "edit" | "delete";
 
 /**
- * 资产库卡片：整张卡片可点，打开详情；「更多」菜单常驻，不依赖悬停，提供编辑、应用到项目与删除。
+ * 资产库卡片：整张卡片可点，打开详情；「更多」菜单常驻，不依赖悬停，提供编辑与删除。
  */
 export const AssetCard = memo(function AssetCard({
   asset,
@@ -69,10 +69,6 @@ export const AssetCard = memo(function AssetCard({
                 <DropdownMenuItem onClick={() => onAction("edit", asset)}>
                   <Pencil aria-hidden />
                   {t("edit")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onAction("apply", asset)}>
-                  <FolderInput aria-hidden />
-                  {t("apply_to_project")}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />

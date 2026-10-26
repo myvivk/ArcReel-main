@@ -33,8 +33,6 @@ function row(name: string, status: AssetSheetStatusRow["status"], type: AssetShe
   };
 }
 
-const libraryPreview = (source: Source) => ({ description: source.description, sheetPath: source.scene_sheet });
-
 function renderGallery(overrides: Partial<Parameters<typeof AssetGallery<Source>>[0]> = {}) {
   return render(
     <AssetGallery<Source>
@@ -44,7 +42,6 @@ function renderGallery(overrides: Partial<Parameters<typeof AssetGallery<Source>
       assets={SCENES}
       readOnly={false}
       onGenerate={vi.fn()}
-      libraryPreview={libraryPreview}
       {...overrides}
     />,
   );
@@ -75,12 +72,10 @@ describe("AssetGallery", () => {
     vi.restoreAllMocks();
   });
 
-  it("hides global write actions and keeps batch scope for an episode gallery", async () => {
+  it("keeps batch scope for an episode gallery but hides the single-card write actions when read-only", async () => {
     const user = userEvent.setup();
     renderGallery({ readOnly: true, batchScope: { episode_id: 4 } });
 
-    expect(screen.queryByRole("button", { name: "新增场景" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "从资产库选择" })).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /生成待生成的场景/ })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "「书房」的更多操作" }));
     expect(screen.queryByRole("menuitem", { name: "生成资产图" })).not.toBeInTheDocument();
@@ -122,8 +117,6 @@ describe("AssetGallery", () => {
       "上传资产图",
       "局部修改",
       "版本历史",
-      "加入资产库",
-      "并入…",
       "删除",
     ]);
   });
@@ -153,7 +146,6 @@ describe("AssetGallery", () => {
     const menu = await openMenu(user, "庭院");
 
     expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["查看大图"]);
-    expect(screen.queryByRole("button", { name: /添加场景/ })).not.toBeInTheDocument();
   });
 
   it("refuses to open a sheet-writing dialog once the asset became busy", async () => {
@@ -165,11 +157,11 @@ describe("AssetGallery", () => {
       tasks: [makeTask({ project_name: "demo", task_type: "scene", media_type: "image", resource_id: "庭院", status: "running" })],
     }));
 
-    const addToLibrary = within(menu).getByRole("menuitem", { name: "加入资产库" });
-    expect(addToLibrary).toHaveAttribute("aria-disabled", "true");
-    await user.click(addToLibrary);
+    const editImage = within(menu).getByRole("menuitem", { name: "局部修改" });
+    expect(editImage).toHaveAttribute("aria-disabled", "true");
+    await user.click(editImage);
 
-    expect(screen.queryByRole("dialog", { name: /加入资产库/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "局部修改" })).not.toBeInTheDocument();
   });
 
   it("drops an upload chosen after the asset became busy", async () => {
@@ -205,7 +197,7 @@ describe("AssetGallery", () => {
       useProjectsStore.setState(useProjectsStore.getInitialState(), true);
     });
 
-    it("lists the episodes that still reference the asset and offers merging instead", async () => {
+    it("lists the episodes that still reference the asset", async () => {
       const user = userEvent.setup();
       const preview = vi.spyOn(API, "previewProjectAssetDeletion").mockResolvedValue({
         success: true,
@@ -228,11 +220,7 @@ describe("AssetGallery", () => {
       ).toBeInTheDocument();
       expect(within(dialog).getByText("夜访")).toBeInTheDocument();
       expect(preview).toHaveBeenCalledWith("demo", "scene", "庭院", { signal: expect.any(AbortSignal) });
-
-      await user.click(within(dialog).getByRole("button", { name: "改为并入…" }));
-
-      expect(await screen.findByRole("alertdialog", { name: "把「庭院」并入另一个资产" })).toBeInTheDocument();
-      expect(screen.queryByRole("alertdialog", { name: "删除场景「庭院」？" })).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("button", { name: "改为并入…" })).not.toBeInTheDocument();
       expect(remove).not.toHaveBeenCalled();
     });
 
@@ -288,7 +276,6 @@ describe("AssetGallery", () => {
               assets={SCENES}
               readOnly={false}
               onGenerate={vi.fn()}
-              libraryPreview={libraryPreview}
             />
           </LeaveGuardProvider>,
         );
@@ -337,63 +324,6 @@ describe("AssetGallery", () => {
       });
     });
   });
-  describe("merging an asset", () => {
-    beforeEach(() => {
-      const project = { title: "demo", scenes: SCENES, episodes: [] } as unknown as ProjectData;
-      useProjectsStore.setState({ currentProjectName: "demo", currentProjectData: project });
-      vi.spyOn(API, "getProject").mockResolvedValue({ project, scripts: {} } as never);
-    });
-
-    afterEach(() => {
-      useProjectsStore.setState(useProjectsStore.getInitialState(), true);
-    });
-
-    it("blocks merging into an asset whose card has a write in flight and says why", async () => {
-      const user = userEvent.setup();
-      let finishUpload: (value: never) => void = () => {};
-      vi.spyOn(API, "uploadFile").mockReturnValue(new Promise((resolve) => (finishUpload = resolve)));
-      const merge = vi.spyOn(API, "mergeProjectAsset").mockResolvedValue({
-        success: true,
-        dry_run: true,
-        source: "庭院",
-        target: "书房",
-        as_derivative: false,
-        aliases_added: [],
-        derivative_created: null,
-        derivatives_moved: [],
-        derivatives_folded: [],
-        references: 0,
-        episodes: [],
-      });
-      renderGallery();
-
-      // 保留方「书房」的卡片上正在上传资产图
-      const target = screen.getByRole("article", { name: "书房" });
-      const file = new File(["sheet"], "scene.png", { type: "image/png" });
-      fireEvent.change(within(target).getByLabelText("上传资产图", { selector: "input" }), { target: { files: [file] } });
-
-      await user.click(within(await openMenu(user, "庭院")).getByRole("menuitem", { name: "并入…" }));
-      const dialog = await screen.findByRole("alertdialog", { name: "把「庭院」并入另一个资产" });
-      await user.click(within(dialog).getByRole("combobox", { name: "保留方" }));
-      await user.click(await screen.findByRole("option", { name: "书房" }));
-
-      await waitFor(() => expect(merge).toHaveBeenCalledWith("demo", "scene", "庭院", "书房", expect.objectContaining({ dryRun: true })));
-      const confirm = within(dialog).getByRole("button", { name: "并入" });
-      expect(await within(dialog).findByText("「书房」正在上传资产图、恢复版本或删除，完成后才能合并")).toBeInTheDocument();
-      expect(confirm).toBeDisabled();
-
-      await act(async () => finishUpload({ path: "x" } as never));
-      await waitFor(() => expect(confirm).toBeEnabled());
-
-      act(() => useTasksStore.setState({
-        tasks: [makeTask({ project_name: "demo", task_type: "scene", media_type: "image", resource_id: "书房", status: "running" })],
-      }));
-      expect(confirm).toBeDisabled();
-      expect(within(dialog).getByText("「书房」正在生成，生成结束后才能合并")).toBeInTheDocument();
-      expect(merge).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe("image viewer", () => {
     const version = (n: number, current: boolean) => ({
       version: n,
@@ -457,7 +387,6 @@ describe("AssetGallery", () => {
           assets={assets}
           readOnly={false}
           onGenerate={vi.fn()}
-          libraryPreview={libraryPreview}
         />
       );
       rerender(gallery(withoutSheet));

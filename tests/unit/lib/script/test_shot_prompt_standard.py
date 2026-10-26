@@ -4,7 +4,7 @@
 机位 / 运镜、丰满度、token 硬闸（登记 + 出场清单）、泛化前缀、凑数镜头。
 """
 
-from lib.script.shot_prompt_standard import lint_shot_prompt, shot_blocks
+from lib.script.shot_prompt_standard import lint_shot_prompt, reference_tokens, shot_blocks
 
 #: 一个合规的单镜头提示词（裸文本含动作 + 神态，标记带景别，首句机位 + 运镜）。
 _GOOD = (
@@ -81,3 +81,27 @@ def test_shot_blocks_split_by_mark():
     blocks = shot_blocks(scene)
     assert [block.number for block in blocks] == [1, 2]
     assert [block.shot_size for block in blocks] == ["中景", "特写"]
+
+
+def test_dialogue_line_in_opening_or_shot_body_is_rejected_with_line_number():
+    for dialogue in ("台词：画外声：“沈氏即刻自尽。”", "对白：林清：开门。", "画外音：脚步声停了。"):
+        opening = f"{dialogue}\n{_GOOD}"
+        problem = lint_shot_prompt(opening, registered_names=_ASSETS)
+        assert problem is not None
+        assert "台词行" in problem
+        assert "第 1 行" in problem
+
+    body = _GOOD.replace("呼吸压在喉咙里；", "呼吸压在喉咙里；\n台词：林清：谁在外面？")
+    problem = lint_shot_prompt(body, registered_names=_ASSETS)
+    assert problem is not None
+    assert "台词行" in problem
+    assert "第 2 行" in problem
+
+
+def test_action_or_environment_description_of_speaking_is_still_allowed():
+    scene = _GOOD.replace("呼吸压在喉咙里；", "呼吸压在喉咙里，启唇说话；画外传来宣读声，门外的人冷笑。")
+    assert lint_shot_prompt(scene, registered_names=_ASSETS, allowed_names=_ASSETS) is None
+
+
+def test_reference_tokens_are_deduped_in_order():
+    assert reference_tokens("沈昭@[沈昭]看向旧公寓@[旧公寓]，沈昭@[沈昭]闭眼。") == ["沈昭", "旧公寓"]

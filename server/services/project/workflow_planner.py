@@ -27,7 +27,7 @@ from lib.project.project_migration_failure import (
 )
 from lib.script.script_batch_edit import script_revision
 from lib.script.script_skeleton import ensure_route_skeleton, resolve_kind_items
-from lib.speech.speech_composition import admit_script_unit
+from lib.speech.speech_composition import admit_script_unit, speech_policy_for_project
 from lib.workflow.workflow_plan import (
     WorkflowPlan,
     WorkflowPlanRequest,
@@ -174,8 +174,9 @@ class WorkflowPlanner:
         if facts is None:
             return []
         problems = []
+        policy = speech_policy_for_project(facts.project)
         for item in facts.items:
-            admission = admit_script_unit(facts.kind, item)
+            admission = admit_script_unit(facts.kind, item, policy=policy)
             problems.extend(speech_admission_problems(admission))
         return problems
 

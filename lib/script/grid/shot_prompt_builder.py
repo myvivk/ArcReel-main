@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from difflib import SequenceMatcher
+from itertools import pairwise
 
 from lib.prompts.prompt_style import normalize_style_value
 from lib.prompts.prompt_templates.builtin import builtin_templates
@@ -28,34 +30,81 @@ from lib.script.grid.shot_models import ShotGridCell
 CONTINUATION_TAIL = "直到自然结束，不新增事件、不切换场景。"
 
 
-def resolve_grid_cells(frames: Sequence[ShotFrame], count: int) -> list[ShotFrame]:
-    """把解析出的镜头序列对齐到宫格格数。
+def _select_keyframes(frames: Sequence[ShotFrame], count: int) -> list[ShotFrame]:
+    """镜头多于画格时按关键瞬间抽帧，绝不合并文本。
 
-    叙事镜头多于画格时，按时间顺序分组覆盖整个段落；少则尾格延续最后一个镜头的动作。
-    手写逐格提示词的数量校验由提交入口负责，此处只映射分镜段，不丢弃尾部事件。
+    首镜是开始画面、末镜是结束画面，二者必留；作者标了 ``关键帧`` 的镜头优先入选，
+    剩余名额再从其余镜头里等距补齐。被抽掉的镜头仍留在分镜提示词里，由视频模型在帧间补——
+    把两镜的话拼进同一格，出图必然画成两帧的混合体（ADR 0098「一格一瞬间」）。
+    """
+
+    if count <= 1:
+        return [frames[0]]
+    picked: dict[int, ShotFrame] = {0: frames[0], len(frames) - 1: frames[-1]}
+    for index in (i for i, frame in enumerate(frames) if frame.keyframe and 0 < i < len(frames) - 1):
+        if len(picked) >= count:
+            break
+        picked[index] = frames[index]
+    if len(picked) < count:
+        rest = [i for i in range(len(frames)) if i not in picked]
+        need = count - len(picked)
+        if rest:
+            step = len(rest) / need
+            for slot in range(need):
+                index = rest[min(int(slot * step), len(rest) - 1)]
+                picked.setdefault(index, frames[index])
+    ordered = [picked[index] for index in sorted(picked)][:count]
+    return [
+        ShotFrame(number=index + 1, shot_size=frame.shot_size, text=frame.text, keyframe=frame.keyframe)
+        for index, frame in enumerate(ordered)
+    ]
+
+
+def cell_duplication_problem(cells: Sequence[ShotFrame]) -> str | None:
+    """相邻两格必须是不同瞬间。文本高度相似或只是复述上一格，出图必然是两张一样的图。"""
+
+    for left, right in pairwise(cells):
+        if "动作收住，画面定格" in right.text or right.text.startswith("延续第"):
+            return f"第{right.number}格只是复述上一格，没有新画面"
+        ratio = SequenceMatcher(None, left.text, right.text, autojunk=False).ratio()
+        if ratio >= 0.9:
+            return f"第{left.number}格与第{right.number}格几乎是同一画面（相似度 {ratio:.2f}）"
+    return None
+
+
+def resolve_grid_cells(frames: Sequence[ShotFrame], count: int) -> list[ShotFrame]:
+    """把逐格文本落到宫格的|帧位|上——**不是一镜一格**。
+
+    设计口径（不要再滑回“镜头对齐格数”）：
+
+    - 宫格是帧位：首帧 → 延续帧 ×N → 尾帧；格数与镜头数无必然关系；
+    - 镜头多于格数：抽帧（首尾必留、关键帧优先、其余等距），不合并多镜文本；
+    - 镜头少于格数：正式链路会先让模型按帧位写逐格文本（首帧取首镜、尾帧取末镜定格、
+      中间是承接上一帧的延续画面）；本函数只做兜底对齐——沿用末镜画面并写清“定格/尚未收住”，
+      绝不只丢一句「延续」指令。
+
+    图片模型要的是可画的描述，指令等于没给内容。手写逐格提示词的数量校验由提交入口负责。
     """
 
     if count < 1:
         raise ValueError("宫格格数必须为正整数")
     if len(frames) > count:
-        resolved = []
-        for index in range(count):
-            group = frames[index * len(frames) // count : (index + 1) * len(frames) // count]
-            resolved.append(
-                ShotFrame(
-                    number=index + 1,
-                    shot_size=" / ".join(dict.fromkeys(frame.shot_size for frame in group if frame.shot_size)),
-                    text="\n".join(frame.text for frame in group),
-                )
-            )
-        return resolved
+        return _select_keyframes(frames, count)
     resolved = list(frames)
     if resolved and len(resolved) < count:
         last = resolved[-1]
-        resolved.extend(
-            ShotFrame(number=index + 1, shot_size="延续", text=f"延续第{last.number}格的动作，{CONTINUATION_TAIL}")
-            for index in range(len(resolved), count)
-        )
+        body = last.text.rstrip("。；; ")
+        pads = count - len(resolved)
+        for offset in range(pads):
+            is_tail = offset == pads - 1
+            detail = "动作收住，画面定格在此刻的状态" if is_tail else "同一构图内动作尚未收住"
+            resolved.append(
+                ShotFrame(
+                    number=len(resolved) + 1,
+                    shot_size="尾帧" if is_tail else "延续",
+                    text=f"{body}；{detail}，{CONTINUATION_TAIL}",
+                )
+            )
     return resolved
 
 

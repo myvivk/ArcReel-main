@@ -116,6 +116,7 @@ SAMPLE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "edit_images": {"resource_type": "character", "edits": [{"id": "张三", "instruction": "把头发改成红色"}]},
     "generate_narration_audio": {"script": "episode_1.json", "segment_ids": ["E1S01"]},
     "generate_episode_script": {"episode_id": 1, "dry_run": True},
+    "plan_short_drama_storyboards": {"episode_id": 1},
     "generate_short_drama_factory": {"prompt": "按人物圣经生成分集规划"},
     "ingest_short_drama_artifacts": {
         "artifacts": [{"path": "character-bible.md", "content_base64": base64.b64encode(b"# Bible\n").decode()}],

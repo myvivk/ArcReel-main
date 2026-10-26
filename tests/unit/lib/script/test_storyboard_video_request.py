@@ -11,6 +11,7 @@ from lib.script.storyboard_video_request import (
     resolve_storyboard_audio_inputs,
     storyboard_asset_links,
     storyboard_frame_evidence,
+    validate_storyboard_video_prompt,
 )
 from lib.speech.voice_settings import VoiceRenderSettings
 
@@ -155,6 +156,21 @@ def test_audio_order_and_text_use_utterance_first_appearance(tmp_path: Path):
         slots=slots,
         voice=VoiceRenderSettings(),
     ).paths
+
+
+def test_video_prompt_action_rejects_dialogue_lines():
+    for text in ("台词：柳敬堂：“跪下接旨。”", "对白：沈昭：我只看数。", "画外音：门外传来宣读声。"):
+        with pytest.raises(ValueError, match=r"video_prompt\.action 不得包含台词行"):
+            validate_storyboard_video_prompt({"video_prompt": {"action": f"K0 推近。\n{text}"}})
+        with pytest.raises(ValueError, match=r"video_prompt\.action 不得包含台词行"):
+            storyboard_asset_links({"characters": {}}, {"video_prompt": f"K0 推近。\n{text}"}, "demo")
+
+
+def test_video_prompt_action_allows_speaking_as_visible_action():
+    validate_storyboard_video_prompt(
+        {"video_prompt": {"action": "K0 沈昭启唇说话，眉心紧锁；K1 画外传来宣读声，柳敬堂冷笑。"}}
+    )
+    assert storyboard_asset_links({}, {"video_prompt": "K0 沈昭启唇说话，随后转身。"}, "demo") == ""
 
 
 def test_per_image_audio_requires_a_real_declared_grid_target(tmp_path):

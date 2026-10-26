@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "wouter";
-import { AlertTriangle, Check, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, Bot, Check, Loader2, Sparkles } from "lucide-react";
 import { reimportShortDramaSource } from "@/actions/shortDrama";
 import { promptAuthoringResourceId } from "@/actions/generation";
 import { useFactoryEpisodeSource } from "@/components/canvas/episode-page/useFactoryEpisodeSource";
 import { isResourceBusy, useActiveResourceIds } from "@/stores/tasks-store";
+import { useAssistantStore } from "@/stores/assistant-store";
 import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -40,6 +41,8 @@ interface Props {
   /** 页头动作用描边小按钮；空态里的主操作用实心按钮。 */
   prominent?: boolean;
   readOnly?: boolean;
+  /** 只给「交给 Agent」入口，不再暴露手动弹窗（集页默认）。 */
+  agentOnly?: boolean;
 }
 
 const ASSET_ROUTE: Record<string, string> = {
@@ -71,8 +74,10 @@ function ShortDramaStoryboardAction({
   sceneIds,
   prominent = false,
   readOnly = false,
+  agentOnly = false,
 }: Props) {
   const { t } = useTranslation("dashboard");
+  const assistantBusy = useAssistantStore((state) => state.sending || state.sessionStatus === "running");
   const demo = useDemoWorkbench();
   const readonly = readOnly || demo;
   const sourceState = useFactoryEpisodeSource(projectName, episode, !readonly);
@@ -93,6 +98,7 @@ function ShortDramaStoryboardAction({
     cached: boolean;
   } | null>(null);
   const [pendingResult, setPendingResult] = useState<typeof result>(null);
+  const [handoffConfirmOpen, setHandoffConfirmOpen] = useState(false);
 
   const hasStoryboards = storyboardCount > 0;
   const missing = source?.assets_missing_description ?? [];
@@ -202,6 +208,33 @@ function ShortDramaStoryboardAction({
     !readonly && !blocked && !busy && !loading && !submitting && !pendingResult
     && Boolean(source?.exists && source.revision) && (!hasStoryboards || selectedIds.length > 0);
 
+  const handOff = () => {
+    if (readonly || blocked || busy || submitting || !source?.exists) return;
+    const scope = hasStoryboards
+      ? `${
+          partial && selectedIds.length > 0 ? `只重写所选分镜 ${selectedIds.join("、")}` : "先问我全量还是部分"
+        }，强度 ${planningStrength}${forceRegenerate ? "，强制忽略缓存" : ""}；` +
+        "已有分镜图或视频时先确认是否覆盖，得到同意后再传 confirm_artifacts=true。"
+      : `本集全量，强度 ${planningStrength}。`;
+    const risk = hasStoryboards
+      ? `本集已有 ${storyboardCount} 个分镜：重分镜会覆盖这些分镜的结构和提示词，并让已有参考素材、视频提示词和视频过期；已生成媒体保留但需重做。`
+      : "";
+    const prompt =
+      `请用 plan_short_drama_storyboards 为第 ${episode} 集执行 AI 分镜。${scope}${risk}` +
+      ` 不要自己改 scripts/episode_${episode}.json；完成后刷新计划、汇报并结束本轮。`;
+    useAssistantStore.getState().setInput(prompt);
+    useAppStore.getState().setAssistantPanelOpen(true);
+  };
+
+  const requestHandOff = () => {
+    if (readonly || blocked || busy || submitting || !source?.exists) return;
+    if (hasStoryboards) {
+      setHandoffConfirmOpen(true);
+      return;
+    }
+    handOff();
+  };
+
   const trigger = (
     <Button
       variant={prominent ? "default" : "outline"}
@@ -214,21 +247,37 @@ function ShortDramaStoryboardAction({
     </Button>
   );
 
+  const handoffTrigger = (
+    <Button
+      variant={prominent ? "default" : "outline"}
+      size={prominent ? "default" : "sm"}
+      onClick={requestHandOff}
+      disabled={readonly || blocked || busy || submitting || assistantBusy || !source?.exists}
+    >
+      {assistantBusy ? (
+        <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+      ) : (
+        <Bot aria-hidden data-icon="inline-start" />
+      )}
+      {t(assistantBusy ? "agent_handoff_busy" : "short_drama_ai_storyboard_handoff")}
+    </Button>
+  );
+
+  const blockedTitle = blocked
+    ? t("short_drama_storyboard_blocked_missing", {
+        count: missing.length,
+        assets: missing.map(missingLabel).join("、"),
+      })
+    : undefined;
+
   return (
     <>
-      {blocked ? (
-        <span
-          title={t("short_drama_storyboard_blocked_missing", {
-            count: missing.length,
-            assets: missing.map(missingLabel).join("、"),
-          })}
-        >
-          {trigger}
-        </span>
-      ) : (
-        trigger
-      )}
-      <Dialog
+      <span className="inline-flex flex-wrap items-center gap-2">
+        {!agentOnly && (blocked ? <span title={blockedTitle}>{trigger}</span> : trigger)}
+        {blocked ? <span title={blockedTitle}>{handoffTrigger}</span> : handoffTrigger}
+      </span>
+      {!agentOnly && (
+        <Dialog
         open={open}
         onOpenChange={(next) => {
           if (!next && !submitting) setOpen(false);
@@ -248,6 +297,11 @@ function ShortDramaStoryboardAction({
           </DialogHeader>
           <DialogBody>
             <div className="flex flex-col gap-3 text-sm">
+              {hasStoryboards && (
+                <p className="rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
+                  {t("short_drama_ai_storyboard_risk_desc", { count: storyboardCount })}
+                </p>
+              )}
               {loading ? (
                 <p className="text-muted-foreground">{t("short_drama_source_loading")}</p>
               ) : source?.exists ? (
@@ -397,6 +451,21 @@ function ShortDramaStoryboardAction({
             <Button variant="outline" onClick={() => setOpen(false)} disabled={submitting}>
               {result ? t("short_drama_ai_storyboard_close") : t("common:cancel")}
             </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                requestHandOff();
+              }}
+              disabled={readonly || submitting || blocked || assistantBusy || !source?.exists}
+            >
+              {assistantBusy ? (
+                <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Bot aria-hidden data-icon="inline-start" />
+              )}
+              {t(assistantBusy ? "agent_handoff_busy" : "short_drama_ai_storyboard_handoff")}
+            </Button>
             <Button onClick={() => void submit()} disabled={!canSubmit}>
               {submitting ? (
                 <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
@@ -408,6 +477,30 @@ function ShortDramaStoryboardAction({
                   ? "short_drama_ai_restoryboard_submit"
                   : "short_drama_ai_storyboard_submit",
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      )}
+      <Dialog open={handoffConfirmOpen} onOpenChange={setHandoffConfirmOpen}>
+        <DialogContent showCloseButton>
+          <DialogHeader>
+            <DialogTitle>{t("short_drama_ai_storyboard_risk_title")}</DialogTitle>
+            <DialogDescription>
+              {t("short_drama_ai_storyboard_risk_desc", { count: storyboardCount })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHandoffConfirmOpen(false)}>
+              {t("common:cancel")}
+            </Button>
+            <Button
+              onClick={() => {
+                setHandoffConfirmOpen(false);
+                handOff();
+              }}
+            >
+              {t("short_drama_ai_storyboard_risk_continue")}
             </Button>
           </DialogFooter>
         </DialogContent>

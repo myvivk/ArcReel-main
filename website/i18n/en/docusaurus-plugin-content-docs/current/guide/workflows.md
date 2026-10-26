@@ -15,7 +15,7 @@ Enter the project name, aspect ratio, visual style, total episode count, episode
 
 ```mermaid
 flowchart LR
-    A["Creative Brief / Factory Continuation / Artifact Import"] --> B["Quality Checks & Seven Artifact Types"]
+    A["Creative Brief / Factory Continuation / Existing Artifact Delivery"] --> B["Quality Checks & Seven Artifact Types"]
     B --> C["Character / Scene / Prop Assets"]
     C --> D["AI Storyboards & Image Prompts"]
     D --> E["Confirm Per-Shot Keyframes"]
@@ -32,9 +32,9 @@ flowchart LR
 
 Each episode goes through a first draft, doctor refinement, episode machine checks, repair, ledger updates, series machine checks, and compliance checks. Each passing batch is saved immediately. A failed check, failed report, or incomplete artifact set rejects the entire batch.
 
-### Artifact Directory Import {#artifact-import}
+### Existing Artifact Delivery {#artifact-import}
 
-For existing factory deliveries, open **Import script** from the overview, script, or storyboard page and select the artifact directory. ArcReel validates relative paths and seven artifact types, then stores the original Markdown:
+For existing qualifying factory deliveries, put the seven artifact types in the project working directory and hand them to the ArcReel Agent for as-is ingestion (`ingest_short_drama_artifacts`). ArcReel validates relative paths and seven artifact types, then stores the original Markdown:
 
 - Character bible: `character-bible.md`;
 - Series outline: `series-outline.md`;
@@ -131,21 +131,13 @@ Confirm:
 - Key props;
 - Style references.
 
-#### Merge assets registered twice {#merge-assets}
-
-When the same person, place, or object is registered as two assets (for example, "Old Wang" and "Wang Jianguo"), open the menu on one of the asset cards, choose **Merge into…**, and pick the asset of the same type to keep. Only characters, scenes, and props can be merged.
-
-After the merge, references in every episode's script plan, final script, drafts, and prompt text point to the kept asset, and the merged asset's name and aliases become aliases of the kept asset. Derivatives of a merged character move to the kept character; a derivative with the same name as one the kept character already has merges into the existing one. The kept asset's description, sheet, and other settings do not change.
-
-For characters, you can also choose **Derivative**: the merged character becomes a derivative of the kept character, keeping its description, and the derivative sheet needs generating. Visual references point to that derivative, dialogue speakers change to the kept character, and the merged character's name is not recorded as an alias.
-
-The merged asset's description, sheet and version history, voice settings, reference image, and reference audio are not kept, and a merge can't be undone. Before you confirm, the dialog lists, per episode, how many references will be rewritten and how many storyboard images and videos will become stale. It also shows the merged asset's description so you can copy what you need into the kept asset.
+The project sidebars (Characters / Scenes / Props) and the cross-project asset library page (`/app/assets`) only browse and maintain existing assets: they offer no way to create, import from the library, add to the library, merge, or apply to a project. Assets collect here after episodes generate them.
 
 #### Delete assets {#delete-assets}
 
 Open the menu on an asset card and choose **Delete**. Before you confirm, the dialog checks references in every episode's script plan, final script, drafts, and prompt text:
 
-- If the asset is referenced, the dialog says which episodes reference it and how many times. Deleting doesn't rewrite those references, so shots that reference the asset will be blocked at generation. To keep the references, choose **Merge instead…** to [merge it into another asset of the same type](#merge-assets).
+- If the asset is referenced, the dialog says which episodes reference it and how many times. Deleting doesn't rewrite those references, so shots that reference the asset will be blocked at generation.
 - If nothing references the asset, the dialog only warns that deletion can't be undone.
 
 Deleting a character also deletes its derivatives. Deletion can't be undone.

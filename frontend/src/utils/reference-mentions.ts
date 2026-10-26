@@ -248,6 +248,13 @@ type ProjectBuckets = Pick<ProjectData, "characters" | "scenes" | "props" | "pro
 type ProjectAssetKind = AssetKind;
 export type MentionLookup = Record<string, ProjectAssetKind>;
 
+/** 一处引用范围：角色 / 场景 / 道具的登记名（角色可写 `本体/衍生`）。 */
+export interface ReferenceNameSets {
+  characters: readonly string[];
+  scenes: readonly string[];
+  props: readonly string[];
+}
+
 // Python str.strip() whitespace set. JavaScript trim() additionally removes U+FEFF,
 // but backend asset-name comparison deliberately treats U+FEFF as a name character.
 // eslint-disable-next-line no-control-regex -- 须显式匹配 Python str.strip() 空白集中的控制字符
@@ -332,6 +339,16 @@ export function resolveCharacterForm(
 }
 
 /** 引用名的展示形态：衍生显示为 `本体 / 衍生`，本体原样。 */
+/**
+ * 标准分镜提示词里的引用记法：`名字@[登记名]`（衍生写 `本体/衍生@[本体/衍生]`）。
+ *
+ * 裸名字留在 token 之前，正文读起来仍是那句话；下游出图按 `@[…]` 内的登记名指认参考图。
+ * 编辑器里选候选与「引入引用资产」菜单共用这一处，两种入口写出的形态才不会分叉。
+ */
+export function storyboardMentionToken(name: string): string {
+  return `${name}@[${name}]`;
+}
+
 export function formatReferenceName(name: string): string {
   const [owner, derivative] = splitDerivativeReference(name);
   return derivative ? `${owner} / ${derivative}` : name;

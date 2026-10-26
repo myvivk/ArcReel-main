@@ -8,22 +8,14 @@ export type CanvasView = "board";
 export interface EpisodeViewFacts {
   hasScript: boolean;
   demo: boolean;
-  hasShortDramaSource?: boolean;
 }
 
-export interface EpisodeViewTab {
-  view: EpisodeView;
-  disabled: boolean;
-}
-
-export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeViewTab[] {
-  if (facts.demo) return [{ view: "board", disabled: false }];
-  return [
-    { view: EPISODE_VIEW_SOURCE, disabled: false },
-    { view: "assets", disabled: !facts.hasShortDramaSource },
-    { view: "board", disabled: false },
-    { view: EPISODE_VIEW_EDIT, disabled: false },
-  ];
+/**
+ * 页签始终完整可点，不按流程进度置灰：步骤的前置关系由视图内的空状态说明下一步
+ * （资产 → 先补剧本，剪辑 → 先生成视频），禁用的页签只说「不能点」，说不出下一步。
+ */
+export function episodeViewTabs(facts: EpisodeViewFacts): EpisodeView[] {
+  return facts.demo ? ["board"] : [...EPISODE_VIEWS];
 }
 
 export function defaultEpisodeView(facts: EpisodeViewFacts): EpisodeView {
@@ -31,8 +23,8 @@ export function defaultEpisodeView(facts: EpisodeViewFacts): EpisodeView {
 }
 
 export function resolveEpisodeView(requested: string | null, facts: EpisodeViewFacts): EpisodeView {
-  const tab = episodeViewTabs(facts).find((entry) => entry.view === requested);
-  return tab && !tab.disabled ? tab.view : defaultEpisodeView(facts);
+  const tab = episodeViewTabs(facts).find((entry) => entry === requested);
+  return tab ?? defaultEpisodeView(facts);
 }
 
 export function withEpisodeView(params: URLSearchParams, next: EpisodeView, facts: EpisodeViewFacts): URLSearchParams {

@@ -17,7 +17,7 @@ from lib.episode.episode_ids import episode_title
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from lib.script.script_plan_entries import ScriptPlanKind, plan_entry_content, plan_variant
 from lib.script.script_skeleton import resolve_declared_kind, resolve_kind_items, rewrite_episode_prefix
-from lib.speech.speech_composition import admit_script_unit
+from lib.speech.speech_composition import admit_script_unit, speech_policy_for_project
 
 #: 内容确认转出的剧本写进 ``metadata.generator`` 的标记：条目是按脚本规划投影出来的，不经文本模型。
 SCRIPT_PLAN_CONVERSION_GENERATOR = "script_plan_conversion"
@@ -70,7 +70,7 @@ def prepare_script_entries(script_data: dict[str, Any], *, project: Mapping[str,
             continue
         # 本轮产出的条目视觉层已由提示词编写写回；内容确认转换在此之后为全部条目重新置位。
         item.pop(PENDING_AUTHORING_FIELD, None)
-        admission = admit_script_unit(kind, item, ignore_marker=True)
+        admission = admit_script_unit(kind, item, ignore_marker=True, policy=speech_policy_for_project(project))
         if admission.allowed:
             item.pop("needs_replan", None)
         else:

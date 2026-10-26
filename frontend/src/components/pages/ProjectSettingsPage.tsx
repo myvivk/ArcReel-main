@@ -307,7 +307,7 @@ function LoadedProjectSettings({ projectName, loaded }: { projectName: string; l
         throw new Error(t(narrationProblem === "model" ? "project_tts_model_required" : "project_narration_voice_required"));
       }
       const res = await API.updateProject(projectName, buildProjectPatch(value, saved, globals));
-      // grid_storyboard、video_backend 落盘后 /video-capabilities 按已存值解析，查询 key 不变，需显式失效
+      // video_backend 落盘后 /video-capabilities 按已存值解析，查询 key 不变，需显式失效
       useCapabilitiesStore.getState().invalidate();
       const next = keepSavedStylePreview(deriveForm(res.project, projectName, globals, null), saved);
       const file = pendingStyleUpload(value, saved);

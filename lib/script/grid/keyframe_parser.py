@@ -19,10 +19,15 @@ scene 形态：可选导语 + 镜头序列，``【镜头N｜景别】正文``，
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from lib.script.shot_prompt_standard import dialogue_lines
+
+logger = logging.getLogger(__name__)
 
 #: scene 指纹长度：只留前 12 位十六进制，够辨识「分镜提示词已变更」，不把整段摘要写进记录。
 SCENE_REVISION_LENGTH = 12
@@ -39,22 +44,46 @@ _KEYFRAME_REF = re.compile(r"[Kk](\d+)")
 #: 视频提示词的时间段标记：``0-2秒：``，兼容半角冒号、空格与小数秒。
 _SEGMENT_MARK = re.compile(r"^[ \t]*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*秒\s*[：:][ \t]*", re.MULTILINE)
 
+#: 关键瞬间标记：``关键帧：`` / ``【关键帧】``，写在镜头正文开头。
+_KEYFRAME_PREFIX = re.compile(r"^\s*(?:【\s*关键帧\s*】|关键帧\s*[：:])\s*")
+
+#: 时间段标记（任意位置）：``0-3秒：``，兼容半角冒号、空格与小数秒。前面的字符不能是数字或小数点，
+#: 否则 ``12-14秒`` 会在 ``2-14秒`` 处被误切。
+_SEGMENT_ANYWHERE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*秒\s*[：:]")
+
+
+def _split_keyframe(body: str) -> tuple[str, bool]:
+    """摘掉正文开头的关键帧标记，返回 ``(正文, 是否关键帧)``。"""
+    if not _KEYFRAME_PREFIX.match(body):
+        return body, False
+    return _KEYFRAME_PREFIX.sub("", body, count=1).lstrip(), True
+
 
 @dataclass(frozen=True, slots=True)
 class ShotFrame:
-    """一个镜头（= 宫格的一格）：序号按出现序从 1 起，景别可缺省，正文是自含的关键帧描述。"""
+    """一个镜头（宫格的一格）：序号按出现序从 1 起，景别可缺省，正文是该瞬间的描述。
+
+    ``keyframe`` 表示这条镜头被作者标成了关键瞬间（梦境→现实、入场、失态、断章）。
+    宫格取格时优先保留它们，而不是按镜头序平均切。
+    """
 
     number: int
     shot_size: str
     text: str
+    keyframe: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class SceneShots:
-    """scene 的解析结果：导语段（可空）与镜头序列（至少一个）。"""
+    """scene 的解析结果：导语段（可空）与镜头序列（至少一个）。
+
+    ``stripped_dialogue_lines`` 记录读取历史脏脚本时被剥离的台词行；新生成路径由质量闸
+    直接拒绝含台词行的提示词，不会走到这里。
+    """
 
     opening: str
     shots: tuple[ShotFrame, ...]
+    stripped_dialogue_lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +101,30 @@ def _clean_lines(parts: list[str]) -> str:
     return "\n".join(part.strip() for part in parts if part.strip())
 
 
-def parse_scene_shots(scene: str) -> SceneShots:
+def strip_scene_dialogue_lines(scene: str) -> tuple[str, list[str]]:
+    """按历史脏数据安全剥离台词行，返回（干净文本, 被剥离的行）。
+
+    旧版 AI 分镜可能把``台词：…``写进 ``image_prompt``；这些行并入前一格后会被宫格/K 帧
+    继承。新生成路径由质量闸拒绝，此处只保护已落盘的存量脚本——不改历史文件，读取时
+    剥离并留下诊断信息。
+    """
+
+    stripped = dialogue_lines(scene)
+    if not stripped:
+        return scene, []
+    clean_lines = [line for line in scene.splitlines() if not _is_dialogue_line(line)]
+    return "\n".join(clean_lines), stripped
+
+
+def _is_dialogue_line(line: str) -> bool:
+    return bool(dialogue_lines(line))
+
+
+def parse_scene_shots(scene: str, *, warnings: list[str] | None = None) -> SceneShots:
     """解析分镜提示词 scene 为导语段与镜头序列。
+
+    历史脏数据里的台词行在读取时剥离（见 :func:`strip_scene_dialogue_lines`），并通过
+    ``warnings`` 与日志留下诊断信息；新生成路径不会依赖这条兜底。
 
     Raises:
         ValueError: scene 为空，或没有任何 ``【镜头N`` 标记（旧单帧格式，按 0098 D-F 拒绝）。
@@ -82,6 +133,12 @@ def parse_scene_shots(scene: str) -> SceneShots:
     text = scene.strip()
     if not text:
         raise ValueError("image_prompt.scene must not be empty")
+    text, stripped = strip_scene_dialogue_lines(text)
+    if stripped:
+        message = f"分镜提示词含 {len(stripped)} 行台词，已按历史脏数据剥离：" + " / ".join(stripped[:3])
+        logger.warning("%s", message)
+        if warnings is not None:
+            warnings.append(message)
     marks = list(_SHOT_MARK.finditer(text))
     if not marks:
         raise ValueError("分镜提示词需按镜头序列重新编写：【镜头N｜景别】正文，一格一镜")
@@ -93,14 +150,21 @@ def parse_scene_shots(scene: str) -> SceneShots:
         if number in seen:
             continue
         end = marks[position + 1].start() if position + 1 < len(marks) else len(text)
-        body = _clean_lines([text[mark.end() : end]])
+        body, keyframe = _split_keyframe(_clean_lines([text[mark.end() : end]]))
         if not body:
             continue
         seen.add(number)
-        shots.append(ShotFrame(number=len(shots) + 1, shot_size=(mark.group(2) or "").strip(), text=body))
+        shots.append(
+            ShotFrame(
+                number=len(shots) + 1,
+                shot_size=(mark.group(2) or "").strip(),
+                text=body,
+                keyframe=keyframe,
+            )
+        )
     if not shots:
         raise ValueError("分镜提示词的镜头序列没有可用的画面描述")
-    return SceneShots(opening=opening, shots=tuple(shots))
+    return SceneShots(opening=opening, shots=tuple(shots), stripped_dialogue_lines=tuple(stripped))
 
 
 def parse_grid_prompt_cells(prompt: str) -> list[ShotFrame]:
@@ -132,11 +196,11 @@ def parse_grid_prompt_cells(prompt: str) -> list[ShotFrame]:
     for number, shot_size, parts in marked:
         if number in seen:
             continue
-        body = _clean_lines(parts)
+        body, keyframe = _split_keyframe(_clean_lines(parts))
         if not body:
             continue
         seen.add(number)
-        frames.append(ShotFrame(number=len(frames) + 1, shot_size=shot_size, text=body))
+        frames.append(ShotFrame(number=len(frames) + 1, shot_size=shot_size, text=body, keyframe=keyframe))
     return frames
 
 
@@ -265,11 +329,40 @@ def join_action_segments(segments: Sequence[ActionSegment], duration_seconds: fl
     return "\n".join(lines)
 
 
+def format_action_segments(action: str) -> str:
+    """把 ``0-3秒：…`` 的时间段正文规范成一行一段；没有时间段标记时原样返回。
+
+    模型常把多个时间段写进同一行，而编辑器与视频输入都按行识别时间段。这里只补行分隔、统一
+    段头写法，不改段落正文、不重排时间；段数与总时长是否连续不在这里判定。
+    """
+
+    text = action.strip()
+    if not text:
+        return text
+    marks = list(_SEGMENT_ANYWHERE.finditer(text))
+    if not marks:
+        return text
+    lines: list[str] = []
+    prefix = text[: marks[0].start()].strip()
+    if prefix:
+        lines.append(prefix)
+    for position, mark in enumerate(marks):
+        end = marks[position + 1].start() if position + 1 < len(marks) else len(text)
+        body = " ".join(text[mark.end() : end].split())
+        if not body:
+            continue
+        start = _format_seconds(float(mark.group(1)))
+        finish = _format_seconds(float(mark.group(2)))
+        lines.append(f"{start}-{finish}秒：{body}")
+    return "\n".join(lines) if len(lines) > (1 if prefix else 0) else text
+
+
 __all__ = [
     "SCENE_REVISION_LENGTH",
     "ActionSegment",
     "SceneShots",
     "ShotFrame",
+    "format_action_segments",
     "format_grid_prompt",
     "join_action_segments",
     "keyframe_reference_problems",
@@ -278,4 +371,5 @@ __all__ = [
     "scene_revision_of",
     "shot_scene_text",
     "split_action_segments",
+    "strip_scene_dialogue_lines",
 ]

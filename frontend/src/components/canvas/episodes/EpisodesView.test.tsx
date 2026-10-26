@@ -35,11 +35,11 @@ describe("工厂集目录", () => {
     await userEvent.click(screen.getByRole("link", { name: "转折" }));
     expect(location.history?.at(-1)).toBe("/episodes/2");
   });
-  it("空目录提供工厂生成、工件导入和集账本创建", () => {
+  it("空目录提供工厂生成和集账本创建", () => {
     useProjectsStore.setState({ currentProjectData: { ...PROJECT, episodes: [] } });
     renderView();
     expect(screen.getAllByRole("button", { name: "AI 原创剧本" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: "工件目录" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "工件目录" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建一集" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /上传原文|AI 规划分集/ })).not.toBeInTheDocument();
   });

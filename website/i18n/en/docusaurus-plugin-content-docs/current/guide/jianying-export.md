@@ -39,12 +39,12 @@ C:\Users\<username>\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.dr
 1. Open the target project and go to the episode you want to export
 2. Switch to the **Edit** view at the top of the episode page
 
-If the episode has no edit timeline yet, the edit view offers two entries:
+If the episode has no edit timeline yet, the edit view offers these entries only when the episode is eligible; both require at least one generated video in the episode:
 
 - **Hand to Agent to edit**: fills an editing request into the chat input so the Agent can make a cut
 - **New edit timeline**: creates one directly from the script, using every video unit in full with hard cuts between clips
 
-Both entries require at least one generated video in the episode. Rendering never creates an edit timeline automatically.
+When the episode has no video yet (or the production status cannot be read), the view only explains why and shows neither entry. Rendering never creates an edit timeline automatically.
 
 > **Tip**: **Export project** in the top bar only downloads the whole project as an archive. Final cuts and Jianying drafts are exported from each episode's edit view.
 

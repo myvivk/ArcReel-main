@@ -349,6 +349,10 @@ class UpdateProjectRequest(BaseModel):
     default_text_backend: str | None = None
     style_template_id: str | None = None
     clear_style_image: bool | None = None
+    # 短剧工厂系列设定：首次交稿时写入，之后只读复用，避免逐批改题材破坏一致性
+    short_drama_genre: str | None = None
+    short_drama_tone: str | None = None
+    short_drama_format: str | None = None
     episodes: list[EpisodePatch] | None = None
     model_settings: dict[str, dict[str, str | None]] | None = None
 
@@ -1064,6 +1068,23 @@ async def update_project(name: str, req: UpdateProjectRequest, _t: Translator):
                     # 显式清除自定义参考图，用于"取消风格"流程
                     project.pop("style_image", None)
                     project.pop("style_description", None)
+
+                # 系列设定：首写写入后由弹窗只读复用；空串 = 清除
+                for field in ("short_drama_genre", "short_drama_tone"):
+                    if field in req.model_fields_set:
+                        value = (getattr(req, field) or "").strip()
+                        if value:
+                            project[field] = value
+                        else:
+                            project.pop(field, None)
+                if "short_drama_format" in req.model_fields_set:
+                    format_value = (req.short_drama_format or "").strip()
+                    if not format_value:
+                        project.pop("short_drama_format", None)
+                    elif format_value in {"standard", "long", "manju"}:
+                        project["short_drama_format"] = format_value
+                    else:
+                        raise HTTPException(status_code=422, detail=_t("short_drama_format_invalid"))
 
                 if "model_settings" in req.model_fields_set:
                     if req.model_settings is None:

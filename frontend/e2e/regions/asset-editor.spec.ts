@@ -5,7 +5,7 @@ import { defineRegionScenarios } from "../support/scenarios.ts";
 import { expect, type ApiOverrides } from "../support/test.ts";
 
 // 资产详情 Sheet：点浏览卡打开的右侧编辑器，三类资产共用。头部改名与上一个、下一个，正文按类型
-// 开关字段区块，底部是未保存修改的内联提示条；「添加」在同一个 Sheet 里打开空白表单。
+// 开关字段区块，底部是未保存修改的内联提示条。
 // 角色的「衍生」区块逐条列出衍生，每条的外观变化在行内保存。
 
 const CHARACTERS_PATH = "/app/projects/demo/characters";
@@ -266,22 +266,6 @@ defineRegionScenarios("资产详情 Sheet", [
       await expect(sheet).toBeVisible();
       await expect(sheet.getByRole("textbox", { name: "描述" })).toHaveValue("改过的描述");
     },
-  },
-  {
-    name: "添加角色：在 Sheet 里打开空白表单",
-    path: CHARACTERS_PATH,
-    api: BASE,
-    ready: galleryReady,
-    act: async (page) => {
-      await clearAgentOverlay(page);
-      await page.getByRole("button", { name: "添加角色" }).click();
-      const form = page.getByRole("dialog", { name: "添加角色" });
-      await form.waitFor();
-      await waitForEntrance(form);
-      await expect(form.getByRole("button", { name: "创建" })).toBeDisabled();
-      await expect(form.getByRole("button", { name: "创建" })).toBeInViewport({ ratio: 1 });
-    },
-    screenshot: { name: "asset-editor-create", target: (page) => page.getByRole("dialog", { name: "添加角色" }) },
   },
   {
     name: "名字与描述很长、别名很多：只有正文滚动，提示条留在底部",

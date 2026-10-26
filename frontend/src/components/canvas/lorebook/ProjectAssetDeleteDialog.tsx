@@ -15,7 +15,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import type { AssetSheetType } from "@/types";
@@ -33,8 +32,6 @@ interface ProjectAssetDeleteDialogProps {
   busy: boolean;
   /** 删除请求在途与否，供卡片同步禁用兄弟控件。 */
   onDeletingChange: (deleting: boolean) => void;
-  /** 「改为并入…」：有引用时提供，转入合并流程。不可合并的类型不传。 */
-  onMergeInstead?: () => void;
 }
 
 type PreviewState =
@@ -44,8 +41,8 @@ type PreviewState =
 
 /**
  * 删除项目资产的确认框。打开时先以 dry_run 查询脚本里的引用：有引用时写明被哪些集引用、删除后
- * 这些分镜在生成时会被拦下，并提供「改为并入…」；没有引用时只写明不可恢复。删除不改写引用，
- * 也不因有引用而禁止。查询请求随关闭或卸载经 AbortSignal 作废；只有查询就绪后才能确认。
+ * 这些分镜在生成时会被拦下；没有引用时只写明不可恢复。删除不改写引用，也不因有引用而禁止。
+ * 查询请求随关闭或卸载经 AbortSignal 作废；只有查询就绪后才能确认。
  *
  * 离开拦截包住确认动作，不包住打开确认框：取消删除时未保存修改原样保留。删除动作返回是否成功，
  * 请求失败或提交时资产已被占用，离开拦截同样保留修改。
@@ -58,7 +55,6 @@ export function ProjectAssetDeleteDialog({
   name,
   busy,
   onDeletingChange,
-  onMergeInstead,
 }: ProjectAssetDeleteDialogProps) {
   const { t } = useTranslation(["assets", "common"]);
   const confirmLeave = useConfirmLeave();
@@ -183,11 +179,6 @@ export function ProjectAssetDeleteDialog({
         </AlertDialogBody>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>{t("common:cancel")}</AlertDialogCancel>
-          {onMergeInstead && references > 0 && (
-            <Button variant="outline" disabled={deleting} onClick={onMergeInstead}>
-              {t("assets:gallery_delete_merge_instead")}
-            </Button>
-          )}
           <AlertDialogAction
             variant="destructive"
             disabled={deleting || busy || preview.phase !== "ready"}

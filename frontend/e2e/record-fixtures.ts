@@ -273,11 +273,14 @@ async function main() {
 
     await postJson(baseUrl, token, "/api/v1/onboarding/seen", {});
     await postJson(baseUrl, token, "/api/v1/projects", { name: DEMO_PROJECT, title: "演示项目", content_mode: "drama", generation_mode: "storyboard" });
-    const packageResult = spawnSync("uv", ["run", "--frozen", "python", "-c",
-      "import json; from tests.short_drama_support import factory_package, artifact_request; print(json.dumps(artifact_request(factory_package())))",
-    ], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    // 工件通过入库服务写入：HTTP 手动导入入口已移除，页面与 Agent 共用同一入库契约。
+    const packageResult = spawnSync("uv", ["run", "--frozen", "python", "-c", `
+from lib.project.project_manager import get_project_manager
+from lib.short_drama_ingest import ingest_short_drama_artifacts
+from tests.short_drama_support import factory_package
+ingest_short_drama_artifacts(get_project_manager(), "demo", factory_package())
+`], { cwd: REPO_ROOT, env, encoding: "utf8" });
     if (packageResult.status !== 0) throw new Error(packageResult.stderr);
-    await postJson(baseUrl, token, `/api/v1/projects/${DEMO_PROJECT}/short-drama/import-artifacts`, JSON.parse(packageResult.stdout));
     // 视觉制作样本通过正式存储写入；接口响应仍由真实后端录制。
     const seedResult = spawnSync("uv", ["run", "--frozen", "python", "-c", `
 from lib.project.project_manager import get_project_manager

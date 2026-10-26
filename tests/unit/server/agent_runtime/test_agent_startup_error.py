@@ -91,6 +91,82 @@ async def test_build_options_forwards_stderr_callback(
 
 
 @pytest.mark.asyncio
+async def test_build_options_threads_tool_progress_into_arcreel_server(
+    seeded_session_manager: SessionManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """会话层注入的逐轮进度回调必须透传到 in-process MCP server 的装配参数。"""
+
+    async def fake_env():
+        return {"ANTHROPIC_API_KEY": "sk"}
+
+    monkeypatch.setattr("server.agent_runtime.options_assembler.load_provider_env_overrides", fake_env)
+    captured: dict[str, Any] = {}
+
+    def fake_build_arcreel_mcp_server(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"type": "sdk", "name": "arcreel", "instance": object()}
+
+    monkeypatch.setattr(
+        "server.agent_runtime.options_assembler.build_arcreel_mcp_server",
+        fake_build_arcreel_mcp_server,
+    )
+
+    async def reporter(round_: Any) -> None:  # pragma: no cover - 只验证透传身份
+        raise AssertionError("不应在装配阶段调用")
+
+    await seeded_session_manager._build_options("demo", tool_progress=reporter)
+
+    assert captured["report_progress"] is reporter
+
+
+@pytest.mark.asyncio
+async def test_build_tool_progress_writes_quality_gate_entry(seeded_session_manager: SessionManager) -> None:
+    """回调把每轮结果定型为 `system/quality_gate_round` 条目写进会话管道。"""
+    from server.agent_runtime.tool_progress import GATE_STORYBOARD_PLAN, QualityGateRound
+
+    entries: list[dict[str, Any]] = []
+
+    class _Pipeline:
+        async def append_progress_entry(self, entry: dict[str, Any]) -> None:
+            entries.append(entry)
+
+    class _Managed:
+        entry_pipeline = _Pipeline()
+
+    reporter = seeded_session_manager._build_tool_progress([_Managed()])
+    await reporter(
+        QualityGateRound(
+            gate=GATE_STORYBOARD_PLAN,
+            episode=1,
+            attempt=1,
+            max_attempts=5,
+            outcome="rejected",
+            elapsed_ms=240_000,
+            reason="scene 2：镜头3 块过短",
+        )
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["subtype"] == "quality_gate_round"
+    assert entries[0]["attempt"] == 1
+    assert entries[0]["outcome"] == "rejected"
+    assert entries[0]["reason"] == "scene 2：镜头3 块过短"
+
+    # 会话尚未就绪 / 已释放：静默丢弃，不抛异常
+    await seeded_session_manager._build_tool_progress([None])(  # type: ignore[list-item]
+        QualityGateRound(
+            gate=GATE_STORYBOARD_PLAN,
+            episode=1,
+            attempt=2,
+            max_attempts=5,
+            outcome="passed",
+            elapsed_ms=10,
+        )
+    )
+    assert len(entries) == 1
+
+
+@pytest.mark.asyncio
 async def test_send_new_session_wraps_actor_failure_with_stderr(
     seeded_session_manager: SessionManager,
     monkeypatch: pytest.MonkeyPatch,

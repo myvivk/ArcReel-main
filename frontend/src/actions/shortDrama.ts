@@ -1,5 +1,5 @@
 /**
- * 短剧工厂导入动作层：与生成类入队不同，短剧导入是同步写盘（无任务队列），故此处只负责
+ * 短剧工厂动作层：与生成类入队不同，源稿重建是同步写盘（无任务队列），故此处只负责
  * 发请求、弹提示、透传结果，不占用 tasks-store 的乐观标记。批量建空白集复用已有的
  * ``POST /episodes`` 逐集创建。
  */
@@ -9,25 +9,6 @@ import { useAppStore } from "@/stores/app-store";
 import { useTasksStore } from "@/stores/tasks-store";
 import { promptAuthoringResourceId } from "@/actions/generation";
 import { errMsg } from "@/utils/async";
-
-export interface ShortDramaArtifactInput {
-  path: string;
-  content_base64: string;
-}
-
-export async function importShortDramaArtifacts(
-  projectName: string,
-  artifacts: ShortDramaArtifactInput[],
-): Promise<{ artifacts: Array<{ path: string; revision: string; kind: string; episode: number | null }> }> {
-  try {
-    const result = await API.importShortDramaArtifacts(projectName, artifacts);
-    useAppStore.getState().pushToast(i18n.t("dashboard:short_drama_imported_artifacts", { count: result.artifacts.length }), "success");
-    return result;
-  } catch (err) {
-    useAppStore.getState().pushToast(errMsg(err), "error");
-    throw err;
-  }
-}
 
 export interface ShortDramaSource {
   episode: number;

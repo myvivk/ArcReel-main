@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Check, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, Loader2, Settings2, Sparkles } from "lucide-react";
 import { API, type FileUrlWidth } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { ShotGridPlan } from "@/types/shot-grid";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import type { ShotGridLayout, ShotGridPlan } from "@/types/shot-grid";
 import { useProjectsStore } from "@/stores/projects-store";
 import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
 import { useShotGridDialogStore } from "@/stores/shot-grid-dialog-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
 import { ShotGridDialogHost } from "./ShotGridDialog";
+import { enqueueShotGrid } from "@/actions/generation";
 import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { errMsg } from "@/utils/async";
+import type { ReferenceNameSets } from "@/utils/reference-mentions";
 
 interface ReferenceMaterialsSectionProps {
   projectName: string;
@@ -23,12 +26,19 @@ interface ReferenceMaterialsSectionProps {
   disabled?: boolean;
   videoPromptFilled?: boolean;
   saveFirst?: boolean;
+  /** 本分镜的出场资产清单：参考素材逐格提示词的 @ 候选从这里取。 */
+  referenceNames?: ReferenceNameSets;
   beforeGenerate: () => Promise<boolean>;
   onPlanChange: (plan: ShotGridPlan | null) => void;
   onBusyChange: (busy: boolean) => void;
 }
 
 const GRID_COLUMNS: Record<number, string> = { 2: "grid-cols-2", 3: "grid-cols-3" };
+const LAYOUTS: Record<ShotGridLayout, [rows: number, cols: number]> = {
+  "2x2": [2, 2],
+  "2x3": [2, 3],
+  "3x3": [3, 3],
+};
 const TERMINAL_TASK_STATUSES = new Set(["completed", "succeeded", "failed", "cancelled"]);
 
 export function ReferenceMaterialsSection({
@@ -57,14 +67,15 @@ export function ReferenceMaterialsSection({
   const busy = submitting || resourceBusy || plan?.status === "generating";
 
   useEffect(() => () => operation.current?.abort(), [scopeKey]);
-  useEffect(() => useShotGridDialogStore.subscribe((state, previous) => {
-    if (previous.request && !state.request) setReloadKey((value) => value + 1);
-  }), []);
 
   const updatePlan = useCallback((next: ShotGridPlan | null) => {
     setResult({ key: scopeKey, plan: next, error: null });
     onPlanChange(next);
   }, [scopeKey, onPlanChange]);
+
+  useEffect(() => useShotGridDialogStore.subscribe((state, previous) => {
+    if (previous.request && !state.request) setReloadKey((value) => value + 1);
+  }), []);
 
   useEffect(() => {
     if (!scriptFile) return;
@@ -109,7 +120,7 @@ export function ReferenceMaterialsSection({
     return () => onBusyChange(false);
   }, [busy, onBusyChange]);
 
-  const configure = async () => {
+  const generate = async (layout?: ShotGridLayout) => {
     if (!scriptFile || episode === undefined || readOnly || disabled || busy) return;
     const controller = new AbortController();
     operation.current?.abort();
@@ -119,13 +130,40 @@ export function ReferenceMaterialsSection({
       if (saveFirst && !(await beforeGenerate())) return;
       if (controller.signal.aborted) return;
       if (isResourceBusy("shot_grid", projectName, plan?.id ?? shotId)) return;
-      useShotGridDialogStore.getState().open({ projectName, scriptFile, episode, shotId, plan });
+      if (
+        plan?.status === "confirmed"
+        && !window.confirm(
+          t("shot_materials_regenerate_guard", {
+            defaultValue: "重新生成会作废已确认的 K 帧，视频提示词也要重写。继续？",
+          }),
+        )
+      ) {
+        return;
+      }
+      // 直接出图：不弹配置窗。prompt 传空串，服务端按 image_prompt 现解析逐格文本，
+      // 宫格与分镜词从此只有一份真相，不再另写一份“参考图提示词”。
+      const [rows, cols] = layout ? LAYOUTS[layout] : [plan?.rows ?? 2, plan?.cols ?? 2];
+      const saved = await API.saveShotGrid(projectName, {
+        script_file: scriptFile,
+        episode,
+        shot_id: shotId,
+        rows,
+        cols,
+        prompt: "",
+      });
+      if (controller.signal.aborted) return;
+      updatePlan(saved);
+      await enqueueShotGrid(projectName, scriptFile, shotId, saved.id);
+      if (controller.signal.aborted) return;
+      setReloadKey((value) => value + 1);
     } catch (cause) {
       if (!controller.signal.aborted) setResult({ key: scopeKey, plan, error: errMsg(cause) });
     } finally {
       if (!controller.signal.aborted) setSubmitting(false);
     }
   };
+
+  const configure = () => generate();
 
   const changeConfirmation = async (confirmed: boolean) => {
     if (!plan || readOnly || disabled || busy || isResourceBusy("shot_grid", projectName, plan.id)) return;
@@ -153,7 +191,8 @@ export function ReferenceMaterialsSection({
   };
 
   const openVideoPrompt = () => {
-    if (episode === undefined || readOnly || disabled || busy || needsRefresh || plan?.status !== "confirmed" || plan.stale) return;
+    // stale 只说明输入相对出图时变了；已确认的 K 帧仍是可用素材，允许继续写视频提示词。
+    if (episode === undefined || readOnly || disabled || busy || needsRefresh || plan?.status !== "confirmed") return;
     usePromptAuthoringStore.getState().open({
       projectName, episode, scope: "current", currentEntryId: shotId, defaultFields: ["video_prompt"], lockFields: true,
     });
@@ -181,7 +220,8 @@ export function ReferenceMaterialsSection({
   const describeCell = (cell: ShotGridPlan["cells"][number]) =>
     cell.prompt.trim() || cell.continuity_notes.trim();
   const showCells = plan?.status === "confirmed" && plan.cells.some((cell) => cell.image_path);
-  const statusLabel = plan?.stale ? t("shot_materials_stale")
+  const statusLabel = plan?.stale
+    ? plan?.status === "confirmed" ? t("shot_materials_stale_confirmed") : t("shot_materials_stale")
     : plan?.status === "confirmed" ? t("shot_materials_confirmed")
       : plan?.status === "completed" ? t("shot_materials_ready")
         : plan?.status === "generating" ? t("shot_grid_generating")
@@ -192,12 +232,42 @@ export function ReferenceMaterialsSection({
       <div className="flex min-h-7 flex-wrap items-center gap-2">
         <h3 id={titleId} className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">{t("shot_reference_materials")}</h3>
         {!readOnly && (
-          <Button type="button" variant="outline" size="xs"
-            disabled={!scriptFile || episode === undefined || disabled || busy}
-            onClick={() => void configure()}>
-            {busy ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : <Sparkles aria-hidden data-icon="inline-start" />}
-            {t("shot_configure_materials")}
-          </Button>
+          <>
+            <Button type="button" variant="outline" size="xs"
+              disabled={!scriptFile || episode === undefined || disabled || busy}
+              onClick={() => void configure()}>
+              {busy ? <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" /> : <Sparkles aria-hidden data-icon="inline-start" />}
+              {t("shot_configure_materials")}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("shot_configure_advanced")}
+                    title={t("shot_configure_advanced")}
+                    disabled={!scriptFile || episode === undefined || disabled || busy}
+                  />
+                }
+              >
+                <Settings2 aria-hidden />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {(Object.keys(LAYOUTS) as ShotGridLayout[]).map((item) => (
+                  <DropdownMenuItem key={item} disabled={busy} onClick={() => void generate(item)}>
+                    {`${plan?.rows ?? 2}x${plan?.cols ?? 2}` === item ? (
+                      <Check aria-hidden />
+                    ) : (
+                      <span className="size-3.5" aria-hidden />
+                    )}
+                    {item.replace("x", "×")}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
         )}
       </div>
       <p role="status" className={plan?.stale ? "text-xs text-warn" : "text-xs text-muted-foreground"}>{statusLabel}</p>
@@ -218,7 +288,7 @@ export function ReferenceMaterialsSection({
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" size="xs" disabled={disabled || busy}
             onClick={() => void changeConfirmation(false)}>{t("shot_unconfirm_materials")}</Button>
-          <Button type="button" size="xs" disabled={disabled || busy || needsRefresh || plan.stale || episode === undefined}
+          <Button type="button" size="xs" disabled={disabled || busy || needsRefresh || episode === undefined}
             onClick={openVideoPrompt}>
             <Sparkles aria-hidden data-icon="inline-start" />
             {videoPromptFilled ? t("shot_video_prompt_rewrite") : t("shot_video_prompt_generate")}

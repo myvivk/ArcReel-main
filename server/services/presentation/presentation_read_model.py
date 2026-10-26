@@ -32,7 +32,7 @@ from lib.speech.narration_delivery import (
     build_narration_audio_basis,
 )
 from lib.speech.speech_artifact_provenance import RenditionVariant, SelectedMediaEvidence, media_content_digest
-from lib.speech.speech_composition import SpeechMode, admit_script_unit
+from lib.speech.speech_composition import SpeechMode, admit_script_unit, speech_policy_for_project
 from lib.speech.speech_presentation import (
     MediaCurrency,
     MediaSelection,
@@ -217,7 +217,7 @@ class PresentationReadModelService:
             script_file = self._current_episode_script(project, selected_video.target.episode)
             script = await asyncio.to_thread(self._project_manager.load_script, project_name, script_file)
         item, kind = self._find_item(script, resource_id)
-        admission = admit_script_unit(kind, item)
+        admission = admit_script_unit(kind, item, policy=speech_policy_for_project(project))
         if not admission.allowed or admission.mode is None:
             raise PresentationUnavailableError(f"unit speech is not presentable: {resource_id}")
         if variant == USE_TTS and admission.mode is not SpeechMode.NARRATOR_VOICEOVER:
@@ -358,7 +358,7 @@ class PresentationReadModelService:
             resource_id = item.get(id_field)
             if not isinstance(resource_id, str) or not resource_id:
                 continue
-            admission = admit_script_unit(kind, item)
+            admission = admit_script_unit(kind, item, policy=speech_policy_for_project(snapshot.project))
             audio_version = await asyncio.to_thread(versions.get_current_version, "audio", resource_id)
             effective_variant = (
                 USE_TTS

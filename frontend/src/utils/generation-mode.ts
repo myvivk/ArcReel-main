@@ -1,8 +1,7 @@
 /**
  * 生成模式工具 — mirrors lib/project/project_manager.py。
  *
- * 生成模式二值 `storyboard | reference_video`，创建时锁定、之后不可更改。宫格是分镜图生视频内的
- * 装配选项（`grid_storyboard` 布尔），不改变喂给视频模型的输入契约，故不是第三种生成模式。
+ * 生成模式二值 `storyboard | reference_video`，创建时锁定、之后不可更改；没有第三种模式。
  */
 
 export type GenerationRoute = "storyboard" | "reference_video";

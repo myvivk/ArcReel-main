@@ -7,7 +7,6 @@ import { RetainedEditUnit } from "@/components/shared/edit-unit/RetainedEditUnit
 import { EPISODE_VIEW_PARAM } from "@/app-routes";
 import { EditTimelineEmptyState } from "@/components/canvas/edit-render/EditTimelineEmptyState";
 import { RenderButton } from "@/components/canvas/edit-render/RenderButton";
-import { ShortDramaImportHost } from "@/components/canvas/shared/ShortDramaImportDialog";
 import { ShortDramaGenerateHost } from "@/components/canvas/shared/ShortDramaGenerateDialog";
 import { PromptAuthoringHost } from "@/components/canvas/shared/PromptAuthoringDialog";
 import { TextTaskFailureNote } from "@/components/canvas/shared/TextTaskFailureNote";
@@ -53,7 +52,7 @@ export interface EpisodeCanvasContext {
 }
 
 /**
- * 一集的页面：两行页头（集头、制作进度、视图 tab 与动作插槽）与下方的视图区。
+ * 一集的页面：三行页头（集头、制作进度、视图 tab、右上角动作行）与下方的视图区。
  *
  * 视图记在地址的 `?view=` 上（见 `episode-view.ts`）。脚本规划、多宫格分镜图与分镜三个视图由同一个画布承担，
  * 切换时画布不卸载；画布里的编辑单元只挂在某一个视图下，经 `EpisodeViewFactsProvider` 判断哪些跳转会卸载自己。
@@ -94,21 +93,15 @@ function EpisodePageContent({
   const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
   const hasScript = Boolean(script);
   const hasShortDramaSource = factorySource.exists;
-  const facts = useMemo<EpisodeViewFacts>(
-    () => ({
-      hasScript,
-      demo,
-      hasShortDramaSource,
-    }),
-    [hasScript, demo, hasShortDramaSource],
-  );
+  const facts = useMemo<EpisodeViewFacts>(() => ({ hasScript, demo }), [hasScript, demo]);
   const tabs = useMemo(() => episodeViewTabs(facts), [facts]);
   const view = resolveEpisodeView(searchParams.get(EPISODE_VIEW_PARAM), facts);
 
-  // 切到不可选的视图不生效；切到当前视图不写历史。
+  // 切到当前视图不写历史；演示项目只有分镜页，其他视图不得写进 URL。
   const changeView = useCallback(
     (next: EpisodeView, options?: EpisodeViewChangeOptions) => {
-      if (next === view || !tabs.some((tab) => tab.view === next && !tab.disabled)) return;
+      if (!tabs.includes(next)) return;
+      if (next === view) return;
       setSearchParams((params) => withEpisodeView(params, next, facts), { replace: options?.replace });
     },
     [view, tabs, facts, setSearchParams],
@@ -144,7 +137,7 @@ function EpisodePageContent({
 
   const ttsNarration = projectData?.narration_delivery === "use_tts";
   let body: ReactNode;
-  if ((factorySource.loading || factorySource.error) && (!script || view === "source")) {
+  if (view === "source" && (factorySource.loading || factorySource.error)) {
     body = <FactoryEpisodeSourceView source={factorySource} projectName={projectName} episode={episode} />;
   } else if (view === "edit") {
     body = (
@@ -230,7 +223,6 @@ function EpisodePageContent({
         {!demo && (
           <>
             <TextTaskFailureNote projectName={projectName} episode={episode} />
-            <ShortDramaImportHost projectName={projectName} episode={episode} />
             <ShortDramaGenerateHost projectName={projectName} episode={episode} />
             <PromptAuthoringHost
               projectName={projectName}

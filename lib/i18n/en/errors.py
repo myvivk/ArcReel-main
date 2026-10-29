@@ -730,6 +730,22 @@ MESSAGES = {
     "rewrite_failed": "Editing the message failed, please try again",
     "overview_source_empty": "Source directory is empty; cannot generate overview",
     "text_provider_not_configured": "Please configure a text provider first: add at least one provider in Settings → Providers",
+    # Source import
+    "source_import_mode_required": "This project is not in source-import mode",
+    "source_import_text_required": "Paste the source text first",
+    "source_import_text_too_long": "The source text exceeds the 50,000-character limit. Split it and import in parts",
+    "source_import_original_not_found": "No source text has been imported for this episode",
+    "source_import_conflict": "The source text or script has changed. Refresh and try again",
+    "source_import_confirmation_required": (
+        "This episode already has storyboard images or videos; regenerating will mark them outdated. "
+        "Confirm to continue"
+    ),
+    "source_import_structure_failed": (
+        "The generated script does not match the factory episode format. Try again or adjust the source text"
+    ),
+    "source_import_generation_failed": "Failed to rewrite the source text. Try again later",
+    "text_backend_missing": "Configure a text model in Settings → Providers first",
+    "story_planning_unavailable_source_import": "Story planning is not used by source-import projects",
     "presentation_unavailable": "The selected video presentation is unavailable or no longer fits its media boundary",
     "project_config_invalid": "Invalid project configuration; check the parameters and retry",
     "invalid_discovery_format": "Unsupported model discovery format: {discovery_format}",

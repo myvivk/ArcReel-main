@@ -36,6 +36,11 @@ interface VersionTimeMachineProps {
    */
   onRestoringChange?: (restoring: boolean) => void;
   /**
+   * 就地预览历史版本：在版本列表里选中一个版本时回调（`null` 表示当前版本），
+   * 供卡片把自己的媒体容器切到该版本播放。提供时选中后收起弹层，让出容器。
+   */
+  onPreviewVersionChange?: (version: VersionInfo | null) => void;
+  /**
    * 提交时刻的占用复核（新鲜读）：`busy` 是最近一次渲染的快照，版本面板打开期间
    * Agent 入队、批量入口或轮询落库都可能占用该资源，新 prop 冲刷到按钮之前的点击
    * 仍会发出恢复请求，与在跑的任务并发写同一个资源文件。返回 true 即拒绝本次恢复。
@@ -71,6 +76,7 @@ export function VersionTimeMachine({
   readOnly = false,
   busy = false,
   onRestoringChange,
+  onPreviewVersionChange,
   checkBusy,
   open: controlledOpen,
   onOpenChange,
@@ -157,6 +163,8 @@ export function VersionTimeMachine({
         setReload((current) => current + 1);
         // 切换结果直接体现在「当前」标记与媒体上，成功不再弹提示
         setSelectedVersion(version);
+        // 恢复后该版本就是当前版本，容器回到当前媒体。
+        onPreviewVersionChange?.(null);
       })());
     } catch (err) {
       useAppStore
@@ -226,7 +234,15 @@ export function VersionTimeMachine({
               size="sm"
               className="flex-wrap"
               value={selectedVersion != null ? [String(selectedVersion)] : []}
-              onValueChange={(next: string[]) => setSelectedVersion(next[0] ? Number(next[0]) : null)}
+              onValueChange={(next: string[]) => {
+                const version = next[0] ? Number(next[0]) : null;
+                setSelectedVersion(version);
+                if (!onPreviewVersionChange) return;
+                const info = version == null ? null : versions.find((v) => v.version === version) ?? null;
+                onPreviewVersionChange(info);
+                // 就地预览要看得见容器，选完即收起弹层；恢复入口重新打开时选中态还在。
+                setOpen(false);
+              }}
             >
               {versions.map((v) => (
                 <ToggleGroupItem key={v.version} value={String(v.version)}>

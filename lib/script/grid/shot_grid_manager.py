@@ -97,9 +97,18 @@ class ShotGridManager:
                 raise
             return grid
 
-    def find(self, *, script_file: str, shot_id: str) -> ShotGrid | None:
+    def find(
+        self,
+        *,
+        script_file: str,
+        shot_id: str,
+        items: Sequence[Any] = (),
+        id_field: str = "scene_id",
+    ) -> ShotGrid | None:
         return select_shot_grids(
-            grid for grid in self.list_all() if grid.script_file == script_file and grid.shot_id == shot_id
+            [grid for grid in self.list_all() if grid.script_file == script_file and grid.shot_id == shot_id],
+            items=items,
+            id_field=id_field,
         ).get(shot_id)
 
     def list_all(self) -> list[ShotGrid]:

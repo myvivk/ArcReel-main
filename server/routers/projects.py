@@ -37,6 +37,7 @@ from lib.config.resolver import (
     video_bucket_for_generation_mode,
 )
 from lib.db import async_session_factory
+from lib.episode.episode_management import create_episode
 from lib.episode.episode_target_duration import (
     EPISODE_TARGET_DURATION_FIELD,
     MAX_EPISODE_TARGET_DURATION,
@@ -272,6 +273,9 @@ class CreateProjectRequest(BaseModel):
     title: str | None = None
     style: str | None = ""  # 保留但不再是用户入口
     content_mode: Literal["drama"] = "drama"
+    # 创作模式（docs/adr/0100）：剧本来源，创建即定、之后不可变。缺省 AI 原创，行为与改动前一致；
+    # source_import 创建成功后自动建第 1 集，响应回带 first_episode。
+    creation_mode: Literal["ai_original", "source_import"] = "ai_original"
     aspect_ratio: str | None = "9:16"
     default_duration: int | None = None
     # 单集目标时长（秒）：可选软偏好，非 ad 项目适用；区间校验在 _validated_episode_target_duration。
@@ -317,6 +321,7 @@ class EpisodePatch(BaseModel):
 class UpdateProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # creation_mode 创建即定：本模型不声明该字段，extra="forbid" 让 PATCH 携带它时直接 422。
     title: str | None = None
     style: str | None = None
     aspect_ratio: str | None = None
@@ -714,8 +719,15 @@ async def create_project(
                     style_template_id=req.style_template_id,
                     extras=extras or None,
                     narration=narration_fields,
+                    creation_mode=req.creation_mode,
                 )
-            return {"success": True, "name": project_name, "project": project}
+                # 导入原文的入口在剧本页，项目刚建好时没有集就没有剧本页，故创建成功后建第 1 集；
+                # AI 原创不建集，行为与改动前一致（docs/adr/0100）。
+                first_episode = create_episode(manager, project_name) if req.creation_mode == "source_import" else None
+            response: dict[str, Any] = {"success": True, "name": project_name, "project": project}
+            if first_episode is not None:
+                response["first_episode"] = first_episode
+            return response
 
         return await asyncio.to_thread(_sync)
     except ValueError as e:

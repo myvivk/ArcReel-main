@@ -20,7 +20,10 @@ from lib.backends.providers import CallPurpose
 from lib.backends.text_backends.base import DEFAULT_MAX_OUTPUT_TOKENS, TextTaskType
 from lib.backends.text_backends.base import TextGenerationRequest as BackendTextGenerationRequest
 from lib.backends.text_generator import TextGenerator
+from lib.db.base import DEFAULT_USER_ID
 from lib.episode.episode_paths import episode_script_filename
+from lib.generation.generation_queue import get_generation_queue
+from lib.generation.generation_queue_client import wait_for_task
 from lib.infra.async_thread import run_sync_transaction
 from lib.infra.content_digest import canonical_json_digest
 from lib.infra.json_io import atomic_write_json
@@ -41,6 +44,7 @@ from lib.script.short_drama_import import (
     resolve_scene_assets,
     scene_beat_groups,
     scene_place_name,
+    unregistered_handled_props,
 )
 from lib.script.short_drama_source import (
     ShortDramaSourceConflict,
@@ -48,11 +52,15 @@ from lib.script.short_drama_source import (
     short_drama_source_relative_path,
 )
 from lib.script.shot_prompt_standard import (
+    ACTION_WORD_HINT,
+    BLOCK_MIN_CHARS,
     BREAK_MARKER_HINT,
     CAMERA_MOTIONS,
     CAMERA_POSITIONS,
     CONTINUITY_MARKER_HINT,
+    EMOTION_WORD_HINT,
     SHOT_SIZES,
+    collapse_blank_lines,
     handoff_problem,
     lint_shot_prompt,
     shot_blocks,
@@ -65,6 +73,11 @@ from server.agent_runtime.tool_progress import (
     GateOutcome,
     ProgressReporter,
     QualityGateRound,
+)
+from server.services.admission.asset_sheet_batch import (
+    AssetSheetScope,
+    load_asset_sheet_batch_plan,
+    submit_asset_sheet_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,7 +152,7 @@ _PLANNING_STRENGTH_HINTS = {
 #: ``image_prompt`` 的格式约定（D-3 / D-10 统一标准）：规划与按分镜重写共用同一份指令文案，
 #: 景别 / 机位 / 运镜词表取自 :mod:`lib.script.shot_prompt_standard` 的单一真相源，与校验闸同源。
 _IMAGE_PROMPT_FORMAT_RULES = (
-    "5. image_prompt：单段多行文本，每个镜头一段，镜头之间空一行，格式固定（示例；第 2 镜首句用了承接词「又」）：",
+    "5. image_prompt：单段多行文本，每个镜头一段，镜头之间只换一行、不留空行，格式固定（示例；第 2 镜首句用了承接词「又」）：",
     "【镜头1｜中景】平视机位，缓推。沈昭@[沈昭]站在床侧，左手把一张 A4 白纸举到台灯下，纸面被灯光穿透，"
     "签名栏的字迹透出淡红；床头监护仪亮着绿色波形线，周敏@[周敏]卧在床上，双眼闭着，呼吸平缓。",
     "【镜头2｜近景】平视机位，固定。沈昭@[沈昭]又把白纸往上抬了半寸，指腹压住签名栏边缘，"
@@ -151,6 +164,13 @@ _IMAGE_PROMPT_FORMAT_RULES = (
     "  - 正文是连贯叙述句：主体（实名 + 具体动作 + 神态）→ 环境道具细节 → 光线氛围一笔，各占一层；"
     "不写台词：严禁出现「台词：」「对白：」「画外音：」原句行；台词只由 utterances 承载，"
     "画面只写看得见的内容（可写启唇说话、冷笑、画外传来宣读声等动作/环境描述）。",
+    f"  - 丰满度（闸门按字面判）：每个【镜头N】的正文不得少于 {BLOCK_MIN_CHARS} 个字符；"
+    "必须同时有 ① 实名主体 + 一个具体动作，② 一个具体神态/情绪（空镜改写光影或环境在动），"
+    "③ 环境或道具细节 + 光线氛围各一笔。"
+    f"动作词至少命中一个（{ACTION_WORD_HINT}）；"
+    f"神态/情绪词至少命中一个（{EMOTION_WORD_HINT}，空镜除外）。"
+    "禁止「画面感/氛围感/电影感」这类空泛占位，"
+    "禁止两个镜头写同一画面；不达标会被回喂原因重写。",
     "  - 资产引用只写「名字@[登记名]」（衍生写「角色/衍生@[角色/衍生]」），只能引用本幕 beats 里出现的资产；"
     "每幕至少用一个「场景名@[登记场景名]」指认本幕场景；其余已登记但不在本幕出场的资产写裸名，"
     "不要写 token。禁止“角色@[...]”这类泛化前缀，禁止把资产外观整份抄进正文；"
@@ -176,12 +196,22 @@ _FACT_RULE = (
 _CONTINUITY_RULE = (
     "连续性（闸门按字面判，别只写语义）：同一幕内从第 2 条镜头起，首句必须出现下列承接词或位移动作之一——"
     f"{CONTINUITY_MARKER_HINT}；出现其一即算承接，一个都没有就判不合格。"
-    "每一幕的首镜要接住上一幕末镜的人物、视线或声源；确实换场或跳时间，就在首镜写断点标记"
+    "每一幕的首镜要接住上一幕末镜的人物、视线或声源；首镜第一个主体必须写实名并带 @[登记名]，"
+    "不得用「她/他/她们」代替——闸门只认登记角色名，写代词等于没接住。"
+    "例如上一幕末镜是沈昭坐在床沿，下一幕首镜写「沈昭@[沈昭]仍坐在床沿……」，不能写「她仍坐在床沿……」。"
+    "确实换场或跳时间，就在首镜首句写断点标记"
     f"（{BREAK_MARKER_HINT}）；断点场景同样只认这几个词。不要写成互不相干的两段。"
 )
 
 #: 断点标记：与 `_CONTINUITY_RULE` 配套，幕间校验用它判定「显式切点」。
 _BREAK_MARKER = re.compile("硬切|黑场|光转|闪回|跳切|转场")
+
+#: 局部返修时把上一分镜末镜正文直接给模型，不让它猜上一镜谁在场、手是空的还是拿着东西。
+_PREVIOUS_CONTEXT_RULE = (
+    "若某分镜带 previous_scene_end，首镜第一句必须复述该末镜的实名、位置、手和持物，"
+    "并带 @[登记名]；不能写「她/他/她们」代替。若确实换场或跳时间，首句写断点标记"
+    f"（{BREAK_MARKER_HINT}）。"
+)
 
 #: 台词时长规则：每幕台词按语速估算，必须给镜头留出画面时间。
 _DIALOGUE_RULE = (
@@ -297,6 +327,8 @@ def _normalize_image_prompt(text: str) -> str:
 
     text = text.replace("\r\n", "\n")
     text = re.sub(r"[\[【]\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?[\]】]", _canon_mark, text)
+    # 分镜块之间只保留一个换行；空行会撑大编辑框，也不参与解析。
+    text = collapse_blank_lines(text)
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
@@ -740,6 +772,7 @@ def _rewrite_prompt(
     assets: dict[str, list[str]],
     planning_strength: int,
     previous_prompts: dict[str, str],
+    previous_scene_ends: Mapping[str, str] | None = None,
     rejection: str | None,
     markdown: bool = False,
     brief: str = "",
@@ -796,6 +829,7 @@ def _rewrite_prompt(
             "严禁输出「台词：」「对白：」「画外音：」行。",
             _FACT_RULE,
             _CONTINUITY_RULE,
+            _PREVIOUS_CONTEXT_RULE,
             _DIALOGUE_RULE,
             _FRAME_RULE,
             f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
@@ -815,6 +849,7 @@ def _rewrite_prompt(
             *_IMAGE_PROMPT_FORMAT_RULES,
             _FACT_RULE,
             _CONTINUITY_RULE,
+            _PREVIOUS_CONTEXT_RULE,
             _DIALOGUE_RULE,
             _FRAME_RULE,
             f"优化强度={planning_strength}。{_PLANNING_STRENGTH_HINTS[planning_strength]}",
@@ -831,6 +866,7 @@ def _rewrite_prompt(
                     "scene_id": scene_id,
                     "beats": beats,
                     "old_image_prompt": previous_prompts.get(scene_id, ""),
+                    "previous_scene_end": (previous_scene_ends or {}).get(scene_id, ""),
                 },
                 ensure_ascii=False,
             )
@@ -852,6 +888,7 @@ async def _request_rewrite(
     allowed_by_scene: Mapping[str, Collection[str]],
     planning_strength: int,
     previous_prompts: dict[str, str],
+    previous_scene_ends: Mapping[str, str] | None = None,
     on_round: ProgressReporter | None = None,
     brief: str = "",
     hook_scene_id: str = "",
@@ -881,6 +918,7 @@ async def _request_rewrite(
             assets=assets,
             planning_strength=planning_strength,
             previous_prompts=previous_prompts,
+            previous_scene_ends=previous_scene_ends,
             rejection=rejection,
             markdown=markdown,
             brief=brief,
@@ -969,6 +1007,12 @@ def _asset_context(project: dict[str, Any], parsed: ParsedEpisode) -> dict[str, 
         "scene": {location for block in parsed.blocks for location in block.locations if location},
         "prop": {name for block in parsed.blocks for name in block.props},
     }
+    # 自动登记的道具（以及只在动作 beat 里出现、没有写进 [道具] 的已登记道具）也要
+    # 进规划上下文；否则模型看得到名字却拿不到“可绑定”信号，仍会写成裸名。
+    prop_bucket = project.get("props") or {}
+    if isinstance(prop_bucket, Mapping):
+        beats_text = "\n".join(beat.text for block in parsed.blocks for beat in block.beats)
+        mentioned["prop"].update(str(name) for name in prop_bucket if str(name) and str(name) in beats_text)
     context: dict[str, list[str]] = {}
     for asset_type, bucket_name in (
         ("character", "characters"),
@@ -1203,6 +1247,21 @@ def _replace_plan_scene(plan: ScenePlanResult, scene_index: int, scene: ScenePla
     scenes = list(plan.scenes)
     scenes[scene_index] = scene
     return plan.model_copy(update={"scenes": scenes})
+
+
+def _with_hard_cut(image_prompt: str) -> str:
+    """在首镜首句后补「硬切。」：模型漏写切点时由系统显式化，避免整集被承接闸卡死。"""
+
+    marker = re.search(r"【\s*镜头\s*1\s*[^】]*】", image_prompt)
+    if marker is None:
+        return image_prompt
+    start = marker.end()
+    if "硬切" in image_prompt[start:]:
+        return image_prompt
+    dot = image_prompt.find("。", start)
+    if dot < 0:
+        return image_prompt + "硬切。"
+    return image_prompt[: dot + 1] + "硬切。" + image_prompt[dot + 1 :]
 
 
 async def _request_plan(
@@ -1639,39 +1698,42 @@ async def _request_mechanical_plan(
 
     groups = _mechanical_groups(beats, declared_seconds)
     ids = [f"E{episode}S{index:02d}" for index in range(1, len(groups) + 1)]
-    durations = {scene_id: seconds for scene_id, (_group, seconds) in zip(ids, groups, strict=True)}
     # 提示词还没写，无法从 token 判幕；这里放全部登记名，token 闸仍挡未登记资产，
     # 真正的本幕场景由 convert_planned_scenes 按写好的提示词判定。
     all_names = {name for bucket in registered.values() for name in bucket}
-    allowed = dict.fromkeys(ids, all_names)
-    requested = [
-        (scene_id, [beats[index - 1] for index in group])
-        for scene_id, (group, _seconds) in zip(ids, groups, strict=True)
-    ]
-    rewrite = await _request_rewrite(
-        project_name=project_name,
-        episode=episode,
-        requested=requested,
-        assets=assets,
-        registered=registered,
-        allowed_by_scene=allowed,
-        planning_strength=planning_strength,
-        previous_prompts={},
-        on_round=on_round,
-        brief=brief,
-        hook_scene_id=ids[0],
-        fixed_durations=durations,
-        new_scenes=True,
-    )
-    scenes = [
-        ScenePlan(
+    character_names = {str(name) for name in registered.get("character", ())}
+    scenes: list[ScenePlan] = []
+    previous_end = ""
+    # 逐幕顺序生成：每一幕都拿到上一幕已经写好的末镜正文，不再让整集一次性猜。
+    for scene_id, (group, seconds) in zip(ids, groups, strict=True):
+        scene_beats = [beats[index - 1] for index in group]
+        rewrite = await _request_rewrite(
+            project_name=project_name,
+            episode=episode,
+            requested=[(scene_id, scene_beats)],
+            assets=assets,
+            registered=registered,
+            allowed_by_scene={scene_id: all_names},
+            planning_strength=planning_strength,
+            previous_prompts={},
+            previous_scene_ends={scene_id: previous_end} if previous_end else None,
+            on_round=on_round,
+            brief=brief,
+            hook_scene_id=ids[0],
+            fixed_durations={scene_id: seconds},
+            new_scenes=True,
+        )
+        result = rewrite.scenes[0]
+        scene = ScenePlan(
             beat_ids=list(group),
             duration_seconds=seconds,
             scene_description=result.scene_description,
             image_prompt=result.image_prompt,
         )
-        for (group, seconds), result in zip(groups, rewrite.scenes, strict=True)
-    ]
+        if previous_end and handoff_problem(previous_end, scene.image_prompt, character_names=character_names):
+            scene = scene.model_copy(update={"image_prompt": _with_hard_cut(scene.image_prompt)})
+        scenes.append(scene)
+        previous_end = scene.image_prompt
     return ScenePlanResult(scenes=scenes)
 
 
@@ -1783,6 +1845,39 @@ async def _rewrite_selected_scenes(
     return script, len(rewrites.scenes)
 
 
+async def _generate_auto_prop_sheets(project_name: str, projects: ProjectManager, names: Sequence[str]) -> None:
+    """为自动登记的道具生成白底资产图，并等到任务终态。
+
+    资产图是分镜/宫格参考图的必要输入；只登记不生成，下一步仍会在参考图准入被拦。
+    这里复用资产图批量服务与队列等待，不另造生图路径。
+    """
+
+    if not names:
+        return
+    queue = get_generation_queue()
+    _, plan = await load_asset_sheet_batch_plan(
+        projects,
+        queue,
+        project_name=project_name,
+        scope=AssetSheetScope(asset_type="prop", names=tuple(names)),
+        user_id=DEFAULT_USER_ID,
+    )
+    if not plan.target_ids:
+        return
+    _, enqueued = await submit_asset_sheet_batch(
+        plan,
+        project_name=project_name,
+        queue=queue,
+        source="webui",
+        user_id=DEFAULT_USER_ID,
+    )
+    for item in enqueued:
+        task = await wait_for_task(item.task_id, queue=queue)
+        if task.get("status") != "succeeded":
+            reason = task.get("error_message") or task.get("error") or item.task_id
+            raise ShortDramaWorkflowError("short_drama_assets_not_ready", f"自动生成道具资产图失败：{reason}")
+
+
 async def import_short_drama_episode(
     *,
     project_name: str,
@@ -1796,10 +1891,12 @@ async def import_short_drama_episode(
     regenerate_scene_ids: Sequence[str] = (),
     on_round: ProgressReporter | None = None,
 ) -> ShortDramaImportResult:
-    """从已入库的工厂源稿生成 AI 分镜，不写入正文或登记资产。
+    """从已入库的工厂源稿生成 AI 分镜。
 
-    ``regenerate_scene_ids`` 非空时走「按分镜重写」：beat 分组与未选中分镜一律不动，
-    只让 AI 重写选中分镜的画面描述与提示词——已生成的媒体与手动编辑因此不会丢。
+    分镜前会把动作 beat 里被手持/交接、但资产表还没有的可携带道具自动登记到
+    ``project.props``（描述先落最小事实，白底资产图仍走资产图生成），避免分镜模型只能
+    写未绑定裸名。正文不改；``regenerate_scene_ids`` 非空时走按分镜重写：beat 分组与
+    未选中分镜一律不动，只让 AI 重写选中分镜的画面描述与提示词——已生成的媒体与手动编辑因此不会丢。
     智能分镜没有机械回落：校验不通过就带原因持续返修，重跑穷尽仍不合格才报错
     （报错即「模型/流程无法运作」，不产出次品）。
 
@@ -1850,6 +1947,29 @@ async def import_short_drama_episode(
         beats = beat_catalog(parsed)
         if not beats:
             raise ShortDramaWorkflowError("short_drama_ai_planning_failed", "源稿没有可分镜的动作或台词")
+        auto_props = unregistered_handled_props(project, markdown, parsed=parsed)
+        if auto_props:
+            try:
+                await asyncio.to_thread(
+                    projects.add_props_batch,
+                    project_name,
+                    {
+                        name: {
+                            "description": (f"源稿动作里被手持/交接的道具「{name}」。外观以分镜描述与后续资产图为准。")
+                        }
+                        for name in auto_props
+                    },
+                )
+            except ValueError as exc:
+                raise ShortDramaWorkflowError("short_drama_assets_not_ready", f"自动登记道具失败：{exc}") from exc
+            project = await asyncio.to_thread(projects.load_project, project_name)
+            try:
+                await _generate_auto_prop_sheets(project_name, projects, auto_props)
+            except ShortDramaWorkflowError:
+                raise
+            except Exception as exc:
+                raise ShortDramaWorkflowError("short_drama_assets_not_ready", f"自动生成道具资产图失败：{exc}") from exc
+            project = await asyncio.to_thread(projects.load_project, project_name)
         missing_assets = assets_missing_description(project, markdown)
         if missing_assets:
             raise ShortDramaWorkflowError(

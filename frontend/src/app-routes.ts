@@ -148,6 +148,12 @@ export function episodeAssetsViewPath(episode: number): string {
   return `/${WORKSPACE_ROUTE_EPISODES}/${episode}?${query.toString()}`;
 }
 
+/** 项目工作区内打开某集（集 ID）剧本视图的相对路径：导入原文项目据此落到本集原文导入面板。 */
+export function episodeSourceViewPath(episode: number): string {
+  const query = new URLSearchParams({ [EPISODE_VIEW_PARAM]: EPISODE_VIEW_SOURCE });
+  return `/${WORKSPACE_ROUTE_EPISODES}/${episode}?${query.toString()}`;
+}
+
 /** 无子路径、直接匹配的工作区叶子路由段。`episodes` 除了「分集」视图本身还接受 `/:episodeId`（集页），
  *  在下面的正则里额外拼一条 `episodes/[^/]+` 分支覆盖后者。 */
 const WORKSPACE_STATIC_LEAF_ROUTES = [

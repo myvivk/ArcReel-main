@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ListChecks } from "lucide-react";
+import { cn } from "cn";
 import { useLocation } from "wouter";
 import { API } from "@/api";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/popover";
 import { AssetSheetBatchDialog } from "@/components/canvas/lorebook/AssetSheetBatchDialog";
 import { StoryboardBatchDialog } from "@/components/canvas/timeline/StoryboardBatchDialog";
+import { FALLBACK_ACTION_SLOT } from "@/components/canvas/episode-page/EpisodeHeaderActions";
 import { createScriptEditTimeline } from "@/components/canvas/edit-render/create-script-timeline";
 import { promptAuthoringHandoffText } from "@/components/canvas/shared/prompt-authoring-handoff";
 import { prefillAssistant } from "@/utils/assistant-prefill";
@@ -34,6 +36,7 @@ import { useWorkflowStore } from "@/stores/workflow-store";
 import type { ProjectData, StoryboardBatchKind } from "@/types";
 import type { EpisodeEditOverview } from "@/types/edit-timeline";
 import { errMsg } from "@/utils/async";
+import { isSourceImport } from "@/utils/creation-mode";
 import { episodeAgentRef } from "@/utils/episode-display";
 import {
   WORKSPACE_ROUTE_CHARACTERS,
@@ -111,6 +114,8 @@ interface Props {
   onRegenerate?: (stepId: string, unitIds: string[]) => void;
   /** 打开范围为全部待编写的「编写提示词」；本集还没有正式脚本时不传。 */
   onAuthorPrompts?: () => void;
+  /** 当前视图的动作插槽注册：动作按钮放进行内对应步骤，落不到步骤时落到弹层顶部。 */
+  registerActionsSlot?: (key: string, node: HTMLElement | null) => void;
 }
 
 /**
@@ -122,9 +127,9 @@ interface Props {
  * 过期、缺描述这类提醒只挂在对应行。
  *
  * 页头只放一枚入口：制作进度 · 一句话现状 · 阻断数；点开是非模态弹层，弹层是唯一的滚动区。
- * 计划的刷新也由它驱动，页头的批量补齐按钮读同一份计划。
+ * 计划的刷新也由它驱动，弹层底部的批量补齐按钮读同一份计划；每一步的明细在行内折叠。
  */
-export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, onAuthorPrompts }: Props) {
+export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, onAuthorPrompts, registerActionsSlot }: Props) {
   const { t, i18n } = useTranslation(["workflow", "dashboard", "assets"]);
   const alertId = useId();
   const [, setLocation] = useLocation();
@@ -135,6 +140,11 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
   );
   const [instructionDraft, setInstructionDraft] = useState<{ key: string; value: string } | null>(null);
   const [running, setRunning] = useState(false);
+  // 兜底插槽：动作落不到具体步骤时放在弹层顶部；容器空时由 empty:hidden 隐藏。
+  const fallbackSlotRef = useCallback((node: HTMLDivElement | null) => {
+    registerActionsSlot?.(FALLBACK_ACTION_SLOT, node);
+  }, [registerActionsSlot]);
+  const closePanel = useCallback(() => setOpen(false), []);
 
   const plan = useWorkflowStore((s) => s.plan);
   const planKey = useWorkflowStore((s) => s.planKey);
@@ -197,6 +207,7 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
       canAuthorPrompts: Boolean(onAuthorPrompts),
       canViewUnit: Boolean(onViewUnit),
       editOverview,
+      sourceImport: isSourceImport(projectData),
     });
   }, [shown, episodeId, episodeRef, episodeMeta, projectData, t, i18n.language, onAuthorPrompts, onViewUnit, editOverview]);
 
@@ -204,6 +215,9 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
   const issues = useMemo(() => (shown ? blockerViews(t, shown.status.issues) : []), [shown, t]);
 
   const next = view?.next ?? null;
+  const totalSteps = view?.rows.length ?? 0;
+  const currentRowIndex = view ? view.rows.findIndex((row) => next?.rowKey === row.key) : -1;
+  const currentStepPosition = currentRowIndex >= 0 ? currentRowIndex + 1 : totalSteps;
   const instructionKey = next?.instruction ? `${currentKey}::${next.actionType}` : null;
   const instruction =
     instructionKey && instructionDraft?.key === instructionKey
@@ -353,12 +367,41 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
         <PopoverContent
           align="end"
           collisionAvoidance={{ side: "none" }}
-          className="relative w-140 max-h-[min(70dvh,640px,var(--available-height))]"
+          className="relative w-140 max-h-[min(80dvh,780px,var(--available-height))]"
         >
           <PopoverHeader>
-            <PopoverTitle>{t("panel_title")}</PopoverTitle>
-            <PopoverDescription>{headline}</PopoverDescription>
+            <div className="flex items-baseline justify-between gap-2">
+              <PopoverTitle>{t("panel_title")}</PopoverTitle>
+              {view && (
+                <span className="num rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+                  {t("panel_step_position", { current: currentStepPosition, total: totalSteps })}
+                </span>
+              )}
+            </div>
+            <PopoverDescription className="sr-only">{headline}</PopoverDescription>
+            {view && totalSteps > 0 && (
+              <div className="mt-2.5 flex gap-1">
+                {view.rows.map((row, index) => (
+                  <span
+                    key={row.key}
+                    className={cn(
+                      "h-1 flex-1 rounded-full",
+                      row.tone === "done" ? "bg-good" : index === currentRowIndex ? "bg-primary" : "bg-border",
+                    )}
+                  />
+                ))}
+              </div>
+            )}
           </PopoverHeader>
+
+          {/* 落不到具体步骤的动作放这里；没有内容时整块不显示。 */}
+          {registerActionsSlot && (
+            <div
+              ref={fallbackSlotRef}
+              className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 p-2 empty:hidden"
+              onClickCapture={() => setOpen(false)}
+            />
+          )}
 
           {error && shown && (
             <p className="text-xs text-muted-foreground" role="status">
@@ -381,10 +424,12 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
 
           {view ? (
             <ol className="flex flex-col">
-              {view.rows.map((row) => (
+              {view.rows.map((row, index) => (
                 <StepListRow
                   key={row.key}
                   row={row}
+                  index={index + 1}
+                  isLast={index === view.rows.length - 1}
                   next={next?.rowKey === row.key ? next : null}
                   instruction={instruction}
                   onInstructionChange={(value) => instructionKey && setInstructionDraft({ key: instructionKey, value })}
@@ -392,6 +437,8 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
                   onViewUnit={viewUnit}
                   onRegenerate={onRegenerate}
                   onConfirmDurations={confirmDurations}
+                  registerActionsSlot={registerActionsSlot}
+                  onActionInvoke={closePanel}
                   busy={loading || running}
                 />
               ))}

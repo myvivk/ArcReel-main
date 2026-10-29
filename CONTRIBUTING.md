@@ -27,9 +27,13 @@ uv run alembic upgrade head
 # 启动后端 (终端 1)
 # 注意：必须用 --reload-dir 限定监视目录，否则 watchfiles 会扫描
 # node_modules / .venv / .git / .worktrees 等数十万个文件，单核 CPU 占用超过 50%
-# Windows 原生开发另加 --loop server.dev_loop:proactor_loop_factory：
-# --reload 下 uvicorn 默认用 SelectorEventLoop，无法为内嵌 Agent 创建子进程
+# Linux / macOS / WSL2：
 uv run uvicorn server.app:app --reload --reload-dir server --reload-dir lib --port 1241
+
+# Windows 原生：必须加 --loop server.dev_loop:proactor_loop_factory。
+# --reload 下 uvicorn 默认用 SelectorEventLoop，Windows 的 Selector 循环不支持
+# create_subprocess_exec，内嵌 Agent 启动 Claude Code 时会报 NotImplementedError。
+uv run uvicorn server.app:app --reload --reload-dir server --reload-dir lib --loop server.dev_loop:proactor_loop_factory --port 1241
 
 # 启动前端 (终端 2)
 cd frontend && pnpm dev

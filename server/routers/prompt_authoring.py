@@ -14,10 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from lib.episode.episode_paths import episode_script_filename
 from lib.infra.api_errors import ConflictError, UnprocessableError
 from lib.project.project_manager import get_project_manager
-from lib.script.grid.keyframe_parser import keyframe_reference_problems
+from lib.script.grid.keyframe_parser import keyframe_reference_problems, shot_scene_text
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
-from lib.script.grid.video_prompt_targets import video_prompt_body_text
+from lib.script.grid.video_prompt_targets import video_prompt_body_text, video_prompt_text
 from lib.script.prompt_authoring_scope import prompt_overwrite_with_text
+from lib.script.shot_prompt_standard import seam_prop_problem, video_prompt_delta_metrics
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.agent_toolset.envelope import json_value
 from server.auth import CurrentUser
@@ -149,6 +150,76 @@ async def save_prompt_authoring_instructions(project_name: str, episode: int, re
         req.instructions,
     )
     return {"success": True}
+
+
+@router.get("/projects/{project_name}/episodes/{episode}/video-prompt-score")
+async def get_video_prompt_score(project_name: str, episode: int, user: CurrentUser):
+    """只读评分：返回本集每条视频提示词的确定性增量指标，不写项目、不入队。"""
+
+    pm = get_project_manager()
+    filename = episode_script_filename(episode)
+    script = await asyncio.to_thread(pm.load_script, project_name, filename)
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    grids = select_shot_grids(
+        (
+            grid
+            for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
+            if grid.episode == episode and grid.script_file == filename and grid.status in {"confirmed", "completed"}
+        ),
+        items=items,
+        id_field=id_field,
+    )
+    project = await asyncio.to_thread(pm.load_project, project_name)
+    registered_props = {str(name) for name in (project.get("props") or {})}
+    registered_names = {
+        str(name) for bucket in ("characters", "scenes", "props") for name in (project.get(bucket) or {})
+    }
+    scenes = []
+    previous_item = None
+    for item in items:
+        scene_id = str(item.get(id_field, ""))
+        action = video_prompt_text(item)
+        grid = grids.get(scene_id)
+        reference_texts = tuple(cell.prompt for cell in grid.cells) if grid is not None else ()
+        scene_characters = item.get("characters_in_scene")
+        scene_props = item.get("props")
+        metrics = video_prompt_delta_metrics(
+            shot_scene_text(item),
+            action,
+            reference_texts=reference_texts,
+            registered_names=registered_names,
+            character_names=[str(name) for name in scene_characters] if isinstance(scene_characters, list) else (),
+            prop_names=[str(name) for name in scene_props] if isinstance(scene_props, list) else (),
+        )
+        seam = (
+            seam_prop_problem(
+                shot_scene_text(previous_item),
+                shot_scene_text(item),
+                registered_props=registered_props,
+            )
+            if previous_item is not None
+            else None
+        )
+        scenes.append(
+            {
+                "scene_id": scene_id,
+                "duration_seconds": item.get("duration_seconds"),
+                "action_chars": metrics.action_chars,
+                "sentence_count": metrics.sentence_count,
+                "max_similarity": round(metrics.max_similarity, 3),
+                "max_verbatim_run": metrics.max_verbatim_run,
+                "static_density": round(metrics.static_density, 3),
+                "warnings": list(metrics.warnings),
+                "mention_problems": list(metrics.mention_problems),
+                "mention_warnings": list(metrics.mention_warnings),
+                "score": metrics.score,
+                "passed": metrics.passed,
+                "problem": metrics.problem,
+                "seam_problem": seam,
+            }
+        )
+        previous_item = item
+    return {"episode": episode, "scenes": scenes}
 
 
 @router.post("/projects/{project_name}/episodes/{episode}/prompt-authoring")

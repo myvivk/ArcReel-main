@@ -74,6 +74,7 @@ export function usageRecordToView(record: UsageRecord): UsageRecordView {
 const RESOURCE_TYPE_BY_KIND: Record<string, string> = {
   storyboard: "storyboards",
   grid: "grids",
+  shot_grid: "shot_grids",
   video: "videos",
   reference_video: "reference_videos",
   tts: "audio",

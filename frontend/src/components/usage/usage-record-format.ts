@@ -88,6 +88,9 @@ export function targetParts(
   purpose: string | null,
   t: TFunction,
 ): TargetParts {
+  if (segmentId && /^(?:shot_)?grid_/.test(segmentId)) {
+    return { prefix: null, name: t("usage_target_grid_generation") };
+  }
   if (segmentId) {
     if (segmentRef) {
       const name =

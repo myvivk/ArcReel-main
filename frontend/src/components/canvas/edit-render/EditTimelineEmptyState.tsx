@@ -1,4 +1,4 @@
-﻿import { useCallback, useState } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, Loader2, Plus, Scissors } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -73,7 +73,7 @@ export function EditTimelineEmptyState({
             {admitted ? t("edit_view_empty_description") : unavailable}
           </p>
         </div>
-        <EpisodeHeaderActions>
+        <EpisodeHeaderActions target="edit">
           <Button
             size="sm"
             onClick={handleHandToAgent}

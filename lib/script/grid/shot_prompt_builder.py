@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from itertools import pairwise
@@ -69,6 +70,31 @@ def cell_duplication_problem(cells: Sequence[ShotFrame]) -> str | None:
         ratio = SequenceMatcher(None, left.text, right.text, autojunk=False).ratio()
         if ratio >= 0.9:
             return f"第{left.number}格与第{right.number}格几乎是同一画面（相似度 {ratio:.2f}）"
+    return None
+
+
+#: 关键帧是一张冻结画面：镜头运动、先后动作和渐变过程都只能由视频阶段承担。
+_KEYFRAME_CAMERA = re.compile(
+    r"镜头(?:推|拉|摇|移|跟|升|降|转|切|固定|缓缓|慢慢|向前|向后|靠近|远离)|"
+    r"机位|景别|运镜|变焦|推镜|拉镜|摇镜|移镜|跟拍|升镜|降镜|环绕镜"
+)
+_KEYFRAME_SEQUENCE = re.compile(r"然后|随后|最后|继而|先[^。；\n]{0,20}再")
+_KEYFRAME_GRADUAL = re.compile(r"逐渐|渐渐|慢慢|缓缓|越来越|不断|一点一点")
+
+
+def keyframe_cell_problem(text: str) -> str | None:
+    """逐格关键帧只能写同一瞬间能同时看见的状态；运动、先后、渐变留给视频。
+
+    图片模型没有时间轴：写「镜头推近」「先…再…」「缓缓转身」只会把两个瞬间叠进一张图。
+    合格返回 ``None``，否则返回可回喂模型的原因。
+    """
+
+    if match := _KEYFRAME_CAMERA.search(text):
+        return f"写了镜头运动「{match.group(0)}」：关键帧是冻结画面，运镜留给视频提示词"
+    if match := _KEYFRAME_SEQUENCE.search(text):
+        return f"写了先后动作「{match.group(0)}」：一格只能画同一瞬间能同时看见的状态"
+    if match := _KEYFRAME_GRADUAL.search(text):
+        return f"写了渐变过程「{match.group(0)}」：关键帧没有时长，只写该瞬间的状态"
     return None
 
 
@@ -188,6 +214,8 @@ def build_shot_grid_prompt(
 __all__ = [
     "CONTINUATION_TAIL",
     "build_shot_grid_prompt",
+    "cell_duplication_problem",
+    "keyframe_cell_problem",
     "resolve_grid_cells",
     "shot_grid_cells",
 ]

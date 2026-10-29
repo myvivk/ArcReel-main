@@ -5,7 +5,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from lib.infra.api_errors import UnprocessableError
 from lib.project.project_manager import ProjectManager, get_project_manager
+from lib.project.project_schema import resolve_creation_mode
 from lib.short_drama_ingest import load_short_drama_artifacts
 from server.dependencies import require_project_migration_ok
 
@@ -13,9 +15,17 @@ router = APIRouter(dependencies=[Depends(require_project_migration_ok)])
 Manager = Annotated[ProjectManager, Depends(get_project_manager)]
 
 
+def _reject_source_import(project: dict[str, object]) -> None:
+    """导入原文项目没有故事规划工件与消费方；路由层直接 422，防地址栏直达。"""
+
+    if resolve_creation_mode(project) == "source_import":
+        raise UnprocessableError("story_planning_unavailable_source_import")
+
+
 @router.get("/projects/{project_name}/story-planning")
 async def get_story_planning(project_name: str, pm: Manager) -> dict[str, object]:
     project = await asyncio.to_thread(pm.load_project, project_name)
+    _reject_source_import(project)
     if project.get("content_mode") != "drama":
         return {"character_bible": None, "series_outline": None, "ledger": None, "episode_plans": []}
     artifacts = await asyncio.to_thread(load_short_drama_artifacts, pm, project_name)
@@ -32,6 +42,7 @@ async def get_story_planning(project_name: str, pm: Manager) -> dict[str, object
 @router.get("/projects/{project_name}/story-planning/context/{episode}")
 async def get_story_context(project_name: str, episode: int, pm: Manager) -> dict[str, str]:
     project = await asyncio.to_thread(pm.load_project, project_name)
+    _reject_source_import(project)
     if project.get("content_mode") == "drama":
         artifacts = await asyncio.to_thread(load_short_drama_artifacts, pm, project_name)
         selected = [

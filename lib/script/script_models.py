@@ -146,7 +146,11 @@ class _VideoPromptCore(BaseModel):
     model_config = _STRICT_CONFIG
 
     action: Annotated[str, AfterValidator(_require_non_blank_prompt)] = Field(
-        min_length=1, description="该分镜时长内的动作描述；镜头运动由 camera_motion 承载"
+        min_length=1,
+        description=(
+            "该分镜 K0→Kn 的动作增量：只写状态之间怎么变，不复述分镜提示词与关键帧已写死的画面；"
+            "每个 K 间隔至少保留一个必要动作；镜头运动由 camera_motion 承载"
+        ),
     )
     camera_motion: Annotated[CameraMotion, BeforeValidator(_normalize_camera_motion)] = Field(description="镜头运动")
     ambiance_audio: str = Field(description="环境音效（画内音）")

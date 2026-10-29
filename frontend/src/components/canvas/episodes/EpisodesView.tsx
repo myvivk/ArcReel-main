@@ -5,10 +5,12 @@ import { MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
 
 import { WORKSPACE_ROUTE_EPISODES } from "@/app-routes";
 import { ShortDramaGenerateButton, ShortDramaGenerateHost } from "@/components/canvas/shared/ShortDramaGenerateDialog";
+import { SourceImportEntry } from "@/components/canvas/episode-page/SourceImportEntry";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { useProjectsStore } from "@/stores/projects-store";
+import { isSourceImport } from "@/utils/creation-mode";
 import { episodeDisplayName } from "@/utils/episode-display";
 
 import { BatchDeleteEpisodesDialog } from "./BatchDeleteEpisodesDialog";
@@ -23,6 +25,8 @@ export function EpisodesView({ projectName }: { projectName: string }) {
   const { t } = useTranslation(["dashboard", "common"]);
   const project = useProjectsStore((s) => s.currentProjectData);
   const episodes = project?.episodes ?? [];
+  // 导入原文项目的剧本来自用户原文：空态引导到剧本页导入，不提供 AI 原创剧本入口。
+  const sourceImport = isSourceImport(project);
   const search = useSearch();
   const [, setLocation] = useLocation();
   const [query, setQuery] = useState("");
@@ -60,6 +64,7 @@ export function EpisodesView({ projectName }: { projectName: string }) {
       <EpisodesHeader
         projectName={projectName}
         episodeCount={episodes.length}
+        sourceImport={sourceImport}
         onCreate={() => setCreateAfter(null)}
         onBatchDelete={() => setBatchOpen(true)}
       />
@@ -79,7 +84,11 @@ export function EpisodesView({ projectName }: { projectName: string }) {
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <p className="text-sm text-muted-foreground">{t("dashboard:no_episodes_yet")}</p>
               <div className="flex flex-wrap justify-center gap-2">
-                <ShortDramaGenerateButton projectName={projectName} episode={0} />
+                {sourceImport ? (
+                  <SourceImportEntry projectName={projectName} episode={null} />
+                ) : (
+                  <ShortDramaGenerateButton projectName={projectName} episode={0} />
+                )}
               </div>
             </div>
           ) : (

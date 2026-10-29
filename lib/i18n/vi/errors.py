@@ -732,6 +732,22 @@ MESSAGES = {
     "rewrite_failed": "Sửa tin nhắn thất bại, vui lòng thử lại",
     "overview_source_empty": "Thư mục nguồn trống; không thể tạo tổng quan",
     "text_provider_not_configured": "Vui lòng cấu hình nhà cung cấp văn bản trước: thêm ít nhất một nhà cung cấp trong Cài đặt → Nhà cung cấp",
+    # Nhập nguyên văn (source_import)
+    "source_import_mode_required": "Dự án này không ở chế độ nhập nguyên văn",
+    "source_import_text_required": "Hãy dán nguyên văn trước",
+    "source_import_text_too_long": "Nguyên văn vượt giới hạn 50.000 ký tự, hãy chia nhỏ để nhập từng phần",
+    "source_import_original_not_found": "Tập này chưa có nguyên văn được nhập",
+    "source_import_conflict": "Nguyên văn hoặc kịch bản đã thay đổi, hãy làm mới và thử lại",
+    "source_import_confirmation_required": (
+        "Tập này đã có ảnh phân cảnh hoặc video; tạo lại sẽ đánh dấu các sản phẩm đó là lỗi thời. "
+        "Hãy xác nhận để tiếp tục"
+    ),
+    "source_import_structure_failed": (
+        "Kịch bản tạo ra không khớp định dạng tập của xưởng. Hãy thử lại hoặc điều chỉnh nguyên văn"
+    ),
+    "source_import_generation_failed": "Chuyển nguyên văn thành kịch bản thất bại, hãy thử lại sau",
+    "text_backend_missing": "Hãy cấu hình mô hình văn bản trong Cài đặt → Nhà cung cấp trước",
+    "story_planning_unavailable_source_import": "Dự án nhập nguyên văn không dùng phần lập kế hoạch câu chuyện",
     "presentation_unavailable": "Bản trình bày video đã chọn không khả dụng hoặc lời thuyết minh vượt quá giới hạn phương tiện",
     "project_config_invalid": "Cấu hình dự án không hợp lệ; hãy kiểm tra tham số và thử lại",
     "invalid_discovery_format": "Định dạng khám phá mô hình không được hỗ trợ: {discovery_format}",

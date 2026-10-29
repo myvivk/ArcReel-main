@@ -744,6 +744,50 @@ def scene_beat_groups(parsed: ParsedEpisode, script_scenes: list[Mapping[str, An
     return groups
 
 
+#: 动作 beat 里“手持 / 交接”物件的窄口径：只抓托盘、碗盏、信匣这类可携带短名，
+#: 不把陈设、地点、身体部位当道具。命中后还要过已登记过滤，登记过的不再报。
+_HANDLED_PROP = re.compile(
+    r"(?:托|端|接|递|放|拿|捧|提|拎|抱|握|抓|举)(?:着|过|起|住|了|来|的)*"
+    r"([\u4e00-\u9fff]{2,6}?(?:盘|碗|盏|盒|匣|瓶|壶|杯|信|纸|绳|印|旨|绫|刀|剑|锁|钥|灯|镜|袋|包|箱|卷|册|笔|砚|簪|钗|镯|佩|符|牌|令|旗|扇|帕|巾|衣|袍|冠|鞋|靴|药|丹|香|烛|茶|酒))"
+)
+
+
+def _handled_narrative_props(parsed: ParsedEpisode) -> set[str]:
+    """动作 beat 里被“托 / 端 / 接 / 递 / 放 / 拿 …”的未登记物件。
+
+    源稿的 ``[道具]`` 行只声明作者记得住的资产；动作 beat 里临时出现的托盘、药碗、
+    信匣不会进资产表。它们没有 prop_id、没有参考图，分镜正文写裸名又能绕过 token 闸，
+    于是每个镜头各画一个。这里只抓“明确被手持/交接”的短物件名，作为分镜前置的候选：
+    已登记的自然被过滤，未登记的进 ``assets_missing_description``，在 AI 分镜前阻断。
+    """
+
+    found: set[str] = set()
+    for block in parsed.blocks:
+        for beat in block.beats:
+            if beat.kind != "action":
+                continue
+            for match in _HANDLED_PROP.finditer(beat.text):
+                name = match.group(1).lstrip("着过起住了来的")
+                if len(name) >= 2:
+                    found.add(name)
+    return found
+
+
+def unregistered_handled_props(
+    project: Mapping[str, Any], markdown: str, *, parsed: ParsedEpisode | None = None
+) -> list[str]:
+    """动作 beat 里被手持/交接、但项目资产表还没有的道具名。
+
+    AI 分镜会先把它们自动登记进 ``project.props``，再进入资产完整性检查；本函数同时给
+    ``assets_missing_description`` 复用，避免检测与登记两份口径。
+    """
+
+    episode = parsed if parsed is not None else parse_short_drama_episode(markdown)
+    bucket = project.get("props") or {}
+    existing = bucket if isinstance(bucket, Mapping) else {}
+    return sorted(name for name in _handled_narrative_props(episode) if not resolve_asset_key(existing, name))
+
+
 def assets_missing_description(project: Mapping[str, Any], markdown: str) -> list[dict[str, str]]:
     """分镜前置检查：本集源稿引用的资产里，缺外观描述的清单。
 
@@ -756,6 +800,11 @@ def assets_missing_description(project: Mapping[str, Any], markdown: str) -> lis
         "scene": sorted({location for block in parsed.blocks for location in block.locations if location}),
         "prop": sorted({name for block in parsed.blocks for name in block.props}),
     }
+    # 源稿没有 [道具] 声明、但在动作里被拿/托/接的物件也要过资产准入；否则分镜模型
+    # 只能把它写成裸名，出图时没有 prop_id 与参考图，跨镜必然一镜一个样。
+    for name in unregistered_handled_props(project, markdown, parsed=parsed):
+        if name not in mentioned["prop"]:
+            mentioned["prop"].append(name)
     missing: list[dict[str, str]] = []
     for asset_type, bucket_name in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
         bucket = project.get(bucket_name) or {}

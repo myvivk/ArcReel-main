@@ -69,7 +69,15 @@ from lib.script.short_drama_source import (
     load_short_drama_source,
     short_drama_source_relative_path,
 )
-from lib.script.shot_prompt_standard import handoff_problem, lint_shot_prompt
+from lib.script.shot_prompt_standard import (
+    action_timeline_problem,
+    collapse_blank_lines,
+    handoff_problem,
+    lint_shot_prompt,
+    seam_prop_problem,
+    video_prompt_delta_problem,
+)
+from lib.script.source_anchor import is_content_aligned_source_anchor
 from lib.speech.speech_composition import require_script_unit_admitted, speech_policy_for_project
 
 logger = logging.getLogger(__name__)
@@ -97,6 +105,14 @@ def _entry_asset_names(item: Mapping[str, Any]) -> set[str]:
         if isinstance(values, list):
             names.update(value for value in values if isinstance(value, str) and value.strip())
     return names
+
+
+def _scene_names(item: Mapping[str, Any], field: str) -> tuple[str, ...]:
+    """分镜条目某个结构化字段里的名字（不是字符串列表一律忽略）。"""
+    values = item.get(field)
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value) for value in values if isinstance(value, str) and value.strip())
 
 
 _VISUAL_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {"scenes": DramaVisualScript}
@@ -147,9 +163,14 @@ def _visual_field_instruction(targets: "PromptAuthoringTargets") -> str | None:
         )
     if fields == {"video_prompt"}:
         return (
-            "本次只编写 video_prompt（视频提示词）。输入里有分镜提示词与该分镜已确认宫格的逐格文本"
-            "（K0→Kn）：按 K0→Kn 的时序写「怎么动」，不复述每格已经写死的静帧外观、姿态与服装；"
-            "每个时间段单独一行（如「0-3秒：…」换行「3-6秒：…」），不要连写成一段；"
+            "本次只编写 video_prompt（视频提示词），它是 K0→Kn 的动作增量，不是第二遍分镜画面。"
+            "只写从上一状态到下一状态的变化（触发、过程、落点）；分镜提示词与 K 帧已经写死的长相、服装、"
+            "构图、景别、机位、光线和动作起止状态不再复述，只在它们发生变化时写变化本身。"
+            "每个 K 帧间隔至少保留一个分镜已经写出的必要动作；不能为了简短把某个 K 之间的动作删掉。"
+            "不要复用分镜提示词或 K 帧里的原句/短语；同一个动作写成状态变化，保留动作义务而不是照抄措辞。"
+            "运镜只由 camera_motion 字段承载，action 不出现任何镜头语言。"
+            "每个时间段单独一行（如「0-3秒：…」换行「3-6秒：…」），覆盖全时长且不重叠；"
+            "首段从 K0 的可见状态起，末段落到 Kn 的可见状态。"
             "只引用真实存在的 K（正文出现的 K 编号必须小于格数），台词不进 action；"
             "不写 BGM、画面比例、时长与模型参数，也不要输出 image_prompt 或改写分镜提示词。"
         )
@@ -198,6 +219,18 @@ def _require_overwrite_acknowledged(
     overwritten = targets.selection.overwritten
     if overwritten and (overwrite_revision is None or overwrite_revision != baseline):
         raise PromptOverwriteRequired(PromptOverwrite(fingerprint=baseline, entries=overwritten))
+
+
+def _collapsed_visual_field(field: str, value: object) -> object:
+    """视觉层写回前压掉镜头块之间的空行；其它字段原样返回。"""
+
+    if field != "image_prompt":
+        return value
+    if isinstance(value, str):
+        return collapse_blank_lines(value)
+    if isinstance(value, dict) and isinstance(value.get("scene"), str):
+        return {**value, "scene": collapse_blank_lines(value["scene"])}
+    return value
 
 
 class ScriptGenerator:
@@ -661,15 +694,10 @@ class ScriptGenerator:
             entry_id = str(item[targets.id_field])
             if source is not None:
                 anchor = item.get("source_text")
-                source_lines = iter(source.markdown.splitlines())
                 if (
                     not isinstance(anchor, str)
                     or not anchor.strip()
-                    or not all(
-                        any(original == line for original in source_lines)
-                        for line in anchor.splitlines()
-                        if line.strip()
-                    )
+                    or not is_content_aligned_source_anchor(anchor, source.markdown)
                 ):
                     raise PromptAuthoringTargetError(translate("video_prompt_source_unaligned"))
             selected[entry_id] = self._require_video_prompt_grid(item, grids.get(entry_id))
@@ -801,6 +829,7 @@ class ScriptGenerator:
         original_by_id = {str(item[targets.id_field]): item for item in targets.entries}
         authored_by_id = {str(item[targets.id_field]): item for item in visual}
         characters = {str(name) for name in (self.project_json.get("characters") or {})}
+        props = {str(name) for name in (self.project_json.get("props") or {})}
         script_scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
         order: list[str] = []
         stored: dict[str, Mapping[str, Any]] = {}
@@ -844,6 +873,9 @@ class ScriptGenerator:
                     if problem := handoff_problem(previous_prompt, scene_text, character_names=characters):
                         failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 未接住上一分镜：{problem}"))
                         continue
+                    if problem := seam_prop_problem(previous_prompt, scene_text, registered_props=props):
+                        failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 持物未接上：{problem}"))
+                        continue
                 if episode is not None and (gap := self._fragment_gap(entry_id, scene_text, targets, episode)):
                     failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt {gap}"))
                     continue
@@ -856,6 +888,22 @@ class ScriptGenerator:
                     self._validate_video_prompt_body(item, grid)
                 except ValueError as exc:
                     failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 未通过校验：{exc}"))
+                    continue
+                storyboard_prompt = shot_scene_text(original)
+                if storyboard_prompt.strip() and (
+                    problem := video_prompt_delta_problem(
+                        storyboard_prompt,
+                        video_prompt_text(item),
+                        reference_texts=tuple(cell.prompt for cell in grid.cells),
+                        registered_names=registered,
+                        character_names=_scene_names(original, "characters_in_scene"),
+                        prop_names=_scene_names(original, "props"),
+                    )
+                ):
+                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 未通过增量校验：{problem}"))
+                    continue
+                if problem := action_timeline_problem(video_prompt_text(item), original.get("duration_seconds")):
+                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 时间轴不合格：{problem}"))
         return failures
 
     def _lint_authored_visual_layer(
@@ -889,7 +937,7 @@ class ScriptGenerator:
             {
                 **entry,
                 **{
-                    field: visual_by_id[str(entry[id_field])][field]
+                    field: _collapsed_visual_field(field, visual_by_id[str(entry[id_field])][field])
                     for field in targets.fields_of(str(entry[id_field]))
                 },
             }

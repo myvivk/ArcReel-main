@@ -118,13 +118,13 @@ Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_
 
 参考素材编辑器保存才落盘；取消、Esc、关闭和 AI 回填都不保存。手写格数必须与规格一致，不截尾、不自动补成另一规格。生成与确认分别执行，确认前不得编写视频提示词。
 
-参考素材的逐格提示词按单 shot 生成：spec 固定 rows/cols，输入固定该分镜的 scene/登记资产/项目画风；校验失败会带具体原因重试，最多再试两次，耗尽仍以原 `shot_grid_author_failed` 失败，不落盘、不影响其他 shot。
+参考素材的逐格提示词按单 shot 生成：spec 固定 rows/cols，输入固定该分镜的 scene/登记资产/项目画风；每格必须是冻结的单一瞬间，写了镜头运动、先后动作或渐变过程会被 `keyframe_cell_problem` 拒绝并带原因重试，最多再试两次，耗尽仍以原 `shot_grid_author_failed` 失败，不落盘、不影响其他 shot。
 
 确认按宫格、切图、复制、绑定与清单登记的同一事务提交。`cell_paths` 从 `cells` 派生，顺序即 K0…Kn；解除确认解绑但保留图片。规格变化才重置出图，未变化的保存保留实际切图。
 
 同分镜存在多个宫格记录时，`select_shot_grids` 统一按脚本显式绑定、confirmed、completed、最新的顺序选择；绑定缺失时不冒用其他记录。工作流、提示词生成和路由共用这个选择器。可消费的参考素材仅认 confirmed。
 
-视频提示词独立生成，输入包括源稿、当前分镜提示词和同一冻结宫格的 K 帧文本上下文。正文 K 引用与包装字段均校验。提交前复核完整宫格、图片 SHA、源稿身份和视觉状态 fingerprint；只写视频字段，不重写上游。
+视频提示词独立生成，输入包括源稿、当前分镜提示词和同一冻结宫格的 K 帧文本上下文。`video_prompt.action` 是 K0→Kn 的增量文档：静态外观、构图、景别、机位与光线由分镜提示词和 K 帧承载，`action` 只写状态之间怎么变，运镜只由 `camera_motion` 承载；每个 K 间隔至少保留一个必要动作。正文 K 引用、包装字段、镜头语言、静态外观词密度、与上游文本的整句相似度和时间轴覆盖均校验（`lib/script/shot_prompt_standard.py`）；接近阈值、未阻断的复述记入评分指标的 `warnings`，由 `scripts/score_video_prompts.py` 汇总成集级报告。提交前复核完整宫格、图片 SHA、源稿身份和视觉状态 fingerprint；只写视频字段，不重写上游。
 
 提示词编写（image_prompt / video_prompt）先在整批响应上按 entry 逐条校验；某条失败后只重发该条目的上下文、旧视觉层与拒绝原因，成功条目原样保留，拼回后整批复验。video_prompt 的正文/K 引用错误也走同一条带原因重试路径，不再让一个条目直接拖垮整批；整批与局部修复共用 `_PROMPT_AUTHORING_ATTEMPTS=5` 的调用预算。K 帧/宫格输入、`video_prompt_basis`、覆盖确认与落盘事务保持不变，耗尽仍不落半成品。
 

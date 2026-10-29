@@ -39,6 +39,17 @@ export interface ShotGridPlan {
   stale?: boolean;
 }
 
+export interface ShotGridVersion {
+  id: string;
+  status: ShotGridStatus;
+  rows: number;
+  cols: number;
+  updated_at: string | null;
+  confirmed_at: string | null;
+  cell_count: number;
+  composite_url: string | null;
+}
+
 /** PUT 保存规格与逐格镜头文本；`prompt` 为 `null` 时保持原值（D-4）。 */
 export interface SaveShotGridPayload {
   script_file: string;

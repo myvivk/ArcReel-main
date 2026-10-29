@@ -1,5 +1,6 @@
-import { useId } from "react";
+import { useCallback, useId } from "react";
 import { useTranslation } from "react-i18next";
+import { Check } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,25 +13,38 @@ import { StepActButton } from "./StepActButton";
 import { problemViews } from "./problem-views";
 import type { NextStepView, StepAct, StepNote, StepRowTone, StepRowView } from "./step-list";
 
-/** 行首圆点：已齐实心、还没有虚线空心、部分半填、进行中呼吸。形状先于颜色，灰度下仍可区分。 */
-function ToneDot({ tone }: { tone: StepRowTone }) {
-  if (tone === "todo") return <span aria-hidden className="size-2 rounded-full border border-dashed border-muted-foreground" />;
-  if (tone === "partial") {
+/** 时间轴节点：已完成打勾、当前步骤主色数字、其余数字；有问题的步骤用对应颜色描边。 */
+function StepMarker({ tone, current, index }: { tone: StepRowTone; current: boolean; index: number }) {
+  if (tone === "done") {
     return (
-      <span aria-hidden className="relative size-2 overflow-hidden rounded-full border border-subtle-foreground">
-        <span className="absolute inset-y-0 left-0 w-1/2 bg-subtle-foreground" />
+      <span
+        aria-hidden
+        className="flex size-7 shrink-0 items-center justify-center rounded-full border border-good/50 bg-good/15 text-good"
+      >
+        <Check className="size-3" />
       </span>
     );
   }
+  const toneClass = current
+    ? "border-transparent bg-primary text-primary-foreground"
+    : tone === "danger"
+      ? "border-destructive/50 text-destructive"
+      : tone === "warn" || tone === "running"
+        ? "border-warn/50 text-warn"
+        : tone === "partial"
+          ? "border-primary/40 text-primary"
+          : "border-border text-muted-foreground";
   return (
     <span
       aria-hidden
       className={cn(
-        "size-2 rounded-full",
-        tone === "warn" ? "bg-warn" : tone === "danger" ? "bg-destructive" : "bg-primary",
+        "flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-medium",
+        toneClass,
         tone === "running" && "animate-breath",
       )}
-    />
+    >
+      {index}
+    </span>
   );
 }
 
@@ -64,9 +78,9 @@ function NextStepBlock({ next, instruction, onInstructionChange, onRun, busy }: 
   const { t } = useTranslation("workflow");
   const inputId = useId();
   return (
-    <div className="flex flex-col gap-2 rounded-md bg-primary/10 p-2" data-testid="workflow-next-step">
+    <div className="flex flex-col gap-2 rounded-md border border-primary/30 bg-primary/10 p-2.5" data-testid="workflow-next-step">
       <p className="text-xs leading-relaxed">
-        <span className="font-medium text-primary">{t("next_step", { step: next.title })}</span>
+        <span className="text-subtle-foreground">{t("next_step", { step: next.title })}</span>
         {next.detail && <span className="text-subtle-foreground"> {next.detail}</span>}
       </p>
       {next.hint && <NoteLine note={next.hint} onRun={onRun} />}
@@ -114,6 +128,14 @@ interface Props {
   onRegenerate?: (stepId: string, unitIds: string[]) => void;
   onConfirmDurations?: (durations: Record<string, number>) => void;
   busy: boolean;
+  /** 把本行挂成动作插槽：当前视图的按钮按步骤 key 投放到这里。 */
+  registerActionsSlot?: (key: string, node: HTMLDivElement | null) => void;
+  /** 点行内动作时收起弹层。 */
+  onActionInvoke?: () => void;
+  /** 时间轴序号（1 起）。 */
+  index: number;
+  /** 最后一行不画时间轴连接线。 */
+  isLast: boolean;
 }
 
 /** 分镜图与视频的过期产物可以就地查看与重生；资产图与视频提示词不是可重生文件产物。 */
@@ -168,59 +190,93 @@ function StepDetails({ step, onViewUnit, onRegenerate, onConfirmDurations, busy 
   );
 }
 
-/** 一行内容：现状一句话、提醒、常驻入口；下一步属于这一行时就地展开，行首加强调色竖条。 */
-export function StepListRow({ row, next, instruction, onInstructionChange, onRun, onViewUnit, onRegenerate, onConfirmDurations, busy }: Props) {
+/**
+ * 竖向时间轴的一行：左侧是序号节点与连接线，右侧是步骤名、一句话现状、常驻入口、
+ * 这一步的动作按钮；当前步骤额外标「进行中」并就地展开下一步块。
+ */
+export function StepListRow({ row, next, instruction, onInstructionChange, onRun, onViewUnit, onRegenerate, onConfirmDurations, busy, registerActionsSlot, onActionInvoke, index, isLast }: Props) {
+  const { t } = useTranslation("workflow");
   const owns = next !== null;
+  // 本行的动作插槽：当前视图把对应步骤的按钮 portal 进来。
+  const actionSlotRef = useCallback((node: HTMLDivElement | null) => {
+    registerActionsSlot?.(row.key, node);
+  }, [registerActionsSlot, row.key]);
   return (
     <li
-      className={cn(
-        "grid grid-cols-[0.5rem_6rem_minmax(0,1fr)] items-baseline gap-x-2.5 gap-y-1 border-l-2 py-1.5 pr-2 pl-1.5",
-        owns ? "border-primary" : "border-transparent",
-      )}
+      className="flex min-w-0 gap-3"
       data-testid={`workflow-row-${row.key}`}
       aria-current={owns ? "step" : undefined}
     >
-      <span className="flex self-center">
-        <ToneDot tone={row.tone} />
-      </span>
-      <h3 className="text-sm font-medium text-foreground">{row.title}</h3>
-      <span
-        className={cn(
-          "text-xs",
-          row.tone === "warn" ? "text-warn" : row.tone === "danger" ? "text-destructive" : "text-subtle-foreground",
+      <div className="relative flex w-7 shrink-0 justify-center">
+        <StepMarker tone={row.tone} current={owns} index={index} />
+        {!isLast && (
+          <span aria-hidden className="absolute bottom-0 left-1/2 top-8 w-px -translate-x-1/2 bg-border" />
         )}
-      >
-        {row.status}
-      </span>
-      <div className="col-span-2 col-start-2 flex min-w-0 flex-col gap-1.5 empty:hidden">
-        {row.notes.map((note) => (
-          <NoteLine key={note.key} note={note} onRun={onRun} />
-        ))}
+      </div>
+      <div className={cn("flex min-w-0 flex-1 flex-col", isLast ? "pb-1" : "pb-4.5")}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-foreground">{row.title}</span>
+          {owns && (
+            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+              {t("panel_in_progress")}
+            </span>
+          )}
+        </div>
+        <p
+          className={cn(
+            "text-xs leading-relaxed",
+            row.tone === "warn" || row.tone === "running"
+              ? "text-warn"
+              : row.tone === "danger"
+                ? "text-destructive"
+                : "text-subtle-foreground",
+          )}
+        >
+          {row.status}
+        </p>
+        {row.notes.length > 0 && (
+          <div className="mt-1 flex flex-col gap-1">
+            {row.notes.map((note) => (
+              <NoteLine key={note.key} note={note} onRun={onRun} />
+            ))}
+          </div>
+        )}
         {row.acts.length > 0 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
             {row.acts.map((act) => (
               <StepActButton key={act.key} act={act} onRun={onRun} asLink busy={busy} />
             ))}
           </div>
         )}
-        {row.steps.map((step) => (
-          <StepDetails
-            key={step.id}
-            step={step}
-            onViewUnit={onViewUnit}
-            onRegenerate={onRegenerate}
-            onConfirmDurations={onConfirmDurations}
-            busy={busy}
-          />
-        ))}
+        <div
+          ref={actionSlotRef}
+          className="mt-2 flex flex-wrap items-center gap-1.5 empty:hidden"
+          onClickCapture={onActionInvoke}
+        />
+        {row.steps.length > 0 && (
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            {row.steps.map((step) => (
+              <StepDetails
+                key={step.id}
+                step={step}
+                onViewUnit={onViewUnit}
+                onRegenerate={onRegenerate}
+                onConfirmDurations={onConfirmDurations}
+                busy={busy}
+              />
+            ))}
+          </div>
+        )}
         {next && (
-          <NextStepBlock
-            next={next}
-            instruction={instruction}
-            onInstructionChange={onInstructionChange}
-            onRun={onRun}
-            busy={busy}
-          />
+          <div className="mt-2.5">
+            <NextStepBlock
+              next={next}
+              instruction={instruction}
+              onInstructionChange={onInstructionChange}
+              onRun={onRun}
+              busy={busy}
+            />
+          </div>
         )}
       </div>
     </li>

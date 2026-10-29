@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "wouter";
 
@@ -17,6 +17,7 @@ import { useCostStore } from "@/stores/cost-store";
 import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
 import type { ProjectData } from "@/types";
 import type { EpisodeScript } from "@/types/script";
+import { isSourceImport } from "@/utils/creation-mode";
 import { lazyNamed } from "@/utils/lazy-component";
 import { previewAspect } from "@/utils/preview-aspect";
 
@@ -31,7 +32,7 @@ import {
 import { FactoryEpisodeSourceView } from "./FactoryEpisodeSourceView";
 import { useFactoryEpisodeSource } from "./useFactoryEpisodeSource";
 import { EpisodeHead } from "./EpisodeHead";
-import { EpisodeHeaderActions, EpisodeHeaderSlotProvider } from "./EpisodeHeaderActions";
+import { EpisodeHeaderActions, EpisodeHeaderSlotProvider, useEpisodeActionSlots } from "./EpisodeHeaderActions";
 import { EpisodePageHeader, episodeViewTabId } from "./EpisodePageHeader";
 import { EpisodeViewFactsProvider } from "./EpisodeViewScope";
 import { EpisodeAssetsView } from "./EpisodeAssetsView";
@@ -88,11 +89,27 @@ function EpisodePageContent({
 }) {
   const { t } = useTranslation("dashboard");
   const [searchParams, setSearchParams] = useSearchParams();
-  const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
+  const actionSlots = useEpisodeActionSlots();
 
   const meta = projectData?.episodes?.find((entry) => entry.episode === episode);
   const hasScript = Boolean(script);
   const hasShortDramaSource = factorySource.exists;
+  // 导入原文项目的剧本页提供「剧本 / 原文」切换与导入面板；AI 原创项目保持原入口。
+  const sourceImport = isSourceImport(projectData);
+  // 有已生成的分镜图/视频时，重新导入会让下游过期，必须在面板里二次确认。
+  const hasMediaArtifacts = Boolean(
+    (meta?.storyboards?.available ?? 0) > 0 || (meta?.videos?.available ?? 0) > 0,
+  );
+  const sourceView = (
+    <FactoryEpisodeSourceView
+      key={`${projectName}:${episode}`}
+      source={factorySource}
+      projectName={projectName}
+      episode={episode}
+      sourceImport={sourceImport}
+      hasMediaArtifacts={hasMediaArtifacts}
+    />
+  );
   const facts = useMemo<EpisodeViewFacts>(() => ({ hasScript, demo }), [hasScript, demo]);
   const tabs = useMemo(() => episodeViewTabs(facts), [facts]);
   const view = resolveEpisodeView(searchParams.get(EPISODE_VIEW_PARAM), facts);
@@ -138,7 +155,7 @@ function EpisodePageContent({
   const ttsNarration = projectData?.narration_delivery === "use_tts";
   let body: ReactNode;
   if (view === "source" && (factorySource.loading || factorySource.error)) {
-    body = <FactoryEpisodeSourceView source={factorySource} projectName={projectName} episode={episode} />;
+    body = sourceView;
   } else if (view === "edit") {
     body = (
       <LazyBoundary variant="pane">
@@ -152,7 +169,7 @@ function EpisodePageContent({
           renderActions={({ timelineId, timelineName, issues, showIssues }) =>
             // 读取完成前不知道有没有阻断级 issue，先不给出片入口。
             issues === null ? null : (
-              <EpisodeHeaderActions>
+              <EpisodeHeaderActions target="edit">
                 <RenderButton
                   projectName={projectName}
                   timelineId={timelineId}
@@ -173,7 +190,7 @@ function EpisodePageContent({
   } else if (view === "assets") {
     body = <EpisodeAssetsView key={`${projectName}:${episode}`} projectName={projectName} episode={episode} projectData={projectData} />;
   } else if (view === "source") {
-    body = <FactoryEpisodeSourceView source={factorySource} projectName={projectName} episode={episode} />;
+    body = sourceView;
   } else if (demo && !script) {
     body = <DemoEpisodePlaceholder />;
   } else {
@@ -185,7 +202,7 @@ function EpisodePageContent({
   }
 
   return (
-    <EpisodeHeaderSlotProvider value={actionsSlot}>
+    <EpisodeHeaderSlotProvider value={actionSlots}>
       <div className="flex min-h-0 flex-1 flex-col">
         <EpisodePageHeader
           head={
@@ -210,6 +227,7 @@ function EpisodePageContent({
                 onViewUnit={viewUnit}
                 onRegenerate={onRegenerate}
                 onAuthorPrompts={script ? openAuthorPrompts : undefined}
+                registerActionsSlot={actionSlots.register}
               />
             )
           }
@@ -218,7 +236,6 @@ function EpisodePageContent({
           onViewChange={changeView}
           boardLabel={t("episode_view_board")}
           sourceLabel={t("episode_view_script")}
-          onActionsSlot={setActionsSlot}
         />
         {!demo && (
           <>

@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
 import { isResourceBusy } from "@/stores/tasks-store";
-import { Sparkles, ImageIcon, Film } from "lucide-react";
+import { Sparkles, ImageIcon, Film, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
-import { API } from "@/api";
+import { API, type VersionInfo } from "@/api";
 import { usePlaybackStart } from "@/hooks/usePlaybackStart";
 import { useProjectsStore } from "@/stores/projects-store";
 import { AspectFrame } from "@/components/canvas/shared/AspectFrame";
@@ -104,6 +104,15 @@ export function MediaCard({
     assetPath ? s.getAssetFingerprint(assetPath) : null,
   );
   const playbackStart = usePlaybackStart("videos", segmentId);
+  // 历史版本在同一个容器里预览：选中后容器切到该版本；当前媒体变了（恢复 / 重新生成 / 切换分镜）
+  // 就退回当前。用键比较在渲染期派生，不在 effect 里同步 setState。
+  const previewKey = `${segmentId}:${assetPath ?? ""}:${assetFp ?? ""}`;
+  const [previewState, setPreviewState] = useState<{ key: string; version: VersionInfo | null }>({
+    key: previewKey,
+    version: null,
+  });
+  const previewVersion = previewState.key === previewKey ? previewState.version : null;
+  const setPreviewVersion = (version: VersionInfo | null) => setPreviewState({ key: previewKey, version });
   // 原图只给全屏预览；卡片里按媒体栏宽度从 640 / 1280 两档缩略图中取，媒体栏最宽约 720px。
   const assetUrl = assetPath ? API.getFileUrl(projectName, assetPath, assetFp) : null;
   const storyboardSrcSet =
@@ -167,11 +176,61 @@ export function MediaCard({
             busy={resourceBusy}
             checkBusy={freshBusy}
             onRestoringChange={setRestoreBusy}
+            onPreviewVersionChange={kind === "video"
+              // 选中的就是当前版本、且卡片本来就有当前媒体时不进预览；当前媒体缺失
+              // （有版本文件但脚本没引用它）时仍然就地播放这一版，否则用户看不到任何东西。
+              ? (info) => setPreviewVersion(info && !(info.is_current && assetPath) ? info : null)
+              : undefined}
           />
         )}
       </div>
 
-      {assetUrl ? (
+      {previewVersion && (
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <span className="rounded-sm bg-warn/12 px-1.5 py-0.5 text-xs font-medium text-warn">
+            {t("media_previewing_version", { version: previewVersion.version })}
+          </span>
+          <Button variant="ghost" size="xs" onClick={() => setPreviewVersion(null)}>
+            {t("media_preview_back_to_current")}
+          </Button>
+        </div>
+      )}
+
+      {previewVersion ? (
+        <div
+          className={
+            aspectRatio === "16:9"
+              ? "w-full overflow-hidden rounded-lg ring-1 ring-border"
+              : "w-full max-w-[450px] overflow-hidden rounded-lg ring-1 ring-border"
+          }
+        >
+          <AspectFrame
+            ratio={aspectRatio}
+            className={aspectRatio === "16:9" ? "w-full" : "h-[265px] w-full max-w-[450px]"}
+          >
+            {previewVersion.presentation_available === true ? (
+              <PresentationPlayer
+                key={`${segmentId}:preview:${previewVersion.version}`}
+                projectName={projectName}
+                resourceType="videos"
+                resourceId={segmentId}
+                videoVersion={previewVersion.version}
+                posterPath={posterPath}
+              />
+            ) : previewVersion.file_url ? (
+              // eslint-disable-next-line jsx-a11y/media-has-caption -- 不能进共享成片读取器的历史版本只展示原始媒体
+              <video
+                src={previewVersion.file_url}
+                aria-label={t("version_preview_alt", { version: previewVersion.version })}
+                className="size-full object-contain"
+                controls
+                playsInline
+                preload="none"
+              />
+            ) : null}
+          </AspectFrame>
+        </div>
+      ) : assetUrl ? (
         kind === "storyboard" ? (
           <PreviewableImageFrame src={assetUrl} alt={`${itemIdWithinEpisode(segmentId)} ${title}`}>
             <AspectFrame ratio={aspectRatio}>
@@ -211,9 +270,16 @@ export function MediaCard({
         )
       ) : (
         <AspectFrame ratio={aspectRatio}>
-          <div className="flex size-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
-            <Icon aria-hidden className="size-5" />
-            <span className="text-xs">{t("media_not_generated")}</span>
+          <div
+            className="flex size-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground"
+            aria-busy={generating}
+          >
+            {generating ? (
+              <Loader2 aria-hidden className="size-5 animate-spin" />
+            ) : (
+              <Icon aria-hidden className="size-5" />
+            )}
+            <span className="text-xs">{t(generating ? "media_generating" : "media_not_generated")}</span>
           </div>
         </AspectFrame>
       )}
@@ -224,15 +290,20 @@ export function MediaCard({
           size="lg"
           onClick={onGenerate}
           disabled={generateDisabled || resourceBusy}
+          aria-busy={generating}
           title={
             generateDisabled
               ? (generateDisabledHint ?? t("media_generate_video_disabled_hint"))
               : undefined
           }
         >
-          <Sparkles aria-hidden data-icon="inline-start" />
-          {generateLabel}
-          {estimatedCost && Object.values(estimatedCost).some((v) => v > 0) && (
+          {generating ? (
+            <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+          ) : (
+            <Sparkles aria-hidden data-icon="inline-start" />
+          )}
+          {generating ? t("media_generating") : generateLabel}
+          {!generating && estimatedCost && Object.values(estimatedCost).some((v) => v > 0) && (
             <span className="num text-xs font-normal">~{formatCost(estimatedCost)}</span>
           )}
         </Button>

@@ -36,7 +36,10 @@ PREVIOUS_STORYBOARD_ROLE = "previous_storyboard"
 STYLE_REFERENCE_ROLE = "style_reference"
 
 #: 上一分镜图的约束句，随类型声明行发给模型。
-PREVIOUS_STORYBOARD_REFERENCE_DESCRIPTION = "只参考构图与色调"
+#: 切镜时不能复制构图，但人物位置、手、持物、服装、光线必须接住；同机位连续镜头才连构图一起参考。
+PREVIOUS_STORYBOARD_REFERENCE_DESCRIPTION = (
+    "参考人物位置、手、持物、服装、光线与色调；同机位连续镜头可参考构图，切镜时不要复制构图"
+)
 
 #: 画风锚图的约束句。
 STYLE_REFERENCE_DESCRIPTION = "只参考色温、质感与光线"

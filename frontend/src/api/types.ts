@@ -5,9 +5,11 @@
 
 import type {
   AssistantSessionResumedPayload,
+  CreationMode,
   EpisodeScript,
   NarrationDelivery,
   ProjectChangeBatchPayload,
+  ProjectData,
   ProjectDeletedPayload,
   ProjectEventSnapshotPayload,
 } from "@/types";
@@ -167,6 +169,8 @@ export interface CreateProjectPayload {
   content_mode?: "drama";
   aspect_ratio?: "9:16" | "16:9";
   generation_mode?: "storyboard";
+  /** 创作模式；缺省由服务端按 AI 原创处理。 */
+  creation_mode?: CreationMode;
   /** 口播语速估算（阅读单位 / 秒）；留空即按项目语言的默认速度估算。 */
   speech_rate_units_per_second?: number | null;
   default_duration?: number | null;
@@ -196,4 +200,52 @@ export interface VideoCapabilitiesQuery {
   /** undefined = 服务端按项目已保存档位；null = 显式「自动」（发空串）；字符串 = 按该档位。 */
   resolution?: string | null;
   usesReferenceImages?: boolean;
+}
+
+/** {@link API.createProject} 的响应；`first_episode` 只在导入原文模式创建时由服务端自动建集后回带。 */
+export interface CreateProjectResponse {
+  success: boolean;
+  name: string;
+  project: ProjectData;
+  first_episode?: number;
+}
+
+/** 工厂机检的一条告警：导入原文不阻塞落盘，只在剧本页展示。 */
+export interface SourceImportQualityWarning {
+  code: string;
+  message: string;
+  line?: number;
+}
+
+/** {@link API.importSourceScript} 的响应：生成的源稿与机检告警。 */
+export interface SourceImportResult {
+  episode: number;
+  /** 源稿相对路径，如 `source/short_drama/episodes/episode_01.md`。 */
+  path: string;
+  revision: string;
+  markdown: string;
+  /** 机检未通过项；结构校验失败会直接报错，不会出现在这里。 */
+  quality_warnings: SourceImportQualityWarning[];
+  /** 生成剧本所用的文本模型；未配置时缺省。 */
+  model?: { provider: string; model: string };
+  /** 非致命提示，如「本集资产尚未登记」。 */
+  warnings?: string[];
+}
+
+/** {@link API.getSourceImportOriginal} 的响应：本集已保存的原文与同步状态。 */
+export interface SourceImportOriginal {
+  text: string;
+  /** 当前原文 revision；还没有原文时为 null。 */
+  revision: string | null;
+  /** 生成剧本时所用原文 revision，用来判断原文改动后剧本是否已过期。 */
+  generated_from_revision: string | null;
+  /** 原文已改、剧本未重新生成。 */
+  stale: boolean;
+  exists: boolean;
+}
+
+/** {@link API.putSourceImportOriginal} 的响应：只落盘原文，不重生成剧本。 */
+export interface SourceImportOriginalSaved {
+  revision: string;
+  stale: boolean;
 }

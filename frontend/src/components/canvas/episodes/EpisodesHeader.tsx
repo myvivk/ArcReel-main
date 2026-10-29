@@ -4,10 +4,12 @@ import { ShortDramaGenerateButton } from "@/components/canvas/shared/ShortDramaG
 import { Button } from "@/components/ui/button";
 
 export function EpisodesHeader({
-  projectName, episodeCount, onCreate, onBatchDelete,
+  projectName, episodeCount, sourceImport = false, onCreate, onBatchDelete,
 }: {
   projectName: string;
   episodeCount: number;
+  /** 导入原文项目不提供 AI 原创剧本入口。 */
+  sourceImport?: boolean;
   onCreate: () => void;
   onBatchDelete: () => void;
 }) {
@@ -17,7 +19,7 @@ export function EpisodesHeader({
       <h2 className="text-base font-semibold">{t("workspace_nav_episodes")}</h2>
       <span className="num text-xs text-muted-foreground">{t("episodes_view_episode_count", { count: episodeCount })}</span>
       <span className="flex-1" />
-      <ShortDramaGenerateButton projectName={projectName} episode={0} />
+      {!sourceImport && <ShortDramaGenerateButton projectName={projectName} episode={0} />}
       <Button variant="ghost" size="sm" onClick={onCreate}>
         <FilePlus aria-hidden data-icon="inline-start" />{t("episode_create_title")}
       </Button>

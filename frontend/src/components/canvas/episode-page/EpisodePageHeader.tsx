@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { EpisodeHeaderActionSlot } from "./EpisodeHeaderActions";
 import type { EpisodeView } from "./episode-view";
 
 /** 视图 tab 的元素 id，视图区以它作为无障碍名。 */
@@ -11,11 +12,11 @@ export function episodeViewTabId(view: EpisodeView): string {
 }
 
 /**
- * 集页页头，三行：第一行是集头与行尾的制作进度入口，第二行是视图 tab，
- * 第三行是当前视图在右上角的动作（批量补齐、编写提示词、出片等）。动作由各视图经
- * `EpisodeHeaderActions` 放进插槽，页头不认识具体动作。
+ * 集页页头，两行：第一行是视图 tab 与行尾的制作进度入口，第二行是集头。
+ * 当前视图的动作（批量补齐、编写提示词、出片等）不再占页头一行，放进制作进度面板里，
+ * 由各视图经 `EpisodeHeaderActions` 放进插槽，页头不认识具体动作。
  *
- * 页签不按流程进度置灰：还没到那一步时，视图内的空状态说明缺什么，动作入口仍留在右上角。
+ * 页签不按流程进度置灰：还没到那一步时，视图内的空状态说明缺什么。
  */
 export function EpisodePageHeader({
   head,
@@ -25,7 +26,6 @@ export function EpisodePageHeader({
   onViewChange,
   boardLabel,
   sourceLabel,
-  onActionsSlot,
 }: {
   head: ReactNode;
   /** 制作进度入口；演示项目没有。 */
@@ -40,7 +40,6 @@ export function EpisodePageHeader({
    * 沿用集页「页签名按项目与这一集的事实取」的做法（同 boardLabel）。
    */
   sourceLabel?: string;
-  onActionsSlot: (node: HTMLDivElement | null) => void;
 }) {
   const { t } = useTranslation("dashboard");
   const label: Record<EpisodeView, string> = {
@@ -51,10 +50,7 @@ export function EpisodePageHeader({
   };
   return (
     <header className="shrink-0 border-b border-border">
-      <div className="flex h-11 items-center gap-3 px-4">
-        {head}
-        {progress}
-      </div>
+      {/* 视图 tab 在上、集头在下；制作进度入口留在右上角不动。 */}
       <div className="flex h-10 items-center gap-3 px-4">
         <Tabs value={view} onValueChange={(next: EpisodeView) => onViewChange(next)} className="shrink-0">
           <TabsList aria-label={t("episode_view_aria")}>
@@ -65,10 +61,13 @@ export function EpisodePageHeader({
             ))}
           </TabsList>
         </Tabs>
+        <span className="flex-1" />
+        {progress}
       </div>
-      {/* 动作行始终显示，动作多到放不下时横向滚动。 */}
-      <div className="relative flex min-h-10 items-center overflow-x-auto px-4 scroll-fade-x">
-        <div ref={onActionsSlot} className="ml-auto flex shrink-0 items-center gap-1.5" />
+      <div className="flex h-11 items-center gap-3 px-4">
+        {head}
+        <span className="flex-1" />
+        <EpisodeHeaderActionSlot className="flex min-w-0 items-center justify-end gap-1.5" />
       </div>
     </header>
   );

@@ -238,6 +238,7 @@ export function buildDemoProjectData(t: DemoT): ProjectData {
     props,
     status: DEMO_STATUS,
     generation_mode: "storyboard",
+    creation_mode: "ai_original",
   };
 }
 

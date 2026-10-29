@@ -175,6 +175,12 @@ export interface EpisodeMeta {
 /** 角色声音绑定方式；与后端 `lib.speech.character_voice.CharacterVoiceBinding` 一一对应，取值增减须两侧同步。 */
 export type CharacterVoiceBinding = "prompt" | "reference_audio";
 
+/**
+ * 创作模式：只决定剧本从哪里来（AI 原创 / 用户导入原文），不参与内容类型与生成路线。
+ * 创建后不可变；存量项目缺字段时按 `ai_original` 读。
+ */
+export type CreationMode = "ai_original" | "source_import";
+
 /** 未声明时的取值：提示词软约束。参考音频是可选增强，须由用户显式选择才生效。 */
 export const DEFAULT_CHARACTER_VOICE_BINDING: CharacterVoiceBinding = "prompt";
 
@@ -224,6 +230,8 @@ export interface ProjectData {
   image_provider_i2i?: string | null;
   /** 生成模式，创建时锁定、之后不可更改。 */
   generation_mode?: GenerationRoute;
+  /** 创作模式：创建时锁定、之后不可更改；缺省按 AI 原创处理。 */
+  creation_mode?: CreationMode;
   /**
    * @deprecated 宫格装配未实现。该布尔只作为 v4→v5 迁移的历史遗留字段存在，
    * 读写都不参与任何判定；新代码不得使用。

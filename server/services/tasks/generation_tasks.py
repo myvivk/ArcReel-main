@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from PIL import Image
+
 from arcreel_market_core.video_backend_contract import VideoCapabilityError
 from lib.artifacts.artifact_activation import (
     ArtifactCurrencyResolver,
@@ -97,6 +99,7 @@ from lib.script.grid.keyframe_parser import (
 from lib.script.grid.layout import grid_aspect_ratio_for
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_prompt_builder import build_shot_grid_prompt, shot_grid_cells
+from lib.script.grid.splitter import split_grid_image
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import resolve_content_mode
 from lib.script.script_skeleton import SKELETON_ENTITY_TYPES, SKELETON_ITEM_LABEL_KEYS, resolve_script_kind
@@ -1710,6 +1713,25 @@ async def execute_shot_grid_task(
                     outcome_box=outcome_box,
                 ),
             )
+        # 合成图成功后就先切出预览格：页面和参考评测立刻读新图，不能等“确认”动作才替换旧切片。
+        try:
+            if not grid.composite_path:
+                raise ValueError("shot grid has no composite path")
+            composite = project_path / grid.composite_path
+            cells_dir = project_path / "storyboards" / grid.id
+            ratio = grid.video_aspect_ratio or generation_input.canvas_ratio
+            with Image.open(composite) as image:
+                image.load()
+                split_cells = split_grid_image(image, grid.rows, grid.cols, ratio, edge_margin=0.0)
+                cells_dir.mkdir(parents=True, exist_ok=True)
+                for index, (cell_image, cell) in enumerate(zip(split_cells, grid.cells, strict=True)):
+                    output = cells_dir / f"{index}.png"
+                    cell_image.save(output, format="PNG")
+                    cell.image_path = output.relative_to(project_path).as_posix()
+            grid.updated_at = datetime.now(UTC).isoformat()
+            manager.save(grid)
+        except Exception:
+            logger.warning("shot grid preview split failed: %s", grid.id, exc_info=True)
         return {
             "file_path": f"shot_grids/{grid.id}.png",
             "resource_type": "shot_grids",

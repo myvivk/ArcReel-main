@@ -16,7 +16,7 @@ export function FactoryStoryboardStart({ projectName, episode, className }: Prop
   const { t } = useTranslation("dashboard");
   return (
     <>
-      <EpisodeHeaderActions>
+      <EpisodeHeaderActions target="script">
         <ShortDramaStoryboardButton
           projectName={projectName}
           episode={episode}

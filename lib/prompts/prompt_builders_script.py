@@ -41,10 +41,14 @@ def render_video_prompt_inputs(scene: str, grid: ShotGrid | None) -> list[str]:
     lines: list[str] = []
     opening = scene.strip()
     if opening:
-        lines.append(f"分镜提示词：{_neutralize_tags(opening).replace(chr(10), chr(10) + '  ')}")
+        lines.append(
+            f"分镜提示词（画面依据；不要复述外观与动作，只写它和关键帧之间没有的变化）："
+            f"{_neutralize_tags(opening).replace(chr(10), chr(10) + '  ')}"
+        )
     if grid is not None and grid.cells:
         lines.append(
-            f"关键帧（{grid.rows}x{grid.cols}，按 K0→K{len(grid.cells) - 1} 顺序，与视频请求下发的参考图同序）："
+            f"关键帧（{grid.rows}x{grid.cols}，按 K0→K{len(grid.cells) - 1} 顺序，与视频请求下发的参考图同序；"
+            "这些是已定格画面，不要复述，只写 K 之间的过渡）："
         )
         for cell in grid.cells:
             size = f"（{cell.continuity_notes}）" if cell.continuity_notes else ""
@@ -113,6 +117,11 @@ def render_drama_content_for_prompt_authoring(
             # 视频提示词编写才需要：分镜提示词与已确认宫格的逐格文本（D-15）。
             lines.extend(render_video_prompt_inputs(shot_scene_text(scene), video_inputs.get(sid)))
         blocks.append("\n".join(lines))
+    if video_inputs is not None and blocks:
+        blocks.append(
+            "写作口径：上面的分镜提示词与 K 帧是已定格画面；video_prompt.action 只写 K0→Kn 之间的变化，"
+            "不要复述外观、景别、机位、运镜，也不要把某一句分镜提示词改写一遍；但每个 K 之间必要的动作不能删。"
+        )
     return "\n\n".join(blocks)
 
 

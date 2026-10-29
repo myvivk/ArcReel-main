@@ -15,7 +15,11 @@ interface Props {
   episode: number;
   scope: PromptAuthoringScope;
   currentEntryId?: string | null;
-  variant?: "outline" | "ghost";
+  variant?: "outline" | "ghost" | "default";
+  /** 按钮尺寸：默认 sm；分镜详情里与相邻的生成按钮对齐用 xs。 */
+  size?: "xs" | "sm";
+  /** 额外的布局类名（如与相邻按钮取同一最小宽度）。 */
+  className?: string;
   defaultRewrite?: boolean;
   defaultFields?: PromptAuthoringField[];
   lockFields?: boolean;
@@ -29,6 +33,8 @@ export function PromptAuthoringButton({
   scope,
   currentEntryId,
   variant = "outline",
+  size = "sm",
+  className,
   defaultRewrite,
   defaultFields,
   lockFields,
@@ -54,7 +60,8 @@ export function PromptAuthoringButton({
   return (
     <Button
       variant={variant}
-      size="sm"
+      size={size}
+      className={className}
       disabled={disabled}
       title={title}
       onClick={() => open({

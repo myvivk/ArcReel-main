@@ -95,7 +95,9 @@ import type {
   VideoCapabilities,
   EpisodeItemRef} from "@/types";
 
-import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan } from "@/types/shot-grid";
+import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan, ShotGridVersion } from "@/types/shot-grid";
+import type { VideoPromptScoreResponse } from "@/types/prompt-score";
+import type { StoryboardScoreResponse, ReferenceReviewResponse, VideoReviewResponse } from "@/types/review";
 import type {
   PresentationReadModel,
   PresentationRequestOptions,
@@ -162,11 +164,15 @@ import type {
   AssetRenameResult,
   AssistantEntriesStreamOptions,
   CreateProjectPayload,
+  CreateProjectResponse,
   EpisodeScriptSnapshot,
   ProjectAssetType,
   ProjectEventStreamOptions,
   ScriptEditCommand,
   ShotUploadResult,
+  SourceImportOriginal,
+  SourceImportOriginalSaved,
+  SourceImportResult,
   SuccessResponse,
   TaskListFilters,
   UsageRecordsQuery,
@@ -190,6 +196,9 @@ export type {
   LoginResponse,
   ProjectAssetType,
   ProjectEventStreamOptions,
+  SourceImportOriginal,
+  SourceImportQualityWarning,
+  SourceImportResult,
   UsageRecordsQuery,
   UsageSummaryQuery,
   VersionInfo,
@@ -452,7 +461,7 @@ class API {
 
   static async createProject(
     payload: CreateProjectPayload,
-  ): Promise<{ success: boolean; name: string; project: ProjectData }> {
+  ): Promise<CreateProjectResponse> {
     return this.request("/projects", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -1272,8 +1281,7 @@ class API {
   }
 
   /** 从已保存的 Markdown 源稿重建正式剧本：整体 AI 分镜，或只重生成所选分镜。 */
-  static async reimportShortDramaSource(
-    projectName: string,
+  static async reimportShortDramaSource(    projectName: string,
     episode: number,
     sourceRevision: string,
     confirmArtifacts: boolean,
@@ -1305,6 +1313,48 @@ class API {
           ...(regenerateSceneIds?.length ? { regenerate_scene_ids: regenerateSceneIds } : {}),
         }),
       },
+    );
+  }
+
+  /**
+   * 导入原文：把本集原文改写为工厂单集 Markdown 并落盘，返回源稿与机检告警。
+   * 首次导入 `expected_revision` 传 null；重新导入传当前源稿 revision，冲突时 409。
+   * 本集已有分镜图/视频时，须由用户确认覆盖并传 `confirm_artifacts=true`，否则 409。
+   */
+  static async importSourceScript(
+    projectName: string,
+    episode: number,
+    body: { text: string; expected_revision?: string | null; confirm_artifacts?: boolean },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<SourceImportResult> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/source-import`,
+      { method: "POST", body: JSON.stringify(body), signal: options.signal },
+    );
+  }
+
+  /** 读取本集已保存的原文与「原文已改、剧本未重生成」状态；还没有原文时 404。 */
+  static async getSourceImportOriginal(
+    projectName: string,
+    episode: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<SourceImportOriginal> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/source-import/original`,
+      { signal: options.signal },
+    );
+  }
+
+  /** 只保存本集原文，不重新生成剧本；`expected_revision` 为上次读到的原文 revision。 */
+  static async putSourceImportOriginal(
+    projectName: string,
+    episode: number,
+    body: { text: string; expected_revision?: string | null },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<SourceImportOriginalSaved> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/source-import/original`,
+      { method: "PUT", body: JSON.stringify(body), signal: options.signal },
     );
   }
 
@@ -2858,12 +2908,89 @@ class API {
 
   // ==================== Per-shot multi-frame grid API ====================
 
+  /** 只读视频提示词评分；不写项目、不入队。 */
+  static async getVideoPromptScore(
+    projectName: string,
+    episode: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<VideoPromptScoreResponse> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/video-prompt-score`, {
+      signal: options.signal,
+    });
+  }
+
+  /** 只读分镜提示词评分。 */
+  static async getStoryboardScore(
+    projectName: string,
+    episode: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<StoryboardScoreResponse> {
+    return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/storyboard-score`, {
+      signal: options.signal,
+    });
+  }
+
+  /** 只读视频技术评测；视觉/音频维度可能为 null。 */
+  static async getVideoReview(
+    projectName: string,
+    episode: number,
+    shotId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<VideoReviewResponse> {
+    const params = new URLSearchParams({ shot_id: shotId });
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/video-review?${params.toString()}`,
+      { signal: options.signal },
+    );
+  }
+
+  /** 只读参考素材评测；视觉维度可能为 null。 */
+  static async getReferenceReview(
+    projectName: string,
+    episode: number,
+    shotId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ReferenceReviewResponse> {
+    const params = new URLSearchParams({ shot_id: shotId });
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/reference-review?${params.toString()}`,
+      { signal: options.signal },
+    );
+  }
+
   static async getShotGrid(projectName: string, scriptFile: string, shotId: string, options: { signal?: AbortSignal } = {}): Promise<ShotGridPlan | null> {
     const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
     return this.request<ShotGridPlan | null>(
       `/projects/${encodeURIComponent(projectName)}/shot-grids?${params.toString()}`,
       { signal: options.signal },
     );
+  }
+
+  /** 按宫格 ID 读取完整记录，供生成中回显上一版。 */
+  static async getShotGridById(
+    projectName: string,
+    gridId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ShotGridPlan | null> {
+    return this.request<ShotGridPlan | null>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/${encodeURIComponent(gridId)}`,
+      { signal: options.signal },
+    );
+  }
+
+  /** 该分镜的全部参考素材版本，供页面切换旧图/新图。 */
+  static async listShotGridVersions(
+    projectName: string,
+    scriptFile: string,
+    shotId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ShotGridVersion[]> {
+    const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
+    const response = await this.request<{ versions: ShotGridVersion[] }>(
+      `/projects/${encodeURIComponent(projectName)}/shot-grids/versions?${params.toString()}`,
+      { signal: options.signal },
+    );
+    return response.versions;
   }
 
   /** 保存宫格规格与逐格镜头文本；`prompt` 为 `null` 时保持原值（D-4）。 */

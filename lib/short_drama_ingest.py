@@ -16,6 +16,7 @@ from lib.episode.source_kinds import record_episode_kind
 from lib.infra.json_io import atomic_write_bytes
 from lib.infra.path_safety import PathTraversalError, safe_join
 from lib.project.project_change_hints import emit_project_change_batch
+from lib.project.project_schema import resolve_creation_mode
 from lib.short_drama_quality import check_episode, check_series, report_passed
 
 
@@ -214,6 +215,8 @@ def ingest_short_drama_artifacts(
     with manager.locked_source_registration(project_name) as (source_dir, project, undo):
         if project.get("content_mode") != "drama":
             raise ShortDramaArtifactError("只有剧情演绎项目可以导入短剧工厂工件")
+        if resolve_creation_mode(project) == "source_import":
+            raise ShortDramaArtifactError("导入原文项目的剧本由原文导入生成，不接受工厂工件入库")
         root = _safe_path(source_dir, "short_drama")
         destinations = {item.path: _safe_path(root, item.path) for item in prepared}
         for item in prepared:
@@ -261,9 +264,24 @@ def register_factory_episode_sources(
     manager: _ArtifactManager, project_name: str, artifacts: list[tuple[str, bytes]]
 ) -> None:
     """给已落盘工件补登记 OWN 源文本，供存量项目补录命令使用。"""
-    prepared = [_artifact_from_bytes(path, raw) for path, raw in artifacts]
     with manager.locked_source_registration(project_name) as (source_dir, project, undo):
-        _register_sources(source_dir.parent, project, prepared, undo)
+        register_factory_episode_sources_locked(source_dir.parent, project, artifacts, undo)
+
+
+def register_factory_episode_sources_locked(
+    project_dir: Path,
+    project: dict[str, Any],
+    artifacts: list[tuple[str, bytes]],
+    undo: ExitStack,
+) -> None:
+    """在已持有的 ``locked_source_registration`` 内登记 OWN 源文本（不自行取锁）。
+
+    导入原文的写事务把源稿、原文、meta 与账本登记放在同一把项目锁里；复用同一份登记逻辑，
+    不嵌套取锁。
+    """
+
+    prepared = [_artifact_from_bytes(path, raw) for path, raw in artifacts]
+    _register_sources(project_dir, project, prepared, undo)
 
 
 def _register_sources(
@@ -293,4 +311,6 @@ __all__ = [
     "ingest_short_drama_artifacts",
     "load_short_drama_artifacts",
     "read_draft_artifact",
+    "register_factory_episode_sources",
+    "register_factory_episode_sources_locked",
 ]

@@ -4,6 +4,7 @@ import type { StoryboardBatchKind } from "@/types/storyboard-batch";
 import type { WorkflowArtifactCollection, WorkflowContent, WorkflowNextAction, WorkflowOperation, WorkflowPlan, WorkflowPlanStep } from "@/types/workflow";
 import { ROUTE_APP_SETTINGS, WORKSPACE_ROUTE_EPISODES, EPISODE_VIEW_PARAM, episodeAssetsViewPath, episodeEditViewPath } from "@/app-routes";
 import { formatNameList } from "@/utils/list-format";
+import { prepareEpisodeAssetsPrompt } from "@/components/canvas/shared/assets-handoff";
 
 export type StepRowKey = "source" | "script" | "prompts" | "assets" | "materials" | "video_prompt" | "voice" | "videos" | "edit";
 export type StepRowTone = "done" | "todo" | "partial" | "running" | "warn" | "danger";
@@ -38,6 +39,8 @@ export interface StepListContext {
   t: TFunction; lang: string; episodeId: number; episodeRef: string; episodeDurationSeconds: number | null;
   assetRoute: (name: string) => string | null; savedPromptInstructions: string;
   canAuthorPrompts: boolean; canViewUnit: boolean; editOverview: EpisodeEditOverview | null;
+  /** 导入原文项目：没有「AI 原创剧本」入口，下一步改为去剧本页导入原文。 */
+  sourceImport: boolean;
 }
 interface Facts { plan: WorkflowPlan; content: WorkflowContent; steps: Map<string, WorkflowPlanStep>; }
 
@@ -211,6 +214,10 @@ function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
   } else if (toGenerate.length > 0) {
     status = t("workflow:status_assets_missing", { count: toGenerate.length });
     tone = "partial";
+  } else if (content.unregistered_references.length > 0) {
+    // 未登记的引用还没有资产条目，谈不上资产图；先标成待登记，别让状态显示成「都有资产图」。
+    status = t("workflow:status_assets_unregistered", { count: content.unregistered_references.length });
+    tone = "warn";
   } else if (content.referenced_assets_without_sheet.length > 0) {
     // 余下没有资产图的是现在生成不了的（缺描述，或衍生的本体缺图），原因见本行的提醒。
     status = t("workflow:status_assets_unsheeted", { count: content.referenced_assets_without_sheet.length });
@@ -220,8 +227,10 @@ function assetsRow(facts: Facts, ctx: StepListContext): StepRowView {
     tone = stale.length > 0 ? "warn" : "done";
   }
   // 有正式脚本时给一个进资产步骤的入口：进度提醒与资产步骤就此打通（D-32）。
-  const acts: StepAct[] = formal
-    ? [
+  // 下一步就是进资产步骤时不再重复挂行内入口：下一步块里已有同一个替代入口。
+  const acts: StepAct[] =
+    formal && facts.plan.next_action.type !== "prepare_episode_assets"
+      ? [
         {
           key: "open-assets-view",
           label: t("workflow:act_open_assets_view"),
@@ -314,12 +323,24 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
   const boardPath = "/" + WORKSPACE_ROUTE_EPISODES + "/" + ctx.episodeId + "?" + EPISODE_VIEW_PARAM + "=board";
   switch (action.type) {
     case "collect_project_input":
+      // 导入原文项目没有 AI 原创剧本入口：下一步直接去本集剧本页粘贴原文。
+      if (ctx.sourceImport) {
+        return {
+          ...base,
+          primary: [{
+            key: "import-source",
+            label: t("dashboard:source_import_entry"),
+            kind: "nav",
+            intent: { type: "route", path: "/" + WORKSPACE_ROUTE_EPISODES + "/" + ctx.episodeId + "?" + EPISODE_VIEW_PARAM + "=source" },
+          }],
+        };
+      }
       return { ...base, primary: [{ key: "factory", label: t("dashboard:short_drama_generate_open"), kind: "ai", intent: { type: "open_factory_generate" } }] };
     case "prepare_episode_assets":
       return {
         ...base,
         detail: t("workflow:next_detail_prepare_episode_assets"),
-        primary: [agentAct(t, t("workflow:agent_prefill_prepare_episode_assets", { episodeRef: ctx.episodeRef }))],
+        primary: [agentAct(t, prepareEpisodeAssetsPrompt(t, ctx.episodeRef, ctx.sourceImport))],
         alternatives: [{ key: "assets", label: t("workflow:act_open_assets_view"), kind: "nav", intent: { type: "route", path: episodeAssetsViewPath(ctx.episodeId) } }],
       };
     case "plan_short_drama_storyboards":

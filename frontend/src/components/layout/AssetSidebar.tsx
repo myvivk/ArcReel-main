@@ -27,8 +27,8 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useCostStore } from "@/stores/cost-store";
-import { WORKSPACE_ROUTE_EPISODES } from "@/app-routes";
 import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
+import { isSourceImport } from "@/utils/creation-mode";
 import { normalizeRoute } from "@/utils/generation-mode";
 import { CreateEpisodeDialog } from "@/components/canvas/episodes/CreateEpisodeDialog";
 import { episodesViewPath } from "@/components/canvas/episodes/episodes-view-model";
@@ -54,8 +54,9 @@ interface NavItem {
 }
 
 /**
- * 工作区侧栏：上方是工作区导航（项目概览、分集、角色、场景、道具，广告项目另有商品、没有分集），
- * 下方是分集列表（搜索、排序与每集的操作）。宽度由外壳的调宽手柄决定；折叠时收为图标栏。
+ * 工作区侧栏：上方是工作区导航（项目概览、故事规划、角色、场景、道具），
+ * 下方是分集列表（搜索、排序与每集的操作），分集不另设导航入口。
+ * 宽度由外壳的调宽手柄决定；折叠时收为图标栏。
  */
 export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps) {
   const { t } = useTranslation(["common", "dashboard"]);
@@ -67,8 +68,10 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
   const [createAfter, setCreateAfter] = useState<number | null | undefined>(undefined);
 
   const episodes = currentProjectData?.episodes ?? [];
-  // 演示项目没有服务端侧数据，「分集」入口与添加菜单隐藏（导航其余项与分集列表照常渲染）
+  // 演示项目没有服务端侧数据：添加菜单隐藏（导航与分集列表照常渲染）
   const demoMode = useDemoWorkbench();
+  // 导入原文项目没有故事规划：剧本来自用户原文，入口全部收在集页剧本视图里。
+  const sourceImport = isSourceImport(currentProjectData);
   const route = normalizeRoute(currentProjectData?.generation_mode);
 
   useEffect(() => {
@@ -89,21 +92,10 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
 
   const navItems: NavItem[] = [
     { key: "overview", path: "/", label: t("dashboard:workspace_nav_overview"), icon: LayoutDashboard },
-    ...(demoMode ? [] : [
+    ...(demoMode || sourceImport ? [] : [
       { key: "story", path: "/story", label: t("dashboard:story_title"), icon: BookOpen },
     ]),
     // 演示项目后端不存在，广告/短片恒单集、不经分集：隐藏入口而非渲染必然报错或无意义的页面
-    ...(demoMode
-      ? []
-      : [
-          {
-            key: "episodes",
-            path: `/${WORKSPACE_ROUTE_EPISODES}`,
-            label: t("dashboard:workspace_nav_episodes"),
-            icon: BookOpen,
-            count: episodes.length,
-          },
-        ]),
     // 侧栏这三个入口承载「项目全部资产」：集页「资产」步骤是本集引用的子集（D-30 / D-31）。
     {
       key: "characters",
@@ -132,8 +124,8 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
   ];
 
   const isNavActive = (item: NavItem): boolean => {
-    // 集页 /episodes/:id 由下方分集列表高亮，「分集」只在分集视图本身高亮
-    if (item.path === "/" || item.key === "episodes") return location === item.path;
+    // 集页 /episodes/:id 由下方分集列表高亮，导航里的「项目概览」只在首页高亮
+    if (item.path === "/") return location === item.path;
     return location === item.path || location.startsWith(item.path + "/");
   };
 
@@ -177,29 +169,22 @@ export function AssetSidebar({ collapsed, onCollapsedChange }: AssetSidebarProps
         </div>
       ) : (
         <section aria-label={sectionTitle} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-3">
-            <h2 className="text-xs font-medium text-muted-foreground">{sectionTitle}</h2>
-            {<span className="text-xs tabular-nums text-muted-foreground">{episodes.length}</span>}
-            <span className="flex-1" />
+          {/* 分集标题与集数不再单独占一行：新建入口收进搜索行右侧，列表本身已经说明了内容。 */}
+          <div className="flex shrink-0 items-center gap-1.5 px-2 pb-2 pt-3">
+            <InputGroup className="min-w-0 flex-1">
+              <InputGroupAddon>
+                <Search aria-hidden />
+              </InputGroupAddon>
+              <InputGroupInput
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t("dashboard:episode_search_placeholder")}
+                aria-label={t("dashboard:episode_search_placeholder")}
+              />
+            </InputGroup>
             {addEpisodeMenu}
           </div>
-
-          {(
-            <div className="shrink-0 px-2 pb-2">
-              <InputGroup>
-                <InputGroupAddon>
-                  <Search aria-hidden />
-                </InputGroupAddon>
-                <InputGroupInput
-                  type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={t("dashboard:episode_search_placeholder")}
-                  aria-label={t("dashboard:episode_search_placeholder")}
-                />
-              </InputGroup>
-            </div>
-          )}
 
           <div className="relative min-h-0 flex-1 overflow-y-auto px-2 pb-2">
             {filteredEps.length === 0 ? (

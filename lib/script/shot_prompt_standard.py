@@ -74,6 +74,9 @@ _EMOTION_WORDS = re.compile(
     "恨|冷|暖|紧|颤|抖|慌|恐|急|忧|焦|愣|怔|僵|屏息|叹|喘|哽|咬|抿|"
     "坚定|迟疑|犹豫|压声|软|疲|累|困|兴奋|欣喜|放松|羞|傲|愧|疑|不甘|失落"
 )
+#: 给人看的动作 / 神态词示例：写进规划提示词，模型不必猜闸门认什么。
+ACTION_WORD_HINT = "推、拉、抬、举、抓、握、走、转身、俯身、抬头、低头、看、望、皱眉、抿嘴、开口"
+EMOTION_WORD_HINT = "眼、眉、神色、表情、目光、冷笑、惊、怒、慌、颤、咬、抿、迟疑、坚定"
 #: 空泛占位描写：出现即判不合格，不靠模型自觉。
 _PLACEHOLDER_PHRASES = ("一位人物", "一处场景", "气氛紧张", "人物站着")
 
@@ -86,6 +89,9 @@ _DIALOGUE_LINE = re.compile(r"^[ \t]*(?:台词|对白|画外音|旁白)\s*[：:]
 
 #: 引用 token：``@[登记名]``；供资产解析与校验共用同一条正则。
 _TOKEN = re.compile(r"@\[([^]\n]+)\]")
+
+#: 资产 mention：``@名字`` 与 ``@[名字]`` 两种写法，与前端 / reference_video 的 mention 扫描同口径。
+_MENTION = re.compile(r"(?<!\w)@(?:\[([^\]\r\n]+)\]|([\w\u4e00-\u9fff]+))")
 
 #: 泛化前缀（``角色@[...]``）：旧三行模板的遗留写法，出图渲染对不上资产名。
 _GENERIC_PREFIX = re.compile(r"(?:角色|场景|道具|商品|风格锚)\s*@\[")
@@ -118,7 +124,75 @@ CONTINUITY_MARKER_HINT = (
 BREAK_MARKER_HINT = "闪回、硬切、黑场、光转、跳切"
 
 #: 单个镜头块的丰满度下限（字符数），与动作 / 神态词共同构成质量闸。
-_BLOCK_MIN_CHARS = 70
+BLOCK_MIN_CHARS = 70
+_BLOCK_MIN_CHARS = BLOCK_MIN_CHARS
+
+#: 视频 action 不复述镜头语言：景别 / 机位 / 运镜由分镜提示词与 camera_motion 承载。
+_CAMERA_LANGUAGE = re.compile(
+    r"镜头|摄影机|摄像机|机位|景别|运镜|构图|取景|焦段|"
+    r"推近|拉远|推镜|拉镜|摇镜|移镜|跟拍|升镜|降镜|环绕镜|变焦|"
+    r"大远景|远景|全景|中远景|中景|中近景|近景|大特写|特写|"
+    r"平视|俯拍|仰拍|俯视|仰视|过肩|主观镜头|侧拍|正拍|顶拍"
+)
+
+#: 视频 action 不复述静帧外观：这些词只应出现在分镜提示词与 K 帧里。
+_STATIC_FRAME_TERMS = (
+    "长相",
+    "五官",
+    "脸型",
+    "肤色",
+    "发型",
+    "发丝",
+    "妆容",
+    "眉眼",
+    "服装",
+    "衣着",
+    "穿着",
+    "外套",
+    "长裙",
+    "衬衫",
+    "围裙",
+    "棉袄",
+    "嫁衣",
+    "衣裳",
+    "衣料",
+    "光线",
+    "光照",
+    "色调",
+    "色温",
+    "打光",
+    "布光",
+    "环境光",
+    "背景",
+)
+
+#: 静态外观字符占比上限：超过即判「复述静帧」。长文按占比判，短文只在命中三个以上
+#: 静态类别时判——分母太小时合法的一句光线变化也会越线。
+_STATIC_FRAME_DENSITY = 0.05
+_STATIC_FRAME_MIN_CHARS = 80
+_STATIC_FRAME_MIN_HITS = 3
+
+#: 整句 / 整段复述的判定：参与比对的最短句长、硬阈值与最长逐字重合长度。
+_COPY_MIN_CHARS = 16
+_COPY_RATIO = 0.9
+_COPY_MIN_RUN = 16
+
+#: 复述嫌疑的提示阈值：不阻断写回，只进入评分报告，供阈值标定与人工复核。
+_COPY_WARN_RATIO = 0.48
+_COPY_WARN_RUN = 10
+_STATIC_WARN_TERMS = 2
+_STATIC_WARN_DENSITY = 0.02
+_STATIC_WARN_MIN_CHARS = 50
+_WARNING_PENALTY = 15
+#: 资产引用：未登记 mention 是绑定失败，按问题扣；没打 @ 的角色/道具是提示，轻扣。
+_MENTION_PROBLEM_PENALTY = 20
+_MENTION_WARNING_PENALTY = 5
+
+#: 句界：视频提示词按时间段分行，分镜提示词按镜头块分段；两边的句界都按这些符号切。
+_SENTENCE_BREAK = re.compile(r"[。！？!?；;]+|\n+")
+
+#: 视频 action 的时间段：``0-3秒`` / ``3~6 秒`` / ``9 至 12 秒``。
+_TIME_SEGMENT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:-|–|—|~|至)\s*(\d+(?:\.\d+)?)\s*秒")
 
 #: 剥掉镜头标记与引用 token 后的「裸文本」：动作 / 神态词只认它，资产外观描述与
 #: 镜头标记不能再替正文凑数（2026-10-24 评审拍板）。NFKC 折叠全角标点后再匹配。
@@ -151,6 +225,12 @@ def shot_blocks(scene: str) -> list[ShotBlock]:
     return blocks
 
 
+def collapse_blank_lines(text: str) -> str:
+    """镜头块之间只留一个换行：空行不参与解析，只会撑大编辑框与提示词。"""
+
+    return re.sub(r"\n[ \t]*\n+", "\n", text.replace("\r\n", "\n"))
+
+
 def _bare_text(block_body: str) -> str:
     return unicodedata.normalize("NFKC", _BARE_NOISE.sub("", block_body))
 
@@ -181,9 +261,277 @@ def dialogue_line_problem(text: str, *, label: str = "image_prompt") -> str | No
     )
 
 
+def _sentences(text: str) -> list[str]:
+    """按句界切句并剥掉镜头标记与引用 token；返回值保留原句顺序。"""
+
+    bare = unicodedata.normalize("NFKC", _BARE_NOISE.sub("", text))
+    return [piece.strip() for piece in _SENTENCE_BREAK.split(bare) if piece.strip()]
+
+
+def _longest_common_run(left: str, right: str) -> int:
+    """两段文本最长逐字重合的长度：比整句相似度更容易抓到「只改几个词」的复述。"""
+
+    match = SequenceMatcher(None, left, right, autojunk=False).find_longest_match(0, len(left), 0, len(right))
+    return match.size
+
+
+@dataclass(frozen=True, slots=True)
+class VideoPromptDeltaMetrics:
+    """视频 action 的确定性增量指标，供编写闸与评分报告共用。
+
+    ``score`` 是三项硬闸与提示项的扣分结果（满分 100），只用于纵向比较与阈值标定；
+    准入判断看 ``problem``，``warnings`` 只记录接近阈值、尚未阻断的复述嫌疑。
+    """
+
+    action_chars: int
+    sentence_count: int
+    camera_terms: tuple[str, ...]
+    static_terms: tuple[str, ...]
+    static_density: float
+    max_similarity: float
+    max_verbatim_run: int
+    copied_sentence: str | None
+    warnings: tuple[str, ...]
+    problem: str | None
+    score: int
+    #: 未登记 / 没打 @ 的资产引用（见 ``review_video_prompt_mentions``）。
+    mention_problems: tuple[str, ...] = ()
+    mention_warnings: tuple[str, ...] = ()
+
+    @property
+    def passed(self) -> bool:
+        return self.problem is None
+
+
+def video_prompt_delta_metrics(
+    storyboard_prompt: str,
+    action: str,
+    *,
+    reference_texts: Collection[str] = (),
+    registered_names: Collection[str] = (),
+    character_names: Collection[str] = (),
+    prop_names: Collection[str] = (),
+) -> VideoPromptDeltaMetrics:
+    """计算视频 action 的镜头语言、静帧密度、复述指标与资产引用。
+
+    ``storyboard_prompt`` 是分镜提示词，``reference_texts`` 是已确认 K 帧的文本；
+    这两份输入已经固定了画面的静态事实。语义改写（同义复述）不在确定性指标的射程内。
+    ``registered_names`` 给出已登记资产名时，同时检查 ``@`` 引用是否绑定得到资产。
+    """
+
+    text = action.strip()
+    if not text:
+        return VideoPromptDeltaMetrics(0, 0, (), (), 0.0, 0.0, 0, None, (), "action 为空", 0)
+    mention = review_video_prompt_mentions(
+        text,
+        registered_names=registered_names,
+        character_names=character_names,
+        prop_names=prop_names,
+    )
+    camera_terms = tuple(dict.fromkeys(match.group(0) for match in _CAMERA_LANGUAGE.finditer(text)))
+    static_terms = tuple(term for term in _STATIC_FRAME_TERMS if term in text)
+    static_chars = sum(text.count(term) * len(term) for term in static_terms)
+    static_density = static_chars / len(text)
+    static_failed = bool(static_terms) and (
+        len(static_terms) >= _STATIC_FRAME_MIN_HITS
+        or (len(text) >= _STATIC_FRAME_MIN_CHARS and static_density >= _STATIC_FRAME_DENSITY)
+    )
+    action_sentences = [sentence for sentence in _sentences(text) if len(sentence) >= _COPY_MIN_CHARS]
+    source_sentences = [
+        sentence
+        for source in (storyboard_prompt, *reference_texts)
+        for sentence in _sentences(source)
+        if len(sentence) >= _COPY_MIN_CHARS
+    ]
+    max_similarity = 0.0
+    max_verbatim_run = 0
+    copied_sentence: str | None = None
+    for sentence in action_sentences:
+        for source in source_sentences:
+            ratio = SequenceMatcher(None, sentence, source, autojunk=False).ratio()
+            run = _longest_common_run(sentence, source)
+            max_similarity = max(max_similarity, ratio)
+            max_verbatim_run = max(max_verbatim_run, run)
+            if copied_sentence is None and (ratio >= _COPY_RATIO or run >= _COPY_MIN_RUN):
+                copied_sentence = sentence
+    copy_failed = copied_sentence is not None
+    if camera_terms:
+        problem = (
+            f"action 出现镜头语言「{camera_terms[0]}」：运镜只由 camera_motion 承载，"
+            "删掉景别 / 机位 / 推拉摇移，只写人物与环境怎么变"
+        )
+    elif static_failed:
+        problem = (
+            f"action 复述静帧（静态外观词占比 {static_density:.0%}："
+            f"{'、'.join(static_terms[:4])}）：长相、服装、光线已由分镜提示词与 K 帧承载，"
+            "只写它们发生的变化，不写外观状态"
+        )
+    elif copied_sentence is not None:
+        snippet = copied_sentence if len(copied_sentence) <= 24 else f"{copied_sentence[:24]}…"
+        problem = (
+            f"action 复述了分镜提示词或 K 帧里已有的句子 / 片段"
+            f"（相似度 {max_similarity:.2f}，最长逐字重合 {max_verbatim_run} 字）：「{snippet}」；"
+            "改成「从上一状态到下一状态怎么变」，只写触发、过程与落点"
+        )
+    else:
+        problem = None
+    if problem is None and mention.problems:
+        problem = mention.problems[0]
+    warnings: list[str] = []
+    if not camera_terms and not static_failed and not copy_failed:
+        if max_similarity >= _COPY_WARN_RATIO or max_verbatim_run >= _COPY_WARN_RUN:
+            warnings.append(
+                f"疑似复述：最大相似度 {max_similarity:.2f}、最长逐字重合 {max_verbatim_run} 字"
+                f"（硬阈值 {_COPY_RATIO:.2f} / {_COPY_MIN_RUN} 字）"
+            )
+        if static_terms and (
+            len(static_terms) >= _STATIC_WARN_TERMS
+            or (len(text) >= _STATIC_WARN_MIN_CHARS and static_density >= _STATIC_WARN_DENSITY)
+        ):
+            warnings.append(
+                f"疑似静帧复述：{'、'.join(static_terms[:4])} 占 {static_density:.0%}"
+                f"（硬阈值 {_STATIC_FRAME_DENSITY:.0%}）"
+            )
+    score = (
+        100
+        - (40 if camera_terms else 0)
+        - (30 if static_failed else 0)
+        - (30 if copy_failed else 0)
+        - _WARNING_PENALTY * len(warnings)
+        - _MENTION_WARNING_PENALTY * len(mention.warnings)
+        - (_MENTION_PROBLEM_PENALTY if mention.problems else 0)
+    )
+    return VideoPromptDeltaMetrics(
+        action_chars=len(text),
+        sentence_count=len(_sentences(text)),
+        camera_terms=camera_terms,
+        static_terms=static_terms,
+        static_density=static_density,
+        max_similarity=max_similarity,
+        max_verbatim_run=max_verbatim_run,
+        copied_sentence=copied_sentence,
+        warnings=tuple(warnings),
+        problem=problem,
+        score=max(0, score),
+        mention_problems=mention.problems,
+        mention_warnings=mention.warnings,
+    )
+
+
+def video_prompt_delta_problem(
+    storyboard_prompt: str,
+    action: str,
+    *,
+    reference_texts: Collection[str] = (),
+    registered_names: Collection[str] = (),
+    character_names: Collection[str] = (),
+    prop_names: Collection[str] = (),
+) -> str | None:
+    """视频 action 的增量闸：复述静帧 / 复述运镜 / 复述成句或片段 / 资产引用绑不上时返回可回喂原因。
+
+    空 action 由 ``_validate_video_prompt_body`` 拦，这里返回 ``None``，不重复报同一件事。
+    合格返回 ``None``；指标明细见 ``video_prompt_delta_metrics``。
+    """
+
+    if not action.strip():
+        return None
+    return video_prompt_delta_metrics(
+        storyboard_prompt,
+        action,
+        reference_texts=reference_texts,
+        registered_names=registered_names,
+        character_names=character_names,
+        prop_names=prop_names,
+    ).problem
+
+
+def action_timeline_problem(action: str, duration_seconds: object) -> str | None:
+    """视频 action 的时间段必须从 0 起连续覆盖分镜时长。
+
+    只在正文已经写了 ``0-x秒`` 这类时间段时校验；没有时间段的存量文本不判，避免把旧数据
+    当成格式错误。合格返回 ``None``，否则返回可回喂原因。
+    """
+
+    if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (int, float)):
+        return None
+    duration = float(duration_seconds)
+    if duration <= 0:
+        return None
+    segments = [(float(m.group(1)), float(m.group(2))) for m in _TIME_SEGMENT.finditer(action)]
+    if not segments:
+        return None
+    cursor = 0.0
+    for start, end in segments:
+        if abs(start - cursor) > 0.2:
+            return f"时间段必须从 0 秒起连续衔接：当前段从 {start:g} 秒开始，上一段停在 {cursor:g} 秒"
+        if end <= start:
+            return f"时间段 {start:g}-{end:g} 秒不成立：结束必须晚于开始"
+        cursor = end
+    if abs(cursor - duration) > 0.25:
+        return f"时间段只覆盖到 {cursor:g} 秒，分镜时长是 {duration:g} 秒；需要连续覆盖完整时长"
+    return None
+
+
 def reference_tokens(text: str) -> list[str]:
     """正文里的 ``@[登记名]`` token（按出现序去重）。"""
     return list(dict.fromkeys(match.group(1).strip() for match in _TOKEN.finditer(text)))
+
+
+def mention_names(text: str) -> list[str]:
+    """正文里的资产 mention（``@名字`` 与 ``@[名字]``），按出现序去重。"""
+    names: list[str] = []
+    for match in _MENTION.finditer(text):
+        name = (match.group(1) or match.group(2) or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+@dataclass(frozen=True, slots=True)
+class MentionReview:
+    """action 里的资产引用检查：未登记的 ``@`` 记问题，没打 ``@`` 的角色/道具记提示。"""
+
+    problems: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+
+def review_video_prompt_mentions(
+    action: str,
+    *,
+    registered_names: Collection[str],
+    character_names: Collection[str] = (),
+    prop_names: Collection[str] = (),
+) -> MentionReview:
+    """检查视频 action 是否用 ``@资产名`` 绑定了已登记的角色/道具。
+
+    ``@`` 引用是模型拿到资产图的入口：写成「她」「微驼身影」或打错名字，参考图都绑不上。
+    未登记的 mention 记问题；本镜角色、道具没打 ``@`` 记提示。
+    """
+    text = action.strip()
+    if not text:
+        return MentionReview((), ())
+    registered = {asset_name_comparison_key(str(name)) for name in registered_names if str(name).strip()}
+    mentions = mention_names(text)
+    owners = {name: _asset_owner(name) for name in mentions}
+    mentioned = set(owners.values())
+    problems = tuple(
+        f"action 引用了未登记资产「@{name}」：mention 解析不到，等于没有绑定参考图；改成已登记资产名，或删掉这个引用"
+        for name in mentions
+        if owners[name] not in registered
+    )
+    warnings: list[str] = []
+    for name in dict.fromkeys(str(n).strip() for n in character_names if str(n).strip()):
+        if asset_name_comparison_key(name) in mentioned:
+            continue
+        if name in text:
+            warnings.append(f"角色「{name}」出现在正文但没用 @ 引用：写成 @{name} 才会绑定资产图")
+        else:
+            warnings.append(f"本镜角色「{name}」没有被 @ 引用：模型拿不到这个角色的资产图")
+    for name in dict.fromkeys(str(n).strip() for n in prop_names if str(n).strip()):
+        if asset_name_comparison_key(name) in mentioned or name not in text:
+            continue
+        warnings.append(f"道具「{name}」出现在正文但没用 @ 引用：写成 @{name} 才会绑定参考图")
+    return MentionReview(problems, tuple(warnings))
 
 
 def _asset_owner(inner: str) -> str:
@@ -219,11 +567,61 @@ def handoff_problem(
     if "承接" in current_text:
         return None
     return (
-        "首镜没有接住上一分镜末镜（上一镜在场人物："
-        f"{'、'.join(sorted(previous_cast)) or '未登记角色'}，本镜一个都没出现）；"
+        "首镜没有接住上一分镜末镜；"
+        f"上一镜末镜：{previous_text.strip()[:90]}；本镜首镜：{current_text.strip()[:90]}。"
+        f"上一镜在场人物：{'、'.join(sorted(previous_cast)) or '未登记角色'}，本镜一个都没出现；"
         "要么让首镜出现上一镜的人物 / 视线 / 声源，用陈设或光源承接时写明「承接上一镜的…」，"
         "要么在首镜写断点标记（硬切/黑场/光转/闪回）"
     )
+
+
+#: 道具进入画面的可见动作；紧贴道具名之前才算，托着 / 端着 / 拿着这类静态持物不算。
+_HANDOVER = re.compile(r"(?:托|端|接|递|放|拿|捧|提|拎|抱|握|抓|举)(?:过|入|来|进|下|到|给|起|了|的|住)?\s*$")
+
+
+def _handover_near(text: str, prop: str) -> bool:
+    start = text.find(prop)
+    if start < 0:
+        return True
+    prefix = text[max(0, start - 10) : start]
+    return bool(_HANDOVER.search(prefix))
+
+
+def seam_prop_problem(
+    previous_prompt: str,
+    current_prompt: str,
+    *,
+    registered_props: Collection[str],
+) -> str | None:
+    """幕间持物接续：上一镜末格没有的道具，本镜首/次格必须有可见的进入动作。
+
+    只查“登记道具名”在文本里的出现，不猜未登记物件；新道具在首格出现时要求首格自身
+    写出托/接/递/放等动作，在次格出现时要求首格或次格写出。合格返回 ``None``。
+    """
+
+    before = shot_blocks(previous_prompt)
+    after = shot_blocks(current_prompt)
+    if not before or not after:
+        return None
+    previous_text = before[-1].body
+    first_text = after[0].body
+    second_text = after[1].body if len(after) > 1 else ""
+    previous_props = {name for name in registered_props if name and name in previous_text}
+    for name in registered_props:
+        if not name or name in previous_props:
+            continue
+        if name in first_text:
+            if not _handover_near(first_text, name):
+                return (
+                    f"道具「{name}」在上一镜末格不存在，本镜首格也没有进入动作；"
+                    f"需要写“托入 / 接过 / 递来 / 放到”等可见动作，不能让它凭空已经在手里"
+                )
+        elif name in second_text and not (_handover_near(second_text, name) or _handover_near(first_text, name)):
+            return (
+                f"道具「{name}」在上一镜末格不存在，本镜首/次格都没有进入动作；"
+                f"需要写“托入 / 接过 / 递来 / 放到”等可见动作，不能让它凭空已经在手里"
+            )
+    return None
 
 
 def lint_shot_prompt(
@@ -312,6 +710,26 @@ def _is_environment_shot(bare: str, character_names: Collection[str]) -> bool:
     return not any(pronoun in bare for pronoun in ("他", "她", "众人", "有人", "人影"))
 
 
+def block_diagnostics(scene: str, *, character_names: Collection[str] = ()) -> list[dict[str, object]]:
+    """逐镜头块给评分器用的可解释诊断：字数、动作、神态、空镜、占位词。"""
+
+    diagnostics: list[dict[str, object]] = []
+    for block in shot_blocks(scene):
+        bare = _bare_text(block.body)
+        environment = _is_environment_shot(bare, character_names)
+        diagnostics.append(
+            {
+                "number": block.number,
+                "chars": len(block.body.strip()),
+                "has_action": bool(_ACTION_WORDS.search(bare)),
+                "has_emotion": bool(_EMOTION_WORDS.search(bare)) or environment,
+                "environment": environment,
+                "placeholder": any(phrase in bare for phrase in _PLACEHOLDER_PHRASES),
+            }
+        )
+    return diagnostics
+
+
 def _shared_tokens(left: ShotBlock, right: ShotBlock) -> bool:
     """两个镜头块是否共享同一个 ``@[登记名]``（通常是同一场景）。"""
     left_tokens = {match.group(1).strip() for match in _TOKEN.finditer(left.body)}
@@ -350,11 +768,18 @@ __all__ = [
     "CAMERA_POSITIONS",
     "CONTINUITY_MARKER_HINT",
     "SHOT_SIZES",
+    "MentionReview",
     "ShotBlock",
+    "VideoPromptDeltaMetrics",
+    "action_timeline_problem",
     "dialogue_line_problem",
     "dialogue_lines",
     "handoff_problem",
     "lint_shot_prompt",
+    "mention_names",
     "reference_tokens",
+    "review_video_prompt_mentions",
     "shot_blocks",
+    "video_prompt_delta_metrics",
+    "video_prompt_delta_problem",
 ]

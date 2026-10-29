@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SortableHandle, SortableItem, SortableList, type SortableMove } from "@/components/shared/sortable/SortableList";
+import { TruncatedText } from "@/components/shared/TruncatedText";
 import { useProjectsStore } from "@/stores/projects-store";
 import { StatusBadge, statusFromAssets } from "@/components/canvas/timeline/StatusBadge";
 import {
@@ -66,6 +67,16 @@ function getSegmentText(seg: Segment, mode: ListContentMode): string {
   }
   // 剧情演绎：用 image_prompt.scene 作为画面预览，与 narration 的 novel_text 对称
   return getImagePromptScene(seg);
+}
+
+/**
+ * 列表里显示的预览。剧情演绎的分镜提示词是整段画面描述，放进 220px 的列表既撑高又读不出重点，
+ * 这里改用场景名；旁白与广告展示的是内容层正文（原文、口播），保持原样。
+ */
+function getSegmentPreview(seg: Segment, mode: ListContentMode): string {
+  if (mode !== "drama") return getSegmentText(seg, mode);
+  const scene = (seg.scenes ?? []).find((name) => typeof name === "string" && name.trim());
+  return scene?.trim() ?? "";
 }
 
 /**
@@ -224,7 +235,7 @@ export function ShotList({
             {visibleIds.map((id) => {
               const index = indexById.get(id)!;
               const seg = segments[index];
-              const text = getSegmentText(seg, contentMode);
+              const preview = getSegmentPreview(seg, contentMode);
               const active = index === selectedIndex;
               const sbPath = seg.generated_assets?.storyboard_image;
               const sbUrl = sbPath
@@ -251,7 +262,8 @@ export function ShotList({
                     <span
                       className={cn(
                         "relative shrink-0 overflow-hidden rounded-sm bg-muted",
-                        aspectRatio === "9:16" ? "h-14 w-10" : "h-9 w-16",
+                        // 缩略图与右侧三行文字同高（72px）：竖屏 40×72（≈9:16），横屏 128×72（16:9）。
+                        aspectRatio === "9:16" ? "h-18 w-10" : "h-18 w-32",
                       )}
                     >
                       {sbUrl ? (
@@ -265,18 +277,26 @@ export function ShotList({
                         </span>
                         <StatusBadge status={statusFromAssets(seg.generated_assets?.status)} />
                       </span>
-                      {text ? (
-                        <span
-                          className={cn(
-                            "line-clamp-2 text-xs leading-snug",
-                            active ? "text-foreground" : "text-subtle-foreground",
-                          )}
-                        >
-                          {text}
-                        </span>
+                      {preview ? (
+                        contentMode === "drama" ? (
+                          <TruncatedText
+                            text={preview}
+                            focusable={false}
+                            className={cn("text-xs", active ? "text-foreground" : "text-subtle-foreground")}
+                          />
+                        ) : (
+                          <span
+                            className={cn(
+                              "line-clamp-2 text-xs leading-snug",
+                              active ? "text-foreground" : "text-subtle-foreground",
+                            )}
+                          >
+                            {preview}
+                          </span>
+                        )
                       ) : null}
-                      <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        <span className="num">{t("duration_seconds_value_text", { value: seg.duration_seconds ?? 0 })}</span>
+                      <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                        <span className="num">{t("duration_seconds_compact", { value: seg.duration_seconds ?? 0 })}</span>
                         {section ? <Badge variant="outline">{section}</Badge> : null}
                         {seg.pending_authoring === true ? (
                           <span className="text-warn">{t("shot_pending_authoring")}</span>

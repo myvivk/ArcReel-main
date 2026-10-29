@@ -84,10 +84,12 @@ from server.routers import (
     prompt_templates,
     props,
     providers,
+    review,
     scenes,
     short_drama,
     shot_grids,
     shot_uploads,
+    source_import,
     story_planning,
     storyboard_batches,
     system,
@@ -616,6 +618,7 @@ async def request_logging_middleware(
 # 不挂依赖的两组另有说明，见下方分组注释。
 app.include_router(projects.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["项目管理"])
 app.include_router(story_planning.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["故事规划"])
+app.include_router(source_import.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["导入原文"])
 app.include_router(characters.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["角色管理"])
 app.include_router(scenes.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["场景管理"])
 app.include_router(props.router, prefix="/api/v1", dependencies=[Depends(get_current_user)], tags=["道具管理"])
@@ -657,6 +660,12 @@ app.include_router(
     prefix="/api/v1",
     dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
     tags=["提示词编写"],
+)
+app.include_router(
+    review.router,
+    prefix="/api/v1",
+    dependencies=[Depends(get_current_user), Depends(require_project_migration_ok)],
+    tags=["只读评测"],
 )
 app.include_router(
     shot_uploads.router,

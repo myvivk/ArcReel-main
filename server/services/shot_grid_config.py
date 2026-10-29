@@ -35,7 +35,7 @@ from lib.script.grid.keyframe_parser import (
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.grid.shot_prompt_builder import shot_grid_cells
+from lib.script.grid.shot_prompt_builder import keyframe_cell_problem, shot_grid_cells
 from lib.script.storyboard_sequence import get_storyboard_items
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ SUPPORTED_LAYOUTS = {(2, 2), (2, 3), (3, 3)}
 
 _GENERATING_STATUSES = {"generating", "confirming"}
 
-_AUTHORED_SYSTEM_PROMPT = """你是分镜画师的提示词编辑助理。用户给你一个分镜的画面描述（镜头序列）和这一镜要画的格数，你为每一格写一段帧链中的关键帧画面：第 1 格是开始画面，最后一格是结束画面，中间各格是过程关键帧，后一格必须承接前一格的姿态、位置与视线。只输出结构化结果，不写任何解释。"""
+_AUTHORED_SYSTEM_PROMPT = """你是分镜画师的提示词编辑助理。用户给你一个分镜的画面描述（镜头序列）和这一镜要画的格数，你为每一格写一段帧链中的关键帧画面：第 1 格是开始画面，最后一格是结束画面，中间各格是过程关键帧，后一格必须承接前一格的姿态、位置与视线。每一格都是冻结的单一瞬间，不是一条镜头：不要写镜头运动、先后动作或渐变过程，这些由视频阶段承担。只输出结构化结果，不写任何解释。"""
 
 _AUTHORED_USER_TEMPLATE = """【分镜画面】
 {scene}
@@ -61,10 +61,13 @@ _AUTHORED_USER_TEMPLATE = """【分镜画面】
 要求：
 - 恰好 {count} 个画面，一个不多一个不少
 - 景别从「远景、全景、中景、近景、特写」中选，同一分镜内要有明显变化
-- 每格是一个关键瞬间：先承接上一格的姿态/位置/视线（第一格写起始状态），再写本格主体状态、环境、光线，用叙述句
+- 每格是一个关键瞬间：正文承接上一格的姿态/位置/视线（第一格写起始状态），只描述本格主体状态、环境、光线，用叙述句
+- 每格是冻结的单一瞬间：不写镜头运动（推/拉/摇/移/跟/升/降/环绕/变焦），不写先后动作（然后/随后/最后/先…再…），不写渐变过程（逐渐/渐渐/慢慢/缓缓）
+- 只写这一帧能同时看见的身体姿态、表情、手/持物、环境与光线；镜头运动与动作过程留给视频阶段
+- 相邻格不要同景别、同机位、同姿态；每次换格都要有可见变化
 - 最后一格收在稳定状态（动作完成后的定姿），不要停在过程里
 - 资产直接写名字，不要写 @[] 之类的引用记号
-- 不得增删事件，所有格必须在同一时空里连续发生
+- 不得增删事件，所有格必须在同一时空里连续发生；明确的剪接点写成断点，不硬接成连续动作
 """
 
 #: 引用字段名 → 资产类型标签，喂给 AI 时只给名字与类型。
@@ -241,6 +244,9 @@ def _serialize_authored_frames(frames: list[_AuthoredFrame], count: int) -> str:
 
     if len(frames) != count or any(not frame.description.strip() for frame in frames):
         raise ValueError(f"模型需返回 {count} 个非空关键帧")
+    for index, frame in enumerate(frames, start=1):
+        if problem := keyframe_cell_problem(frame.description):
+            raise ValueError(f"第{index}格{problem}")
     return format_grid_prompt(
         [
             ShotFrame(number=index + 1, shot_size=frame.shot_size, text=frame.description)

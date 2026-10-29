@@ -12,6 +12,7 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import { isDemoProject } from "@/onboarding/demo-project";
+import { isSourceImport } from "@/utils/creation-mode";
 import { useAppStore } from "@/stores/app-store";
 import { useConfigStatusStore } from "@/stores/config-status-store";
 import { useActiveResourceIds } from "@/stores/tasks-store";
@@ -86,6 +87,8 @@ export function StudioCanvasRouter() {
   // 演示态：资产画布仍走 readOnly 透传，工作台时间线的只读则由组件自己直读同一判定。
   // useDemoWorkbench() 已把路由参数与 store 的判定滞后收口在单一来源，此处直接消费。
   const demoMode = useDemoWorkbench();
+  // 导入原文项目没有故事规划：地址栏直达 /story 时重定向回概览（与侧栏入口收敛成对）。
+  const sourceImport = isSourceImport(currentProjectData);
 
   // 演示态不发真实能力请求。demoMode 演示→真实切换时先于 store 变为 false，
   // currentProjectName 单独判一次兜住这一帧仍读到旧演示项目名的窗口。
@@ -423,7 +426,7 @@ export function StudioCanvasRouter() {
       </Route>
 
       <Route path="/story">
-        {demoMode || currentProjectData?.content_mode !== "drama" ? <Redirect to="/" /> : (
+        {demoMode || sourceImport || currentProjectData?.content_mode !== "drama" ? <Redirect to="/" /> : (
           <LazyBoundary variant="pane">
             <StoryPlanningCanvas key={currentProjectName} projectName={currentProjectName} />
           </LazyBoundary>

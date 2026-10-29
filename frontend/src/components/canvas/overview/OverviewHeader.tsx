@@ -7,6 +7,7 @@ import { Link } from "wouter";
 import { projectSettingsPath } from "@/app-routes";
 import { buttonVariants } from "@/components/ui/button";
 import type { ProjectData } from "@/types";
+import { isSourceImport } from "@/utils/creation-mode";
 
 const MODE_LABEL_KEY = {
   narration: "narration_visuals_mode",
@@ -38,6 +39,8 @@ export function OverviewHeader({
 }) {
   const { t } = useTranslation("dashboard");
   const isAd = data.content_mode === "ad";
+  // 导入原文项目的剧本来自用户原文，「AI 原创剧本」入口不渲染（导入入口在概览正文里）。
+  const sourceImport = isSourceImport(data);
   const episodes = data.episodes ?? [];
   // 各集脚本条目的计划时长之和，与侧栏集卡上的时长同一口径，不代表已生成的视频。
   const scriptSeconds = episodes.reduce((sum, ep) => sum + (ep.duration_seconds ?? 0), 0);
@@ -60,7 +63,7 @@ export function OverviewHeader({
       </div>
       {readOnly ? null : (
         <div className="flex shrink-0 items-center gap-2">
-          {data.content_mode === "drama" ? <ShortDramaGenerateButton projectName={projectName} episode={0} /> : null}
+          {data.content_mode === "drama" && !sourceImport ? <ShortDramaGenerateButton projectName={projectName} episode={0} /> : null}
           <Link
             href={`~${projectSettingsPath(projectName)}`}
             className={buttonVariants({ variant: "ghost", size: "sm" })}

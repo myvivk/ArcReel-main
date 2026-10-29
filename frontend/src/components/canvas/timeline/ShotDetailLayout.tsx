@@ -7,6 +7,8 @@ const MIN_MEDIA_PERCENT = 30;
 const MAX_MEDIA_PERCENT = 80;
 const MIN_EDITOR_PERCENT = 20;
 const MEDIA_PERCENT_STEP = 2;
+/** 媒体栏的最小宽度（px）：与网格列 `minmax(505px, 百分比)` 的下限保持一致。 */
+const MIN_MEDIA_WIDTH_PX = 505;
 const MEDIA_PERCENT_STORAGE_KEY = "arcreel_shot_detail_media_percent";
 
 function readMediaPercent(): number {
@@ -57,7 +59,13 @@ export function ShotDetailLayout({
   }, []);
 
   const updateMediaPercent = useCallback((next: number) => {
-    const clamped = Math.min(100 - MIN_EDITOR_PERCENT, Math.max(MIN_MEDIA_PERCENT, next));
+    // 媒体栏宽度是 max(505px, 百分比)：窄窗口下百分比低于 505px 时列宽被下限顶住，
+    // 把拖动的下限也抬到同一个像素下限，分隔线才会跟列宽一起动。
+    const width = detailRef.current?.getBoundingClientRect().width ?? 0;
+    const floor = width > 0
+      ? Math.max(MIN_MEDIA_PERCENT, (MIN_MEDIA_WIDTH_PX / width) * 100)
+      : MIN_MEDIA_PERCENT;
+    const clamped = Math.min(100 - MIN_EDITOR_PERCENT, Math.max(floor, next));
     setMediaPercent(clamped);
     persistMediaPercent(clamped);
   }, []);
@@ -118,7 +126,7 @@ export function ShotDetailLayout({
               "group absolute top-0 bottom-0 hidden w-3 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center border-0 bg-transparent p-0 @min-[860px]/shot-detail:flex",
               resizing && "cursor-col-resize",
             )}
-            style={{ left: `calc(100% - ${mediaPercent}%)` }}
+            style={{ left: `calc(100% - max(${MIN_MEDIA_WIDTH_PX}px, ${mediaPercent}%))` }}
             onDoubleClick={handleSeparatorDoubleClick}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}

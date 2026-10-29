@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -118,17 +119,43 @@ async def author_shot_grid_prompt(
     return {"prompt": prompt}
 
 
+@router.get("/versions")
+def list_shot_grid_versions(project_name: str, script_file: str, shot_id: str, request: Request):
+    """该分镜的全部参考素材版本，供页面切换旧图/新图。"""
+
+    manager = ShotGridManager(get_project_manager().get_project_path(project_name))
+    grids = [grid for grid in manager.list_all() if grid.script_file == script_file and grid.shot_id == shot_id]
+    grids.sort(key=lambda grid: grid.updated_at or "", reverse=True)
+    root = request.scope.get("root_path", "")
+    return {
+        "versions": [
+            {
+                "id": grid.id,
+                "status": grid.status,
+                "rows": grid.rows,
+                "cols": grid.cols,
+                "updated_at": grid.updated_at,
+                "confirmed_at": grid.confirmed_at,
+                "cell_count": len(grid.cells),
+                "composite_url": (
+                    f"{root}/api/v1/projects/{project_name}/shot-grids/{grid.id}/image" if grid.composite_path else None
+                ),
+            }
+            for grid in grids
+        ]
+    }
+
+
 @router.get("")
 def get_shot_grid(project_name: str, script_file: str, shot_id: str, request: Request):
-    grid = ShotGridManager(get_project_manager().get_project_path(project_name)).find(
-        script_file=script_file, shot_id=shot_id
-    )
+    project_manager = get_project_manager()
+    project_path = project_manager.get_project_path(project_name)
+    script = project_manager.load_script(project_name, script_file)
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    grid = ShotGridManager(project_path).find(script_file=script_file, shot_id=shot_id, items=items, id_field=id_field)
     if grid is None:
         return None
     result = grid.to_dict()
-    project_manager = get_project_manager()
-    script = project_manager.load_script(project_name, script_file)
-    items, id_field, _, _, _ = get_storyboard_items(script)
     shot = next((item for item in items if str(item.get(id_field, "")) == shot_id), None)
     result["stale"] = shot is None or (
         grid.scene_revision is not None and grid.scene_revision != scene_revision_of(shot_scene_text(shot))
@@ -146,6 +173,21 @@ def get_shot_grid(project_name: str, script_file: str, shot_id: str, request: Re
             artifact_path=f"storyboards/{grid.id}/contact.png",
         )
         result["stale"] = result["stale"] or comparison.status in {ArtifactStatus.STALE, ArtifactStatus.BLOCKED}
+    if grid.composite_path:
+        result["composite_url"] = (
+            f"{request.scope.get('root_path', '')}/api/v1/projects/{project_name}/shot-grids/{grid.id}/image"
+        )
+    return result
+
+
+@router.get("/{grid_id}")
+def get_shot_grid_by_id(project_name: str, grid_id: str, request: Request):
+    """按宫格 ID 读取完整记录，供页面在生成中回显上一版。"""
+
+    grid = ShotGridManager(get_project_manager().get_project_path(project_name)).get(grid_id)
+    if grid is None:
+        return None
+    result = grid.to_dict()
     if grid.composite_path:
         result["composite_url"] = (
             f"{request.scope.get('root_path', '')}/api/v1/projects/{project_name}/shot-grids/{grid.id}/image"
@@ -256,6 +298,9 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
                 authored_frames = parse_grid_prompt_cells(authored)
                 if len(authored_frames) == grid.rows * grid.cols:
                     frames = authored_frames
+                    # 逐格文本是出图的唯一输入（ADR 0099 D-2）；补格结果不回写 prompt，
+                    # 执行端会重新解析 scene 并机械补帧，刚生成的逐格文本就被丢掉了。
+                    grid.prompt = authored
             except Exception as exc:
                 logger.warning("grid frame authoring failed for %s: %s", shot_id, exc)
             if len(frames) < grid.rows * grid.cols:
@@ -266,6 +311,17 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
             problem = cell_duplication_problem(frames)
             if problem:
                 raise HTTPException(status_code=422, detail=f"宫格逐格文本不合格：{problem}（可重试）")
+    # 重新生成前把上一版 confirmed 快照成历史记录；当前记录随后会被清空，但旧图必须还能看。
+    if grid.status == "confirmed" and grid.composite_path:
+        source = project_path / grid.composite_path
+        if source.is_file():
+            snapshot = ShotGrid.from_dict(grid.to_dict())
+            snapshot.id = f"shot_grid_{uuid.uuid4().hex[:12]}"
+            snapshot.composite_path = f"shot_grids/{snapshot.id}.png"
+            shutil.copyfile(source, project_path / snapshot.composite_path)
+            snapshot.updated_at = datetime.now(UTC).isoformat()
+            manager.save(snapshot)
+
     grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
     grid.composite_path = None
     grid.image_basis = None
@@ -325,9 +381,7 @@ def confirm_shot_grid(project_name: str, grid_id: str, request: Request, t: Tran
     grid = manager.get(grid_id)
     if grid is None:
         raise HTTPException(status_code=404, detail=t("shot_grid_missing"))
-    if grid.status == "confirmed":
-        return {"success": True, "grid": get_shot_grid(project_name, grid.script_file, grid.shot_id, request)}
-    if grid.status != "completed" or not grid.composite_path:
+    if grid.status not in {"completed", "confirmed"} or not grid.composite_path:
         raise HTTPException(status_code=409, detail=t("shot_grid_not_ready"))
     # 不再拿 GET 的 stale 当确认门槛：它表达的是「输入相对出图时变了」，其中提示词这一条由下方切分事务
     # 里的 scene_revision 复核兜住；资产变化不该阻止用户确认一张已经出好的图。

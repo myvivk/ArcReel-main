@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Film, ImageIcon, Timer } from "lucide-react";
+import { AlertTriangle, Film, ImageIcon, Sparkles, Timer } from "lucide-react";
 import type { DurationOutOfRangeReason } from "@/hooks/useModelCapabilities";
 import type { NarrationSegment, DramaScene, AdShot, ImagePrompt, VideoPrompt } from "@/types";
 import type { ShotGridPlan } from "@/types/shot-grid";
@@ -15,6 +15,8 @@ import { useStaysInEpisodeView } from "@/components/canvas/episode-page/EpisodeV
 import { PromptPreviewButton } from "@/components/shared/PromptPreviewButton";
 import { ReferencesSection } from "./ReferencesSection";
 import { ReferenceMaterialsSection } from "./ReferenceMaterialsSection";
+import { ReviewPanel } from "./ReviewPanel";
+import { VideoPromptScorePanel } from "./VideoPromptScorePanel";
 import { MentionTextarea } from "@/components/shared/mentions/MentionTextarea";
 import { buildMentionCandidates, SHOT_MENTION_KINDS } from "@/components/shared/mentions/mention-candidates";
 import { MediaCard } from "./MediaCard";
@@ -28,6 +30,7 @@ import { useAppStore } from "@/stores/app-store";
 import { isResourceBusy, isScriptFileBusy } from "@/stores/tasks-store";
 import { useCostStore } from "@/stores/cost-store";
 import { useProjectsStore } from "@/stores/projects-store";
+import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
 import { durationIncompatibleLabel } from "@/components/shared/ShotDurationSelect";
 import { errMsg } from "@/utils/async";
 import { isContinuousIntegerRange } from "@/utils/duration_format";
@@ -419,6 +422,8 @@ function ShotDetailContent({
   const [plan, setPlan] = useState<ShotGridPlan | null>(null);
   const [videoDialogOpen, setVideoDialogOpen] = useState(false);
   const [materialsBusy, setMaterialsBusy] = useState(false);
+  /** 参考素材确认状态切换后项目快照刷新失败：视频提示词入口要等刷新成功再放行。 */
+  const [needsRefresh, setNeedsRefresh] = useState(false);
   const [restoringMedia, setRestoringMedia] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const [endFrameSubmitting, setEndFrameSubmitting] = useState(false);
@@ -432,6 +437,19 @@ function ShotDetailContent({
   const generateLabel = dirty ? t("common:save_and_generate") : undefined;
   const savingHint = saving ? t("common:save_status_saving") : undefined;
   const videoDisabled = editingBlocked || refreshPending || !!generatingVideo || !hasConfirmedMaterials;
+  // 「生成/重写视频提示词」随参考素材一起走：素材确认后才可打开编写弹窗。
+  const videoPromptFilled = videoText.trim().length > 0;
+  const videoPromptDisabled = editingBlocked || refreshPending || materialsBusy || needsRefresh
+    || !!generatingStoryboard || !!generatingVideo;
+  const openVideoPrompt = () => {
+    // stale 只说明输入相对出图时变了；已确认的 K 帧仍是可用素材，允许继续写视频提示词。
+    if (episode === undefined || videoPromptDisabled || plan?.status !== "confirmed") return;
+    // 已有视频提示词时按钮写「重写」，弹窗也默认走重写；空提示词时按补缺编写。
+    usePromptAuthoringStore.getState().open({
+      projectName, episode, scope: "current", currentEntryId: segmentId,
+      defaultRewrite: videoPromptFilled, defaultFields: ["video_prompt"], lockFields: true,
+    });
+  };
 
   const handleVideoUpload = async (file: File) => {
     if (!scriptFile || uploadingVideo || restoringMedia || isResourceBusy("video", projectName, segmentId) || gridBusy()) return;
@@ -588,6 +606,9 @@ function ShotDetailContent({
                 defaultFields={["image_prompt"]}
                 lockFields
                 label={t("prompt_authoring_open_image")}
+                variant="default"
+                size="xs"
+                className="min-w-29"
               />
             ) : null}
             {promptActions("image")}
@@ -605,6 +626,13 @@ function ShotDetailContent({
             projectName={projectName}
             className="max-h-none min-h-31"
           />
+          <ReviewPanel
+            kind="storyboard"
+            projectName={projectName}
+            episode={episode}
+            shotId={segmentId}
+            revision={imageText}
+          />
         </ShotSection>
         <ReferenceMaterialsSection
           key={`${projectName}:${scriptFile}:${segmentId}`}
@@ -615,26 +643,27 @@ function ShotDetailContent({
           aspectRatio={aspectRatio}
           readOnly={readOnly}
           disabled={saving || refreshPending || !!generatingStoryboard || !!generatingVideo}
-          videoPromptFilled={videoText.trim().length > 0}
           saveFirst={dirty}
           referenceNames={referenceNames}
           beforeGenerate={prepareGeneration}
           onPlanChange={setPlan}
           onBusyChange={setMaterialsBusy}
+          onNeedsRefreshChange={setNeedsRefresh}
+        />
+        <ReviewPanel
+          kind="reference"
+          projectName={projectName}
+          episode={episode}
+          shotId={segmentId}
+          revision={`${plan?.id ?? ""}:${plan?.status ?? ""}:${plan?.cells?.length ?? 0}`}
         />
         <ShotSection title={t("detail_video_prompt_title")} icon={<Film aria-hidden className="size-3.5" />}>
           <div className="flex flex-wrap items-center gap-2">
-            {episode !== undefined && !readOnly && videoText.trim().length > 0 ? (
-              <PromptAuthoringButton
-                projectName={projectName}
-                episode={episode}
-                scope="current"
-                currentEntryId={segmentId}
-                defaultRewrite
-                defaultFields={["video_prompt"]}
-                lockFields
-                label={t("prompt_authoring_open_video")}
-              />
+            {episode !== undefined && !readOnly && plan?.status === "confirmed" ? (
+              <Button type="button" size="xs" disabled={videoPromptDisabled} onClick={openVideoPrompt}>
+                <Sparkles aria-hidden data-icon="inline-start" />
+                {videoPromptFilled ? t("shot_video_prompt_rewrite") : t("shot_video_prompt_generate")}
+              </Button>
             ) : null}
             {promptActions("video")}
             <span className="text-xs text-subtle-foreground">{t("shot_mention_hint")}</span>
@@ -650,6 +679,12 @@ function ShotDetailContent({
             kinds={SHOT_MENTION_KINDS}
             projectName={projectName}
             className="max-h-none min-h-28"
+          />
+          <VideoPromptScorePanel
+            projectName={projectName}
+            episode={episode}
+            shotId={segmentId}
+            revision={videoText}
           />
         </ShotSection>
       </ShotGroup>
@@ -694,6 +729,15 @@ function ShotDetailContent({
         uploading={uploadingVideo}
         uploadDisabled={endFrameSubmitting}
       />
+      <div className="mt-4">
+        <ReviewPanel
+          kind="video"
+          projectName={projectName}
+          episode={episode}
+          shotId={segmentId}
+          revision={assets?.video_clip ?? ""}
+        />
+      </div>
     </>
   );
 

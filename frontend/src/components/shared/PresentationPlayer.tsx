@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Loader2 } from "lucide-react";
+import { Captions, CaptionsOff, Download, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,17 @@ interface PresentationPlayerProps {
 
 /** 起始位置离可播放范围末尾至少留出这么多，免得一播放就撞上边界停住。 */
 const START_END_MARGIN_SECONDS = 0.05;
+
+/** 字幕叠加层的开关记忆：跨分镜、跨会话保留，默认开。 */
+const CAPTIONS_STORAGE_KEY = "arcreel_presentation_captions";
+
+function readCaptionsEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(CAPTIONS_STORAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
 
 interface PresentationLoadState {
   resourceKey: string;
@@ -73,6 +84,18 @@ export function PresentationPlayer({
   const [downloading, setDownloading] = useState(false);
   const [positionMicroseconds, setPositionMicroseconds] = useState(0);
   const [nativeCaptionsShowing, setNativeCaptionsShowing] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(readCaptionsEnabled);
+  const toggleCaptions = () => {
+    setCaptionsEnabled((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(CAPTIONS_STORAGE_KEY, next ? "on" : "off");
+      } catch {
+        // 存储不可用时只在本次会话内生效。
+      }
+      return next;
+    });
+  };
   const canonicalPath =
     resourceType === "videos"
       ? `videos/scene_${resourceId}.mp4`
@@ -424,7 +447,7 @@ export function PresentationPlayer({
         </audio>
       )}
 
-      {activeCue && !nativeCaptionsShowing && (
+      {captionsEnabled && activeCue && !nativeCaptionsShowing && (
         <div className="pointer-events-none absolute inset-x-3 bottom-12 flex justify-center">
           <span className="max-w-[92%] rounded-md bg-black/75 px-2.5 py-1 text-center text-xs leading-relaxed text-white shadow-lg">
             {activeCue.text}
@@ -464,6 +487,16 @@ export function PresentationPlayer({
             onChoose={chooseVariant}
           />
         )}
+        <Button
+          variant="secondary"
+          size="icon-xs"
+          aria-pressed={captionsEnabled}
+          aria-label={t("presentation_captions_toggle")}
+          title={t("presentation_captions_toggle")}
+          onClick={toggleCaptions}
+        >
+          {captionsEnabled ? <Captions aria-hidden /> : <CaptionsOff aria-hidden />}
+        </Button>
         <Button
           variant="secondary"
           size="icon-xs"

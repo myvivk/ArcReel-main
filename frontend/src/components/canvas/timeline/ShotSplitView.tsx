@@ -71,7 +71,7 @@ interface Selection {
 }
 
 /**
- * 分镜分屏：左侧分镜列表（220px，可收为 44px）+ 右侧分镜详情。
+ * 分镜分屏：左侧分镜列表（竖屏 220px、横屏 300px，可收为 44px）+ 右侧分镜详情。
  * 切换分镜经离开拦截：当前分镜有未保存修改时先询问。J / K 切换分镜，⌘S / Ctrl+S 保存当前分镜。
  */
 export function ShotSplitView({
@@ -217,7 +217,12 @@ export function ShotSplitView({
       ref={rootRef}
       className={cn(
         "grid h-full min-h-0 min-w-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-background",
-        collapsed ? "grid-cols-[44px_minmax(0,1fr)]" : "grid-cols-[220px_minmax(0,1fr)]",
+        collapsed
+          ? "grid-cols-[44px_minmax(0,1fr)]"
+          // 横屏缩略图按 16:9 与行高对齐（128×72），列表需要更宽，否则文字列挤不下。
+          : aspectRatio === "9:16"
+            ? "grid-cols-[220px_minmax(0,1fr)]"
+            : "grid-cols-[300px_minmax(0,1fr)]",
       )}
     >
       <ShotList

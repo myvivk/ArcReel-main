@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { API } from "@/api";
+import { ROUTE_APP_PROJECTS, episodeSourceViewPath } from "@/app-routes";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
 import { DEFAULT_TEMPLATE_ID } from "@/data/style-templates";
@@ -93,6 +94,7 @@ export function CreateProjectModal() {
   const [basics, setBasics] = useState<WizardBasicsValue>({
     title: "",
     aspectRatio: "9:16",
+    creationMode: "ai_original",
   });
   const [duration, setDuration] = useState<WizardDurationValue>({
     episodeTargetDuration: null,
@@ -220,6 +222,7 @@ export function CreateProjectModal() {
         content_mode: "drama",
         aspect_ratio: basics.aspectRatio,
         generation_mode: "storyboard",
+        creation_mode: basics.creationMode,
         // 口播语速估算未填即不传（服务端不落盘，回退语言默认）
         ...(duration.speechRate !== null ? { speech_rate_units_per_second: duration.speechRate } : {}),
         default_duration: models.defaultDuration,
@@ -253,7 +256,14 @@ export function CreateProjectModal() {
       }
 
       setShowCreateModal(false);
-      navigate(`/app/projects/${resp.name}`);
+      // 导入原文项目创建时服务端已建好第 1 集：直接落到它的剧本页粘贴原文。
+      // AI 原创保持落项目概览，行为不变。
+      const firstEpisode = resp.first_episode;
+      if (basics.creationMode === "source_import" && firstEpisode != null) {
+        navigate(`${ROUTE_APP_PROJECTS}/${encodeURIComponent(resp.name)}${episodeSourceViewPath(firstEpisode)}`);
+      } else {
+        navigate(`/app/projects/${resp.name}`);
+      }
     } catch (err) {
       useAppStore.getState().pushToast(t("create_project_failed", { message: errMsg(err) }), "error");
       setCreating(false);

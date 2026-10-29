@@ -46,7 +46,7 @@ from lib.script.script_editor import ScriptEditError, new_item_id, patch_field, 
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 from lib.script.script_revision import content_fingerprint_of_data
 from lib.script.script_structure_validator import validate_script_structure
-from lib.script.source_anchor import is_verbatim_source_anchor
+from lib.script.source_anchor import is_content_aligned_source_anchor
 from lib.script.storyboard_mentions import storyboard_mention_warnings
 from lib.speech.speech_composition import (
     SpeechAdmission,
@@ -808,10 +808,11 @@ def _source_text_problems(
     candidate: dict[str, Any],
     operations: list[ScriptBatchOperation],
 ) -> tuple[ScriptBatchEditProblem, ...]:
-    """本次写入的对应原文须是本集源文的逐字子串，与参考生视频拆分工具同一判定口径。
+    """本次写入的对应原文须与本集源文内容对齐，与参考生视频拆分工具同一判定口径。
 
     只查新增或改动过的非空 ``source_text``：未动的条目即使源文后来变了也不拦无关编辑，清空
-    对应原文始终允许。比对源文见 :func:`_anchor_sources`；项目没有源文时不校验。
+    对应原文始终允许。格式差异（换行、引号分行、Markdown 标记）不算改写；比对源文见
+    :func:`_anchor_sources`，项目没有源文时不校验。
     """
     items, id_field, kind = resolve_items(candidate)
     original_items, original_id_field, _original_kind = resolve_items(original)
@@ -836,7 +837,7 @@ def _source_text_problems(
     sources = _anchor_sources(project_dir, project, episode)
     problems: list[ScriptBatchEditProblem] = []
     for index, item_id, source_text in written:
-        if not sources or any(is_verbatim_source_anchor(source_text, source) for source in sources):
+        if not sources or any(is_content_aligned_source_anchor(source_text, source) for source in sources):
             continue
         path: tuple[str | int, ...] = (kind, index, "source_text")
         problems.append(

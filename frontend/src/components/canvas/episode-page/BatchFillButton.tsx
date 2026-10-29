@@ -59,15 +59,21 @@ export function BatchFillButton({
 }) {
   const { t } = useTranslation("dashboard");
   const done = count === 0;
-  const label = done
-    ? t(`batch_fill_${kind}_done`)
-    : count === null
-      ? t(`batch_generate_${kind}`)
-      : t(`batch_fill_${kind}_count`, { count });
+  // 已齐时不再给按钮，用一枚完成态标签表示（设计稿：绿色「已齐」胶囊）。
+  if (done) {
+    return (
+      <span className="inline-flex shrink-0 items-center rounded-full bg-good/15 px-2 py-0.5 text-xs font-medium text-good">
+        {t("batch_fill_done_short")}
+      </span>
+    );
+  }
+  const label = count === null
+    ? t(`batch_generate_${kind}`)
+    : t(`batch_fill_${kind}_count`, { count });
   return (
     <Tooltip>
       <TooltipTrigger
-        render={<Button variant="outline" size="sm" disabled={done || disabled} onClick={onClick} />}
+        render={<Button variant="outline" size="sm" disabled={disabled} onClick={onClick} />}
       >
         <Sparkles aria-hidden data-icon="inline-start" />
         <span className="num">{label}</span>

@@ -55,7 +55,7 @@ from lib.project.asset_types import (
     project_asset_name_conflicts,
 )
 from lib.project.project_manager import VALID_GENERATION_MODES as _VALID_GENERATION_MODES
-from lib.project.project_schema import PERSISTED_PROJECT_CONTENT_MODES
+from lib.project.project_schema import CREATION_MODES, PERSISTED_PROJECT_CONTENT_MODES
 from lib.references.reference_catalog import ReferenceCatalog, build_reference_catalog
 from lib.script.script_models import (
     AD_TARGET_DURATION_DRIFT_THRESHOLD,
@@ -165,6 +165,9 @@ class DataValidator:
     # 生成模式合法集（storyboard / reference_video），真相源在 lib.project.project_manager（创建写入方），
     # 避免两处枚举漂移。必填：存量项目由 v4→v5 迁移补写显式值，缺失即非法。
     VALID_GENERATION_MODES: ClassVar[set[str]] = set(_VALID_GENERATION_MODES)
+    # 创作模式合法集（ai_original / source_import），真相源在 lib.project.project_schema。可缺失：
+    # 未跑到 v18→v19 迁移的旧归档、演示数据按 ai_original 读，由读侧缺省兜底；出现即须合法。
+    VALID_CREATION_MODES: ClassVar[set[str]] = set(CREATION_MODES)
     # 参考生视频 unit 时长的结构合理性区间，真相源同上（档位成员校验依赖运行时模型能力，
     # 不在归档层做）。
     VALID_UNIT_DURATION_RANGE = REFERENCE_UNIT_DURATION_RANGE
@@ -420,6 +423,20 @@ class DataValidator:
         elif not isinstance(content_mode, str) or content_mode not in self.VALID_CONTENT_MODES:
             errors.append(
                 _m("val_content_mode_invalid", value=content_mode, allowed=_allowed(self.VALID_CONTENT_MODES))
+            )
+
+        # 创作模式可缺失：未跑到 v18→v19 迁移的旧归档与演示数据按 ai_original 读（读侧
+        # ``resolve_creation_mode`` 兜底），缺失不报错；出现即须是合法二值之一。
+        creation_mode = project.get("creation_mode")
+        if creation_mode is not None and (
+            not isinstance(creation_mode, str) or creation_mode not in self.VALID_CREATION_MODES
+        ):
+            errors.append(
+                _m(
+                    "val_field_invalid",
+                    field="creation_mode",
+                    detail=f"必须是 {_allowed(self.VALID_CREATION_MODES)}",
+                )
             )
 
         # 生成模式必填二值：存量项目由 v4→v5 迁移补写显式值（含 grid 重编码），无缺省语义

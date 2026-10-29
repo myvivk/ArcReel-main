@@ -104,7 +104,11 @@ from lib.project.asset_types import (
 )
 from lib.project.legacy_reference_durations import migrate_script_unit_durations
 from lib.project.project_change_hints import emit_project_change_hint
-from lib.project.project_schema import parse_project_schema_version
+from lib.project.project_schema import (
+    CREATION_MODES,
+    DEFAULT_CREATION_MODE,
+    parse_project_schema_version,
+)
 from lib.project.script_entry_cleanup import purge_replaced_entry_media
 from lib.project.task_project_claim import ensure_task_project_claim
 from lib.references.reference_catalog import derivative_reference
@@ -2397,6 +2401,7 @@ class ProjectManager:
         style_template_id: str | None = None,
         extras: dict | None = None,
         narration: Mapping[str, object] | None = None,
+        creation_mode: str = DEFAULT_CREATION_MODE,
     ) -> dict:
         """
         创建新的项目元数据文件
@@ -2413,11 +2418,17 @@ class ProjectManager:
 
         `narration` 是旁白交付配置字段（交付方式与 TTS 快照，见 `lib.speech.narration_config`），
         缺省为后期配音；TTS 配音必须带完整快照。
+
+        `creation_mode` 是剧本来源（`ai_original` / `source_import`，见
+        `lib.project.project_schema`），创建入口写入、之后不可变；缺省 AI 原创。它只允许由本参数
+        写入，`extras` 不得覆盖。
         """
         project_name = self.normalize_project_name(project_name)
         project_title = str(title).strip() if title is not None else ""
         if content_mode != "drama":
             raise ValueError("新建项目只支持短剧工厂（drama / storyboard）")
+        if creation_mode not in CREATION_MODES:
+            raise ValueError(f"creation_mode 必须是 {' / '.join(sorted(CREATION_MODES))}，收到: {creation_mode!r}")
 
         # schema_version 与 CURRENT_SCHEMA_VERSION 对齐：新项目即最新形态，
         # 避免被启动迁移误处理（如 v0→v1 在"未含 clues 字段"时误清空 scenes/props）。
@@ -2430,6 +2441,7 @@ class ProjectManager:
             "title": project_title,
             "content_mode": "drama",
             "generation_mode": "storyboard",
+            "creation_mode": creation_mode,
             "aspect_ratio": aspect_ratio or "9:16",
             "style": style or "",
             "episodes": [],
@@ -2481,6 +2493,8 @@ class ProjectManager:
                 "target_duration",
                 "brief",
                 "grid_storyboard",
+                # 创作模式只由 creation_mode 参数写入，extras 不得覆盖（模式互斥守卫依赖它不可变）。
+                "creation_mode",
             }
             forbidden = reserved & set(extras)
             if forbidden:

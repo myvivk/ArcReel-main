@@ -11,8 +11,10 @@ import { ShortDramaStoryboardButton } from "@/components/canvas/shared/ShortDram
 import { FactoryStoryboardStart } from "@/components/canvas/shared/FactoryStoryboardStart";
 import { BatchFillButton, useBatchGap } from "@/components/canvas/episode-page/BatchFillButton";
 import { EpisodeHeaderActions } from "@/components/canvas/episode-page/EpisodeHeaderActions";
+import { SourceImportEntry } from "@/components/canvas/episode-page/SourceImportEntry";
 import type { EpisodeCanvasContext } from "@/components/canvas/episode-page/EpisodePage";
 import { useActiveResourceIds } from "@/stores/tasks-store";
+import { isSourceImport } from "@/utils/creation-mode";
 import { getScriptItemId } from "@/utils/script-shape";
 import { previewAspect } from "@/utils/preview-aspect";
 import { ONBOARDING_ANCHORS } from "@/onboarding/anchors";
@@ -106,6 +108,8 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
 
   const { t } = useTranslation("dashboard");
   const editorContentMode = "drama" as const;
+  // 导入原文项目没有 AI 原创剧本：空态给「导入原文」入口，不渲染 AI 原创按钮。
+  const sourceImport = isSourceImport(projectData);
 
   const hasScript = Boolean(episodeScript);
   const [batchKind, setBatchKind] = useState<StoryboardBatchKind | null>(null);
@@ -164,10 +168,15 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     if (projectData && editorContentMode === "drama" && !demoReadOnly) {
       return (
         <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-          <EpisodeHeaderActions>
-            <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-          </EpisodeHeaderActions>
-          <p className="text-sm text-muted-foreground">{t("timeline_script_not_ready")}</p>
+          {!sourceImport && (
+            <EpisodeHeaderActions target="source">
+              <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+            </EpisodeHeaderActions>
+          )}
+          <p className="text-sm text-muted-foreground">
+            {t(sourceImport ? "source_import_timeline_hint" : "timeline_script_not_ready")}
+          </p>
+          {sourceImport && <SourceImportEntry projectName={projectName} episode={episode} />}
         </div>
       );
     }
@@ -208,10 +217,14 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   if (!importedShortDrama && !demoReadOnly) {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
-        <EpisodeHeaderActions>
-          <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-        </EpisodeHeaderActions>
-        <p className="text-sm text-muted-foreground">{t("timeline_no_editable_segments")}</p>
+        {!sourceImport && (
+          <EpisodeHeaderActions target="source">
+            <ShortDramaGenerateButton projectName={projectName} episode={episode} />
+          </EpisodeHeaderActions>
+        )}
+        <p className="text-sm text-muted-foreground">
+          {t(sourceImport ? "source_import_timeline_hint" : "timeline_no_editable_segments")}
+        </p>
         <pre className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
           {JSON.stringify(episodeScript, null, 2)}
         </pre>
@@ -222,43 +235,53 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {view === "board" && hasScript && (
-        <EpisodeHeaderActions>
-          {!demoReadOnly && (
-            <>
+        <>
+          {!demoReadOnly && !sourceImport && (
+            <EpisodeHeaderActions target="source">
               <ShortDramaGenerateButton projectName={projectName} episode={episode} />
-            </>
+            </EpisodeHeaderActions>
           )}
           {!demoReadOnly && importedShortDrama && (
-            <ShortDramaStoryboardButton
-              projectName={projectName}
-              episode={episode}
-              storyboardCount={segments.length}
-              sceneIds={segments.map((segment) => getScriptItemId(segment, editorContentMode))}
-              agentOnly
-            />
+            <EpisodeHeaderActions target="script">
+              <ShortDramaStoryboardButton
+                projectName={projectName}
+                episode={episode}
+                storyboardCount={segments.length}
+                sceneIds={segments.map((segment) => getScriptItemId(segment, editorContentMode))}
+                agentOnly
+              />
+            </EpisodeHeaderActions>
           )}
-          <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
-          <BatchFillButton
-            kind="shot-grids"
-            count={shotGridGap}
-            disabled={demoReadOnly}
-            onClick={() => setBatchKind("shot-grids")}
-          />
-          <BatchFillButton
-            kind="videos"
-            count={videoGap}
-            disabled={demoReadOnly}
-            onClick={() => setBatchKind("videos")}
-          />
-          {onGenerateEpisodeNarration && (
+          <EpisodeHeaderActions target="prompts">
+            <PromptAuthoringButton projectName={projectName} episode={episode} scope="pending" />
+          </EpisodeHeaderActions>
+          <EpisodeHeaderActions target="materials">
             <BatchFillButton
-              kind="narration"
-              count={narrationGap}
-              disabled={narrationBatchBusy}
-              onClick={() => onGenerateEpisodeNarration(scriptFile)}
+              kind="shot-grids"
+              count={shotGridGap}
+              disabled={demoReadOnly}
+              onClick={() => setBatchKind("shot-grids")}
             />
+          </EpisodeHeaderActions>
+          <EpisodeHeaderActions target="videos">
+            <BatchFillButton
+              kind="videos"
+              count={videoGap}
+              disabled={demoReadOnly}
+              onClick={() => setBatchKind("videos")}
+            />
+          </EpisodeHeaderActions>
+          {onGenerateEpisodeNarration && (
+            <EpisodeHeaderActions target="voice">
+              <BatchFillButton
+                kind="narration"
+                count={narrationGap}
+                disabled={narrationBatchBusy}
+                onClick={() => onGenerateEpisodeNarration(scriptFile)}
+              />
+            </EpisodeHeaderActions>
           )}
-        </EpisodeHeaderActions>
+        </>
       )}
 
       {batchKind && (

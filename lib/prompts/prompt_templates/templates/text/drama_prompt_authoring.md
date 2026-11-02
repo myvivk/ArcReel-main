@@ -22,6 +22,7 @@ slots:
   scenes_content: 工厂 AI 分镜的内容投影，含出场资产名字清单、口播、原文锚和已确认的参考素材
   episode: 集号
   instructions: 附加指令正文；无时传 null
+  model_facts: 目标视频模型的事实与写作要点；写分镜提示词时传 null
 protected: false
 ---
 # 角色与任务
@@ -47,6 +48,12 @@ protected: false
 <episode_constraints>
 当前正在生成第 {{ episode }} 集。每个分镜产出一条视觉层，`scene_id` 必须逐字等于上方分镜内容里的 scene_id（含拆分 / 编辑后缀，如 `_1`），不增不减不改；不要输出口播 / 时长 / 资产等非视觉字段。
 </episode_constraints>
+{% if model_facts %}
+
+# 目标视频模型
+
+{{ model_facts }}
+{% endif %}
 
 # 字段写作指引
 

@@ -66,6 +66,8 @@ export interface ModelCapabilities {
   /** 首帧 / 尾帧生效值（含用户覆盖）；尚未查到或查询失败时为 null（未知），不谎报不支持。 */
   firstFrame: boolean | null;
   lastFrame: boolean | null;
+  /** 参考图数量上限；0 表示不支持参考图路径，null 表示未知。 */
+  maxReferenceImages: number | null;
   /** 声音一致性三级标识；尚未查到或查询失败时为 null（未知）。 */
   voiceConsistency: VoiceConsistencyTier | null;
   /**
@@ -195,6 +197,7 @@ export function useModelCapabilities({
     resolvedVideoBackend: caps ? `${caps.provider_id}/${caps.model}` : null,
     firstFrame: caps ? caps.first_frame : null,
     lastFrame: caps ? caps.last_frame : null,
+    maxReferenceImages: caps ? caps.max_reference_images : null,
     voiceConsistency: caps ? caps.voice_consistency : null,
     videoModelUnresolved: fresh && result.unresolved,
     videoModelError: fresh ? result.error : null,

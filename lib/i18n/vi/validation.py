@@ -95,6 +95,9 @@ MESSAGES = {
     "val_utterance_speaker_type": "{prefix} speaker phải là chuỗi hoặc null",
     "val_utterance_dialogue_speaker": "{prefix} dialogue phải có speaker không rỗng",
     "val_utterance_voiceover_speaker": "{prefix} voiceover không được có speaker",
+    "val_utterance_at_invalid": "{prefix} at phải là số giây không âm",
+    "val_utterance_shot_invalid": "{prefix} shot phải là số nguyên lớn hơn hoặc bằng 1",
+    "val_utterance_anchor_conflict": "{prefix} at và shot loại trừ lẫn nhau",
     "val_scene_speech_overflow": (
         "{prefix}: thời lượng thoại ước tính {spoken:.1f} giây vượt thời lượng cảnh {duration} giây quá "
         "{tolerance:.0%} (trần dung sai {budget:.1f} giây); thoại dài có thể không kịp nói hoặc nghe quá nhanh "
@@ -378,6 +381,9 @@ MESSAGES = {
     "val_ce_comfyui_fps_conflict": (
         "Tốc độ khung hình có nhiều nguồn mâu thuẫn ({values}): việc quy đổi thời lượng thành số khung hình chỉ "
         "dùng được một tốc độ, hãy chỉ giữ lại một nguồn"
+    ),
+    "val_ce_comfyui_duration_frames_conflict": (
+        "Không thể liên kết đồng thời duration (giây) và frames: cùng một chiều sẽ bị ghi hai lần, hãy chỉ giữ một"
     ),
     "val_ce_comfyui_ui_format_workflow": (
         "Đây là workflow định dạng UI của ComfyUI và không thể gửi đi; hãy xuất bằng Export (API) trong ComfyUI"

@@ -31,6 +31,7 @@ from lib.backends.backend_runtime import (
     with_artifact_retry,
 )
 from lib.backends.http_status_errors import redacted_status_error
+from lib.custom_provider.comfyui.artifacts import direct_artifact_url
 from lib.custom_provider.comfyui.failures import NODE_ERRORS, UPLOAD_FAILED, ComfyuiError
 from lib.infra.logging_utils import format_kwargs_for_log
 from lib.infra.retry import retry_async
@@ -338,6 +339,16 @@ class ComfyuiClient:
         """
 
         async def once() -> None:
+            # RunningHub 代理的 /view 在部分工作流上会 302 到 404 的 CDN 路径；history 给了
+            # bucket / objectKey 时先走真实对象直链，失败再退回原生 /view（自建 ComfyUI 只有 /view）。
+            direct = direct_artifact_url(self._base_url, artifact)
+            if direct is not None:
+                try:
+                    await stream_to_file(http, direct, output_path, max_bytes=max_bytes)
+                    return
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code not in (403, 404):
+                        raise
             await stream_to_file(
                 http,
                 self._url("/view"),

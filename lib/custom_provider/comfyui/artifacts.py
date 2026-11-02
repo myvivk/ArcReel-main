@@ -14,9 +14,11 @@ ComfyUI 的 history 条目不说「这次成功了」——它把每个节点的
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from arcreel_market_core.comfyui.bindings import targets_of
 from lib.backends.container_sniff import sniff_container
@@ -54,6 +56,29 @@ _EXECUTION_INTERRUPTED_EVENT = "execution_interrupted"
 
 #: 认不出出错节点时 ``comfyui_execution_error`` 的 ``node`` 占位值。
 _UNKNOWN_NODE = "-"
+
+#: RunningHub 代理的 ``/view`` 在部分工作流上会 302 到错误的 CDN 路径（404）；history 条目里
+#: 的 ``bucket`` / ``objectKey`` 是对象的真实位置，直链可绕过那一段坏掉的重定向。
+_RUNNINGHUB_TOS_HOST = "tos-cn-beijing.volces.com"
+_TOS_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+
+
+def direct_artifact_url(base_url: str, artifact: Mapping[str, Any]) -> str | None:
+    """RunningHub 代理产物的 TOS 直链；其余 ComfyUI 地址或缺少坐标时返回 ``None``。
+
+    只对 ``*.runninghub.cn`` 且 ``storageProvider == "tos"`` 的条目生效：这是代理把对象放进
+    火山 TOS 后的真实位置，普通 ComfyUI 的产物没有这两个字段，仍走原生的 ``/view``。
+    """
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host != "runninghub.cn" and not host.endswith(".runninghub.cn"):
+        return None
+    if str(artifact.get("storageProvider") or "").lower() != "tos":
+        return None
+    bucket = str(artifact.get("bucket") or "").strip()
+    object_key = str(artifact.get("objectKey") or "").strip().lstrip("/")
+    if not _TOS_BUCKET_RE.fullmatch(bucket) or not object_key:
+        return None
+    return f"https://{bucket}.{_RUNNINGHUB_TOS_HOST}/{quote(object_key, safe='/')}"
 
 
 def output_nodes_of(definition: Mapping[str, Any]) -> list[str]:

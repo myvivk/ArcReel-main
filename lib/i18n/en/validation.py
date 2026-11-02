@@ -95,6 +95,9 @@ MESSAGES = {
     "val_utterance_speaker_type": "{prefix} speaker must be a string or null",
     "val_utterance_dialogue_speaker": "{prefix} dialogue must carry a non-empty speaker",
     "val_utterance_voiceover_speaker": "{prefix} voiceover must not carry a speaker",
+    "val_utterance_at_invalid": "{prefix} at must be a non-negative number of seconds",
+    "val_utterance_shot_invalid": "{prefix} shot must be an integer greater than or equal to 1",
+    "val_utterance_anchor_conflict": "{prefix} at and shot are mutually exclusive",
     "val_scene_speech_overflow": (
         "{prefix}: estimated speech runs {spoken:.1f}s, exceeding the {duration}s scene duration by more than "
         "{tolerance:.0%} (tolerance ceiling {budget:.1f}s); long dialogue may not fit or may sound rushed "
@@ -370,6 +373,9 @@ MESSAGES = {
     "val_ce_comfyui_fps_conflict": (
         "The frame rate has several conflicting sources ({values}): converting a duration into a frame count needs "
         "exactly one frame rate, so keep only one of them"
+    ),
+    "val_ce_comfyui_duration_frames_conflict": (
+        "duration (seconds) and frames cannot both be bound: the same dimension would be written twice, so keep only one"
     ),
     "val_ce_comfyui_ui_format_workflow": (
         "This is a ComfyUI UI-format workflow and cannot be submitted; export it with Export (API) in ComfyUI instead"

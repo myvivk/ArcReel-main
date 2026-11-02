@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { DiscoveryFormat, EndpointDescriptor, EndpointKey, ImageCap, MediaType } from "@/types";
 import { useEndpointCatalogStore } from "@/stores/endpoint-catalog-store";
-import { isComfyuiEndpoint, isComfyuiProtocol } from "./customProviderHelpers";
+import { isComfyuiEndpoint, isRunninghubProtocol, isWorkflowProtocol } from "./customProviderHelpers";
 
 const MEDIA_GROUP_LABEL_KEY: Record<MediaType, string> = {
   text: "endpoint_text_group",
@@ -54,12 +54,14 @@ export function EndpointSelect({ id, value, onChange, protocol, disabled }: Endp
   }, [initialized, fetchCatalog]);
 
   const groups = useMemo(() => {
-    const wantsComfyui = isComfyuiProtocol(protocol);
-    const usable = endpoints.filter((e) => isComfyuiEndpoint(e) === wantsComfyui);
+    const wantsWorkflow = isWorkflowProtocol(protocol);
+    const usable = endpoints.filter((e) => isComfyuiEndpoint(e) === wantsWorkflow);
     return MEDIA_ORDER.map((media) => ({ media, options: usable.filter((e) => e.media_type === media) })).filter(
       (group) => group.options.length > 0,
     );
   }, [endpoints, protocol]);
+
+  const isRunninghub = isRunninghubProtocol(protocol);
 
   const label = (endpoint: EndpointDescriptor) => endpoint.display_name ?? t(endpoint.display_name_key);
   const selected = endpoints.find((e) => e.key === value);
@@ -101,7 +103,11 @@ export function EndpointSelect({ id, value, onChange, protocol, disabled }: Endp
             <SelectGroup key={group.media}>
               <SelectLabel>{t(MEDIA_GROUP_LABEL_KEY[group.media])}</SelectLabel>
               {group.options.map((endpoint) => (
-                <SelectItem key={endpoint.key} value={endpoint.key}>
+                <SelectItem
+                  key={endpoint.key}
+                  value={endpoint.key}
+                  disabled={isRunninghub && !endpoint.workflow_id}
+                >
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="truncate">{label(endpoint)}</span>
                     <span className="flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground">
@@ -109,6 +115,9 @@ export function EndpointSelect({ id, value, onChange, protocol, disabled }: Endp
                       <span className="truncate font-mono">{endpoint.request_path_template}</span>
                       {endpoint.image_capabilities && (
                         <span className="shrink-0">· {t(imageCapabilityKey(endpoint.image_capabilities))}</span>
+                      )}
+                      {isRunninghub && !endpoint.workflow_id && (
+                        <span className="shrink-0 text-warn">· {t("ce_rh_workflow_id_missing")}</span>
                       )}
                     </span>
                   </span>

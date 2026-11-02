@@ -62,6 +62,7 @@ import type {
   ComfyuiInferResponse,
   ComfyuiMediaType,
   CustomEndpointInfo,
+  PullRunningHubResponse,
   MarketEntryAggregate,
   MarketSubmission,
   MarketSubmissionDiagnostic,
@@ -367,9 +368,10 @@ class API {
    * 与 getSystemConfig 的 options 同口径（同样剔除 hidden 模型），过滤只加在桶层。
    */
   static async getModelCandidates(
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; includeUnconfigured?: boolean } = {}
   ): Promise<ModelCandidatesResponse> {
-    return this.request("/system/config/model-candidates", { signal: options.signal });
+    const query = options.includeUnconfigured ? "?include_unconfigured=true" : "";
+    return this.request(`/system/config/model-candidates${query}`, { signal: options.signal });
   }
 
   /** 新建 TTS 项目的预填值（全局默认的 TTS 模型、音色与语速）。 */
@@ -1203,14 +1205,18 @@ class API {
    *
    * 只读——不向供应商发请求、不产生费用。读的是**已保存**的剧本内容，草稿未保存时
    * 预览仍是上一次保存的结果。不可用原因由后端按请求语言渲染，前端不二次翻译。
+   * `videoBackend` 传生成弹窗里选中的候选模型：提示词格式（方言）由模型决定，
+   * 换了模型就该看到换过的文本，而不是项目里存着的那个模型的格式。
    */
   static async previewScriptItemPrompts(
     projectName: string,
     itemId: string,
     scriptFile: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; videoBackend?: string },
   ): Promise<ItemPromptPreview> {
-    const query = new URLSearchParams({ script_file: scriptFile }).toString();
+    const params: Record<string, string> = { script_file: scriptFile };
+    if (options?.videoBackend) params.video_backend = options.videoBackend;
+    const query = new URLSearchParams(params).toString();
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/script-items/${encodeURIComponent(itemId)}/prompt-preview?${query}`,
       { signal: options?.signal },
@@ -1699,7 +1705,7 @@ class API {
     scriptFile: string,
     durationSeconds: number = 4,
     seed: number | null = null,
-    frameMode: "first_last" | "reference" = "first_last",
+    frameMode: "first_last" | "reference" = "reference",
   ): Promise<{ success: boolean; task_id: string; deduped: boolean; message: string }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/generate/video/${encodeURIComponent(segmentId)}`,
@@ -2800,6 +2806,17 @@ class API {
     return this.request(`/custom-endpoints/validate${query}`, {
       method: "POST",
       body: JSON.stringify(definition),
+      signal: options.signal,
+    });
+  }
+
+  static async pullRunningHubWorkflow(
+    body: { workflow_id: string; provider_id?: string; base_url?: string; api_key?: string },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<PullRunningHubResponse> {
+    return this.request("/custom-endpoints/pull-runninghub", {
+      method: "POST",
+      body: JSON.stringify(body),
       signal: options.signal,
     });
   }

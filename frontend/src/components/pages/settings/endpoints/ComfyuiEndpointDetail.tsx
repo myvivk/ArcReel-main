@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { FileJson2, Loader2 } from "lucide-react";
+import { Cloud, FileJson2, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
 import { errMsg, voidCall } from "@/utils/async";
@@ -78,6 +78,8 @@ export interface ComfyuiEndpointDetailProps {
   onSaved: (record: CustomEndpointInfo) => void;
   /** 把当前这份定义交出去，重新导入的新 workflow 接到它上面。 */
   onReimport: (current: ComfyuiEndpointDefinition) => void;
+  /** 把当前这份 RunningHub 端点定义交出去，按 workflowId 从线上重新拉取。 */
+  onPullRunningHub?: (current: ComfyuiEndpointDefinition) => void;
   /** 放弃未保存修改：上层丢掉导入的未保存定义，并重建本组件回到已保存内容。 */
   onDiscard: () => void;
   /** 「更多操作」里由上层提供的条目（分享、删除）。 */
@@ -102,6 +104,7 @@ export function ComfyuiEndpointDetail({
   providers,
   onSaved,
   onReimport,
+  onPullRunningHub,
   onDiscard,
   menuItems,
   submissionBadge,
@@ -109,6 +112,7 @@ export function ComfyuiEndpointDetail({
   const { t } = useTranslation(["dashboard", "common"]);
   const nameId = useId();
   const mediaLabelId = useId();
+  const workflowIdId = useId();
 
   const [definition, setDefinition] = useState(initialDefinition);
   const [bindings, setBindings] = useState<ComfyuiBindings>(() =>
@@ -314,6 +318,7 @@ export function ComfyuiEndpointDetail({
           badges={
             <>
               <Badge variant="secondary">{t("ce_kind_comfyui")}</Badge>
+              {definition.workflow_id && <Badge variant="secondary">{t("ce_rh_badge")}</Badge>}
               <Badge variant="outline">
                 {t(definition.media_type === "image" ? "endpoint_image_group" : "endpoint_video_group")}
               </Badge>
@@ -332,10 +337,18 @@ export function ComfyuiEndpointDetail({
             </>
           }
           primary={
-            <Button variant="outline" onClick={() => onReimport(draft)}>
-              <FileJson2 aria-hidden data-icon="inline-start" />
-              {t("ce_cf_reimport")}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {record && onPullRunningHub && definition.workflow_id && (
+                <Button variant="outline" onClick={() => onPullRunningHub(draft)}>
+                  <Cloud aria-hidden data-icon="inline-start" />
+                  {t("ce_rh_refresh")}
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => onReimport(draft)}>
+                <FileJson2 aria-hidden data-icon="inline-start" />
+                {t("ce_cf_reimport")}
+              </Button>
+            </div>
           }
           menu={
             <>
@@ -396,6 +409,22 @@ export function ComfyuiEndpointDetail({
         </Section>
 
         <Section title={t("ce_cf_definition_title")}>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor={workflowIdId} className="text-sm font-medium">
+              {t("ce_rh_workflow_id_label")}
+            </label>
+            <Input
+              id={workflowIdId}
+              value={definition.workflow_id ?? ""}
+              placeholder={t("ce_rh_workflow_id_placeholder")}
+              autoComplete="off"
+              onChange={(event) => {
+                const workflowId = event.target.value;
+                setDefinition((current) => ({ ...current, workflow_id: workflowId || undefined }));
+              }}
+            />
+            <p className="text-xs text-muted-foreground">{t("ce_rh_workflow_id_hint")}</p>
+          </div>
           <div className="flex flex-col gap-1.5">
             <label htmlFor={nameId} className="text-sm font-medium">
               {t("ce_cf_name_label")}

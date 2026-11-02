@@ -16,6 +16,7 @@ from lib.backends.image_backends.base import ImageCapabilityError
 from lib.config.resolver import ImageBucketCapabilityError, VideoBucketCapabilityError
 from lib.custom_provider.comfyui.failures import ComfyuiError
 from lib.custom_provider.declarative_backend import DeclarativeRuntimeError
+from lib.custom_provider.runninghub.failures import RunningHubError
 from lib.generation.execution_checkpoint import ReferenceExecutionIdentityError
 from lib.generation.task_failure import encode_failure
 from lib.generation.video_request_facts import VideoRequestFactsError
@@ -56,7 +57,8 @@ def encode_task_failure_message(exc: Exception) -> str:
         | VideoRequestFactsError
         | ReferenceExecutionIdentityError
         | DeclarativeRuntimeError
-        | ComfyuiError,
+        | ComfyuiError
+        | RunningHubError,
     ):
         # 结构化执行拒绝没有通用兜底 code 可退，退回 str(exc)（即 code 本身）——
         # 非结构化文本在读侧原样透传，不会丢失原因。

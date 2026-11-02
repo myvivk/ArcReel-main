@@ -50,15 +50,24 @@ from lib.generation.video_request_facts import (
     VideoRequestFactsFailure,
     evaluate_video_request_facts,
 )
+from lib.prompts.model_specs import VideoPromptSpec, resolve_video_prompt_spec
 from lib.prompts.prompt_utils import (
+    VideoReferenceLabel,
     is_structured_video_prompt,
     render_storyboard_video_prompt,
 )
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.grid.keyframe_parser import keyframe_reference_problems
+from lib.script.grid.video_prompt_targets import video_prompt_target_for_project
 from lib.script.script_models import get_generated_assets
-from lib.script.storyboard_sequence import StoryboardImageUnavailable, StoryboardVideoSlots
+from lib.script.storyboard_sequence import (
+    StoryboardImageUnavailable,
+    StoryboardVideoSlots,
+    apply_storyboard_frame_mode,
+    resolve_storyboard_video_asset_images,
+    split_storyboard_video_asset_images,
+)
 from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
 from lib.speech.speech_composition import (
     SpeechAdmission,
@@ -457,6 +466,22 @@ def speech_admission_ticket(unit_id: str, exc: SpeechAdmissionError) -> UnitAdmi
     )
 
 
+def _project_language(project: Mapping[str, Any]) -> str | None:
+    """项目输出语言；缺省返回 None（渲染按中文措辞）。"""
+
+    value = project.get("source_language")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _project_spec(project: Mapping[str, Any]) -> VideoPromptSpec | None:
+    """项目当前视频模型对应的提示词规范；未配置模型时 None（通用口径）。"""
+
+    target = video_prompt_target_for_project(project)
+    if target is None:
+        return None
+    return resolve_video_prompt_spec(target["provider"], target["model"])
+
+
 def storyboard_video_prompt(
     item: dict[str, Any],
     *,
@@ -465,6 +490,9 @@ def storyboard_video_prompt(
     slots: StoryboardVideoSlots | None = None,
     asset_links: str = "",
     audio_speakers: tuple[str, ...] = (),
+    spec: VideoPromptSpec | None = None,
+    references: Sequence[VideoReferenceLabel] | None = None,
+    language: str | None = None,
 ) -> str:
     prompt = item.get("video_prompt")
     if not prompt:
@@ -486,6 +514,9 @@ def storyboard_video_prompt(
         slots=slots,
         asset_links=asset_links,
         audio_speakers=audio_speakers,
+        spec=spec,
+        references=references,
+        language=language,
     )
     # K 引用有界（D-17）：越界文本写回时已被拒，这里在计费前再拦一次——声明了不存在的参考图
     # 只会在供应商那边失败，成本更高。
@@ -546,6 +577,52 @@ async def audio_switch_conflict(
     return None
 
 
+def _video_reference_plan(
+    *,
+    project_dir: Path,
+    project: dict[str, Any],
+    item: dict[str, Any],
+    episode: int,
+    items: Sequence[Any],
+    id_field: str,
+    resource_id: str,
+    resolver: ArtifactCurrencyResolver | None,
+    frame_mode: str,
+    max_reference_images: int | None,
+) -> tuple[StoryboardVideoSlots, list[VideoReferenceLabel]]:
+    """本次请求实际会下发的参考图序列：资产图（参考图模式）+ K 帧，顺序即编号。
+
+    执行路径与准入路径共用本函数，编号、计数与实发列表因此同源；资产图按
+    ``max_reference_images`` 的剩余名额截断，不会挤掉 K 帧、也不会超发。
+    """
+
+    slots = resolve_usable_storyboard_video_slots(
+        project_path=project_dir,
+        project=project,
+        episode=episode,
+        resource_id=resource_id,
+        items=items,
+        id_field=id_field,
+        resolver=resolver,
+    )
+    slots = apply_storyboard_frame_mode(slots, frame_mode if frame_mode in {"first_last", "reference"} else "reference")
+    references: list[VideoReferenceLabel] = []
+    if slots.reference_only:
+        assets = resolve_storyboard_video_asset_images(project_path=project_dir, project=project, item=item)
+        selected_assets, _dropped_assets = split_storyboard_video_asset_images(
+            assets,
+            max_reference_images=max_reference_images,
+            frame_count=len(slots.frames),
+        )
+        references.extend(VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets)
+        references.extend(
+            VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
+            for _role, frame in slots.frames
+            if frame.keyframe_index is not None
+        )
+    return slots, references
+
+
 def build_storyboard_video_specs(
     *,
     items: list[dict[str, Any]],
@@ -560,6 +637,8 @@ def build_storyboard_video_specs(
     resolver: ArtifactCurrencyResolver | None = None,
     voice_characters: dict[str, Any] | None = None,
     storyboard_items: Sequence[Any] | None = None,
+    frame_mode: str = "reference",
+    max_reference_images: int | None = None,
 ) -> tuple[list[TaskSpec], list[UnitAdmissionTicket]]:
     """Build the Storyboard-mode specs, refusing each unit that cannot be requested.
 
@@ -599,14 +678,17 @@ def build_storyboard_video_specs(
             continue
 
         try:
-            slots = resolve_usable_storyboard_video_slots(
-                project_path=project_dir,
+            slots, references = _video_reference_plan(
+                project_dir=project_dir,
                 project=project,
+                item=item,
                 episode=episode,
-                resource_id=str(item_id),
                 items=storyboard_items if storyboard_items is not None else items,
                 id_field=id_field,
+                resource_id=str(item_id),
                 resolver=resolver,
+                frame_mode=frame_mode,
+                max_reference_images=max_reference_images,
             )
         except (OSError, ValueError) as exc:
             # 分镜图本身不可用是最常见的一种，给出下一步该跑什么，而不是只报路径。
@@ -628,6 +710,9 @@ def build_storyboard_video_specs(
                 voice_characters=voice_characters,
                 slots=slots,
                 asset_links=storyboard_asset_links(project, item, project_dir.name),
+                spec=_project_spec(project),
+                references=references or None,
+                language=_project_language(project),
             )
         except Exception as exc:
             refused.append(
@@ -643,8 +728,8 @@ def build_storyboard_video_specs(
         # duration 是能力维度，留待执行层在 provider 解析后校验（见 ADR-0001）；
         # 原样透传调用方显式指定的值，不在入队侧做 int() 截断式归一化（否则会把
         # 本应被执行层拒绝的非法值静默修正）。缺省由执行层按 caps 收口默认。
-        extra_payload: dict[str, Any] = {}
-        extra_payload["storyboard_reference_count"] = len(slots.references)
+        extra_payload: dict[str, Any] = {"frame_mode": frame_mode}
+        extra_payload["storyboard_reference_count"] = len(references)
         duration = item.get("duration_seconds")
         if duration is not None:
             extra_payload["duration_seconds"] = duration
@@ -752,15 +837,20 @@ async def admit_storyboard_video_request(
             count = (spec.payload or {}).get("storyboard_reference_count", 0)
             if project_dir is not None:
                 try:
-                    slots = resolve_usable_storyboard_video_slots(
-                        project_path=project_dir,
+                    frame_mode = str((spec.payload or {}).get("frame_mode") or "reference")
+                    slots, references = _video_reference_plan(
+                        project_dir=project_dir,
                         project=project,
+                        item=items_by_id[spec.resource_id],
                         episode=episode,
                         items=storyboard_items if storyboard_items is not None else items,
                         id_field=id_field,
                         resource_id=spec.resource_id,
+                        resolver=None,
+                        frame_mode=frame_mode,
+                        max_reference_images=request_facts.max_reference_images,
                     )
-                    count = len(slots.references)
+                    count = len(references) or len(slots.references)
                     if spec.payload is not None:
                         spec.payload["storyboard_reference_count"] = count
                     audio = resolve_storyboard_audio_inputs(
@@ -782,6 +872,9 @@ async def admit_storyboard_video_request(
                                 project, items_by_id[spec.resource_id], project_dir.name
                             ),
                             audio_speakers=audio.speakers,
+                            spec=resolve_video_prompt_spec(request_facts.provider_id, request_facts.model_id),
+                            references=references or None,
+                            language=_project_language(project),
                         )
                     if audio.paths and (
                         request_facts.voice_consistency != "native"

@@ -106,6 +106,10 @@ export function ComfyuiEndpointTestSection({ definition, providers, blocked }: C
   const [providerId, setProviderId] = useState(() => (providers[0] ? String(providers[0].id) : ""));
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  // 内联凭证要自己声明走哪套 transport；有 workflowId 的端点默认按 RunningHub 试。
+  const [inlineProtocol, setInlineProtocol] = useState<"comfyui" | "runninghub">(
+    definition.workflow_id ? "runninghub" : "comfyui",
+  );
 
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<EndpointPreviewResponse | null>(null);
@@ -135,8 +139,12 @@ export function ComfyuiEndpointTestSection({ definition, providers, blocked }: C
 
   const credentials = useCallback((): EndpointTestCredentials => {
     if (credSource === "provider") return { provider_id: `custom-${providerId}` };
-    return { base_url: baseUrl, api_key: apiKey };
-  }, [credSource, providerId, baseUrl, apiKey]);
+    return { base_url: baseUrl, api_key: apiKey, protocol: inlineProtocol };
+  }, [credSource, providerId, baseUrl, apiKey, inlineProtocol]);
+
+  const selectedProvider = providers.find((p) => String(p.id) === providerId);
+  const trialIsRunninghub =
+    credSource === "provider" ? selectedProvider?.discovery_format === "runninghub" : inlineProtocol === "runninghub";
 
   const parameters = useMemo(
     () => ({
@@ -277,6 +285,15 @@ export function ComfyuiEndpointTestSection({ definition, providers, blocked }: C
           />
         ) : (
           <>
+            <TestSelect
+              label={t("ce_rh_test_protocol")}
+              value={inlineProtocol}
+              onValueChange={(value) => setInlineProtocol(value as "comfyui" | "runninghub")}
+              items={[
+                { value: "comfyui", label: t("ce_rh_test_protocol_comfyui") },
+                { value: "runninghub", label: t("ce_rh_test_protocol_runninghub") },
+              ]}
+            />
             <TestField label={t("base_url")} htmlFor={ids.baseUrl}>
               <Input
                 id={ids.baseUrl}
@@ -285,7 +302,7 @@ export function ComfyuiEndpointTestSection({ definition, providers, blocked }: C
                 spellCheck={false}
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="http://127.0.0.1:8188"
+                placeholder={inlineProtocol === "runninghub" ? "https://www.runninghub.cn" : "http://127.0.0.1:8188"}
               />
             </TestField>
             <TestField label={t("credential_secret_label")} htmlFor={ids.apiKey}>
@@ -338,6 +355,11 @@ export function ComfyuiEndpointTestSection({ definition, providers, blocked }: C
       </TestCard>
 
       <TestCard title={t("ce_test_trial")} badge={t("ce_cf_test_trial_gpu")} desc={t("ce_cf_test_trial_desc")}>
+        {trialIsRunninghub && (
+          <p role="status" className="text-xs text-warn">
+            {t("ce_rh_test_cost_warning")}
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={() => void handleStartTrial()} disabled={trial.starting || blocked || running}>
             {trial.starting ? (
@@ -407,6 +429,14 @@ function ConversionsTable({
           : t("ce_cf_test_conv_duration", { seconds: conversions.duration_seconds }),
       to: conversions.frames === null ? null : t("ce_cf_test_conv_frame_count", { n: conversions.frames }),
     });
+    if (conversions.duration != null) {
+      rows.push({
+        key: "duration",
+        label: t("ce_cf_test_conv_duration_target"),
+        from: t("ce_cf_test_conv_duration", { seconds: conversions.duration }),
+        to: t("ce_cf_test_conv_duration", { seconds: conversions.duration }),
+      });
+    }
   }
   rows.push({
     key: "seed",

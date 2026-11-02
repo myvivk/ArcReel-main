@@ -138,11 +138,17 @@ async def video_bucket_for_queued_task(
     图生视频 / 宫格 → i2v；参考生视频调公共 request projection 按当前实际可用资产分流——
     无参考图的视频单元 → i2v，其余 → r2v。剧本 / unit / 能力读不到时回退代表桶 r2v；
     回退只影响 claim 池过滤与限流槽路由的精度，执行层仍在处理开始时重新投影。
+    storyboard 的 ``frame_mode=reference`` 实际下发参考图，必须与执行侧同判为 r2v；
+    否则 claim 会按 i2v 的 provider 占槽，执行时又解析成 r2v 的 provider，形成
+    claim → DispatchProviderChanged → requeue 的死循环。
     表外任务类型返回 None（不定桶）。
     """
     from lib.config.resolver import VIDEO_BUCKET_BY_TASK_TYPE
 
-    return VIDEO_BUCKET_BY_TASK_TYPE.get(task_type)
+    bucket = VIDEO_BUCKET_BY_TASK_TYPE.get(task_type)
+    if task_type == "video" and isinstance(payload, dict) and payload.get("frame_mode") == "reference":
+        return "r2v"
+    return bucket
 
 
 async def resolve_video_execution_for_queued_task(

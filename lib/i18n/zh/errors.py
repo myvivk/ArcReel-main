@@ -129,6 +129,16 @@ MESSAGES = {
     "task_fail_comfyui_output_missing": "ComfyUI 已执行完毕，但产物节点 {nodes} 没有产出任何文件，请检查该节点的节点绑定与 workflow 的成片链路",
     "task_fail_comfyui_output_type_mismatch": "ComfyUI 产出的 {filename} 不是这个端点应产出的文件类型（应为 {expected}），请把产物节点的节点绑定指到导出最终产物的那个节点，或在该保存节点上改用受支持的格式（如 SaveVideo 选 h264-mp4）",
     "task_fail_comfyui_output_container_mismatch": "ComfyUI 产出的 {filename} 文件内容不是这个端点应产出的容器（应为 {expected}），请在保存节点上改用受支持的格式（如 SaveVideo 选 h264-mp4）",
+    "task_fail_runninghub_auth_failed": "RunningHub 拒绝了这次请求：APIKEY 无效、已失效或没有权限，请到「供应商」里重新配置",
+    "task_fail_runninghub_workflow_not_found": "RunningHub 上找不到工作流，或当前 APIKEY 无权访问；请检查端点里的工作流 ID：{detail}",
+    "task_fail_runninghub_insufficient_coins": "RunningHub 余额不足，任务未提交：{detail}",
+    "task_fail_runninghub_task_failed": "RunningHub 执行失败：{detail}",
+    "task_fail_runninghub_upload_failed": "素材上传到 RunningHub 失败：{detail}",
+    "task_fail_runninghub_job_lost": "RunningHub 上找不到这次执行（{task_id}），请重试",
+    "task_fail_runninghub_output_missing": "RunningHub 已执行完毕，但没有产出 {media_type} 文件，请检查产物节点与节点绑定",
+    "task_fail_runninghub_output_type_mismatch": "RunningHub 产出的 {filename} 不是这个端点应产出的文件类型（应为 {expected}），请检查产物节点的节点绑定",
+    "task_fail_runninghub_output_container_mismatch": "RunningHub 产出的 {filename} 文件内容不是这个端点应产出的容器（应为 {expected}），请在保存节点上改用受支持的格式",
+    "task_fail_runninghub_node_errors": "RunningHub 拒收这份 workflow，共 {nodes} 个节点报错，首条：{summary}",
     "task_fail_artifact_download_failed": "视频生成任务已成功但下载失败，可重试下载：{detail}",
     "task_fail_cascade_blocked_dependency": "因依赖任务 {dependency_task_id} 失败而被阻塞：{reason}",
     "prompt_must_be_string_or_scene_object": "prompt 必须是字符串或包含 scene/composition 的对象",
@@ -400,8 +410,13 @@ MESSAGES = {
     "connectivity_check_unsupported_format": "发现格式 {discovery_format} 暂不支持连通性检查",
     "connectivity_check_comfyui_ok": "ComfyUI 可达，版本 {version}",
     "connectivity_check_comfyui_ok_unknown_version": "ComfyUI 可达，未回传版本号",
+    "connectivity_check_runninghub_ok": "RunningHub 可达：余额 {coins} RH 币，运行中 {running} 个任务",
+    "connectivity_check_runninghub_auth_failed": "APIKEY 无效或已失效，请检查 RunningHub 控制台中的密钥",
     "discovery_not_applicable_comfyui": (
         "ComfyUI 协议没有可发现的模型列表：能调用什么由 workflow 自身决定，请改为导入 ComfyUI 端点并挂到模型行上"
+    ),
+    "discovery_not_applicable_runninghub": (
+        "RunningHub 协议没有可发现的模型列表：能调用什么由 workflow 自身决定，请改为导入 ComfyUI 端点并挂到模型行上"
     ),
     "custom_endpoint_kind_conflicts_with_attachment": (
         "这份定义换了容器类型，与该端点当前的挂接不相容：模型 {model}（供应商 {provider}）的协议接不了它。请先改动模型行的挂接，再替换定义"
@@ -415,6 +430,20 @@ MESSAGES = {
     ),
     "comfyui_provider_requires_comfyui_endpoint": (
         "ComfyUI 协议的供应商只能挂 ComfyUI 端点，模型 {model_id} 的 {endpoint} 不是"
+    ),
+    "runninghub_provider_requires_workflow_endpoint": (
+        "RunningHub 供应商只能挂 workflow 端点，模型 {model_id} 的 {endpoint} 不是"
+    ),
+    "runninghub_provider_required": "这个操作需要 RunningHub 供应商",
+    "runninghub_workflow_id_required": (
+        "RunningHub 供应商的端点必须填写工作流 ID：模型 {model_id} 挂的 {endpoint} 还没有"
+    ),
+    "runninghub_workflow_id_required_for_pull": "请填写 RunningHub 工作流 ID",
+    "runninghub_workflow_id_required_for_attachment": (
+        "这个端点正在被 RunningHub 供应商的模型 {model}（供应商 {provider}）使用，不能清空工作流 ID"
+    ),
+    "capability_overrides_not_supported_for_workflow": (
+        "模型 {model_id} 挂的是 workflow 端点，能力只从节点绑定推导，不支持能力覆盖"
     ),
     "capability_overrides_not_supported_for_comfyui": (
         "模型 {model_id} 挂的是 ComfyUI 端点，能力只从节点绑定推导，不支持能力覆盖"
@@ -479,7 +508,9 @@ MESSAGES = {
     "ref_duration_exceeded": "脚本编排 {total}s 超出 {model} 最大档位，已按 {duration}s 生成，成片短于脚本编排",
     "ref_duration_rounded_up": "脚本编排 {total}s 不在 {model} 的时长档位内，已按 {duration}s 生成，成片长于脚本编排",
     "comfyui_multiple_outputs": "ComfyUI 这次产出了 {count} 个文件，已取其中的 {filename}",
+    "runninghub_multiple_outputs": "RunningHub 这次产出了 {count} 个文件，已取其中的 {filename}",
     "ref_too_many_images": "参考图数量 {count} 超出 {model} 上限 {max_count}，已取前 {max_count} 张",
+    "storyboard_video_assets_trimmed": "参考图上限 {limit} 张（其中关键帧 {frame_count} 张），{count} 张资产图未随请求发出：{names}；提示词里不会为它们编号",
     "ref_payload_too_large": "参考图请求体超出供应商限制，已二次压缩重试",
     "ref_payload_floor_exceeded": "参考图过大或过多，压缩到最低画质仍超出供应商请求体上限，请减少参考图数量或降低分辨率后重试",
     "ref_sora_single_ref": "Sora 参考生视频暂不支持多图，已降级为单图",

@@ -46,5 +46,5 @@
     "success": "succeeded",
     "fail": "failed"
   },
-  "capabilities": {"text_to_video": false, "first_frame": true, "audio_track": "always_off"}
+  "capabilities": {"text_to_video": false, "first_frame": true, "audio_track": "always_off", "max_prompt_chars": 2000}
 }

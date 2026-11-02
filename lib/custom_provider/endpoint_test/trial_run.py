@@ -52,6 +52,7 @@ from lib.config.resolver import ConfigResolver
 from lib.custom_provider.comfyui.failures import ComfyuiError
 from lib.custom_provider.declarative_backend import DeclarativeRuntimeError, DeclarativeVideoBackend
 from lib.custom_provider.declarative_image_backend import DeclarativeImageBackend
+from lib.custom_provider.runninghub.failures import RunningHubError
 from lib.db.base import DEFAULT_USER_ID
 from lib.db.repositories.usage_repo import bound_provider_response
 from lib.generation.task_failure import encode_failure
@@ -498,7 +499,8 @@ class TrialRunManager:
             # 两种运行时与两道能力闸的失败载体同形（稳定 code + 可序列化 params），编码成失败码后
             # 读侧按同一条路径本地化；其余异常没有稳定码可编，原样留字符串。
             structured = isinstance(
-                exc, DeclarativeRuntimeError | ComfyuiError | VideoCapabilityError | ImageCapabilityError
+                exc,
+                DeclarativeRuntimeError | ComfyuiError | RunningHubError | VideoCapabilityError | ImageCapabilityError,
             )
             run.error = encode_failure(exc.code, **exc.params) if structured else str(exc)
             self._finish(run, target, capture, TrialRunStatus.FAILED)

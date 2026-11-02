@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Check, ChevronDown, History, Images, Loader2, Settings2, Sparkles } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, Copy, History, Images, Loader2, Settings2, Sparkles } from "lucide-react";
 import { API, type FileUrlWidth } from "@/api";
 import {
   AlertDialog,
@@ -54,7 +54,7 @@ const TERMINAL_TASK_STATUSES = new Set(["completed", "succeeded", "failed", "can
 
 export function ReferenceMaterialsSection({
   projectName, scriptFile, episode, shotId, aspectRatio = "9:16", readOnly, disabled,
-  saveFirst, beforeGenerate, onPlanChange, onBusyChange, onNeedsRefreshChange,
+  saveFirst, beforeGenerate, onPlanChange, onBusyChange, onNeedsRefreshChange, referenceNames,
 }: ReferenceMaterialsSectionProps) {
   const { t } = useTranslation("dashboard");
   const titleId = useId();
@@ -70,6 +70,8 @@ export function ReferenceMaterialsSection({
   const [submitting, setSubmitting] = useState(false);
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewCell, setPreviewCell] = useState<ShotGridPlan["cells"][number] | null>(null);
+  const [previewCopied, setPreviewCopied] = useState(false);
   const [regenerateRequest, setRegenerateRequest] = useState<{ layout?: ShotGridLayout } | null>(null);
   const [versions, setVersions] = useState<ShotGridVersion[]>([]);
   const [fallbackPlan, setFallbackPlan] = useState<ShotGridPlan | null>(null);
@@ -186,8 +188,7 @@ export function ReferenceMaterialsSection({
     try {
       if (controller.signal.aborted) return;
       if (isResourceBusy("shot_grid", projectName, plan?.id ?? shotId)) return;
-      // 直接出图：不弹配置窗。prompt 传空串，服务端按 image_prompt 现解析逐格文本，
-      // 宫格与分镜词从此只有一份真相，不再另写一份“参考图提示词”。
+      // 直接出图：不弹配置窗。保留已有逐格描述；没有描述时服务端才回退解析 image_prompt。
       const [rows, cols] = layout ? LAYOUTS[layout] : [plan?.rows ?? 2, plan?.cols ?? 2];
       const saved = await API.saveShotGrid(projectName, {
         script_file: scriptFile,
@@ -195,7 +196,7 @@ export function ReferenceMaterialsSection({
         shot_id: shotId,
         rows,
         cols,
-        prompt: "",
+        prompt: plan?.prompt ?? "",
       });
       if (controller.signal.aborted) return;
       updatePlan(saved);
@@ -220,12 +221,37 @@ export function ReferenceMaterialsSection({
     await runGenerate(layout);
   };
 
-  const configure = () => generate();
+  const configure = async () => {
+    if (!scriptFile || episode === undefined || readOnly || disabled || busy) return;
+    // 已确认的宫格先确认「会作废 K 帧」，确认后仍进配置弹窗：描述原样回填，规格锁定。
+    if (plan?.status === "confirmed") {
+      void generate();
+      return;
+    }
+    if (saveFirst && !(await beforeGenerate())) return;
+    useShotGridDialogStore.getState().open({
+      projectName,
+      scriptFile,
+      episode,
+      shotId,
+      plan,
+      referenceNames,
+    });
+  };
 
-  const confirmRegenerate = async () => {
+  const confirmRegenerate = () => {
     const request = regenerateRequest;
+    if (!request || !scriptFile || episode === undefined) return;
     setRegenerateRequest(null);
-    await runGenerate(request?.layout);
+    useShotGridDialogStore.getState().open({
+      projectName,
+      scriptFile,
+      episode,
+      shotId,
+      plan,
+      referenceNames,
+      allowConfirmedRegenerate: true,
+    });
   };
 
   const confirmMaterials = async () => {
@@ -276,6 +302,17 @@ export function ReferenceMaterialsSection({
       setSubmitting(false);
     }
   };
+
+  const copyPreviewPrompt = async () => {
+    if (!previewCell?.prompt) return;
+    try {
+      await navigator.clipboard.writeText(previewCell.prompt);
+      setPreviewCopied(true);
+      window.setTimeout(() => setPreviewCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时保持按钮原状，不打断预览。
+    }
+  };
   const imageUrl = (path: string, width: FileUrlWidth = 1280) =>
     API.getFileUrl(projectName, path, fingerprints[path] ?? null, { width });
   // 预览历史版本时，下面的宫格区域改用那一版的规格与画面。
@@ -308,6 +345,12 @@ export function ReferenceMaterialsSection({
       : plan?.status === "completed" ? t("shot_materials_ready")
         : plan?.status === "generating" ? t("shot_grid_generating")
           : plan?.status === "failed" ? t("shot_materials_failed") : t("shot_materials_not_generated");
+  const showFallback = Boolean(
+    !previewPlan
+      && fallbackPlan
+      && (plan?.status === "generating" || plan?.status === "failed")
+      && fallbackPlan.composite_path,
+  );
 
   return (
     <section aria-labelledby={titleId} className="flex min-w-0 flex-col gap-2">
@@ -412,8 +455,8 @@ export function ReferenceMaterialsSection({
           )}
         </div>
       )}
-      {fallbackPlan && (plan?.status === "generating" || plan?.status === "failed") && fallbackPlan.composite_path ? (
-        <div className="rounded-md border border-border bg-muted/20 p-2">
+      {fallbackPlan && showFallback && fallbackPlan.composite_path ? (
+        <div className="w-fit max-w-full rounded-md border border-border bg-muted/20 p-2">
           <p className="mb-2 text-xs text-muted-foreground">
             {t(plan?.status === "failed" ? "shot_materials_previous_after_failure" : "shot_materials_previous_while_generating")}
           </p>
@@ -441,7 +484,7 @@ export function ReferenceMaterialsSection({
           </Button>
         </div>
       )}
-      {showCells && shownPlan ? (
+      {showFallback ? null : showCells && shownPlan ? (
         aspectRatio === "9:16" ? (
           <div className="flex max-w-full items-stretch gap-2 overflow-x-auto pb-1">
             {shownPlan.cells.map((cell, index) => (
@@ -449,7 +492,14 @@ export function ReferenceMaterialsSection({
                 <button
                   type="button"
                   aria-label={t("shot_keyframe", { index: cell.index })}
-                  onClick={() => { if (cell.image_path) setPreviewUrl(imageUrl(cell.image_path)); }}
+                  title={describeCell(cell)}
+                  onClick={() => {
+                    if (cell.image_path) {
+                      setPreviewUrl(imageUrl(cell.image_path));
+                      setPreviewCell(cell);
+                      setPreviewCopied(false);
+                    }
+                  }}
                   className="focus-ring relative w-[140px] overflow-hidden rounded-lg border border-border bg-muted/40 p-1.5 text-left shadow-sm"
                 >
                   <div className="overflow-hidden rounded-md bg-background" style={{ aspectRatio: cellRatio }}>
@@ -477,7 +527,14 @@ export function ReferenceMaterialsSection({
                 key={cell.index}
                 type="button"
                 aria-label={t("shot_keyframe", { index: cell.index })}
-                onClick={() => { if (cell.image_path) setPreviewUrl(imageUrl(cell.image_path)); }}
+                title={describeCell(cell)}
+                onClick={() => {
+                  if (cell.image_path) {
+                    setPreviewUrl(imageUrl(cell.image_path));
+                    setPreviewCell(cell);
+                    setPreviewCopied(false);
+                  }
+                }}
                 className="focus-ring min-w-0 overflow-hidden rounded-md border border-border bg-muted/40 text-left"
               >
                 <div className="relative overflow-hidden bg-background" style={{ aspectRatio: cellRatio }}>
@@ -496,7 +553,7 @@ export function ReferenceMaterialsSection({
         )
       ) : shownPlan?.composite_path ? (
         <button type="button" aria-label={t("shot_materials_preview_open")}
-          onClick={() => { if (shownPlan.composite_path) setPreviewUrl(imageUrl(shownPlan.composite_path)); }}
+          onClick={() => { if (shownPlan.composite_path) { setPreviewCell(null); setPreviewCopied(false); setPreviewUrl(imageUrl(shownPlan.composite_path)); } }}
           className="focus-ring relative block overflow-hidden rounded-md border border-border bg-muted/20"
           style={{ width: gridWidth, height: gridHeight, maxWidth: "100%", maxHeight: "100%" }}>
           <img src={imageUrl(shownPlan.composite_path)} alt={t("shot_materials_preview")} className="size-full object-contain" />
@@ -512,11 +569,54 @@ export function ReferenceMaterialsSection({
           </span>
         </div>
       )}
-      <Dialog open={previewUrl !== null} onOpenChange={(open) => { if (!open) setPreviewUrl(null); }}>
+      <Dialog
+        open={previewUrl !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewUrl(null);
+            setPreviewCell(null);
+            setPreviewCopied(false);
+          }
+        }}
+      >
         <DialogContent size="viewer">
-          <DialogHeader><DialogTitle>{t("shot_materials_preview")}</DialogTitle></DialogHeader>
-          <DialogBody className="flex min-h-0 items-center justify-center">
-            {previewUrl ? <img src={previewUrl} alt={t("shot_materials_preview")} className="size-full object-contain" /> : null}
+          <DialogHeader>
+            <DialogTitle>
+              {previewCell ? t("shot_keyframe", { index: previewCell.index }) : t("shot_materials_preview")}
+            </DialogTitle>
+          </DialogHeader>
+          <DialogBody className="@container flex min-h-0 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col @md:flex-row @md:items-stretch">
+              <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-muted/10 p-4">
+                {previewUrl ? (
+                  <img src={previewUrl} alt={t("shot_materials_preview")} className="h-full w-full object-contain" />
+                ) : null}
+              </div>
+              {previewCell ? (
+                <aside className="relative flex max-h-56 w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-border bg-background p-5 @md:max-h-none @md:w-96 @md:border-l @md:border-t-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium">{t("shot_materials_preview_desc")}</span>
+                    <span className="rounded-md border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground">
+                      {previewCell.continuity_notes || "—"}
+                    </span>
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">
+                    {previewCell.prompt || t("shot_materials_preview_empty")}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    className="self-start"
+                    disabled={!previewCell.prompt}
+                    onClick={() => void copyPreviewPrompt()}
+                  >
+                    {previewCopied ? <Check aria-hidden data-icon="inline-start" /> : <Copy aria-hidden data-icon="inline-start" />}
+                    {previewCopied ? t("common:copied") : t("common:copy")}
+                  </Button>
+                </aside>
+              ) : null}
+            </div>
           </DialogBody>
         </DialogContent>
       </Dialog>

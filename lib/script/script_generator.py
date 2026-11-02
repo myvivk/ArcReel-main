@@ -36,9 +36,11 @@ from lib.infra.path_safety import safe_join
 from lib.infra.text_utils import strip_json_code_fences
 from lib.project.project_manager import ProjectManager
 from lib.project.story_plan_docs import factory_authoring_context
+from lib.prompts.model_specs import parse_backend_ref, resolve_video_prompt_spec
 from lib.prompts.prompt_builders_script import (
     build_drama_prompt,
     render_drama_content_for_prompt_authoring,
+    render_video_model_brief,
 )
 from lib.script.grid.keyframe_parser import format_action_segments, keyframe_reference_problems, shot_scene_text
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
@@ -46,6 +48,7 @@ from lib.script.grid.shot_models import ShotGrid
 from lib.script.grid.video_prompt_targets import (
     video_prompt_basis_for,
     video_prompt_body_text,
+    video_prompt_target_for_project,
     video_prompt_text,
 )
 from lib.script.prompt_authoring_scope import (
@@ -78,6 +81,7 @@ from lib.script.shot_prompt_standard import (
     video_prompt_delta_problem,
 )
 from lib.script.source_anchor import is_content_aligned_source_anchor
+from lib.script.storyboard_video_request import storyboard_asset_links
 from lib.speech.speech_composition import require_script_unit_admitted, speech_policy_for_project
 
 logger = logging.getLogger(__name__)
@@ -91,6 +95,10 @@ _NO_ENTRY_TO_AUTHOR_NOTE = (
 #: 编写产物最多调用几次文本模型：首轮 + 带拒绝原因的返修轮；穷尽仍不合格就报错，
 #: 不落盘半成品（与 AI 分镜的 ``_PLAN_ATTEMPTS`` 同一闸、同一口径，D-10）。
 _PROMPT_AUTHORING_ATTEMPTS = 5
+
+#: 视频提示词后缀预算的下限（K 帧声明、资产链接、声音声明、编号声明、排除项）。
+#: 实际预留按条目算了 K 帧、资产链接与说话人，短条目也不低于该下限。
+_VIDEO_PROMPT_RESERVE_FLOOR = 200
 
 
 def _entry_asset_names(item: Mapping[str, Any]) -> set[str]:
@@ -494,6 +502,7 @@ class ScriptGenerator:
 
         frozen_images = await asyncio.to_thread(image_digests)
         base_prompt = await self._build_visual_prompt(episode, targets, instructions, video_inputs=video_inputs)
+        prompt_limit = await self._video_prompt_limit() if video_inputs is not None else None
         registered = self._registered_asset_names()
         rejection: str | None = None
         visual_by_id: dict[str, dict] = {}
@@ -520,7 +529,12 @@ class ScriptGenerator:
                     continue
                 visual = [visual_by_id[entry_id] for entry_id in targets.ids]
                 failures = self._authored_visual_failures(
-                    visual, targets, registered, video_inputs=video_inputs, episode=episode
+                    visual,
+                    targets,
+                    registered,
+                    video_inputs=video_inputs,
+                    episode=episode,
+                    prompt_limit=prompt_limit,
                 )
                 if failures:
                     pending_entry, rejection = failures[0]
@@ -820,6 +834,7 @@ class ScriptGenerator:
         *,
         video_inputs: Mapping[str, ShotGrid] | None,
         episode: int | None = None,
+        prompt_limit: int | None = None,
     ) -> list[tuple[str, str]]:
         """逐 entry 校验 image_prompt/video_prompt，返回 ``(entry_id, 可回喂原因)``。
 
@@ -904,6 +919,18 @@ class ScriptGenerator:
                     continue
                 if problem := action_timeline_problem(video_prompt_text(item), original.get("duration_seconds")):
                     failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 时间轴不合格：{problem}"))
+                    continue
+                if prompt_limit is not None:
+                    body = video_prompt_body_text(item)
+                    reserve = self._video_prompt_reserve(item, grid)
+                    if len(body) + reserve > prompt_limit:
+                        failures.append(
+                            (
+                                entry_id,
+                                f"分镜 {entry_id} 的 video_prompt 超过目标模型上限：正文 {len(body)} 字符 + "
+                                f"后缀预留 {reserve} > {prompt_limit}，请压缩正文后再输出",
+                            )
+                        )
         return failures
 
     def _lint_authored_visual_layer(
@@ -970,7 +997,7 @@ class ScriptGenerator:
             if not isinstance(assets, dict):
                 assets = {}
                 item["generated_assets"] = assets
-            assets["video_prompt_basis"] = video_prompt_basis_for(grid)
+            assets["video_prompt_basis"] = video_prompt_basis_for(grid, target=self._video_prompt_target())
 
     @staticmethod
     def _format_video_prompt_lines(item: dict[str, Any]) -> None:
@@ -1039,6 +1066,85 @@ class ScriptGenerator:
         script["metadata"] = metadata
         return script
 
+    def _video_backend_ref(self) -> tuple[str, str]:
+        """项目当前的视频模型 ``(provider_id, model_id)``；未配置时返回两个空串。
+
+        顺序与生成弹窗落盘的位置一致：参考生视频桶（``video_provider_r2v``，弹窗里选的模型
+        写这里）→ 图生视频桶 → 项目默认。漏掉 r2v 会让写作侧永远看不到用户在弹窗里选的模型。
+        """
+
+        for key in ("video_provider_r2v", "video_provider_i2v", "video_backend"):
+            provider, model = parse_backend_ref(self.project_json.get(key))
+            if provider and model:
+                return provider, model
+        return "", ""
+
+    def _video_prompt_target(self) -> dict[str, str] | None:
+        """写进 ``video_prompt_basis.target`` 的写作依据；未配置模型时为 None（通用口径）。"""
+
+        return video_prompt_target_for_project(self.project_json)
+
+    def _video_model_brief(self) -> str | None:
+        """写作侧 prompt 的「目标视频模型」块；未配置模型时返回 None（不注入）。"""
+
+        provider_id, model_id = self._video_backend_ref()
+        if not provider_id or not model_id:
+            return None
+        spec = resolve_video_prompt_spec(provider_id, model_id)
+        return render_video_model_brief(
+            spec,
+            provider_id=provider_id,
+            model_id=model_id,
+            durations=self._video_supported_durations(provider_id, model_id),
+        )
+
+    @staticmethod
+    def _video_supported_durations(provider_id: str, model_id: str) -> list[int]:
+        from lib.config.registry import PROVIDER_REGISTRY
+
+        meta = PROVIDER_REGISTRY.get(provider_id)
+        info = meta.models.get(model_id) if meta is not None else None
+        if info is None:
+            return []
+        return list(info.supported_durations or [])
+
+    def _video_prompt_reserve(self, item: Mapping[str, Any], grid: ShotGrid | None) -> int:
+        """按条目估视频提示词后缀长度：编号行 + K 帧声明 + 资产链接 + 声音声明。"""
+
+        reserve = _VIDEO_PROMPT_RESERVE_FLOOR
+        if grid is not None:
+            reserve += 40 * max(1, len(grid.cells))
+        try:
+            reserve += len(storyboard_asset_links(self.project_json, item, self.project_path.name))
+        except (ValueError, KeyError, TypeError):
+            reserve += 200
+        utterances = item.get("utterances")
+        if isinstance(utterances, list):
+            speakers = {
+                str(entry.get("speaker") or "")
+                for entry in utterances
+                if isinstance(entry, Mapping) and entry.get("kind") == "dialogue"
+            }
+            reserve += 80 * len({speaker for speaker in speakers if speaker})
+        return reserve
+
+    async def _video_prompt_limit(self) -> int | None:
+        """目标视频模型的提示词字符上限；未声明或解析失败时 None（跳过预算校验）。"""
+
+        provider_id, model_id = self._video_backend_ref()
+        if not provider_id or not model_id:
+            return None
+        resolver = self.config_resolver or ConfigResolver()
+        try:
+            caps = await resolver.video_capabilities_for_model(
+                provider_id, model_id, self.project_json, generation_type="i2v"
+            )
+        except Exception:
+            logger.debug("视频能力解析失败，跳过提示词预算校验", exc_info=True)
+            return None
+        value = caps.get("max_prompt_chars")
+        return value if isinstance(value, int) and value > 0 else None
+
     def _build_drama_prompt_authoring_prompt(
         self,
         content_scenes: list,
@@ -1065,6 +1171,8 @@ class ScriptGenerator:
             # 输出语言与 script_plan（normalize）同取项目 source_language，避免非中文项目 script_plan 内容与 prompt_authoring 视觉割裂
             target_language=self.project_json.get("source_language") or "中文",
             instructions=instructions,
+            # 只有写视频提示词时才知道写给哪个模型；写分镜图时不注入，避免把视频模型约束带进画面层。
+            model_facts=self._video_model_brief() if video_inputs is not None else None,
         )
         context = factory_authoring_context(self.project_path, episode)
         self._artifact_basis = ArtifactBasisDescriptor.from_basis(

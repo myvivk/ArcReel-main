@@ -891,10 +891,13 @@ async def load_storyboard_video_batch_plan(
     user_id: str,
     config_resolver: ConfigResolver | None = None,
     video_request_facts: VideoRequestFacts | VideoRequestFactsFailure | None = None,
+    frame_mode: str = "reference",
 ) -> StoryboardVideoBatchPlan:
     """读取这一集的现状，选出没有可用视频的分镜，列出跳过项并对其余分镜判整批准入。
 
     ``video_request_facts`` 缺省时按项目当前配置求值；准入与报价读同一份。
+    ``frame_mode`` 决定这批请求是首尾帧还是参考图模式：参考图模式下资产图随请求下发，
+    计数与提示词编号都按实际发出的序列算。
     """
 
     loaded = await asyncio.to_thread(load_episode_storyboard_script, projects, project_name, episode_id)
@@ -929,6 +932,11 @@ async def load_storyboard_video_batch_plan(
             skips.append(BatchSkip(unit_id, reason))
 
     content_mode = resolve_content_mode(loaded.script, loaded.project)
+    facts = (
+        (video_request_facts or await storyboard_video_request_facts(loaded.project, config_resolver))
+        if candidates
+        else None
+    )
     specs, refused = build_storyboard_video_specs(
         items=candidates,
         id_field=id_field,
@@ -942,11 +950,8 @@ async def load_storyboard_video_batch_plan(
         skip_ids=None,
         voice_characters=await resolve_voice_context(loaded.project, content_mode),
         storyboard_items=clean,
-    )
-    facts = (
-        (video_request_facts or await storyboard_video_request_facts(loaded.project, config_resolver))
-        if specs
-        else None
+        frame_mode=frame_mode,
+        max_reference_images=facts.max_reference_images if isinstance(facts, VideoRequestFacts) else None,
     )
     admission = await admit_storyboard_video_request(
         project_name=project_name,

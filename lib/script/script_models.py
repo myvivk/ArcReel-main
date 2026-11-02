@@ -485,6 +485,16 @@ class Utterance(BaseModel):
     kind: UtteranceKind = Field(description="发声类型：dialogue=带角色归属的角色发声、voiceover=无角色归属的叙述旁白")
     speaker: str | None = Field(default=None, description="说话角色名；dialogue 必填非空、voiceover 必须为 null")
     text: str = Field(description="发声内容原文，逐字保留")
+    at: float | None = Field(
+        default=None,
+        ge=0,
+        description="台词起点（秒，相对本分镜起点）；H3 据此把台词内联回原句位置。与 shot 二选一",
+    )
+    shot: int | None = Field(
+        default=None,
+        ge=1,
+        description="台词所在分镜段号（1 起，对应 action 的 0-3秒/3-6秒 分段）；与 at 二选一",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -504,6 +514,12 @@ class Utterance(BaseModel):
                 raise ValueError("dialogue utterance 必须带非空 speaker")
         elif self.speaker is not None:
             raise ValueError("voiceover utterance 不得带 speaker")
+        return self
+
+    @model_validator(mode="after")
+    def _check_anchor(self) -> "Utterance":
+        if self.at is not None and self.shot is not None:
+            raise ValueError("utterance 的 at 与 shot 只能二选一")
         return self
 
 

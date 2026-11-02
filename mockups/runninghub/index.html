@@ -1,0 +1,1326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RunningHub 接入 · UI 预览</title>
+<style>
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.168 0.009 265);
+  --foreground: oklch(0.975 0.004 265);
+  --subtle-foreground: oklch(0.820 0.008 265);
+  --card: oklch(0.182 0.011 270);
+  --popover: oklch(0.205 0.011 265);
+  --primary: oklch(0.76 0.09 295);
+  --primary-foreground: oklch(0.14 0 0);
+  --secondary: oklch(0.250 0.012 265);
+  --muted: oklch(0.250 0.012 265);
+  --muted-foreground: oklch(0.640 0.010 265);
+  --accent: oklch(0.26 0.012 265 / 0.5);
+  --destructive: oklch(0.70 0.18 25);
+  --border: oklch(0.40 0.012 265 / 0.35);
+  --input: oklch(0.45 0.014 265 / 0.55);
+  --ring: oklch(0.76 0.09 295);
+  --good: oklch(0.78 0.10 155);
+  --warn: oklch(0.80 0.12 70);
+  --sidebar: oklch(0.148 0.009 260);
+  --scrim: oklch(0.10 0.012 265 / 0.78);
+  --shadow-overlay: 0 16px 40px -12px oklch(0 0 0 / 0.6);
+  --font-sans: "Inter", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; border-color: var(--border); }
+[hidden] { display: none !important; }
+html { color-scheme: dark; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(1000px 500px at 8% -10%, oklch(0.32 0.05 295 / 0.28), transparent 55%),
+    radial-gradient(900px 500px at 98% 110%, oklch(0.26 0.04 260 / 0.25), transparent 55%),
+    linear-gradient(180deg, var(--card), var(--sidebar));
+  background-attachment: fixed;
+  overflow: hidden;
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted-foreground); }
+.subtle { color: var(--subtle-foreground); }
+.ico { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ico-xs { width: 13px; height: 13px; }
+.ico-sm { width: 14px; height: 14px; }
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* ---------- preview chrome (not part of the product design) ---------- */
+.previewbar {
+  height: 44px; display: flex; align-items: center; gap: 14px;
+  padding: 0 16px; background: oklch(0.12 0.008 265);
+  border-bottom: 1px solid var(--border); font-size: 12px; position: relative; z-index: 5;
+}
+.previewbar .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.previewbar .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent); }
+.previewbar .sep { width: 1px; height: 16px; background: var(--border); }
+.previewbar .tabs { display: flex; gap: 2px; overflow: auto; }
+.previewbar .ptab {
+  border: 0; background: transparent; color: var(--muted-foreground); font-size: 12px;
+  padding: 5px 9px; border-radius: 6px; white-space: nowrap;
+}
+.previewbar .ptab:hover { color: var(--foreground); background: var(--muted); }
+.previewbar .ptab.active { color: var(--foreground); background: color-mix(in oklab, var(--primary) 16%, transparent); }
+.previewbar .spacer { flex: 1; }
+.previewbar .toggle { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); white-space: nowrap; }
+.previewbar .note { color: var(--muted-foreground); white-space: nowrap; }
+.switch { position: relative; width: 30px; height: 18px; border-radius: 999px; background: var(--muted); border: 1px solid var(--border); padding: 0; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted-foreground); transition: transform .15s, background .15s; }
+.switch[aria-checked="true"] { background: color-mix(in oklab, var(--primary) 35%, transparent); }
+.switch[aria-checked="true"]::after { transform: translateX(12px); background: var(--primary); }
+
+/* ---------- app shell ---------- */
+.app { height: calc(100vh - 44px); display: flex; flex-direction: column; overflow: hidden; }
+.topbar { height: 56px; flex: 0 0 56px; display: flex; align-items: center; gap: 12px; padding: 0 24px 0 12px; border-bottom: 1px solid var(--border); }
+.topbar .back { color: var(--subtle-foreground); }
+.topbar h1 { margin: 0; font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+.topbar .top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.body { flex: 1; min-height: 0; display: flex; }
+
+/* settings nav */
+.settings-nav { width: 224px; flex: 0 0 224px; border-right: 1px solid var(--border); padding: 14px 12px; overflow-y: auto; }
+.nav-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 18px; }
+.nav-group > p { margin: 0 0 4px; padding: 0 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground); }
+.nav-item { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 8px; border-radius: 6px; font-size: 13px; color: var(--subtle-foreground); }
+.nav-item .ico { color: var(--muted-foreground); }
+.nav-item:hover { background: color-mix(in oklab, var(--muted) 50%, transparent); color: var(--foreground); }
+.nav-item.active { background: color-mix(in oklab, var(--primary) 15%, transparent); color: var(--foreground); }
+.nav-item.active .ico { color: var(--primary); }
+.nav-badge { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+/* secondary rail */
+.rail { width: 264px; flex: 0 0 264px; border-right: 1px solid var(--border); padding: 14px 12px; overflow-y: auto; }
+.rail-tabs { display: flex; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; margin-bottom: 12px; }
+.rail-tab { flex: 1; border: 0; background: transparent; color: var(--muted-foreground); font-size: 12px; padding: 4px 6px; border-radius: 6px; display: flex; justify-content: center; gap: 5px; }
+.rail-tab.active { background: var(--card); color: var(--foreground); box-shadow: 0 1px 0 oklch(0 0 0 / .2); }
+.rail-tab .n { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.rail-group-label { margin: 14px 6px 6px; font-size: 11px; color: var(--muted-foreground); }
+.rail-item { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 7px; color: var(--subtle-foreground); }
+.rail-item:hover { background: color-mix(in oklab, var(--muted) 50%, transparent); color: var(--foreground); }
+.rail-item.active { background: color-mix(in oklab, var(--primary) 15%, transparent); color: var(--foreground); }
+.rail-item .rail-avatar { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 6px; font-size: 10px; font-weight: 600; color: var(--primary); background: color-mix(in oklab, var(--primary) 8%, transparent); }
+.rail-item .rail-title { display: flex; flex-direction: column; min-width: 0; }
+.rail-item .rail-title b { font-weight: 450; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-item .rail-title small { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail-item.action { color: var(--muted-foreground); }
+.rail-item.action .ico { color: var(--muted-foreground); }
+.rail-empty { padding: 10px 8px; font-size: 12px; color: var(--muted-foreground); }
+
+/* detail */
+.detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.detail-header { flex: 0 0 auto; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+.entity-head { display: flex; align-items: flex-start; gap: 12px; }
+.entity-avatar { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; margin-top: 2px; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(145deg, color-mix(in oklab, var(--primary) 22%, transparent), color-mix(in oklab, var(--primary) 6%, transparent)); color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+.entity-title { min-width: 0; flex: 1; }
+.entity-title h2 { margin: 0 0 2px; font-size: 17px; font-weight: 550; letter-spacing: -0.015em; }
+.title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
+.title-row h2 { margin: 0; }
+.entity-title p { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--muted-foreground); font-size: 12.5px; }
+.entity-title p .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.head-actions { display: flex; align-items: center; gap: 6px; }
+.detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 24px; scrollbar-gutter: stable; }
+.detail-body .column { max-width: 920px; display: flex; flex-direction: column; gap: 32px; }
+.detail-footer { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--card); padding: 10px 24px; }
+.savebar { max-width: 920px; display: flex; align-items: center; gap: 12px; }
+.savebar .status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted-foreground); }
+.savebar .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.savebar .status.ok .dot { background: var(--good); }
+.savebar .actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* generic */
+.section { display: flex; flex-direction: column; gap: 12px; }
+.section-head { display: flex; align-items: center; gap: 10px; }
+.section-head h3 { margin: 0; font-size: 15px; font-weight: 550; letter-spacing: -0.01em; }
+.section-head .count { font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.section-head .head-actions { margin-left: auto; display: flex; gap: 6px; }
+.section-desc { margin: -4px 0 0; max-width: 44em; font-size: 12.5px; color: var(--muted-foreground); }
+.hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted-foreground); }
+.hint.warn { color: var(--warn); }
+.hint.good { color: var(--good); }
+.inline-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.btn { height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border-radius: 8px; border: 1px solid transparent; font-size: 13px; font-weight: 500; white-space: nowrap; transition: background .15s, border-color .15s, opacity .15s; }
+.btn:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 40%, transparent); }
+.btn:disabled { opacity: .45; pointer-events: none; }
+.btn-primary { background: var(--primary); color: var(--primary-foreground); }
+.btn-primary:hover { background: color-mix(in oklab, var(--primary) 82%, transparent); }
+.btn-outline { border-color: var(--input); background: color-mix(in oklab, var(--input) 22%, transparent); color: var(--foreground); }
+.btn-outline:hover { background: color-mix(in oklab, var(--input) 42%, transparent); }
+.btn-ghost { background: transparent; color: var(--subtle-foreground); }
+.btn-ghost:hover { background: color-mix(in oklab, var(--muted) 60%, transparent); color: var(--foreground); }
+.btn-sm { height: 28px; padding: 0 8px; font-size: 12px; border-radius: 7px; }
+.btn-icon { width: 32px; padding: 0; }
+.btn-icon.btn-sm { width: 28px; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.input { width: 100%; height: 32px; border: 1px solid var(--input); border-radius: 8px; background: color-mix(in oklab, var(--input) 30%, transparent); padding: 0 10px; font-size: 13px; color: var(--foreground); outline: none; transition: border-color .15s, box-shadow .15s; }
+.input::placeholder { color: var(--muted-foreground); }
+.input:focus { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 35%, transparent); }
+.input.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.input[type="file"] { padding: 3px 4px; font-size: 12px; color: var(--muted-foreground); }
+.input[type="file"]::file-selector-button { height: 24px; margin-right: 8px; padding: 0 8px; border: 1px solid var(--input); border-radius: 6px; background: color-mix(in oklab, var(--input) 30%, transparent); color: var(--foreground); font-size: 11.5px; cursor: pointer; }
+.input[type="file"]::file-selector-button:hover { background: color-mix(in oklab, var(--input) 48%, transparent); }
+textarea.input { height: auto; min-height: 64px; padding: 8px 10px; resize: vertical; line-height: 1.5; }
+.input-group { display: flex; align-items: center; position: relative; }
+.input-group .input { padding-right: 36px; }
+.input-group .btn { position: absolute; right: 2px; }
+.select { width: 100%; height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--input); border-radius: 8px; background: color-mix(in oklab, var(--input) 30%, transparent); padding: 0 8px 0 10px; font-size: 13px; color: var(--foreground); text-align: left; }
+.select:disabled, .select.disabled { opacity: .72; pointer-events: none; }
+.select .ico { color: var(--muted-foreground); }
+.segmented { display: inline-flex; align-self: flex-start; background: var(--muted); border-radius: 8px; padding: 3px; gap: 2px; }
+.segmented button { border: 0; background: transparent; color: var(--muted-foreground); font-size: 12px; padding: 3px 12px; border-radius: 6px; }
+.segmented button.active { background: var(--card); color: var(--foreground); }
+
+.field { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.field > label { padding-top: 6px; font-size: 13px; color: var(--muted-foreground); }
+.field .control { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.field .control > .input, .field .control > .select { max-width: 560px; }
+.field .control > .input.w-sm { max-width: 140px; }
+
+.badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; font-size: 11px; line-height: 1; white-space: nowrap; }
+.badge .ico { width: 11px; height: 11px; }
+.badge-secondary { background: var(--secondary); color: var(--foreground); }
+.badge-outline { border-color: var(--border); color: var(--subtle-foreground); }
+.badge-primary { background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary); border-color: color-mix(in oklab, var(--primary) 26%, transparent); }
+.badge-good { background: color-mix(in oklab, var(--good) 14%, transparent); color: var(--good); border-color: color-mix(in oklab, var(--good) 24%, transparent); }
+.badge-warn { background: color-mix(in oklab, var(--warn) 14%, transparent); color: var(--warn); border-color: color-mix(in oklab, var(--warn) 26%, transparent); }
+.badge-destructive { background: color-mix(in oklab, var(--destructive) 14%, transparent); color: var(--destructive); border-color: color-mix(in oklab, var(--destructive) 26%, transparent); }
+
+.alert { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); font-size: 12.5px; line-height: 1.5; }
+.alert .ico { margin-top: 1px; }
+.alert.success { border-color: color-mix(in oklab, var(--good) 32%, transparent); background: color-mix(in oklab, var(--good) 7%, transparent); color: var(--good); }
+.alert.error { border-color: color-mix(in oklab, var(--destructive) 36%, transparent); background: color-mix(in oklab, var(--destructive) 8%, transparent); color: var(--destructive); }
+.alert.warn { border-color: color-mix(in oklab, var(--warn) 32%, transparent); background: color-mix(in oklab, var(--warn) 7%, transparent); color: var(--warn); }
+.alert .alert-copy { color: var(--subtle-foreground); }
+.alert .alert-copy b { color: var(--foreground); font-weight: 550; }
+
+.card { border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 72%, transparent); overflow: hidden; }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; }
+.list-row + .list-row { border-top: 1px solid var(--border); }
+.list-row .row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.list-row .row-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+.list-row .row-sub { font-size: 11.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-row .row-actions { display: flex; gap: 2px; }
+.list-row.warn-row { background: color-mix(in oklab, var(--warn) 4%, transparent); }
+
+.protocol-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.protocol-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 60%, transparent); text-align: left; color: var(--subtle-foreground); }
+.protocol-card:hover { border-color: var(--input); background: color-mix(in oklab, var(--muted) 30%, transparent); }
+.protocol-card.selected { border-color: color-mix(in oklab, var(--primary) 55%, transparent); background: color-mix(in oklab, var(--primary) 8%, transparent); color: var(--foreground); }
+.protocol-card .ico { color: var(--muted-foreground); }
+.protocol-card.selected .ico { color: var(--primary); }
+.protocol-card b { font-size: 13px; font-weight: 550; }
+.protocol-card small { font-size: 11px; color: var(--muted-foreground); }
+.protocol-card .check { position: absolute; top: 8px; right: 8px; width: 16px; height: 16px; display: none; place-items: center; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); }
+.protocol-card.selected .check { display: grid; }
+.protocol-card .check .ico { width: 10px; height: 10px; stroke-width: 3; color: var(--primary-foreground); }
+
+.empty-card { display: flex; gap: 12px; align-items: flex-start; padding: 16px; border: 1px dashed color-mix(in oklab, var(--input) 80%, transparent); border-radius: 10px; background: color-mix(in oklab, var(--card) 35%, transparent); }
+.empty-card .empty-icon { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--border); color: var(--muted-foreground); background: var(--card); }
+.empty-card .empty-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.empty-card b { font-size: 13px; font-weight: 550; }
+.empty-card p { margin: 0; font-size: 12px; color: var(--muted-foreground); max-width: 46em; }
+.empty-card .empty-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+
+/* model table */
+.model-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: color-mix(in oklab, var(--card) 72%, transparent); }
+.model-head, .model-row { display: grid; grid-template-columns: 26px minmax(0,1.5fr) minmax(150px,1fr) 92px 60px 28px; align-items: center; gap: 8px; padding: 0 12px; }
+.model-head { height: 32px; font-size: 11px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--muted) 22%, transparent); }
+.model-row { min-height: 44px; border-bottom: 1px solid var(--border); }
+.model-row:last-child { border-bottom: 0; }
+.model-row:hover { background: color-mix(in oklab, var(--muted) 20%, transparent); }
+.model-row .model-name { display: flex; flex-direction: column; min-width: 0; }
+.model-row .model-name b { font-size: 13px; font-weight: 450; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-row .model-name small { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-row .price { font-family: var(--font-mono); font-size: 12px; color: var(--subtle-foreground); }
+.endpoint-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 3px 7px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; color: var(--subtle-foreground); background: color-mix(in oklab, var(--muted) 25%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.endpoint-pill .ico { width: 11px; height: 11px; color: var(--primary); }
+.endpoint-pill.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 30%, transparent); background: color-mix(in oklab, var(--warn) 6%, transparent); }
+.endpoint-pill.warn .ico { color: var(--warn); }
+.checkbox { width: 15px; height: 15px; border: 1px solid var(--input); border-radius: 4px; background: color-mix(in oklab, var(--input) 30%, transparent); appearance: none; display: grid; place-items: center; padding: 0; }
+.checkbox:checked { background: var(--primary); border-color: var(--primary); }
+.checkbox:checked::after { content: ""; width: 8px; height: 5px; border-left: 2px solid var(--primary-foreground); border-bottom: 2px solid var(--primary-foreground); transform: rotate(-45deg) translateY(-1px); }
+
+.model-editor { display: none; grid-template-columns: 1fr 1fr; gap: 14px 24px; padding: 16px 14px; border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--muted) 12%, transparent); }
+.model-row.expanded + .model-editor { display: grid; }
+.model-editor .full { grid-column: 1 / -1; }
+.model-editor .field { grid-template-columns: 90px minmax(0,1fr); }
+.model-editor .field > label { font-size: 12px; }
+.endpoint-menu { margin-top: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--popover); box-shadow: var(--shadow-overlay); padding: 4px; max-width: 420px; }
+.menu-label { padding: 7px 8px 4px; font-size: 10.5px; font-weight: 500; color: var(--muted-foreground); text-transform: none; }
+.menu-option { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 6px; font-size: 12.5px; }
+.menu-option:hover { background: color-mix(in oklab, var(--muted) 50%, transparent); }
+.menu-option.selected { background: color-mix(in oklab, var(--primary) 12%, transparent); }
+.menu-option.disabled { opacity: .6; }
+.menu-option .tick { width: 14px; flex: 0 0 14px; color: var(--primary); display: grid; place-items: center; margin-top: 1px; }
+.menu-option b { display: block; font-weight: 450; }
+.menu-option small { display: block; margin-top: 1px; font-size: 11px; color: var(--muted-foreground); }
+.menu-option .menu-link { margin-left: auto; color: var(--primary); font-size: 11.5px; }
+.menu-option .menu-link:hover { text-decoration: underline; }
+
+/* import */
+.import-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.import-card { text-align: left; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 62%, transparent); display: flex; flex-direction: column; gap: 5px; }
+.import-card:hover { border-color: var(--input); background: color-mix(in oklab, var(--muted) 26%, transparent); }
+.import-card.selected { border-color: color-mix(in oklab, var(--primary) 50%, transparent); background: color-mix(in oklab, var(--primary) 7%, transparent); }
+.import-card .ico { color: var(--muted-foreground); margin-bottom: 3px; }
+.import-card.selected .ico { color: var(--primary); }
+.import-card b { font-size: 13px; font-weight: 550; }
+.import-card p { margin: 0; font-size: 11.5px; color: var(--muted-foreground); }
+
+/* endpoint detail */
+.endpoint-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 12px; color: var(--muted-foreground); }
+.usage-card { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklab, var(--card) 55%, transparent); font-size: 12px; color: var(--subtle-foreground); }
+.usage-card .ico { color: var(--muted-foreground); }
+.chain { display: flex; align-items: stretch; gap: 8px; }
+.chain-node { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 55%, transparent); }
+.chain-node.active { border-color: color-mix(in oklab, var(--primary) 45%, transparent); background: color-mix(in oklab, var(--primary) 7%, transparent); }
+.chain-node b { font-size: 12.5px; font-weight: 550; }
+.chain-node small { font-size: 11px; color: var(--muted-foreground); line-height: 1.45; }
+.chain-node .chain-check { color: var(--good); }
+.chain-arrow { align-self: center; color: var(--muted-foreground); flex: 0 0 auto; }
+.channel-card { display: flex; flex-direction: column; gap: 14px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 55%, transparent); }
+.spec-bar { display: flex; flex-wrap: wrap; gap: 6px; }
+.spec { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; color: var(--subtle-foreground); background: color-mix(in oklab, var(--muted) 18%, transparent); }
+.spec .ico { width: 11px; height: 11px; color: var(--muted-foreground); }
+.link-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted-foreground); }
+.check-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--subtle-foreground); }
+.check-line .checkbox { margin-top: 1px; }
+.code-pill { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in oklab, var(--muted) 26%, transparent); font-size: 12px; }
+.bind-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: color-mix(in oklab, var(--card) 72%, transparent); }
+.bind-head, .bind-row { display: grid; grid-template-columns: 120px 110px minmax(0,1fr) 100px; align-items: center; gap: 10px; padding: 0 14px; }
+.bind-head { height: 32px; font-size: 11px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 22%, transparent); border-bottom: 1px solid var(--border); }
+.bind-row { min-height: 42px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.bind-row:last-child { border-bottom: 0; }
+.bind-row .key { font-weight: 450; }
+.bind-row .node { font-family: var(--font-mono); font-size: 11.5px; color: var(--subtle-foreground); }
+.bind-row .actions { display: flex; justify-content: flex-end; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; font-family: var(--font-mono); font-size: 11px; color: var(--subtle-foreground); background: color-mix(in oklab, var(--muted) 18%, transparent); }
+.chip .n { color: var(--muted-foreground); }
+.auth-note { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted-foreground); background: color-mix(in oklab, var(--muted) 16%, transparent); }
+.auth-note .btn { margin-left: auto; }
+
+.test-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.test-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.test-field.span4 { grid-column: 1 / -1; }
+.test-field.span2 { grid-column: span 2; }
+.test-field > label { font-size: 11.5px; color: var(--muted-foreground); }
+.test-field .input, .test-field .select { max-width: none; }
+.test-actions { display: flex; gap: 6px; }
+.trial-card { margin-top: 4px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in oklab, var(--card) 72%, transparent); padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.trial-head { display: flex; align-items: center; gap: 8px; }
+.trial-head b { font-size: 13px; font-weight: 550; }
+.trial-head .badge { margin-left: auto; }
+.timeline { display: flex; align-items: center; gap: 6px; }
+.tl-step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted-foreground); white-space: nowrap; }
+.tl-dot { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-size: 10px; color: var(--muted-foreground); background: var(--card); }
+.tl-dot .ico { width: 11px; height: 11px; }
+.tl-step.done { color: var(--good); }
+.tl-step.done .tl-dot { border-color: color-mix(in oklab, var(--good) 45%, transparent); background: color-mix(in oklab, var(--good) 12%, transparent); color: var(--good); }
+.tl-step.active { color: var(--primary); }
+.tl-step.active .tl-dot { border-color: color-mix(in oklab, var(--primary) 55%, transparent); background: color-mix(in oklab, var(--primary) 12%, transparent); color: var(--primary); animation: pulse 1.2s ease-in-out infinite; }
+.tl-step.fail { color: var(--destructive); }
+.tl-step.fail .tl-dot { border-color: color-mix(in oklab, var(--destructive) 50%, transparent); background: color-mix(in oklab, var(--destructive) 12%, transparent); color: var(--destructive); }
+.tl-line { flex: 1; height: 1px; background: var(--border); min-width: 12px; }
+@keyframes pulse { 50% { opacity: .45; } }
+.trial-summary { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; padding-top: 2px; }
+.trial-summary > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.trial-summary small { font-size: 10.5px; color: var(--muted-foreground); }
+.trial-summary span { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact { display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklab, var(--muted) 16%, transparent); }
+.artifact-thumb { width: 64px; height: 40px; flex: 0 0 64px; border-radius: 5px; background: linear-gradient(135deg, oklch(0.38 0.08 295), oklch(0.25 0.05 250)); display: grid; place-items: center; color: var(--primary); border: 1px solid var(--border); }
+.artifact-thumb .ico { width: 16px; height: 16px; }
+.artifact .file { min-width: 0; flex: 1; }
+.artifact .file b { display: block; font-size: 12.5px; font-weight: 450; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact .file small { color: var(--muted-foreground); font-size: 11px; }
+.trial-fail { display: flex; flex-direction: column; gap: 8px; }
+
+/* modal */
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; background: var(--scrim); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal { width: 560px; max-width: 100%; max-height: 88vh; overflow: auto; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-overlay); }
+.modal.wide { width: 620px; }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 4px; }
+.modal-head h3 { margin: 0; font-size: 15px; font-weight: 550; letter-spacing: -0.01em; }
+.modal-head .btn { margin-left: auto; }
+.modal-body { padding: 14px 20px 18px; display: flex; flex-direction: column; gap: 14px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 6px; padding: 12px 20px 16px; border-top: 1px solid var(--border); }
+.modal .field { grid-template-columns: 92px minmax(0,1fr); }
+.modal .field > label { font-size: 12.5px; }
+.success-hero { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid color-mix(in oklab, var(--good) 30%, transparent); border-radius: 10px; background: color-mix(in oklab, var(--good) 7%, transparent); }
+.success-icon { width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in oklab, var(--good) 18%, transparent); color: var(--good); }
+.success-hero b { display: block; font-size: 13px; font-weight: 550; }
+.success-hero p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted-foreground); }
+.mini-list { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted-foreground); }
+.mini-list span { display: flex; gap: 6px; align-items: center; }
+.mini-list .mono { font-size: 11px; }
+
+/* toast */
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; background: var(--popover); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-overlay); padding: 8px 12px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+.toast .ico { color: var(--good); }
+
+/* scrollbars */
+* { scrollbar-width: thin; scrollbar-color: oklch(0.40 0.012 265 / .55) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: oklch(0.40 0.012 265 / .55); border-radius: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* responsive */
+@media (max-width: 1220px) {
+  .settings-nav { width: 200px; flex-basis: 200px; }
+  .rail { width: 232px; flex-basis: 232px; }
+  .protocol-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detail-body { padding: 20px; }
+}
+@media (max-width: 980px) {
+  .settings-nav { display: none; }
+  .rail { width: 210px; flex-basis: 210px; }
+  .protocol-grid { grid-template-columns: 1fr 1fr; }
+  .test-grid { grid-template-columns: 1fr 1fr; }
+  .test-field.span4 { grid-column: 1 / -1; }
+  .trial-summary { grid-template-columns: 1fr 1fr; }
+  .model-head, .model-row { grid-template-columns: 24px minmax(0,1fr) 120px 76px 28px; }
+  .model-head > :nth-child(5), .model-row > :nth-child(5) { display: none; }
+}
+</style>
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true"><defs>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-workflow" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/><rect x="8" y="15" width="8" height="6" rx="1.5"/><path d="M6.5 9v3.5h11V9M12 12.5V15"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.6-4.2"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.6 4.2"/><path d="M21 3v4h-4M3 21v-4h4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4v16l13-8Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m11 12 9-9M17 6l3 3M15 8l2 2"/></symbol>
+  <symbol id="i-coins" viewBox="0 0 24 24"><circle cx="8" cy="8" r="5"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15v3M12 9v9M17 6v12"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.9 5.8L20 10.7l-5.6 2.2L12 19l-2.4-6.1L4 10.7l6.1-1.9L12 3Z"/><path d="M19 3v3M20.5 4.5h-3"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 13h.01M15 13h.01M9 17h6"/></symbol>
+  <symbol id="i-store" viewBox="0 0 24 24"><path d="M6 3h12l2 5H4l2-5ZM4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M9 12h6"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 12h6"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="m17 9 4-2v10l-4-2"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-redirect" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 12h8M12 8l4 4-4 4"/></symbol>
+</defs></svg>
+
+<!-- ============ preview chrome ============ -->
+<div class="previewbar">
+  <span class="brand"><span class="brand-dot"></span>ArcReel · RunningHub 接入</span>
+  <span class="sep"></span>
+  <div class="tabs" role="tablist" aria-label="预览视图">
+    <button class="ptab active" data-view="provider">供应商详情</button>
+    <button class="ptab" data-view="new-provider">新建供应商</button>
+    <button class="ptab" data-view="pull">拉取工作流</button>
+    <button class="ptab" data-view="endpoint">端点详情</button>
+    <button class="ptab" data-view="model">模型行</button>
+    <button class="ptab" data-view="test">测试结果</button>
+    <button class="ptab" data-view="activate">使用位置</button>
+  </div>
+  <span class="spacer"></span>
+  <label class="toggle"><span>错误态</span><button class="switch" id="error-toggle" role="switch" aria-checked="false" aria-label="切换错误态"></button></label>
+  <span class="sep"></span>
+  <span class="note">静态预览 · 可点击</span>
+</div>
+
+<!-- ============ app ============ -->
+<div class="app">
+  <header class="topbar">
+    <button class="btn btn-ghost btn-sm back" onclick="toast('返回上一页（预览）')"><svg class="ico ico-sm"><use href="#i-chevron-left"/></svg>返回</button>
+    <span style="width:1px;height:16px;background:var(--border)"></span>
+    <h1>设置</h1>
+    <div class="top-actions">
+      <span class="badge badge-outline">演示环境</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- settings nav -->
+    <nav class="settings-nav" aria-label="设置">
+      <div class="nav-group">
+        <p>生成</p>
+        <a class="nav-item active" data-nav="providers"><svg class="ico"><use href="#i-sparkles"/></svg>供应商</a>
+        <a class="nav-item" data-nav="default-models"><svg class="ico"><use href="#i-image"/></svg>默认模型</a>
+        <a class="nav-item" data-nav="endpoints"><svg class="ico"><use href="#i-workflow"/></svg>调用端点</a>
+      </div>
+      <div class="nav-group">
+        <p>Agent</p>
+        <a class="nav-item" data-nav="agent"><svg class="ico"><use href="#i-bot"/></svg>ArcReel Agent</a>
+        <a class="nav-item" data-nav="memory"><svg class="ico"><use href="#i-database"/></svg>Agent 记忆</a>
+      </div>
+      <div class="nav-group">
+        <p>独立</p>
+        <a class="nav-item" data-nav="market"><svg class="ico"><use href="#i-store"/></svg>市场</a>
+        <a class="nav-item" data-nav="usage"><svg class="ico"><use href="#i-chart"/></svg>用量</a>
+      </div>
+      <div class="nav-group">
+        <p>系统</p>
+        <a class="nav-item" data-nav="general"><svg class="ico"><use href="#i-sliders"/></svg>通用</a>
+        <a class="nav-item" data-nav="templates"><svg class="ico"><use href="#i-file"/></svg>提示词模板</a>
+        <a class="nav-item" data-nav="about"><svg class="ico"><use href="#i-settings"/></svg>关于</a>
+      </div>
+    </nav>
+
+    <!-- ============ providers rail ============ -->
+    <nav class="rail" id="rail-providers" aria-label="供应商列表">
+      <div class="rail-tabs">
+        <button class="rail-tab active" data-rail="custom">自定义 <span class="n">2</span></button>
+        <button class="rail-tab" data-rail="builtin">内置 <span class="n">6</span></button>
+      </div>
+      <div data-rail-list="custom">
+        <div class="rail-group-label">自定义供应商</div>
+        <a class="rail-item active" data-go="provider">
+          <span class="rail-avatar">RH</span>
+          <span class="rail-title"><b>RunningHub 云端工作流</b><small>3 个模型</small></span>
+        </a>
+        <a class="rail-item" data-go="provider">
+          <span class="rail-avatar">转</span>
+          <span class="rail-title"><b>我的中转站</b><small>2 个模型</small></span>
+        </a>
+        <a class="rail-item action" data-go="new-provider"><svg class="ico"><use href="#i-plus"/></svg><span class="rail-title"><b>添加自定义供应商</b></span></a>
+      </div>
+      <div data-rail-list="builtin" hidden>
+        <div class="rail-group-label">内置供应商</div>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">G</span><span class="rail-title"><b>Gemini</b><small>已配置 2 个密钥</small></span></a>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">火</span><span class="rail-title"><b>火山方舟</b><small>未配置</small></span></a>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">O</span><span class="rail-title"><b>OpenAI</b><small>已配置 1 个密钥</small></span></a>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">K</span><span class="rail-title"><b>可灵 Kling</b><small>未配置</small></span></a>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">M</span><span class="rail-title"><b>MiniMax</b><small>未配置</small></span></a>
+        <a class="rail-item" data-go="provider"><span class="rail-avatar">V</span><span class="rail-title"><b>Vidu</b><small>未配置</small></span></a>
+      </div>
+    </nav>
+
+    <!-- ============ endpoints rail ============ -->
+    <nav class="rail" id="rail-endpoints" aria-label="调用端点" hidden>
+      <div class="rail-tabs">
+        <button class="rail-tab active" data-rail="mine">我的 <span class="n">2</span></button>
+        <button class="rail-tab" data-rail="builtin">内置 <span class="n">6</span></button>
+      </div>
+      <div data-rail-list="mine">
+        <div class="rail-group-label">我的端点</div>
+        <a class="rail-item active" data-go="endpoint">
+          <svg class="ico" style="color:var(--primary)"><use href="#i-workflow"/></svg>
+          <span class="rail-title"><b>首尾帧-全能V3.1</b><small>2 个模型使用 · 视频</small></span>
+        </a>
+        <a class="rail-item" data-go="endpoint">
+          <svg class="ico" style="color:var(--warn)"><use href="#i-workflow"/></svg>
+          <span class="rail-title"><b>角色一致性-参考图</b><small>1 个模型使用 · 缺少 ID</small></span>
+        </a>
+        <a class="rail-item action" data-go="pull"><svg class="ico"><use href="#i-plus"/></svg><span class="rail-title"><b>新建端点</b></span></a>
+      </div>
+      <div data-rail-list="builtin" hidden>
+        <div class="rail-group-label">内置端点</div>
+        <a class="rail-item" data-go="endpoint"><svg class="ico"><use href="#i-file"/></svg><span class="rail-title"><b>NewAPI Video</b><small>声明式 · 视频</small></span></a>
+        <a class="rail-item" data-go="endpoint"><svg class="ico"><use href="#i-file"/></svg><span class="rail-title"><b>MiniMax H3</b><small>声明式 · 视频</small></span></a>
+        <a class="rail-item" data-go="endpoint"><svg class="ico"><use href="#i-file"/></svg><span class="rail-title"><b>Vidu 视频</b><small>声明式 · 视频</small></span></a>
+        <a class="rail-item" data-go="endpoint"><svg class="ico"><use href="#i-file"/></svg><span class="rail-title"><b>Seedream 文生图</b><small>声明式 · 图像</small></span></a>
+      </div>
+    </nav>
+
+    <!-- ============ provider detail ============ -->
+    <section class="detail" id="view-provider">
+      <div class="detail-header">
+        <div class="entity-head">
+          <div class="entity-avatar">RH</div>
+          <div class="entity-title">
+            <h2>RunningHub 云端工作流</h2>
+            <p>RunningHub 工作流 <span class="muted">·</span> <span class="mono">https://www.runninghub.cn</span></p>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-outline" id="provider-test-btn" onclick="testProvider(this)"><svg class="ico"><use href="#i-refresh"/></svg>测试连接</button>
+            <button class="btn btn-ghost btn-icon" aria-label="更多操作" onclick="toast('更多操作：导出、删除供应商')"><svg class="ico"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="column">
+          <section class="section">
+            <h3 class="section-head" style="display:flex">连接</h3>
+            <div class="field"><label>名称</label><div class="control"><input class="input" value="RunningHub 云端工作流"></div></div>
+            <div class="field"><label>协议</label><div class="control"><button class="select disabled"><span>RunningHub 工作流</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">保存后不可更改。</p></div></div>
+            <div class="field"><label>接口地址</label><div class="control"><input class="input mono" value="https://www.runninghub.cn"></div></div>
+            <div class="field"><label>密钥</label><div class="control"><div class="input-group"><input class="input mono" type="password" value="rh_9f2c8a1b7d4e6f0a"><button class="btn btn-ghost btn-icon" aria-label="显示密钥" onclick="toast('切换密钥明文（预览）')"><svg class="ico"><use href="#i-eye"/></svg></button></div><p class="hint">在 RunningHub 控制台「API 调用」中获取；只用于本机出站请求。</p></div></div>
+            <div class="alert success" id="provider-conn-alert"><svg class="ico"><use href="#i-check"/></svg><span>连接成功：余额 <b>99,999</b> RH 币 · 运行中 <b>0</b> 个任务 <span class="muted" style="margin-left:6px">刚刚</span></span></div>
+          </section>
+
+          <section class="section" id="workflow-endpoints">
+            <div class="section-head">
+              <h3>工作流端点</h3><span class="count">2</span>
+              <div class="head-actions"><button class="btn btn-outline btn-sm" onclick="go('pull')"><svg class="ico ico-xs"><use href="#i-plus"/></svg>新建工作流端点</button></div>
+            </div>
+            <div class="card">
+              <div class="list-row">
+                <div class="row-main">
+                  <div class="row-title">首尾帧-全能V3.1 <span class="badge badge-good"><svg class="ico"><use href="#i-check"/></svg>已绑定</span></div>
+                  <div class="row-sub mono">workflow 1904…346 · 37 个节点 · 2 个模型使用</div>
+                </div>
+                <div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="go('endpoint')">编辑</button><button class="btn btn-ghost btn-sm" onclick="go('test')">测试</button></div>
+              </div>
+              <div class="list-row warn-row">
+                <div class="row-main">
+                  <div class="row-title">角色一致性-参考图 <span class="badge badge-warn"><svg class="ico"><use href="#i-alert"/></svg>缺少工作流 ID</span></div>
+                  <div class="row-sub">RunningHub 供应商必须为每个端点填写工作流 ID；本地 ComfyUI 不需要。</div>
+                </div>
+                <div class="row-actions"><button class="btn btn-outline btn-sm" onclick="go('endpoint')">去填写</button></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section" id="models-section">
+            <div class="section-head">
+              <h3>模型</h3><span class="count">3</span>
+              <div class="head-actions"><button class="btn btn-outline btn-sm" onclick="toast('已展开模型行')"><svg class="ico ico-xs"><use href="#i-plus"/></svg>手动添加模型</button></div>
+            </div>
+            <div class="model-table">
+              <div class="model-head"><span></span><span>模型</span><span>端点</span><span>价格</span><span>类型</span><span></span></div>
+              <div class="model-row" id="model-row-1">
+                <input class="checkbox" type="checkbox" checked aria-label="启用">
+                <div class="model-name"><b>首尾帧-全能V3.1</b><small class="mono">rh-v31-start-end</small></div>
+                <span class="endpoint-pill"><svg class="ico"><use href="#i-workflow"/></svg>RH · 1904…346</span>
+                <span class="price">¥0.35/秒</span>
+                <span class="badge badge-outline">视频</span>
+                <button class="btn btn-ghost btn-icon btn-sm" aria-label="更多" onclick="toggleModel(1)"><svg class="ico"><use href="#i-more"/></svg></button>
+              </div>
+              <div class="model-editor" id="model-editor-1">
+                <div class="field"><label>模型 ID</label><div class="control"><input class="input mono" value="rh-v31-start-end"><p class="hint">ArcReel 内的别名，不会发给 RunningHub。</p></div></div>
+                <div class="field"><label>显示名</label><div class="control"><input class="input" value="首尾帧-全能V3.1"></div></div>
+                <div class="field full"><label>端点</label><div class="control">
+                  <button class="select" onclick="toggleEndpointMenu()"><span>RunningHub 工作流 / 首尾帧-全能V3.1</span><svg class="ico"><use href="#i-chevron-down"/></svg></button>
+                  <div class="endpoint-menu" id="endpoint-menu" hidden>
+                    <div class="menu-label">RunningHub 工作流</div>
+                    <div class="menu-option selected" onclick="pickEndpoint(this)"><span class="tick"><svg class="ico ico-xs"><use href="#i-check"/></svg></span><span><b>首尾帧-全能V3.1</b><small>RH · 1904…346 · 已绑定</small></span></div>
+                    <div class="menu-option disabled" onclick="toast('该端点缺少工作流 ID，先补齐再选')"><span class="tick"></span><span><b>角色一致性-参考图</b><small>RH · 缺少工作流 ID</small></span><span class="menu-link">去填写</span></div>
+                    <div class="menu-label">本地 ComfyUI</div>
+                    <div class="menu-option" onclick="pickEndpoint(this)"><span class="tick"></span><span><b>SDXL 本地</b><small>本地 · 127.0.0.1:8188</small></span></div>
+                  </div>
+                </div></div>
+                <div class="field"><label>价格</label><div class="control"><div class="inline-row"><input class="input mono" value="0.35" style="width:96px"><span class="hint">元/秒</span></div></div></div>
+                <div class="field"><label>时长</label><div class="control"><button class="select disabled"><span>由工作流固定</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">节点绑定未提供可换算的整秒档位。</p></div></div>
+                <div class="field full"><label>分辨率</label><div class="control"><button class="select disabled"><span>由工作流推导 · 1080×1920</span><svg class="ico"><use href="#i-chevron-down"/></svg></button></div></div>
+              </div>
+              <div class="model-row" id="model-row-2">
+                <input class="checkbox" type="checkbox" checked aria-label="启用">
+                <div class="model-name"><b>角色一致性</b><small class="mono">rh-character-consistency</small></div>
+                <span class="endpoint-pill warn"><svg class="ico"><use href="#i-alert"/></svg>缺少工作流 ID</span>
+                <span class="price">¥0.20/秒</span>
+                <span class="badge badge-outline">视频</span>
+                <button class="btn btn-ghost btn-icon btn-sm" aria-label="更多"><svg class="ico"><use href="#i-more"/></svg></button>
+              </div>
+              <div class="model-row" id="model-row-3">
+                <input class="checkbox" type="checkbox" aria-label="启用">
+                <div class="model-name"><b>全能V3.1-参考图</b><small class="mono">rh-v31-reference</small></div>
+                <span class="endpoint-pill"><svg class="ico"><use href="#i-workflow"/></svg>RH · 1904…346</span>
+                <span class="price">¥0.40/秒</span>
+                <span class="badge badge-outline">视频</span>
+                <button class="btn btn-ghost btn-icon btn-sm" aria-label="更多"><svg class="ico"><use href="#i-more"/></svg></button>
+              </div>
+            </div>
+            <p class="hint warn">「角色一致性-参考图」缺少工作流 ID，保存后生成会失败。</p>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">并发</h3>
+            <p class="section-desc">同时提交到 RunningHub 的任务上限。RunningHub 账号自身也有队列限制，建议先设为 2–3。</p>
+            <div class="field"><label>图像</label><div class="control"><input class="input w-sm" type="number" value="2"></div></div>
+            <div class="field"><label>视频</label><div class="control"><input class="input w-sm" type="number" value="3"></div></div>
+            <div class="field"><label>音频</label><div class="control"><input class="input w-sm" type="number" placeholder="未设置"></div></div>
+          </section>
+        </div>
+      </div>
+      <div class="detail-footer">
+        <div class="savebar">
+          <span class="status"><span class="dot"></span>1 个端点缺少工作流 ID，暂不能保存</span>
+          <div class="actions"><button class="btn btn-ghost" onclick="toast('已放弃修改（预览）')">放弃</button><button class="btn btn-primary" disabled>保存</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ new provider ============ -->
+    <section class="detail" id="view-new-provider" hidden>
+      <div class="detail-header">
+        <div class="entity-head">
+          <div class="entity-avatar"><svg class="ico ico-sm"><use href="#i-plus"/></svg></div>
+          <div class="entity-title"><h2>新建自定义供应商</h2><p>选择接入方式，填写账号凭据，再创建工作流与模型。</p></div>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="column">
+          <section class="section">
+            <h3 class="section-head">接入方式</h3>
+            <div class="protocol-grid">
+              <button class="protocol-card" onclick="toast('本预览聚焦 RunningHub 工作流')"><svg class="ico"><use href="#i-sparkles"/></svg><b>OpenAI 兼容</b><small>OpenAI /v1 协议</small><span class="check"><svg class="ico"><use href="#i-check"/></svg></span></button>
+              <button class="protocol-card" onclick="toast('本预览聚焦 RunningHub 工作流')"><svg class="ico"><use href="#i-bot"/></svg><b>Google</b><small>Gemini API</small><span class="check"><svg class="ico"><use href="#i-check"/></svg></span></button>
+              <button class="protocol-card" onclick="toast('本预览聚焦 RunningHub 工作流')"><svg class="ico"><use href="#i-workflow"/></svg><b>ComfyUI</b><small>本地或自建 ComfyUI</small><span class="check"><svg class="ico"><use href="#i-check"/></svg></span></button>
+              <button class="protocol-card selected" onclick="toast('已选择 RunningHub 工作流')"><svg class="ico"><use href="#i-cloud"/></svg><b>RunningHub</b><small>云端 ComfyUI 工作流</small><span class="check"><svg class="ico"><use href="#i-check"/></svg></span></button>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">连接</h3>
+            <div class="field"><label>名称</label><div class="control"><input class="input" value="RunningHub 云端工作流"></div></div>
+            <div class="field"><label>协议</label><div class="control"><button class="select disabled"><span>RunningHub 工作流</span><svg class="ico"><use href="#i-chevron-down"/></svg></button></div></div>
+            <div class="field"><label>接口地址</label><div class="control"><input class="input mono" value="https://www.runninghub.cn"></div></div>
+            <div class="field"><label>密钥</label><div class="control"><div class="input-group"><input class="input mono" type="password" placeholder="粘贴 RunningHub APIKEY"><button class="btn btn-ghost btn-icon" aria-label="显示密钥" onclick="toast('切换密钥明文（预览）')"><svg class="ico"><use href="#i-eye"/></svg></button></div><p class="hint">在 RunningHub 控制台「API 调用」中获取。</p></div></div>
+            <div class="alert"><svg class="ico"><use href="#i-refresh"/></svg><span class="alert-copy">测试连接只验证账号，<b>不会提交任务、不扣币</b>；连通后会显示 RH 币余额与运行中任务数。</span></div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h3>工作流端点</h3><div class="head-actions"><span class="badge badge-outline">0</span></div></div>
+            <div class="empty-card">
+              <div class="empty-icon"><svg class="ico"><use href="#i-cloud"/></svg></div>
+              <div class="empty-main">
+                <b>还没有 RunningHub 工作流端点</b>
+                <p>RunningHub 的“模型”来自工作流。先创建一个端点，再回来添加模型。保存供应商后会自动回到这里。</p>
+                <div class="empty-actions">
+                  <button class="btn btn-primary btn-sm" onclick="go('pull')"><svg class="ico ico-xs"><use href="#i-cloud"/></svg>从 RunningHub 拉取</button>
+                  <button class="btn btn-outline btn-sm" onclick="toast('打开 workflow 文件选择（预览）')"><svg class="ico ico-xs"><use href="#i-upload"/></svg>导入 workflow 文件</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h3>模型</h3><span class="count">0</span><div class="head-actions"><button class="btn btn-outline btn-sm" disabled><svg class="ico ico-xs"><use href="#i-plus"/></svg>手动添加模型</button></div></div>
+            <div class="empty-card">
+              <div class="empty-icon"><svg class="ico"><use href="#i-workflow"/></svg></div>
+              <div class="empty-main"><b>先创建工作流端点</b><p>没有端点时无法添加模型。端点保存后，这里会自动出现可选的 RunningHub 工作流。</p></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">并发</h3>
+            <p class="section-desc">RunningHub 按账号队列调度；建议从 2–3 开始，避免排队时间被本地并发放大。</p>
+            <div class="field"><label>图像</label><div class="control"><input class="input w-sm" type="number" placeholder="2"></div></div>
+            <div class="field"><label>视频</label><div class="control"><input class="input w-sm" type="number" placeholder="3"></div></div>
+            <div class="field"><label>音频</label><div class="control"><input class="input w-sm" type="number" placeholder="未设置"></div></div>
+          </section>
+        </div>
+      </div>
+      <div class="detail-footer">
+        <div class="savebar"><span class="status"><span class="dot"></span>填写 APIKEY 后可保存</span><div class="actions"><button class="btn btn-ghost" onclick="go('provider')">取消</button><button class="btn btn-primary" disabled title="先填写 APIKEY">保存</button></div></div>
+      </div>
+    </section>
+
+    <!-- ============ endpoint new ============ -->
+    <section class="detail" id="view-endpoint-new" hidden>
+      <div class="detail-header">
+        <div class="entity-head">
+          <div class="entity-avatar"><svg class="ico ico-sm"><use href="#i-workflow"/></svg></div>
+          <div class="entity-title"><h2>新建调用端点</h2><p>一份 ComfyUI API workflow 连同它的节点绑定。可以从 RunningHub 直接拉取。</p></div>
+          <div class="head-actions"><span class="badge badge-secondary">工作流</span></div>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="column">
+          <section class="section">
+            <h3 class="section-head">选择导入方式</h3>
+            <div class="import-grid">
+              <button class="import-card" onclick="toast('打开文件选择（预览）')">
+                <svg class="ico"><use href="#i-upload"/></svg>
+                <b>导入 workflow 文件</b>
+                <p>支持 ComfyUI 导出的 API 格式 JSON；UI 格式会被拒绝并说明原因。</p>
+              </button>
+              <button class="import-card selected" onclick="go('pull')">
+                <svg class="ico"><use href="#i-cloud"/></svg>
+                <b>从 RunningHub 拉取</b>
+                <p>输入工作流 ID，自动获取 API workflow 并推断节点绑定。</p>
+              </button>
+            </div>
+          </section>
+          <div class="empty-card">
+            <div class="empty-icon"><svg class="ico"><use href="#i-workflow"/></svg></div>
+            <div class="empty-main"><b>还没有选择 workflow</b><p>选好导入方式后会进入节点绑定编辑器：确认提示词、首帧 / 尾帧、输出节点，再保存。</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="detail-footer"><div class="savebar"><span class="status">未选择 workflow</span><div class="actions"><button class="btn btn-primary" disabled>保存</button></div></div></div>
+    </section>
+
+    <!-- ============ endpoint detail ============ -->
+    <section class="detail" id="view-endpoint" hidden>
+      <div class="detail-header">
+        <button class="btn btn-ghost btn-sm" style="margin:-4px 0 6px -8px" onclick="go('provider')"><svg class="ico ico-xs"><use href="#i-chevron-left"/></svg>返回 RunningHub 云端工作流</button>
+        <div class="entity-head">
+          <div class="entity-title">
+            <div class="title-row"><h2>首尾帧-全能V3.1</h2><span class="badge badge-secondary">RunningHub 工作流</span><span class="badge badge-outline">视频</span></div>
+            <p class="endpoint-meta"><span class="mono muted">ce-12</span><span class="muted">·</span><span class="muted">37 个节点</span></p>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-outline" onclick="toast('重新导入 workflow（预览）')"><svg class="ico"><use href="#i-file"/></svg>重新导入</button>
+            <button class="btn btn-ghost btn-icon" aria-label="更多操作" onclick="toast('更多操作：导出、分享、删除')"><svg class="ico"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="column">
+          <div class="usage-card"><svg class="ico"><use href="#i-chart"/></svg><span>2 个模型行正在使用：RunningHub 云端工作流 · 首尾帧-全能V3.1</span></div>
+
+          <section class="section" id="remote-workflow">
+            <h3 class="section-head">远端工作流</h3>
+            <div class="field"><label>工作流 ID</label><div class="control"><div class="inline-row"><span class="code-pill mono">1904136902449209346</span><button class="btn btn-ghost btn-sm" onclick="copyText('1904136902449209346')"><svg class="ico ico-xs"><use href="#i-copy"/></svg>复制</button><button class="btn btn-ghost btn-sm" onclick="toast('将在新标签打开 RunningHub 工作流页（预览）')"><svg class="ico ico-xs"><use href="#i-external"/></svg>在 RunningHub 打开</button></div></div></div>
+            <div class="field"><label>同步</label><div class="control"><div class="inline-row"><button class="btn btn-outline btn-sm" id="repull-btn" onclick="confirmRepull()"><svg class="ico ico-xs"><use href="#i-refresh"/></svg>从 RunningHub 重新拉取</button><span class="hint">上次拉取：刚刚</span></div><p class="hint">会替换 workflow 并重新匹配节点绑定；无法匹配的绑定会被清空。</p></div></div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">节点绑定</h3>
+            <div class="bind-table">
+              <div class="bind-head"><span>语义键</span><span>状态</span><span>节点</span><span style="text-align:right">操作</span></div>
+              <div class="bind-row"><span class="key">提示词</span><span class="badge badge-good"><svg class="ico"><use href="#i-check"/></svg>已确认</span><span class="node">CLIPTextEncode #6</span><span class="actions"><button class="btn btn-ghost btn-sm" onclick="toast('重新识别提示词（预览）')">重新识别</button></span></div>
+              <div class="bind-row"><span class="key">首帧</span><span class="badge badge-good"><svg class="ico"><use href="#i-check"/></svg>已确认</span><span class="node">LoadImage #10</span><span class="actions"><button class="btn btn-ghost btn-sm" onclick="toast('重新识别首帧（预览）')">重新识别</button></span></div>
+              <div class="bind-row"><span class="key">尾帧</span><span class="badge badge-good"><svg class="ico"><use href="#i-check"/></svg>已确认</span><span class="node">LoadImage #11</span><span class="actions"><button class="btn btn-ghost btn-sm" onclick="toast('重新识别尾帧（预览）')">重新识别</button></span></div>
+              <div class="bind-row"><span class="key">输出</span><span class="badge badge-good"><svg class="ico"><use href="#i-check"/></svg>已确认</span><span class="node">SaveVideo #17</span><span class="actions"><button class="btn btn-ghost btn-sm" onclick="toast('重新识别输出（预览）')">重新识别</button></span></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">定义</h3>
+            <div class="field"><label>名称</label><div class="control"><input class="input" value="首尾帧-全能V3.1"></div></div>
+            <div class="field"><label>媒体类型</label><div class="control"><div class="segmented"><button class="active">视频</button><button>图片</button></div><p class="hint">RunningHub 返回的 workflow 不声明产图还是产视频，需要在这里确认。</p></div></div>
+            <div class="field"><label>反向代理凭据</label><div class="control"><div class="auth-note"><svg class="ico"><use href="#i-lock"/></svg>本地 ComfyUI 使用；RunningHub 使用 APIKEY，本节不生效。<button class="btn btn-ghost btn-sm" onclick="toast('展开 auth 节（预览）')">展开</button></div></div></div>
+          </section>
+
+          <section class="section">
+            <h3 class="section-head">workflow 本体</h3>
+            <div class="chips">
+              <span class="chip">CLIPTextEncode <span class="n">×2</span></span>
+              <span class="chip">LoadImage <span class="n">×2</span></span>
+              <span class="chip">KSampler <span class="n">×1</span></span>
+              <span class="chip">VAEDecode <span class="n">×1</span></span>
+              <span class="chip">SaveVideo <span class="n">×1</span></span>
+              <span class="chip">Reroute <span class="n">×3</span></span>
+            </div>
+          </section>
+
+          <section class="section" id="endpoint-test">
+            <h3 class="section-head">端点测试</h3>
+            <p class="section-desc">预览提交请求的形状，或真实提交一笔任务验证绑定。测试连接会消耗 RH 币。</p>
+            <div class="test-grid">
+              <div class="test-field span4"><label>提示词</label><textarea class="input">镜头缓慢推近，雨滴落在伞面，霓虹在积水中拉出长长的倒影；人物从画面右侧走入，抬头看向镜头。</textarea></div>
+              <div class="test-field"><label>比例</label><button class="select">9:16 <svg class="ico"><use href="#i-chevron-down"/></svg></button></div>
+              <div class="test-field"><label>分辨率</label><button class="select">原生 <svg class="ico"><use href="#i-chevron-down"/></svg></button></div>
+              <div class="test-field"><label>时长（秒）</label><input class="input" value="5"></div>
+              <div class="test-field"><label>凭证来源</label><button class="select">RunningHub 云端工作流 <svg class="ico"><use href="#i-chevron-down"/></svg></button></div>
+              <div class="test-field span2"><label>首帧</label><input class="input" type="file"></div>
+              <div class="test-field span2"><label>尾帧</label><input class="input" type="file"></div>
+            </div>
+            <div class="alert warn"><svg class="ico"><use href="#i-coins"/></svg><span>测试连接会真实提交一笔任务并消耗 RH 币；预览请求不提交、不扣币。</span></div>
+            <div class="test-actions"><button class="btn btn-outline" onclick="toast('渲染 POST /task/openapi/create 的请求体（预览）')"><svg class="ico"><use href="#i-file"/></svg>预览请求</button><button class="btn btn-primary" onclick="startTrial()"><svg class="ico"><use href="#i-play"/></svg>测试连接</button></div>
+
+            <div class="trial-card" id="trial-card" hidden>
+              <div class="trial-head"><b>测试连接</b><span class="badge badge-primary" id="trial-status">提交中</span></div>
+              <div class="timeline">
+                <div class="tl-step" id="tl-submit"><span class="tl-dot">1</span><span>提交</span></div><span class="tl-line"></span>
+                <div class="tl-step" id="tl-queue"><span class="tl-dot">2</span><span>排队</span></div><span class="tl-line"></span>
+                <div class="tl-step" id="tl-run"><span class="tl-dot">3</span><span>运行</span></div><span class="tl-line"></span>
+                <div class="tl-step" id="tl-done"><span class="tl-dot">4</span><span>完成</span></div>
+              </div>
+              <div class="trial-summary" id="trial-summary" hidden>
+                <div><small>taskId</small><span class="mono">1910246754753896450</span></div>
+                <div><small>耗时</small><span>37s</span></div>
+                <div><small>费用</small><span>17 RH 币</span></div>
+                <div><small>产物</small><span>1080×1920 · 8.4 MB</span></div>
+              </div>
+              <div class="artifact" id="trial-artifact" hidden>
+                <div class="artifact-thumb"><svg class="ico"><use href="#i-play"/></svg></div>
+                <div class="file"><b>ComfyUI_00001.mp4</b><small>8.4 MB · 8 秒 · 1080×1920</small></div>
+                <button class="btn btn-outline btn-sm" onclick="toast('下载产物（预览）')"><svg class="ico ico-xs"><use href="#i-upload"/></svg>下载</button>
+              </div>
+              <div class="trial-fail" id="trial-fail" hidden>
+                <div class="alert error"><svg class="ico"><use href="#i-alert"/></svg><span class="alert-copy"><b>节点 SaveVideo 失败：</b> 'str' object has no attribute 'shape'。<br>远端 workflow 可能与本地定义不一致。</span></div>
+                <div class="test-actions"><button class="btn btn-outline btn-sm" onclick="toast('已复制错误（预览）')">复制错误</button><button class="btn btn-outline btn-sm" onclick="toast('重新拉取并绑定（预览）')">重新拉取并绑定</button></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div class="detail-footer">
+        <div class="savebar"><span class="status ok"><span class="dot"></span>已保存</span><div class="actions"><button class="btn btn-ghost" onclick="toast('已放弃修改（预览）')">放弃</button><button class="btn btn-primary" onclick="saveDemo()">保存</button></div></div>
+      </div>
+    </section>
+
+    <!-- ============ where it takes effect ============ -->
+    <section class="detail" id="view-activate" hidden>
+      <div class="detail-header">
+        <div class="entity-head">
+          <div class="entity-avatar"><svg class="ico ico-sm"><use href="#i-sliders"/></svg></div>
+          <div class="entity-title">
+            <h2>默认模型</h2>
+            <p>为图像、视频和文本选择默认模型。项目级设置优先于这里。</p>
+          </div>
+          <div class="head-actions"><button class="btn btn-outline" onclick="toast('打开项目设置 → 模型（预览）')"><svg class="ico"><use href="#i-sliders"/></svg>项目设置 → 模型</button></div>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="column" style="max-width: 860px">
+          <div class="chain">
+            <div class="chain-node"><b><span class="chain-check">✓</span> ① 供应商 / 端点</b><small>RunningHub 账号 + 工作流已配置</small></div>
+            <span class="chain-arrow"><svg class="ico ico-sm" style="transform:rotate(180deg)"><use href="#i-chevron-left"/></svg></span>
+            <div class="chain-node active"><b>② 默认模型</b><small>全局默认，或项目级覆盖</small></div>
+            <span class="chain-arrow"><svg class="ico ico-sm" style="transform:rotate(180deg)"><use href="#i-chevron-left"/></svg></span>
+            <div class="chain-node"><b>③ 生成任务</b><small>创建任务时锁定模型</small></div>
+          </div>
+
+          <section class="section">
+            <div class="section-head"><h3>视频</h3><span class="count">默认模型</span></div>
+            <div class="channel-card">
+              <div class="field"><label>默认视频模型</label><div class="control">
+                <button class="select"><span>RunningHub 云端工作流 / 首尾帧-全能V3.1 <span class="badge badge-primary" style="margin-left:6px">RunningHub</span></span><svg class="ico"><use href="#i-chevron-down"/></svg></button>
+                <p class="hint">项目未单独指定视频模型时，使用这个模型。</p>
+              </div></div>
+              <div class="field"><label>图生视频（i2v）</label><div class="control"><button class="select"><span>跟随默认</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">留空即沿用上面的默认模型；RunningHub 端点支持首帧 / 尾帧。</p></div></div>
+              <div class="field"><label>参考生视频（r2v）</label><div class="control"><button class="select disabled"><span>该端点未绑定参考图，r2v 候选里不会出现它</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">能力由节点绑定推导；补上参考图绑定后才会进入 r2v 候选。</p></div></div>
+              <div class="spec-bar">
+                <span class="spec">时长 5s / 8s</span>
+                <span class="spec">分辨率 720p / 1080p</span>
+                <span class="spec">首尾帧</span>
+                <span class="spec">有声</span>
+              </div>
+              <label class="check-line"><input class="checkbox" type="checkbox" checked> 生成有声视频 <span class="hint">由工作流的音轨节点决定；模型固定有声或无声时置灰。</span></label>
+              <div class="field"><label>视频轮询超时</label><div class="control"><div class="inline-row"><input class="input w-sm" value="600"><span class="hint">秒；RunningHub 排队较久时可适当加大。</span></div></div></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h3>图像</h3><span class="count">默认模型</span></div>
+            <div class="channel-card">
+              <div class="field"><label>默认图像模型</label><div class="control"><button class="select"><span>自动选择</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">RunningHub 当前只配置了视频工作流；要出图请另建图像工作流端点。</p></div></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h3>旁白配音</h3><span class="count">本次未接入</span><span class="badge badge-outline" style="margin-left:auto">后续</span></div>
+            <div class="channel-card">
+              <div class="field"><label>默认配音模型</label><div class="control"><button class="select disabled"><span>跟随全局（本次未接入 RunningHub TTS）</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">RunningHub 的 TTS 有两条接法：标准模型 API（MiniMax / Qwen3-TTS / 豆包），或自己搭一个 TTS 工作流（workflowId）。后者需要把 workflow 端点扩展到 <span class="mono">media_type: audio</span>，本次未做；推荐用它，因为音色与后处理可完全自定义。</p></div></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h3>文本</h3><span class="count">默认模型</span></div>
+            <div class="channel-card">
+              <div class="field"><label>默认文本模型</label><div class="control"><button class="select disabled"><span>跟随全局（RunningHub 不提供对话 / 文本模型）</span><svg class="ico"><use href="#i-chevron-down"/></svg></button></div></div>
+            </div>
+          </section>
+
+          <div class="alert"><svg class="ico"><use href="#i-alert"/></svg><span class="alert-copy"><b>生效顺序：</b>项目设置 → 模型 &gt; 全局默认模型 &gt; 自动推断。修改只影响新任务；已提交 / 运行中的任务保持创建时锁定的模型。</span></div>
+          <div class="link-row">只想让某个项目使用 RunningHub？<button class="btn btn-outline btn-sm" onclick="toast('打开项目设置 → 模型（预览）')">打开项目 → 设置 → 模型</button><span class="hint">项目里的“跟随全局”表示不覆盖。</span></div>
+        </div>
+      </div>
+      <div class="detail-footer"><div class="savebar"><span class="status ok"><span class="dot"></span>已保存</span><div class="actions"><button class="btn btn-ghost" onclick="toast('已放弃修改（预览）')">放弃</button><button class="btn btn-primary" onclick="saveDemo()">保存</button></div></div></div>
+    </section>
+  </div>
+</div>
+
+<!-- ============ pull modal ============ -->
+<div class="modal-backdrop" id="pull-modal" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="pull-title">
+    <div class="modal-head"><h3 id="pull-title">从 RunningHub 拉取工作流</h3><button class="btn btn-ghost btn-icon" aria-label="关闭" onclick="closePull()"><svg class="ico"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body" id="pull-form">
+      <div class="field"><label>凭证来源</label><div class="control"><button class="select"><span>RunningHub 云端工作流 <span class="muted" style="font-size:11px">custom-2</span></span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">使用已保存供应商的 APIKEY，不会显示明文；也可以临时填写。</p></div></div>
+      <div class="field"><label>工作流 ID</label><div class="control"><input class="input mono" id="pull-workflow-id" value="1904136902449209346"><p class="hint">在 RunningHub 工作流页复制链接末尾的数字。</p></div></div>
+      <div class="alert"><svg class="ico"><use href="#i-cloud"/></svg><span class="alert-copy">拉取只读取 workflow，<b>不会提交任务、不扣币</b>。成功后进入节点绑定确认。</span></div>
+    </div>
+    <div class="modal-body" id="pull-success" hidden>
+      <div class="success-hero"><div class="success-icon"><svg class="ico"><use href="#i-check"/></svg></div><div><b>已获取 API workflow</b><p>37 个节点 · 4 个语义键已识别 · 来源 workflow 1904…346</p></div></div>
+      <div class="field"><label>媒体类型</label><div class="control"><button class="select"><span>视频</span><svg class="ico"><use href="#i-chevron-down"/></svg></button><p class="hint">RunningHub 返回的 workflow 不声明产图还是产视频，需要确认。</p></div></div>
+      <div class="mini-list">
+        <span><svg class="ico ico-xs" style="color:var(--good)"><use href="#i-check"/></svg>提示词 <span class="mono">→ CLIPTextEncode #6</span></span>
+        <span><svg class="ico ico-xs" style="color:var(--good)"><use href="#i-check"/></svg>首帧 <span class="mono">→ LoadImage #10</span></span>
+        <span><svg class="ico ico-xs" style="color:var(--good)"><use href="#i-check"/></svg>尾帧 <span class="mono">→ LoadImage #11</span></span>
+        <span><svg class="ico ico-xs" style="color:var(--good)"><use href="#i-check"/></svg>输出 <span class="mono">→ SaveVideo #17</span></span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closePull()">取消</button>
+      <button class="btn btn-primary" id="pull-btn" onclick="pullWorkflow()"><svg class="ico"><use href="#i-cloud"/></svg>拉取并解析</button>
+      <button class="btn btn-primary" id="pull-continue" hidden onclick="continueBinding()">继续确认节点绑定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ confirm repull ============ -->
+<div class="modal-backdrop" id="confirm-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-head"><h3 id="confirm-title">从 RunningHub 重新拉取？</h3></div>
+    <div class="modal-body">
+      <p class="hint" style="font-size:12.5px;line-height:1.6;color:var(--subtle-foreground)">这会替换当前 workflow 并重新匹配节点绑定。已经手动确认过、但无法在新 workflow 中找到对应节点的绑定会被清空；模型行、价格与使用关系不变。</p>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeConfirm()">取消</button><button class="btn btn-primary" onclick="doRepull()">重新拉取</button></div>
+  </div>
+</div>
+
+<!-- ============ toast ============ -->
+<div class="toast" id="toast" hidden><svg class="ico"><use href="#i-check"/></svg><span id="toast-text"></span></div>
+
+<script>
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+let toastTimer = null;
+let trialTimers = [];
+let repulling = false;
+
+function toast(message) {
+  const box = $('#toast');
+  $('#toast-text').textContent = message;
+  box.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { box.hidden = true; }, 2200);
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('已复制：' + text)).catch(() => toast('已复制：' + text));
+  } else {
+    toast('已复制：' + text);
+  }
+}
+
+/* ---------- views ---------- */
+function showDetail(id) {
+  $$('.detail').forEach((el) => { el.hidden = el.id !== 'view-' + id; });
+  $$('.detail-body').forEach((el) => { el.scrollTop = 0; });
+}
+function setActiveTab(view) {
+  $$('.previewbar .ptab').forEach((el) => el.classList.toggle('active', el.dataset.view === view));
+}
+function setNav(section) {
+  $$('.settings-nav .nav-item').forEach((el) => el.classList.toggle('active', el.dataset.nav === section));
+}
+function setRail(which) {
+  $('#rail-providers').hidden = which !== 'providers';
+  $('#rail-endpoints').hidden = which !== 'endpoints';
+}
+
+function scrollDetailTo(el, offset = 12) {
+  if (!el) return;
+  const body = el.closest('.detail-body');
+  if (!body) { el.scrollIntoView({ block: 'start', behavior: 'auto' }); return; }
+  const top = el.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - offset;
+  body.scrollTop = Math.max(0, top);
+}
+
+function go(view) {
+  if (view === 'provider' || view === 'new-provider') {
+    setRail('providers');
+    setNav('providers');
+    showDetail(view);
+  } else if (view === 'pull' || view === 'endpoint-new' || view === 'endpoint') {
+    setRail('endpoints');
+    setNav('endpoints');
+    showDetail(view === 'pull' ? 'endpoint-new' : view);
+    if (view === 'pull') openPull();
+  } else if (view === 'model') {
+    setRail('providers');
+    setNav('providers');
+    showDetail('provider');
+    const row = $('#model-row-1');
+    row.classList.add('expanded');
+    $('#endpoint-menu').hidden = false;
+    requestAnimationFrame(() => scrollDetailTo($('#models-section'), 10));
+  } else if (view === 'test') {
+    setRail('endpoints');
+    setNav('endpoints');
+    showDetail('endpoint');
+    requestAnimationFrame(() => showTrialResult());
+  } else if (view === 'activate') {
+    setRail('none');
+    setNav('default-models');
+    showDetail('activate');
+  }
+  setActiveTab(view);
+  history.replaceState(null, '', '?view=' + encodeURIComponent(view));
+}
+
+/* ---------- rail interactions ---------- */
+$$('.rail-tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    const rail = tab.closest('.rail');
+    $$('.rail-tab', rail).forEach((t) => t.classList.toggle('active', t === tab));
+    $$('[data-rail-list]', rail).forEach((list) => { list.hidden = list.dataset.railList !== tab.dataset.rail; });
+  });
+});
+$$('[data-go]').forEach((el) => el.addEventListener('click', (e) => { e.preventDefault(); go(el.dataset.go); }));
+$$('.settings-nav .nav-item').forEach((el) => {
+  el.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (el.dataset.nav === 'providers') go('provider');
+    else if (el.dataset.nav === 'endpoints') go('endpoint');
+    else toast('本预览只覆盖「供应商」与「调用端点」');
+  });
+});
+$$('.previewbar .ptab').forEach((tab) => tab.addEventListener('click', () => go(tab.dataset.view)));
+
+/* ---------- provider connectivity ---------- */
+function testProvider(btn) {
+  const alertEl = $('#provider-conn-alert');
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>测试中…';
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = original;
+    if (document.body.classList.contains('error-state')) {
+      alertEl.className = 'alert error';
+      alertEl.innerHTML = '<svg class="ico"><use href="#i-alert"/></svg><span><b>连接失败：</b>APIKEY 无效或已失效（401）。请检查 RunningHub 控制台中的密钥。</span>';
+    } else {
+      alertEl.className = 'alert success';
+      alertEl.innerHTML = '<svg class="ico"><use href="#i-check"/></svg><span>连接成功：余额 <b>99,999</b> RH 币 · 运行中 <b>0</b> 个任务 <span class="muted" style="margin-left:6px">刚刚</span></span>';
+    }
+  }, 800);
+}
+
+/* ---------- model row ---------- */
+function toggleModel(n) {
+  const row = $('#model-row-' + n);
+  const editor = $('#model-editor-' + n);
+  if (editor) row.classList.toggle('expanded');
+}
+function toggleEndpointMenu() {
+  const menu = $('#endpoint-menu');
+  menu.hidden = !menu.hidden;
+}
+function pickEndpoint(option) {
+  const menu = $('#endpoint-menu');
+  const label = option.querySelector('b')?.textContent || '';
+  const select = menu.previousElementSibling;
+  if (select) select.querySelector('span').textContent = 'RunningHub 工作流 / ' + label;
+  menu.hidden = true;
+  toast('已选择端点：' + label);
+}
+
+/* ---------- pull workflow ---------- */
+function openPull() {
+  $('#pull-modal').hidden = false;
+  $('#pull-form').hidden = false;
+  $('#pull-success').hidden = true;
+  $('#pull-btn').hidden = false;
+  $('#pull-btn').disabled = false;
+  $('#pull-continue').hidden = true;
+}
+function closePull() {
+  $('#pull-modal').hidden = true;
+}
+function pullWorkflow() {
+  const btn = $('#pull-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>拉取中…';
+  setTimeout(() => {
+    $('#pull-form').hidden = true;
+    $('#pull-success').hidden = false;
+    btn.hidden = true;
+    $('#pull-continue').hidden = false;
+  }, 900);
+}
+function continueBinding() {
+  closePull();
+  toast('已带入 workflow 与节点绑定，请确认后保存');
+  setTimeout(() => go('endpoint'), 200);
+}
+
+/* ---------- repull confirm ---------- */
+function confirmRepull() {
+  $('#confirm-modal').hidden = false;
+}
+function closeConfirm() {
+  $('#confirm-modal').hidden = true;
+}
+function doRepull() {
+  closeConfirm();
+  if (repulling) return;
+  repulling = true;
+  const btn = $('#repull-btn');
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>拉取中…';
+  setTimeout(() => {
+    repulling = false;
+    btn.disabled = false;
+    btn.innerHTML = original;
+    toast('已重新拉取，节点绑定已重新匹配');
+  }, 1000);
+}
+
+/* ---------- trial ---------- */
+function setTrialStep(id, state) {
+  const el = $('#tl-' + id);
+  if (!el) return;
+  el.className = 'tl-step' + (state ? ' ' + state : '');
+  const dot = el.querySelector('.tl-dot');
+  if (state === 'done') dot.innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+  else if (state === 'fail') dot.innerHTML = '<svg class="ico"><use href="#i-x"/></svg>';
+  else if (state === 'active') dot.innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>';
+  else dot.textContent = el.dataset.n || '';
+}
+function resetTrial() {
+  trialTimers.forEach(clearTimeout);
+  trialTimers = [];
+  ['submit', 'queue', 'run', 'done'].forEach((id, i) => {
+    const el = $('#tl-' + id);
+    if (!el) return;
+    el.className = 'tl-step';
+    el.dataset.n = String(i + 1);
+    el.querySelector('.tl-dot').textContent = String(i + 1);
+  });
+  $('#trial-summary').hidden = true;
+  $('#trial-artifact').hidden = true;
+  $('#trial-fail').hidden = true;
+  $('#tl-done').querySelector('span:last-child').textContent = '完成';
+  $('#trial-status').textContent = '提交中';
+  $('#trial-status').className = 'badge badge-primary';
+}
+function startTrial(instant = false) {  resetTrial();
+  const card = $('#trial-card');
+  card.hidden = false;
+  if (instant) {
+    scrollDetailTo(card, 24);
+  } else {
+    setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60);
+  }
+  const fail = document.body.classList.contains('error-state');
+  const status = $('#trial-status');
+  $('#tl-submit').className = 'tl-step active';
+  $('#tl-submit .tl-dot').innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>';
+  trialTimers.push(setTimeout(() => {
+    $('#tl-submit').className = 'tl-step done';
+    $('#tl-submit .tl-dot').innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+    status.textContent = '排队中';
+    $('#tl-queue').className = 'tl-step active';
+    $('#tl-queue .tl-dot').innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>';
+  }, 380));
+  trialTimers.push(setTimeout(() => {
+    $('#tl-queue').className = 'tl-step done';
+    $('#tl-queue .tl-dot').innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+    status.textContent = '运行中';
+    $('#tl-run').className = 'tl-step active';
+    $('#tl-run .tl-dot').innerHTML = '<svg class="ico spin"><use href="#i-refresh"/></svg>';
+  }, 1000));
+  trialTimers.push(setTimeout(() => {
+    if (fail) {
+      $('#tl-run').className = 'tl-step fail';
+      $('#tl-run .tl-dot').innerHTML = '<svg class="ico"><use href="#i-x"/></svg>';
+      $('#tl-done').querySelector('span:last-child').textContent = '未完成';
+      status.textContent = '失败';
+      status.className = 'badge badge-destructive';
+      $('#trial-fail').hidden = false;
+    } else {
+      $('#tl-run').className = 'tl-step done';
+      $('#tl-run .tl-dot').innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+      $('#tl-done').className = 'tl-step done';
+      $('#tl-done .tl-dot').innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+      $('#tl-done').querySelector('span:last-child').textContent = '成功';
+      status.textContent = '成功';
+      status.className = 'badge badge-good';
+      $('#trial-summary').hidden = false;
+      $('#trial-artifact').hidden = false;
+    }
+  }, 1900));
+}
+
+function showTrialResult() {
+  resetTrial();
+  const fail = document.body.classList.contains('error-state');
+  const card = $('#trial-card');
+  card.hidden = false;
+  const status = $('#trial-status');
+  const done = (id) => {
+    const el = $('#tl-' + id);
+    el.className = 'tl-step done';
+    el.querySelector('.tl-dot').innerHTML = '<svg class="ico"><use href="#i-check"/></svg>';
+  };
+  done('submit');
+  done('queue');
+  if (fail) {
+    const run = $('#tl-run');
+    run.className = 'tl-step fail';
+    run.querySelector('.tl-dot').innerHTML = '<svg class="ico"><use href="#i-x"/></svg>';
+    $('#tl-done').querySelector('span:last-child').textContent = '未完成';
+    status.textContent = '失败';
+    status.className = 'badge badge-destructive';
+    $('#trial-fail').hidden = false;
+  } else {
+    done('run');
+    done('done');
+    $('#tl-done').querySelector('span:last-child').textContent = '成功';
+    status.textContent = '成功';
+    status.className = 'badge badge-good';
+    $('#trial-summary').hidden = false;
+    $('#trial-artifact').hidden = false;
+  }
+  scrollDetailTo(card, 24);
+}
+
+/* ---------- save / misc ---------- */
+function saveDemo() {
+  toast('已保存（预览演示）');
+  const status = document.querySelector('.savebar .status');
+  if (status) {
+    status.className = 'status ok';
+    status.innerHTML = '<span class="dot"></span>已保存';
+  }
+}
+
+/* ---------- error-state toggle ---------- */
+const errorToggle = $('#error-toggle');
+errorToggle.addEventListener('click', () => {
+  const on = errorToggle.getAttribute('aria-checked') !== 'true';
+  errorToggle.setAttribute('aria-checked', String(on));
+  document.body.classList.toggle('error-state', on);
+  const alertEl = $('#provider-conn-alert');
+  if (alertEl) {
+    if (on) {
+      alertEl.className = 'alert error';
+      alertEl.innerHTML = '<svg class="ico"><use href="#i-alert"/></svg><span><b>连接失败：</b>APIKEY 无效或已失效（401）。请检查 RunningHub 控制台中的密钥。</span>';
+    } else {
+      alertEl.className = 'alert success';
+      alertEl.innerHTML = '<svg class="ico"><use href="#i-check"/></svg><span>连接成功：余额 <b>99,999</b> RH 币 · 运行中 <b>0</b> 个任务 <span class="muted" style="margin-left:6px">刚刚</span></span>';
+    }
+  }
+  if (!$('#view-endpoint').hidden && !$('#trial-card').hidden) showTrialResult();
+  toast(on ? '已切换到错误态：可查看连接失败与任务失败样式' : '已恢复正常态');
+});
+
+/* ---------- boot ---------- */
+const params = new URLSearchParams(location.search);
+const initial = params.get('view') || 'provider';
+if (params.get('state') === 'error') {
+  errorToggle.setAttribute('aria-checked', 'true');
+  document.body.classList.add('error-state');
+  const alertEl = $('#provider-conn-alert');
+  if (alertEl) {
+    alertEl.className = 'alert error';
+    alertEl.innerHTML = '<svg class="ico"><use href="#i-alert"/></svg><span><b>连接失败：</b>APIKEY 无效或已失效（401）。请检查 RunningHub 控制台中的密钥。</span>';
+  }
+}
+go(initial);
+if (!['provider', 'new-provider', 'pull', 'endpoint', 'model', 'test', 'activate'].includes(initial)) go('provider');
+</script>
+</body>
+</html>

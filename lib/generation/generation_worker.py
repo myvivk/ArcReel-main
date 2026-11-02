@@ -32,7 +32,7 @@ from lib.billing.ledger import Ledger
 from lib.config.registry import PROVIDER_REGISTRY
 from lib.config.resolver import ConfigResolver
 from lib.config.service import ConfigService, read_video_poll_timeout_seconds
-from lib.custom_provider.discovery_formats import is_comfyui_protocol
+from lib.custom_provider.discovery_formats import is_workflow_protocol
 from lib.custom_provider.endpoint_resolution import resolve_endpoint_spec
 from lib.db import async_session_factory, safe_session_factory
 from lib.db.models.task import Task
@@ -173,8 +173,8 @@ class CapacityTable:
     def _custom_lane_default(provider: Any, column: int | None, global_default: int) -> int:
         """自定义供应商某条 lane 的上限：列有值取列值，列为 NULL 取协议默认。
 
-        ComfyUI 协议的供应商是用户自己的一张显卡，图像与视频各开 1 条即占满；全局默认（视频 3、
-        图像 5）会让几个任务同时抢同一张卡，排队都排在远端、本地看不见。用户仍可把列显式调高。
+        ComfyUI / RunningHub 协议的供应商是用户自己的显卡或云端工作流，图像与视频各开 1 条即占满；
+        全局默认（视频 3、图像 5）会让几个任务同时抢同一张卡 / 排队在远端，用户仍可把列显式调高。
         其余协议面向的是商业 API，按全局默认走。
 
         与 :meth:`_lane_default` 分开：那一条读的是内置供应商注册表的声明默认，自定义供应商没有
@@ -182,7 +182,7 @@ class CapacityTable:
         """
         if column is not None:
             return column
-        return COMFYUI_LANE_DEFAULT if is_comfyui_protocol(provider.discovery_format) else global_default
+        return COMFYUI_LANE_DEFAULT if is_workflow_protocol(provider.discovery_format) else global_default
 
     @classmethod
     def from_env(cls) -> CapacityTable:

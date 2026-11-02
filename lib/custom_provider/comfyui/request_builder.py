@@ -63,6 +63,8 @@ class MediaInputs:
     start_image: str | None = None
     end_image: str | None = None
     reference_images: Sequence[str] = ()
+    #: 上传后的参考音频引用名，按 workflow 里 ``ref_audios.ref_audio_N`` 的顺序写。
+    reference_audios: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,8 @@ class BuiltWorkflow:
     width: int | None = None
     height: int | None = None
     frames: int | None = None
+    #: 本次直接写进 workflow 的时长（秒）；``None`` 表示未绑定 ``duration``。
+    duration: float | None = None
     negative_prompt: str = ""
     dropped_nodes: tuple[str, ...] = ()
 
@@ -112,6 +116,7 @@ def build_workflow(
     media_type = "image" if definition.get("media_type") == "image" else "video"
 
     dropped = _apply_media(workflow, bindings, media or MediaInputs(), load_inference_rules(media_type))
+    _apply_reference_audios(workflow, (media or MediaInputs()).reference_audios)
 
     body, avoid_text = split_avoid_lines(prompt)
     _write_all(workflow, _targets(bindings.get("prompt")), body)
@@ -119,8 +124,10 @@ def build_workflow(
     width, height = _write_size(workflow, bindings, aspect_ratio=aspect_ratio, resolution=resolution, media=media_type)
     # 图自己写着片长、而这份片长凑不出一档原生时长时不动帧数：端点对外说的正是「时长不由
     # ArcReel 驱动」（档位为空、界面只读），请求里那个秒数是规划层借的，不是用户选的。
+    # ``duration`` 直接写秒数；绑了它就不再走 frames 换算，避免把同一维写两次。
+    duration = _write_duration(workflow, _targets(bindings.get("duration")), duration_seconds)
     driven = None if keeps_its_own_frame_count(definition) else duration_seconds
-    frames = _write_frames(workflow, bindings, duration_seconds=driven)
+    frames = None if duration is not None else _write_frames(workflow, bindings, duration_seconds=driven)
     actual_seed = _write_seed(workflow, bindings, requested=seed, rng=rng or Random())
 
     return BuiltWorkflow(
@@ -130,6 +137,7 @@ def build_workflow(
         width=width,
         height=height,
         frames=frames,
+        duration=duration,
         negative_prompt=avoid_text,
         dropped_nodes=dropped,
     )
@@ -267,6 +275,22 @@ def _align_down(value: int, step: int) -> int:
     return max(step, value - value % step)
 
 
+# ---------------------------------------------------------------- 时长
+
+
+def _write_duration(
+    workflow: dict[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+    duration_seconds: float | None,
+) -> float | None:
+    """把请求时长（秒）直接写进 ``duration`` 绑定；未绑定或请求没给时长时不写。"""
+
+    if not targets or duration_seconds is None:
+        return None
+    _write_all(workflow, targets, duration_seconds)
+    return float(duration_seconds)
+
+
 # ---------------------------------------------------------------- 帧数
 
 
@@ -331,6 +355,41 @@ def _write_seed(
 
 
 # ---------------------------------------------------------------- 改图
+
+
+def reference_audio_targets(workflow: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
+    """workflow 里接到 ``ref_audios.ref_audio_N`` 的 LoadAudio 节点，按 N 排序。
+
+    ComfyUI 端点的音频槽位没有独立的绑定语义键：它们是模型节点的 autogrow 输入，接的是
+    ``LoadAudio``。按 consumer 的入口名识别，避免把 BGM / 其他音频节点误当参考音频。
+    """
+    slots: dict[int, dict[str, str]] = {}
+    for consumer in workflow.values():
+        if not isinstance(consumer, Mapping):
+            continue
+        inputs = consumer.get("inputs")
+        if not isinstance(inputs, Mapping):
+            continue
+        for name, link in inputs.items():
+            if not isinstance(name, str) or not name.startswith("ref_audios.ref_audio_"):
+                continue
+            if not isinstance(link, list) or len(link) != 2:
+                continue
+            suffix = name.rsplit("_", 1)[-1]
+            if not suffix.isdigit():
+                continue
+            node_id = str(link[0])
+            node = workflow.get(node_id)
+            if not isinstance(node, Mapping) or node.get("class_type") != "LoadAudio":
+                continue
+            slots[int(suffix)] = {"node": node_id, "input": "audio"}
+    return tuple(slots[index] for index in sorted(slots))
+
+
+def _apply_reference_audios(workflow: dict[str, Any], values: Sequence[str]) -> None:
+    """把上传后的参考音频引用名按槽位顺序写进 LoadAudio；缺的槽保持 workflow 字面值。"""
+    for target, value in zip(reference_audio_targets(workflow), values, strict=False):
+        _write_one(workflow, target, value)
 
 
 def _apply_media(

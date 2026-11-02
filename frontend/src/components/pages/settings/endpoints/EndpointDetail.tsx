@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { Copy, Download, ExternalLink, Loader2, Plus, RefreshCw, Share2, Store, Trash2, Upload } from "lucide-react";
+import { Cloud, Copy, Download, ExternalLink, Loader2, Plus, RefreshCw, Share2, Store, Trash2, Upload } from "lucide-react";
 import { Link } from "wouter";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
@@ -56,6 +56,7 @@ import { exportEndpointDefinition } from "./export-endpoint-definition";
 import { EXAMPLE_TEMPLATES } from "./example-templates";
 import { VariableInsertionProvider } from "./endpoint-form-primitives";
 import { ComfyuiEndpointDetail } from "./ComfyuiEndpointDetail";
+import { isWorkflowProtocol } from "../customProviderHelpers";
 import { ShareToMarketDialog } from "./ShareToMarketDialog";
 import type { ComfyuiImportDraft } from "./comfyui-import";
 
@@ -94,6 +95,8 @@ interface EndpointDetailProps {
   onNavigateToModel: (reference: EndpointReference) => void;
   /** 打开导入对话框（新建端点页的入口）。 */
   onImport: () => void;
+  /** 打开「从 RunningHub 拉取工作流」弹窗；不提供时不显示该入口。 */
+  onPullRunningHub?: (current?: ComfyuiEndpointDefinition) => void;
   /** 打开安装确认弹窗的更新态；只在市场轴可更新时提供入口。 */
   onUpdateFromMarket: (
     installation: EndpointInstallation,
@@ -140,6 +143,7 @@ export function EndpointDetail({
   onCreateProvider,
   onNavigateToModel,
   onImport,
+  onPullRunningHub,
   onUpdateFromMarket,
   marketUpdatePending,
   onReimportComfyui,
@@ -414,7 +418,7 @@ export function EndpointDetail({
   if (selection.mode === "comfyui" || selection.mode === "comfyui-draft") {
     const draftRecord = selection.mode === "comfyui" ? selection.record : selection.draft.record;
     // 端点测试的凭证来源只列 comfyui 协议的供应商：别的协议的地址与密钥打不到一台 ComfyUI 上。
-    const comfyuiProviders = providers.filter((provider) => provider.discovery_format === "comfyui");
+    const workflowProviders = providers.filter((provider) => isWorkflowProtocol(provider.discovery_format));
     return (
       <>
         <ComfyuiEndpointDetail
@@ -424,9 +428,10 @@ export function EndpointDetail({
           initialInference={selection.mode === "comfyui" ? null : selection.draft.inference}
           usages={usages}
           back={back}
-          providers={comfyuiProviders}
+          providers={workflowProviders}
           onSaved={onSaved}
           onReimport={onReimportComfyui}
+          onPullRunningHub={onPullRunningHub}
           onDiscard={onDiscardComfyui}
           menuItems={(unsaved, pending) => (
             <>
@@ -464,10 +469,18 @@ export function EndpointDetail({
   let menu: ReactNode = null;
   if (selection.mode === "new") {
     primary = (
-      <Button variant="outline" onClick={onImport}>
-        <Upload aria-hidden data-icon="inline-start" />
-        {t("ce_import_definition")}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        {onPullRunningHub && (
+          <Button variant="outline" onClick={() => onPullRunningHub()}>
+            <Cloud aria-hidden data-icon="inline-start" />
+            {t("ce_rh_pull")}
+          </Button>
+        )}
+        <Button variant="outline" onClick={onImport}>
+          <Upload aria-hidden data-icon="inline-start" />
+          {t("ce_import_definition")}
+        </Button>
+      </div>
     );
   } else if (selection.mode === "custom") {
     primary = createProviderButton;

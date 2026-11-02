@@ -64,6 +64,9 @@ from lib.custom_provider.comfyui.comfyui_image_backend import ComfyuiImageBacken
 from lib.custom_provider.comfyui.failures import ComfyuiError
 from lib.custom_provider.declarative_backend import DeclarativeVideoBackend, request_urls
 from lib.custom_provider.declarative_image_backend import DeclarativeImageBackend, image_capabilities_from_definition
+from lib.custom_provider.discovery_formats import is_runninghub_protocol
+from lib.custom_provider.runninghub.backend import RunningHubImageBackend, RunningHubVideoBackend
+from lib.custom_provider.runninghub.failures import AUTH_FAILED, RunningHubError
 
 if TYPE_CHECKING:
     from lib.db.models.custom_provider import CustomProvider
@@ -708,6 +711,27 @@ def _build_comfyui_runtime(
             raise ComfyuiError("provider_unsupported_media", provider_id=provider.provider_id, media_type=media_type)
         if not provider.base_url:
             raise ValueError("ComfyUI 调用端点需要 base_url")
+        runninghub = is_runninghub_protocol(provider.discovery_format)
+        if runninghub and not provider.api_key:
+            raise RunningHubError(AUTH_FAILED)
+        if runninghub:
+            if media_type == "image":
+                image_delegate = RunningHubImageBackend(
+                    provider_id=provider.provider_id,
+                    model=model_id,
+                    base_url=provider.base_url,
+                    api_key=provider.api_key,
+                    definition=definition,
+                )
+                return CustomImageBackend(provider_id=provider.provider_id, delegate=image_delegate, model=model_id)
+            video_delegate = RunningHubVideoBackend(
+                provider_id=provider.provider_id,
+                model=model_id,
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                definition=definition,
+            )
+            return CustomVideoBackend(provider_id=provider.provider_id, delegate=video_delegate, model=model_id)
         if media_type == "image":
             image_delegate = ComfyuiImageBackend(
                 provider_id=provider.provider_id,
@@ -755,9 +779,10 @@ def comfyui_endpoint_spec(key: str, definition: Mapping[str, Any]) -> EndpointSp
         display_name_key="",
         source="custom",
         # 提交形态固定：一份 workflow 整体 POST 给 /prompt，没有随模型变化的路径段，也没有
-        # 可配的方法——两者都不是定义里的可取值，故写在投影处而非读自定义。
+        # 可配的方法——两者都不是定义里的可取值，故写在投影处而非读自定义。带 workflowId 的定义
+        # 走 RunningHub 的 task OpenAPI，路径只影响目录展示，不改执行分叉。
         request_method="POST",
-        request_path_template="/prompt",
+        request_path_template="/task/openapi/create" if definition.get("workflow_id") else "/prompt",
         build_backend=_build_comfyui_runtime(definition),
         image_capabilities=None if is_video else binding_image_capabilities(definition),
         video_caps_for_model=(lambda _model_id: caps) if caps is not None else None,
@@ -856,6 +881,10 @@ def endpoint_spec_to_dict(spec: EndpointSpec) -> dict:
     data.pop("definition", None)
     data["kind"] = spec.kind
     data["display_name"] = spec.display_name
+    # RunningHub 供应商据此在模型行的端点选择器里判断能不能挂；定义本体仍单独取。
+    data["workflow_id"] = (
+        str(spec.definition.get("workflow_id") or "").strip() or None if spec.definition is not None else None
+    )
     # 参数约束的投影：界面据此禁用分辨率 / 时长控件并写出空值占位，判据与执行层同源。
     data["size_fixed"] = spec.size_fixed
     data["duration_fixed"] = spec.duration_fixed

@@ -24,6 +24,7 @@ from lib.backends.backend_runtime import poll_with_retry, should_retry_poll
 from lib.backends.container_sniff import CONTAINER_HEAD_BYTES
 from lib.custom_provider.comfyui.artifacts import (
     container_matches,
+    direct_artifact_url,
     filename_of,
     history_digest,
     output_artifacts,
@@ -123,6 +124,9 @@ class ComfyuiExecution:
 
     def view_url(self, artifact: Mapping[str, Any]) -> str:
         """产物在这台 ComfyUI 上的取件地址，作为这一版的来源留痕。"""
+        direct = direct_artifact_url(self._client.base_url, artifact)
+        if direct is not None:
+            return direct
         query = urlencode(
             {
                 "filename": filename_of(artifact),

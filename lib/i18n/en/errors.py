@@ -131,6 +131,16 @@ MESSAGES = {
     "task_fail_comfyui_output_missing": "ComfyUI finished but output node {nodes} produced no file; check its node bindings and the workflow's output chain",
     "task_fail_comfyui_output_type_mismatch": "ComfyUI produced {filename}, which is not a file type this endpoint should output (expected {expected}); point the output node bindings at the node that exports the final artifact, or switch that save node to a supported format (for SaveVideo, pick h264-mp4)",
     "task_fail_comfyui_output_container_mismatch": "The contents of {filename} produced by ComfyUI are not a container this endpoint should output (expected {expected}); switch the save node to a supported format (for SaveVideo, pick h264-mp4)",
+    "task_fail_runninghub_auth_failed": "RunningHub rejected this request: the API key is invalid, expired, or not authorized. Reconfigure it under Providers",
+    "task_fail_runninghub_workflow_not_found": "RunningHub cannot find the workflow, or this API key cannot access it; check the workflow ID on the endpoint: {detail}",
+    "task_fail_runninghub_insufficient_coins": "RunningHub has insufficient balance and the task was not submitted: {detail}",
+    "task_fail_runninghub_task_failed": "RunningHub failed while executing: {detail}",
+    "task_fail_runninghub_upload_failed": "Uploading the asset to RunningHub failed: {detail}",
+    "task_fail_runninghub_job_lost": "RunningHub no longer knows about this run ({task_id}); please retry",
+    "task_fail_runninghub_output_missing": "RunningHub finished but produced no {media_type} file; check the output node and its bindings",
+    "task_fail_runninghub_output_type_mismatch": "RunningHub produced {filename}, which is not a file type this endpoint should output (expected {expected}); check the output node bindings",
+    "task_fail_runninghub_output_container_mismatch": "The contents of {filename} produced by RunningHub are not a container this endpoint should output (expected {expected}); switch the save node to a supported format",
+    "task_fail_runninghub_node_errors": "RunningHub refused this workflow; {nodes} node(s) reported errors, first: {summary}",
     "task_fail_artifact_download_failed": "Video generation succeeded but artifact download failed; retry the download: {detail}",
     "task_fail_cascade_blocked_dependency": "Blocked by failed dependency task {dependency_task_id}: {reason}",
     "prompt_must_be_string_or_scene_object": "prompt must be a string or an object containing scene/composition",
@@ -420,8 +430,14 @@ MESSAGES = {
     "connectivity_check_unsupported_format": "Connectivity checks are not supported for {discovery_format}",
     "connectivity_check_comfyui_ok": "ComfyUI is reachable, version {version}",
     "connectivity_check_comfyui_ok_unknown_version": "ComfyUI is reachable; it did not report a version",
+    "connectivity_check_runninghub_ok": "RunningHub is reachable: {coins} RH coins, {running} running task(s)",
+    "connectivity_check_runninghub_auth_failed": "The API key is invalid or expired; check it in the RunningHub console",
     "discovery_not_applicable_comfyui": (
         "The ComfyUI protocol has no model list to discover: what can be called is decided by the workflow "
+        "itself. Import a ComfyUI endpoint and attach it to a model row instead"
+    ),
+    "discovery_not_applicable_runninghub": (
+        "The RunningHub protocol has no model list to discover: what can be called is decided by the workflow "
         "itself. Import a ComfyUI endpoint and attach it to a model row instead"
     ),
     "custom_endpoint_kind_conflicts_with_attachment": (
@@ -437,6 +453,21 @@ MESSAGES = {
     ),
     "comfyui_provider_requires_comfyui_endpoint": (
         "A ComfyUI protocol provider only accepts ComfyUI endpoints; {endpoint} on model {model_id} is not one"
+    ),
+    "runninghub_provider_requires_workflow_endpoint": (
+        "A RunningHub provider only accepts workflow endpoints; {endpoint} on model {model_id} is not one"
+    ),
+    "runninghub_provider_required": "This action requires a RunningHub provider",
+    "runninghub_workflow_id_required": (
+        "Endpoints on a RunningHub provider must have a workflow ID: {endpoint} attached to model {model_id} does not"
+    ),
+    "runninghub_workflow_id_required_for_pull": "Enter a RunningHub workflow ID",
+    "runninghub_workflow_id_required_for_attachment": (
+        "This endpoint is in use by model {model} (provider {provider}) on RunningHub; its workflow ID cannot be cleared"
+    ),
+    "capability_overrides_not_supported_for_workflow": (
+        "Model {model_id} uses a workflow endpoint, whose capabilities are derived from node bindings alone; "
+        "capability overrides are not supported"
     ),
     "capability_overrides_not_supported_for_comfyui": (
         "Model {model_id} uses a ComfyUI endpoint, whose capabilities are derived from node bindings alone; "
@@ -512,7 +543,9 @@ MESSAGES = {
     "ref_duration_exceeded": "The script runs {total}s, beyond {model}'s longest duration option; generated at {duration}s, so the clip is shorter than the script",
     "ref_duration_rounded_up": "The script runs {total}s, which is not one of {model}'s duration options; generated at {duration}s, so the clip is longer than the script",
     "comfyui_multiple_outputs": "ComfyUI produced {count} files this run; kept {filename}",
+    "runninghub_multiple_outputs": "RunningHub produced {count} files this run; kept {filename}",
     "ref_too_many_images": "Reference image count {count} exceeds {model} limit of {max_count}, kept the first {max_count}",
+    "storyboard_video_assets_trimmed": "The reference image limit is {limit} ({frame_count} are keyframes); {count} asset image(s) were not sent: {names}. They are not numbered in the prompt",
     "ref_payload_too_large": "Reference image payload exceeded provider limits, retried with extra compression",
     "ref_payload_floor_exceeded": "Reference images are too large or too many; even compressed to the lowest quality they still exceed the provider's request size limit. Please reduce the number of reference images or their resolution and try again",
     "ref_sora_single_ref": "Sora reference mode does not currently support multiple images, downgraded to single image",

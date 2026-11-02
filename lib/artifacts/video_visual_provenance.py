@@ -14,6 +14,7 @@ from typing import cast
 
 from lib.artifacts.artifact_manifest import ArtifactBasis
 from lib.infra.content_digest import sha256_file
+from lib.prompts.model_specs import resolve_video_prompt_spec
 from lib.prompts.prompt_utils import render_storyboard_video_prompt
 
 
@@ -60,6 +61,7 @@ def build_storyboard_video_visual_basis(
     has_utterances: bool,
     voice_characters: object,
     rendered_prompt: str | None = None,
+    prompt_spec: str | None = None,
     reference_images: Sequence[Path] = (),
     reference_audio_files: Sequence[Path] = (),
     reference_audio_speakers: Sequence[str] = (),
@@ -77,6 +79,7 @@ def build_storyboard_video_visual_basis(
             {"utterances": utterances} if has_utterances else None,
             content_mode=content_mode,
             voice_characters=voice_characters if isinstance(voice_characters, dict) else None,
+            spec=resolve_video_prompt_spec(provider_id, model_id, declared=prompt_spec),
         )
     )
     files = [("storyboard", storyboard_image)]

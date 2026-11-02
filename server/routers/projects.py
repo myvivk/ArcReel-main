@@ -1235,6 +1235,10 @@ async def preview_script_item_prompts(
     _t: Translator,
     names: DisplayNamesCatalog,
     script_file: str = Query(..., description="剧本文件名"),
+    video_backend: str | None = Query(
+        None,
+        description="生成弹窗里选中的候选视频模型（provider/model）；给出时按该模型渲染提示词格式",
+    ),
 ):
     """渲染该条目当前会送进图像 / 视频模型的最终提示词文本。
 
@@ -1246,7 +1250,7 @@ async def preview_script_item_prompts(
     此时报「先修复」比渲染一份不会被发出的文本诚实。
     """
     try:
-        preview = await preview_item_prompts(name, script_file, item_id)
+        preview = await preview_item_prompts(name, script_file, item_id, video_backend=video_backend)
     except ScriptItemNotFound as exc:
         raise NotFoundError("script_item_not_found", id=item_id) from exc
     except FileNotFoundError as exc:

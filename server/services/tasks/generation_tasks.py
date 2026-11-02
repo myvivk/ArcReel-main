@@ -45,7 +45,7 @@ from lib.artifacts.video_visual_provenance import build_storyboard_video_visual_
 from lib.artifacts.visual_artifact_provenance import (
     build_storyboard_video_artifact_visual_basis,
 )
-from lib.config.resolver import video_bucket_for_generation_mode
+from lib.config.resolver import video_bucket_for_request
 from lib.config.service import DEFAULT_VIDEO_POLL_TIMEOUT_SECONDS
 from lib.db.base import DEFAULT_USER_ID
 from lib.generation.execution_checkpoint import (
@@ -87,7 +87,8 @@ from lib.project.project_manager import (
     resolve_episode_script_binding,
 )
 from lib.project.resource_paths import CHARACTER_DERIVATIVE_RESOURCE_TYPE, resource_relative_path
-from lib.prompts.prompt_utils import render_storyboard_video_prompt
+from lib.prompts.model_specs import resolve_video_prompt_spec
+from lib.prompts.prompt_utils import VideoReferenceLabel, render_storyboard_video_prompt
 from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
     keyframe_reference_problems,
@@ -107,11 +108,14 @@ from lib.script.storyboard_sequence import (
     apply_storyboard_frame_mode,
     find_storyboard_item,
     get_storyboard_items,
+    resolve_storyboard_video_asset_images,
+    split_storyboard_video_asset_images,
 )
 from lib.script.storyboard_video_request import (
     resolve_storyboard_audio_inputs,
     storyboard_asset_links,
     storyboard_frame_evidence,
+    storyboard_video_asset_trim_warning,
 )
 from lib.speech.audio_utils import (
     AUDIO_REFERENCE_MAX_BYTES,
@@ -969,7 +973,9 @@ async def execute_video_task(
         project=project,
         user_id=user_id,
         video=VideoLaneRequest(
-            generation_type=video_bucket_for_generation_mode(project.get("generation_mode")),
+            generation_type=video_bucket_for_request(
+                project.get("generation_mode"), payload.get("frame_mode")
+            ),
             route="storyboard",
         ),
     )
@@ -1006,7 +1012,7 @@ async def execute_video_task(
     )
     frame_mode = payload.get("frame_mode")
     slots = apply_storyboard_frame_mode(
-        slots, frame_mode if frame_mode in {"first_last", "reference"} else "first_last"
+        slots, frame_mode if frame_mode in {"first_last", "reference"} else "reference"
     )
     frozen_frames = await asyncio.to_thread(
         storyboard_frame_evidence,
@@ -1029,7 +1035,36 @@ async def execute_video_task(
             provider_start_image = tail_path
         provider_end_image = slots.end.path if slots.end is not None else None
         reference_images = [frame.path for frame in slots.references]
-    basis_storyboard_image = provider_start_image or (reference_images[0] if reference_images else slots.start.path)
+    # 参考图模式下资产图随请求进 reference_images（首帧 / 尾帧模式不能叠加，故只在此模式加）。
+    # 数组顺序 = 编号顺序：资产图在前、K 帧在后；编号与实际发出的序列同源。
+    frame_reference_images = list(reference_images)
+    video_references: list[VideoReferenceLabel] = []
+    selected_assets: list[tuple[str, str, Path]] = []
+    dropped_assets: list[tuple[str, str, Path]] = []
+    reference_limit = 0
+    if slots.reference_only:
+        asset_images = resolve_storyboard_video_asset_images(
+            project_path=project_path, project=project, item=item
+        )
+        reference_limit = getattr(request_facts, "max_reference_images", 0) or 0
+        selected_assets, dropped_assets = split_storyboard_video_asset_images(
+            asset_images,
+            max_reference_images=reference_limit,
+            frame_count=len(frame_reference_images),
+        )
+        if selected_assets:
+            reference_images = [path for _kind, _name, path in selected_assets] + frame_reference_images
+        video_references = [
+            VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets
+        ] + [
+            VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
+            for _role, frame in slots.frames
+            if frame.keyframe_index is not None
+        ]
+    # 产物依据仍取这条分镜自己的首帧（K0 / 上一镜末帧），不能取数组第一张——参考图模式下
+    # 数组最前面是资产图，那是主体锚点，不是这条分镜的画面依据。
+    first_storyboard = slots.frames[0][1].path if slots.frames else slots.start.path
+    basis_storyboard_image = provider_start_image or first_storyboard
     audio_inputs = await asyncio.to_thread(
         resolve_storyboard_audio_inputs,
         project=project,
@@ -1050,6 +1085,11 @@ async def execute_video_task(
         slots=slots,
         asset_links=asset_links,
         audio_speakers=audio_inputs.speakers,
+        spec=resolve_video_prompt_spec(
+            registry_provider_id, model_name, declared=ctx.video.prompt_spec
+        ),
+        references=video_references or None,
+        language=project.get("source_language") if isinstance(project.get("source_language"), str) else None,
     )
     if problems := keyframe_reference_problems(prompt_text, slots.cell_count):
         raise ValueError(f"video_prompt references unavailable keyframes: {', '.join(problems)}")
@@ -1074,6 +1114,7 @@ async def execute_video_task(
             if content_mode == "drama"
             else None,
             rendered_prompt=prompt_text,
+            prompt_spec=ctx.video.prompt_spec,
             reference_images=reference_images,
             reference_audio_files=reference_audio_files,
             reference_audio_speakers=audio_inputs.speakers,
@@ -1147,6 +1188,13 @@ async def execute_video_task(
             slots=slots,
             asset_links=storyboard_asset_links(current_project, item, project_name),
             audio_speakers=current_audio.speakers,
+            spec=resolve_video_prompt_spec(
+                registry_provider_id, model_name, declared=ctx.video.prompt_spec
+            ),
+            references=video_references or None,
+            language=current_project.get("source_language")
+            if isinstance(current_project.get("source_language"), str)
+            else None,
         )
         if current_rendered != prompt_text or current_audio != audio_inputs:
             raise ValueError("video asset or voice inputs changed before submission")
@@ -1178,15 +1226,30 @@ async def execute_video_task(
         )
         media_inputs: list[ProviderMediaInput] = []
         if slots.reference_only:
+            frames = list(slots.frames)
+            if len(frames) != len(frame_reference_images):
+                raise ValueError(
+                    f"reference frame/images mismatch: frames={len(frames)} images={len(frame_reference_images)}"
+                )
             media_inputs.extend(
                 ProviderMediaInput(
-                    path=image,
+                    path=path,
+                    role="reference_image",
+                    logical_type=kind,
+                    logical_name=name,
+                    kind="asset_sheet",
+                )
+                for kind, name, path in selected_assets
+            )
+            media_inputs.extend(
+                ProviderMediaInput(
+                    path=frame_reference_images[index],
                     role=cast(ProviderMediaRole, role),
                     logical_type="storyboard_grid",
                     logical_name=f"{resource_id}:K{frame.keyframe_index}",
                     kind=f"grid_cell_{frame.keyframe_index}" if frame.keyframe_index is not None else "storyboard",
                 )
-                for (role, frame), image in zip(slots.frames, reference_images, strict=True)
+                for index, (role, frame) in enumerate(frames)
             )
         else:
             assert provider_start_image is not None
@@ -1352,6 +1415,14 @@ async def execute_video_task(
     )
     #: backend 执行期产生的非阻断提示（如 ComfyUI 一次产出多个文件），随结果落进任务 result。
     warnings: list[dict[str, Any]] = []
+    if (
+        trim_warning := storyboard_video_asset_trim_warning(
+            dropped_assets,
+            limit=reference_limit,
+            frame_count=len(frame_reference_images),
+        )
+    ) is not None:
+        warnings.append(trim_warning)
     try:
         await _admit_before_submit()
         _output_path, version, _, video_uri = await generator.generate_video_async(

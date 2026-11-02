@@ -36,6 +36,8 @@ import { DURATION_ERROR_KEY, ModelTable } from "./CustomProviderModelTable";
 import {
   isComfyuiEndpoint,
   isComfyuiProtocol,
+  isRunninghubProtocol,
+  isWorkflowProtocol,
   mergeDiscoveredModels,
   toggleDefaultReducer,
   urlPreviewFor,
@@ -57,6 +59,7 @@ const DISCOVERY_FORMAT_OPTIONS: { value: DiscoveryFormat; labelKey: string }[] =
   { value: "openai", labelKey: "discovery_format_openai" },
   { value: "google", labelKey: "discovery_format_google" },
   { value: "comfyui", labelKey: "discovery_format_comfyui" },
+  { value: "runninghub", labelKey: "discovery_format_runninghub" },
 ];
 
 interface CustomProviderFormProps {
@@ -107,7 +110,9 @@ export function CustomProviderForm({
   // 目录到齐后协议随之落定。
   const wiredFormat: DiscoveryFormat | null = useMemo(() => {
     const descriptor = catalogEndpoints.find((item) => item.key === initialEndpoint);
-    return descriptor && isComfyuiEndpoint(descriptor) ? "comfyui" : null;
+    if (!descriptor || !isComfyuiEndpoint(descriptor)) return null;
+    // 带 workflowId 的端点默认按 RunningHub 接线；本地 ComfyUI 端点留空 workflowId。
+    return descriptor.workflow_id ? "runninghub" : "comfyui";
   }, [catalogEndpoints, initialEndpoint]);
   const formatOf = useCallback(
     (value: CustomProviderFormValue): DiscoveryFormat => value.pickedFormat ?? wiredFormat ?? "openai",
@@ -118,7 +123,7 @@ export function CustomProviderForm({
       effectiveModelRows(
         value.models,
         catalogInitialized ? catalogEndpoints : null,
-        isComfyuiProtocol(formatOf(value)),
+        isWorkflowProtocol(formatOf(value)),
       ),
     [catalogInitialized, catalogEndpoints, formatOf],
   );
@@ -140,7 +145,9 @@ export function CustomProviderForm({
       };
       if (!value.displayName.trim()) fail(t("fill_provider_name"));
       if (!value.baseUrl.trim()) fail(t("fill_base_url"));
-      if (!existing && !keyOptional && !value.apiKey.trim()) fail(t("fill_api_key"));
+      if (!existing && (isRunninghubProtocol(discoveryFormat) || !keyOptional) && !value.apiKey.trim()) {
+        fail(t("fill_api_key"));
+      }
       if (enabledModels.length === 0) fail(t("enable_one_model"));
       if (enabledModels.some((m) => !m.model_id.trim())) fail(t("enabled_model_needs_id"));
       // 目录没取回来时行挂不挂得住当前协议判不了：接线端点还没解析出来，协议就回退成了 openai，
@@ -151,7 +158,13 @@ export function CustomProviderForm({
         (initialEndpoint !== undefined || value.pickedFormat !== null);
       if (catalogPending) fail(t("cp_endpoint_catalog_pending"));
       // 停在未选择端点上的行：服务端按行校验协议配对，一行没有端点整份配置都落不了库
-      if (models.some((m) => !m.endpoint)) fail(t("cp_model_endpoint_unselected"));
+      if (models.some((m) => !m.endpoint)) {
+        fail(
+          t(
+            isRunninghubProtocol(discoveryFormat) ? "cp_runninghub_endpoint_unselected" : "cp_model_endpoint_unselected",
+          ),
+        );
+      }
       if (
         models.some(
           (m) => endpointToMediaType[m.endpoint] === "text" && parsePositiveInt(m.max_output_tokens_text) === undefined,
@@ -179,7 +192,7 @@ export function CustomProviderForm({
         await API.fullUpdateCustomProvider(existing.id, {
           display_name: value.displayName,
           base_url: value.baseUrl,
-          ...(value.noApiKey ? { api_key: "" } : value.apiKey ? { api_key: value.apiKey } : {}),
+          ...(value.noApiKey && !isRunninghubProtocol(discoveryFormat) ? { api_key: "" } : value.apiKey ? { api_key: value.apiKey } : {}),
           models: payloadModels,
           ...workers,
         });
@@ -200,7 +213,7 @@ export function CustomProviderForm({
         display_name: value.displayName,
         discovery_format: discoveryFormat,
         base_url: value.baseUrl,
-        api_key: value.noApiKey ? "" : value.apiKey,
+        api_key: value.noApiKey && !isRunninghubProtocol(discoveryFormat) ? "" : value.apiKey,
         models: payloadModels,
         ...workers,
       });
@@ -215,6 +228,8 @@ export function CustomProviderForm({
   const setValue = unit.setValue;
   const discoveryFormat = formatOf(value);
   const isComfyui = isComfyuiProtocol(discoveryFormat);
+  const isRunninghub = isRunninghubProtocol(discoveryFormat);
+  const isWorkflow = isWorkflowProtocol(discoveryFormat);
   const models = useMemo(() => deriveModels(value), [deriveModels, value]);
 
   const setField = useCallback(
@@ -252,10 +267,10 @@ export function CustomProviderForm({
   }, [focusModelId]);
 
   const comfyuiEndpoints = useMemo(() => catalogEndpoints.filter(isComfyuiEndpoint), [catalogEndpoints]);
-  // ComfyUI 协议下新行必须挂 ComfyUI 端点：没有可挂的端点时按钮禁用并给出去处
-  const noComfyuiEndpointYet = isComfyui && comfyuiEndpoints.length === 0;
+  // workflow 协议下新行必须挂 workflow 端点：没有可挂的端点时按钮禁用并给出去处
+  const noComfyuiEndpointYet = isWorkflow && comfyuiEndpoints.length === 0;
   const addModel = () => {
-    const endpoint = isComfyui ? comfyuiEndpoints[0]?.key : undefined;
+    const endpoint = isWorkflow ? comfyuiEndpoints[0]?.key : undefined;
     const row = endpoint ? newModelRow({ endpoint }) : newModelRow();
     updateModels((rows) => [...rows, row]);
     setExpanded((prev) => new Set(prev).add(row.key));
@@ -282,7 +297,7 @@ export function CustomProviderForm({
       showError(t("fill_base_url_first"));
       return false;
     }
-    if (!useStoredCredential && !keyOptional && !value.apiKey) {
+    if (!useStoredCredential && (isRunninghub || !keyOptional) && !value.apiKey) {
       showError(t(baseUrlChanged ? "base_url_changed_reenter_key" : "fill_api_key_first"));
       return false;
     }
@@ -403,7 +418,7 @@ export function CustomProviderForm({
   const concurrencyHeadingId = useId();
   const urlPreview = urlPreviewFor(discoveryFormat, value.baseUrl);
   const hasUnsetEndpoint = models.some((m) => !m.endpoint);
-  const workersPlaceholder = isComfyui ? t("cp_max_workers_placeholder_comfyui") : t("cp_max_workers_placeholder");
+  const workersPlaceholder = isWorkflow ? t("cp_max_workers_placeholder_comfyui") : t("cp_max_workers_placeholder");
   const protocolName = t(DISCOVERY_FORMAT_OPTIONS.find((o) => o.value === discoveryFormat)?.labelKey ?? "");
 
   const header = (
@@ -478,7 +493,15 @@ export function CustomProviderForm({
           >
             <Select<DiscoveryFormat>
               value={discoveryFormat}
-              onValueChange={(next) => next && setField("pickedFormat", next)}
+              onValueChange={(next) => {
+                if (!next) return;
+                setValue((prev) => ({
+                  ...prev,
+                  pickedFormat: next,
+                  // RunningHub 必须带 APIKEY，切过来时顺带取消「无需密钥」。
+                  ...(next === "runninghub" ? { noApiKey: false } : {}),
+                }));
+              }}
               disabled={!!existing}
               items={DISCOVERY_FORMAT_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
             >
@@ -526,7 +549,7 @@ export function CustomProviderForm({
               ) : undefined
             }
           >
-            {!value.noApiKey && (
+            {(!value.noApiKey || isRunninghub) && (
               <InputGroup>
                 <InputGroupInput
                   mono
@@ -550,17 +573,20 @@ export function CustomProviderForm({
                 </InputGroupAddon>
               </InputGroup>
             )}
-            <label className="flex items-center gap-2 text-sm text-subtle-foreground">
-              <Checkbox
-                checked={value.noApiKey}
-                onCheckedChange={(checked) =>
-                  setValue((prev) => ({ ...prev, noApiKey: checked, apiKey: checked ? "" : prev.apiKey }))
-                }
-              />
-              {t("cp_no_api_key")}
-            </label>
+            {!isRunninghub && (
+              <label className="flex items-center gap-2 text-sm text-subtle-foreground">
+                <Checkbox
+                  checked={value.noApiKey}
+                  onCheckedChange={(checked) =>
+                    setValue((prev) => ({ ...prev, noApiKey: checked, apiKey: checked ? "" : prev.apiKey }))
+                  }
+                />
+                {t("cp_no_api_key")}
+              </label>
+            )}
           </FieldRow>
-          {/* ComfyUI 协议下探针可能被反向代理的自定义头鉴权挡住，据此提前说明判据。 */}
+          {/* workflow 协议下探针可能被反向代理的自定义头鉴权挡住，据此提前说明判据。 */}
+          {isRunninghub && <p className="text-sm text-muted-foreground">{t("cp_runninghub_connectivity_hint")}</p>}
           {isComfyui && <p className="text-sm text-muted-foreground">{t("cp_comfyui_connectivity_hint")}</p>}
           {testResult && (
             <Alert variant={testResult.success ? "default" : "destructive"}>
@@ -576,7 +602,7 @@ export function CustomProviderForm({
               {t("model_list")}
               {models.length > 0 && <span className="ml-2 text-muted-foreground tabular-nums">{models.length}</span>}
             </h3>
-            {!isComfyui && (
+            {!isWorkflow && (
               <Button variant="outline" size="sm" disabled={discovering} onClick={() => void handleDiscover()}>
                 {discovering && <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />}
                 {discovering ? t("discovering_models") : t("discover_models")}
@@ -587,8 +613,12 @@ export function CustomProviderForm({
               {t("add_model_manually")}
             </Button>
           </div>
-          {/* comfyui 没有模型发现，用说明替代按钮 */}
-          {isComfyui && <p className="text-sm text-muted-foreground">{t("discovery_not_applicable")}</p>}
+          {/* workflow 没有模型发现，用说明替代按钮 */}
+          {isWorkflow && (
+            <p className="text-sm text-muted-foreground">
+              {t(isRunninghub ? "discovery_not_applicable_runninghub" : "discovery_not_applicable")}
+            </p>
+          )}
           {hasUnsetEndpoint && <p className="text-sm text-warn">{t("cp_model_endpoint_unselected")}</p>}
           {models.length > 0 ? (
             <div ref={tableRef}>
@@ -613,9 +643,9 @@ export function CustomProviderForm({
           ) : (
             <p className="rounded-lg border border-dashed border-input px-4 py-6 text-center text-sm text-muted-foreground">
               {noComfyuiEndpointYet
-                ? t("cp_comfyui_no_endpoint_hint")
-                : isComfyui
-                  ? t("cp_comfyui_add_model_hint")
+                ? t(isRunninghub ? "cp_runninghub_no_endpoint_hint" : "cp_comfyui_no_endpoint_hint")
+                : isWorkflow
+                  ? t(isRunninghub ? "cp_runninghub_add_model_hint" : "cp_comfyui_add_model_hint")
                   : t("cp_models_empty_hint")}
             </p>
           )}
@@ -627,7 +657,11 @@ export function CustomProviderForm({
               {t("cp_concurrency_label")}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {isComfyui ? t("cp_concurrency_help_comfyui") : t("cp_concurrency_help")}
+              {isRunninghub
+                ? t("cp_runninghub_concurrency_help")
+                : isComfyui
+                  ? t("cp_concurrency_help_comfyui")
+                  : t("cp_concurrency_help")}
             </p>
           </div>
           {(

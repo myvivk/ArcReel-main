@@ -18,7 +18,7 @@ backend 实例缓存随本模块承载：缓存是 server 执行层关切（``do
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -43,6 +43,7 @@ from lib.generation.video_request_facts import (
     evaluate_video_request_facts,
 )
 from lib.project.project_manager import get_project_manager
+from lib.prompts.model_specs import prompt_spec_for_definition
 
 if TYPE_CHECKING:
     from lib.config.resolver import ProviderModel
@@ -251,6 +252,9 @@ class VideoLaneResult:
     # 自定义供应商解析出的 endpoint（ENDPOINT_REGISTRY 键）；内置供应商无该维度，为 None。
     # 续跑据此与提交时持久化的 endpoint 比对，见 server.services.tasks.resume_executor。
     endpoint: str | None = None
+    # 执行端点按工作流结构检出的提示词规范键（如 ComfyUI 工作流里的 MiniMax H3 节点 →
+    # ``minimax-h3-local``）。内置供应商与未检出的工作流为 None，渲染时按模型名继续匹配。
+    prompt_spec: str | None = None
 
     @property
     def requested_generate_audio(self) -> bool:
@@ -290,11 +294,23 @@ class AudioLaneResult:
     voices: tuple[VoiceOption, ...]
 
 
+def _prompt_spec_of(video_backend: Any) -> str | None:
+    """视频后端实际跑的那份工作流对应的提示词规范键；内置供应商与检不出的工作流为 None。
+
+    自定义供应商的 backend 在工厂外还包一层 ``CustomVideoBackend``，端点定义落在被包装的
+    delegate 上；两处都看，取到第一个 Mapping 即止。
+    """
+
+    definition = getattr(video_backend, "_definition", None)
+    if not isinstance(definition, Mapping):
+        definition = getattr(getattr(video_backend, "_delegate", None), "_definition", None)
+    return prompt_spec_for_definition(definition)
+
+
 def _lane_not_declared(lane: str, request_hint: str) -> RuntimeError:
     return RuntimeError(
         f"{lane} lane 未声明：调用 resolve_generation_context 时传入 {request_hint} 才能访问该 lane 的解析产物"
     )
-
 
 @dataclass(frozen=True)
 class GenerationContext:
@@ -427,6 +443,7 @@ async def resolve_generation_context(
                 # 显式按类型分流而非 getattr 探测：endpoint 为 None 恰好是「跳过续跑比对」
                 # 这条最宽松分支，属性一旦改名，探测式取值会静默失效且无任何信号。
                 endpoint=video_backend.endpoint if isinstance(video_backend, CustomVideoBackend) else None,
+                prompt_spec=_prompt_spec_of(video_backend),
             )
 
         if audio is not None:

@@ -125,6 +125,32 @@ def render_drama_content_for_prompt_authoring(
     return "\n\n".join(blocks)
 
 
+def render_video_model_brief(
+    spec: object,
+    *,
+    provider_id: str,
+    model_id: str,
+    durations: list[int] | None = None,
+) -> str:
+    """写作侧 prompt 的「目标视频模型」块：模型身份 + 硬事实 + 方言要点。
+
+    事实（时长档位）由代码产出，方言要点来自 spec 的 ``writing_guide``（措辞），
+    与 ``docs/adr/0077`` 的「取值留代码、措辞进片段」同口径。
+    """
+
+    label = str(getattr(spec, "label", "") or model_id)
+    lines = [f"本次提示词写给 {label}（{provider_id}/{model_id}），不是通用口径。"]
+    if durations:
+        lines.append(f"- 可用时长档位：{'、'.join(str(value) for value in durations)} 秒；按分镜 duration_seconds 拆段。")
+    guide = str(getattr(spec, "writing_guide", "") or "").strip()
+    if guide:
+        lines.append(f"- {guide}")
+    lines.append(
+        "- 正文引用资产写 @资产名（如 @沈昭），不要自己写「图1」；参考图模式下系统会把资产名渲染成「名称图N」。"
+    )
+    return "\n".join(lines)
+
+
 def build_drama_prompt(
     style: str,
     style_description: str,
@@ -133,6 +159,7 @@ def build_drama_prompt(
     aspect_ratio: str = "16:9",
     target_language: str = "中文",
     instructions: str | None = None,
+    model_facts: str | None = None,
 ) -> str:
     """构建剧情演绎 prompt_authoring（视觉层）prompt。
 
@@ -155,4 +182,5 @@ def build_drama_prompt(
         episode=episode,
         target_language=target_language,
         instructions=instructions,
+        model_facts=model_facts,
     )

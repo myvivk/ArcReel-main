@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,15 +30,37 @@ from lib.artifacts.generation_input import (
     project_input_observation,
     storyboard_image_input,
 )
-from lib.generation.video_request_facts import VideoRequestFacts
+from lib.config.resolver import ConfigResolver
+from lib.db import async_session_factory
+from lib.generation.video_request_facts import (
+    ExecutionVideoIdentity,
+    VideoRequestFacts,
+    evaluate_video_request_facts,
+)
 from lib.project.project_manager import ProjectManager, get_project_manager
+from lib.prompts.model_specs import VideoPromptSpec, resolve_video_prompt_spec
+from lib.prompts.prompt_utils import VideoReferenceLabel
 from lib.script.script_models import resolve_content_mode
-from lib.script.storyboard_sequence import find_storyboard_item, get_storyboard_items
-from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
+from lib.script.storyboard_sequence import (
+    apply_storyboard_frame_mode,
+    find_storyboard_item,
+    get_storyboard_items,
+    resolve_storyboard_video_asset_images,
+    split_storyboard_video_asset_images,
+)
+from lib.script.storyboard_video_request import (
+    resolve_storyboard_audio_inputs,
+    storyboard_asset_links,
+    storyboard_video_asset_trim_warning,
+)
 from lib.speech.voice_settings import VoiceRenderSettings
 from server.services.admission.reference_admission import input_refusal_error
 from server.services.admission.video_batch_admission import storyboard_video_prompt, storyboard_video_request_facts
-from server.services.tasks.generation_context import ImageLaneRequest, resolve_generation_context
+from server.services.tasks.generation_context import (
+    ImageLaneRequest,
+    VideoLaneRequest,
+    resolve_generation_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,16 +146,89 @@ async def reference_image_limit(
     return ctx.image.max_reference_images, ctx.image.backend_model
 
 
+@dataclass(frozen=True)
+class CandidateVideoContext:
+    """候选模型下的视频预览上下文：方言规范 + 该模型的能力事实（可能解析不出）。"""
+
+    spec: VideoPromptSpec | None = None
+    facts: VideoRequestFacts | None = None
+
+
+async def resolve_candidate_video_context(
+    project_name: str,
+    project: dict[str, Any],
+    project_path: Path,
+    video_backend: str | None,
+) -> CandidateVideoContext | None:
+    """解析这次预览要按哪个视频模型出文本；未给候选时按项目/全局的生效模型。
+
+    规范走与执行期同一入口（``resolve_generation_context``）：由执行端点的定义 / 工作流结构
+    检出，不靠模型名猜；事实按参考生视频（``r2v``）桶求值——这条路就是参考图模式，按 i2v
+    求值会得到「模型不支持 i2v」这种与本次请求无关的失败，参考图也会被裁掉。
+
+    只读：构造 backend 不提交任务、不扣费；解析失败按「不知道」处理，退回按模型名匹配 /
+    项目配置，不让一次预览把项目打挂。
+    """
+
+    backend = (video_backend or "").strip()
+    payload = {"video_provider_r2v": backend} if backend else None
+    provider = model = ""
+    declared: str | None = None
+    try:
+        ctx = await resolve_generation_context(
+            project_name,
+            payload,
+            project=project,
+            project_path=project_path,
+            video=VideoLaneRequest(generation_type="r2v"),
+        )
+        provider = ctx.video.provider_model.provider_id
+        model = ctx.video.backend_model
+        declared = ctx.video.prompt_spec
+    except Exception as exc:
+        logger.info("预览无法解析视频 lane（候选=%s），规范按模型名回落：%s", backend or "项目配置", exc)
+        if not backend:
+            return None
+        provider, _sep, model = backend.partition("/")
+
+    if not provider or not model:
+        return None
+    spec: VideoPromptSpec | None = (
+        resolve_video_prompt_spec(declared=declared)
+        if declared
+        else resolve_video_prompt_spec(provider, model)
+    )
+
+    facts: VideoRequestFacts | None = None
+    try:
+        evaluated = await evaluate_video_request_facts(
+            project,
+            route="storyboard",
+            generation_type="r2v",
+            identity=ExecutionVideoIdentity(provider, model),
+            resolver=ConfigResolver(async_session_factory),
+        )
+    except Exception as exc:
+        logger.info("预览无法按 %s/%s 求值视频请求事实：%s", provider, model, exc)
+    else:
+        if isinstance(evaluated, VideoRequestFacts):
+            facts = evaluated
+    return CandidateVideoContext(spec=spec, facts=facts)
+
+
 async def preview_item_prompts(
     project_name: str,
     script_file: str,
     item_id: str,
     *,
+    video_backend: str | None = None,
     projects: ProjectManager | None = None,
 ) -> ItemPromptPreview:
     """渲染一个分镜条目的分镜图与视频最终提示词文本。
 
-    ``projects`` 供工具运行时把已解析的 ProjectManager 注入进来（REST 路由用进程默认实例）。
+    ``video_backend`` 是生成弹窗里选中的候选模型（``provider/model``）。给了就按它解析视频
+    lane 的提示词规范——模型决定用哪套方言，面板上看到的就是这次真正会发出去的文本；不给则
+    沿用项目当前配置。``projects`` 供工具运行时把已解析的 ProjectManager 注入进来。
     """
 
     def _load() -> tuple[dict[str, Any], Path, dict[str, Any], dict[str, Any], str]:
@@ -148,12 +243,19 @@ async def preview_item_prompts(
         return project, project_path, script, resolved[0], resolve_content_mode(script, project)
 
     project, project_path, script, item, content_mode = await asyncio.to_thread(_load)
+    # 弹窗选了候选模型就先按它求值：方言规范与能力事实都按这次请求的模型走。
+    candidate = await resolve_candidate_video_context(project_name, project, project_path, video_backend)
     # 声音绑定按项目当前的视频能力档解析（非 drama 或无声一律 None），与执行期同一判据。
-    video_facts = await storyboard_video_request_facts(project)
+    video_facts = (
+        candidate.facts
+        if candidate is not None and candidate.facts is not None
+        else await storyboard_video_request_facts(project)
+    )
     silent = isinstance(video_facts, VideoRequestFacts) and (
         not video_facts.requested_generate_audio or video_facts.voice_consistency == "none"
     )
     voice_characters = (project.get("characters") or {}) if content_mode == "drama" and not silent else None
+    candidate_spec = candidate.spec if candidate is not None else None
 
     def _assemble() -> StoryboardImageInput | InputRefused:
         # 与执行期读同一份生成输入（含上一分镜图的可用性判定），「图N」编号才能逐字一致；
@@ -217,6 +319,8 @@ async def preview_item_prompts(
                     warnings=rendered.warnings,
                 )
 
+        video_warnings: list[dict[str, Any]] = []
+
         def render_video(_prompt: object) -> str:
             script_input = resolve_usable_episode_script_input(
                 project_path=project_path,
@@ -233,6 +337,36 @@ async def preview_item_prompts(
                 id_field=id_field,
                 resource_id=item_id,
             )
+            # 生成固定走参考图模式：预览与实发同一份参考图序列（资产图在前、K 帧在后）。
+            slots = apply_storyboard_frame_mode(slots, "reference")
+            references: list[VideoReferenceLabel] = []
+            asset_links = storyboard_asset_links(project, item, project_name)
+            if isinstance(video_facts, VideoRequestFacts):
+                assets = resolve_storyboard_video_asset_images(
+                    project_path=project_path, project=project, item=item
+                )
+                limit = video_facts.max_reference_images or 0
+                selected_assets, dropped_assets = split_storyboard_video_asset_images(
+                    assets,
+                    max_reference_images=limit,
+                    frame_count=len(slots.frames),
+                )
+                if (
+                    trim_warning := storyboard_video_asset_trim_warning(
+                        dropped_assets,
+                        limit=limit,
+                        frame_count=len(slots.frames),
+                    )
+                ) is not None:
+                    video_warnings.append(trim_warning)
+                references.extend(
+                    VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets
+                )
+            references.extend(
+                VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
+                for _role, frame in slots.frames
+                if frame.keyframe_index is not None
+            )
             audio_speakers: tuple[str, ...] = ()
             if isinstance(video_facts, VideoRequestFacts):
                 audio_speakers = resolve_storyboard_audio_inputs(
@@ -247,11 +381,22 @@ async def preview_item_prompts(
                 content_mode=content_mode,
                 voice_characters=voice_characters,
                 slots=slots,
-                asset_links=storyboard_asset_links(project, item, project_name),
+                asset_links=asset_links,
                 audio_speakers=audio_speakers,
+                spec=(
+                    candidate_spec
+                    if candidate_spec is not None
+                    else resolve_video_prompt_spec(video_facts.provider_id, video_facts.model_id)
+                    if isinstance(video_facts, VideoRequestFacts)
+                    else None
+                ),
+                references=references or None,
+                language=(project.get("source_language") if isinstance(project.get("source_language"), str) else None),
             )
 
         video = _render(item.get("video_prompt"), render_video)
+        if video.text is not None and video_warnings:
+            video = replace(video, warnings=tuple(video_warnings))
         return ItemPromptPreview(
             item_id=item_id,
             content_mode=content_mode,

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import type {
   AnyEndpointDefinition,
   ComfyuiEndpointDefinition,
+  ComfyuiInferResponse,
   ComfyuiMediaType,
   CustomEndpointInfo,
   CustomProviderInfo,
@@ -30,6 +31,7 @@ import { isComfyuiDefinition, reimportedDefinition, type ComfyuiImportDraft } fr
 import { EndpointDetail, type EndpointSelection } from "./EndpointDetail";
 import type { EndpointBackTarget } from "./EndpointHeader";
 import { EndpointImportDialog } from "./EndpointImportDialog";
+import { RunningHubPullDialog } from "./RunningHubPullDialog";
 import { groupUsagesByEndpoint } from "./EndpointUsageList";
 
 /** 有 kind 即是一份此刻就能显示的端点定义；其余形状的身份由服务端的分流结果给出。 */
@@ -101,6 +103,13 @@ export function EndpointsSection() {
     definition: ComfyuiEndpointDefinition;
   } | null>(null);
   const [comfyuiDraft, setComfyuiDraft] = useState<ComfyuiImportDraft | null>(null);
+  const [pullOpen, setPullOpen] = useState(false);
+  // 已有 RunningHub 端点的「重新拉取」落点：新 workflow 接到它上面，身份与节点绑定沿用。
+  const [pullBase, setPullBase] = useState<{
+    record: CustomEndpointInfo;
+    definition: ComfyuiEndpointDefinition;
+  } | null>(null);
+  const [pullWorkflowId, setPullWorkflowId] = useState("");
   // 未保存定义的一次性身份发号器；只进详情的 React key，不参与渲染。
   const draftSeq = useRef(0);
 
@@ -400,6 +409,50 @@ export function EndpointsSection() {
     }
   }, [importDefinition, importValidation, importFileName, reimportBase, select, pushToast, t]);
 
+  /** RunningHub 拉取成功：直接进绑定编辑器，与导入 ComfyUI workflow 同一条草稿路径。 */
+  const handleRunninghubPulled = useCallback(
+    (definition: ComfyuiEndpointDefinition, inference: ComfyuiInferResponse) => {
+      const base = pullBase;
+      if (base) {
+        // 已有端点：只换 workflow，身份/元数据/旧绑定沿用；用新 workflow + 旧绑定再跑一轮
+        // 推断，才能拿到「沿用 / 已重匹配 / 需确认」而不是把旧绑定丢掉。
+        const refreshed: ComfyuiEndpointDefinition = {
+          ...reimportedDefinition(base.definition, definition, false),
+          workflow_id: definition.workflow_id ?? base.definition.workflow_id,
+        };
+        setPullOpen(false);
+        setPullBase(null);
+        voidCall(
+          API.inferComfyuiBindings(refreshed, { mediaType: refreshed.media_type })
+            .then((rematch) => {
+              draftSeq.current += 1;
+              setComfyuiDraft({
+                token: String(draftSeq.current),
+                record: base.record,
+                definition: refreshed,
+                fileName: `RunningHub ${refreshed.workflow_id ?? ""}`.trim(),
+                inference: rematch,
+              });
+              select(base.record.key);
+            })
+            .catch((e) => pushToast(errMsg(e, t("ce_import_failed")), "error")),
+        );
+        return;
+      }
+      draftSeq.current += 1;
+      setComfyuiDraft({
+        token: String(draftSeq.current),
+        record: null,
+        definition,
+        fileName: `RunningHub ${definition.workflow_id ?? ""}`.trim(),
+        inference,
+      });
+      setPullOpen(false);
+      select(COMFYUI_DRAFT_KEY);
+    },
+    [pullBase, pushToast, select, t],
+  );
+
   /** 关掉导入弹窗：在途的识别与推断一并作废，回来的那一份不再装进详情。 */
   const closeImport = useCallback(() => {
     importRunRef.current += 1;
@@ -416,6 +469,23 @@ export function EndpointsSection() {
   }, [resetImportSource]);
 
   /** 为当前这个 ComfyUI 端点换一份 workflow：身份与已确认的节点绑定沿用手上这一份。 */
+  /** 打开 RunningHub 拉取：传 current 表示刷新已有端点，不传表示新建。 */
+  const openRunningHubPull = useCallback(
+    (current?: ComfyuiEndpointDefinition) => {
+      if (current) {
+        const record = customEndpoints.find((endpoint) => endpoint.key === selectedKey) ?? null;
+        if (!record) return;
+        setPullBase({ record, definition: current });
+        setPullWorkflowId(current.workflow_id ?? "");
+      } else {
+        setPullBase(null);
+        setPullWorkflowId("");
+      }
+      setPullOpen(true);
+    },
+    [customEndpoints, selectedKey],
+  );
+
   const startComfyuiReimport = useCallback(
     (current: ComfyuiEndpointDefinition) => {
       // 草稿的身份只在它就是当前选中的那一个时才算数：手上留着端点 A 的未保存草稿、人却走到
@@ -572,6 +642,7 @@ export function EndpointsSection() {
           onCreateProvider={handleCreateProvider}
           onNavigateToModel={handleNavigateToModel}
           onImport={openImport}
+          onPullRunningHub={openRunningHubPull}
           onUpdateFromMarket={(installation, currentDefinition, hasUnsavedChanges) =>
             void handleUpdateFromMarket(installation, currentDefinition, hasUnsavedChanges)
           }
@@ -597,8 +668,20 @@ export function EndpointsSection() {
         </DetailPane>
       )}
 
-      <EndpointImportDialog
-        open={importOpen}
+      <RunningHubPullDialog
+        key={pullOpen ? "runninghub-pull-open" : "runninghub-pull-closed"}
+        open={pullOpen}
+        providers={providers}
+        initialWorkflowId={pullWorkflowId}
+        onClose={() => {
+          setPullOpen(false);
+          setPullBase(null);
+          setPullWorkflowId("");
+        }}
+        onPulled={handleRunninghubPulled}
+      />
+
+      <EndpointImportDialog        open={importOpen}
         fileName={importFileName}
         definition={importDefinition}
         validation={importValidation}

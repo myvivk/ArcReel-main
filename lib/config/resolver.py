@@ -263,6 +263,21 @@ def video_bucket_for_generation_mode(generation_mode: str | None) -> VideoGenera
     return VIDEO_BUCKET_BY_GENERATION_MODE.get(generation_mode, _DEFAULT_VIDEO_BUCKET)
 
 
+def video_bucket_for_request(
+    generation_mode: str | None, frame_mode: str | None
+) -> VideoGenerationType:
+    """按项目生成模式 + 本次帧模式定桶。
+
+    Storyboard 的 ``frame_mode=reference`` 实际下发的是 K 帧参考图（没有首帧/尾帧），
+    语义上属于 r2v；只看 ``generation_mode`` 会把它错判成 i2v，进而用 ``first_frame``
+    去卡一个只有参考图入口的模型。``first_last`` 仍走 i2v；``reference_video`` 恒为 r2v。
+    """
+    bucket = video_bucket_for_generation_mode(generation_mode)
+    if bucket == "i2v" and frame_mode == "reference":
+        return "r2v"
+    return bucket
+
+
 def _payload_video_pinned_pair(
     payload: dict, generation_type: VideoGenerationType | None
 ) -> tuple[VideoGenerationType, tuple[str, str]] | None:

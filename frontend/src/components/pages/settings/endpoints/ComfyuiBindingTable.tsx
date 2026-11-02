@@ -159,7 +159,7 @@ function ManualPicker({ bindingKey, nodes, onPick }: ManualPickerProps) {
   return (
     // 原生下拉：选项是带节点号与字面值的一长串落点，值选中即生效、随即回到占位项
     <select
-      className="h-8 w-full max-w-72 min-w-0 rounded-lg border border-input bg-input/30 px-2.5 font-mono text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="h-9 w-full max-w-xl min-w-0 rounded-lg border border-input bg-input px-2.5 font-mono text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
       translate="no"
       value=""
       aria-label={t("ce_cf_manual_pick_label", { key: bindingKey })}
@@ -168,9 +168,11 @@ function ManualPicker({ bindingKey, nodes, onPick }: ManualPickerProps) {
         if (hit) onPick(hit.target);
       }}
     >
-      <option value="">{t(bindingKey === "output" ? "ce_cf_manual_pick_output" : "ce_cf_manual_pick")}</option>
+      <option value="" className="bg-input text-foreground">
+        {t(bindingKey === "output" ? "ce_cf_manual_pick_output" : "ce_cf_manual_pick")}
+      </option>
       {options.map((option) => (
-        <option key={option.id} value={option.id}>
+        <option key={option.id} value={option.id} className="bg-input text-foreground">
           {option.label}
         </option>
       ))}

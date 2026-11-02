@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from lib.prompts.model_specs import parse_backend_ref, resolve_video_prompt_spec
 from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.grid.shot_models import ShotGrid
 
@@ -68,15 +69,51 @@ def video_prompt_basis(item: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return basis if isinstance(basis, Mapping) else None
 
 
-def video_prompt_basis_for(grid: ShotGrid, *, written_at: str | None = None) -> dict[str, Any]:
-    """写回时记下的依据：哪一次宫格、几格、逐格指纹是什么（D-18）。"""
+def video_prompt_basis_for(
+    grid: ShotGrid, *, written_at: str | None = None, target: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """写回时记下的依据：哪一次宫格、几格、逐格指纹是什么（D-18），以及写给哪个模型。"""
 
-    return {
+    basis: dict[str, Any] = {
         "grid_id": grid.id,
         "layout": f"{grid.rows}x{grid.cols}",
         "cells_revision": grid_cells_revision(grid),
         "written_at": written_at or datetime.now(UTC).isoformat(),
     }
+    if target is not None:
+        basis["target"] = dict(target)
+    return basis
+
+
+def video_prompt_target_for_project(project: Mapping[str, Any]) -> dict[str, str] | None:
+    """项目当前的视频模型（参考生视频 → 图生视频 → 项目默认）写作依据；未配置时 None（通用口径）。"""
+
+    for key in ("video_provider_r2v", "video_provider_i2v", "video_backend"):
+        provider, model = parse_backend_ref(project.get(key))
+        if provider and model:
+            return {"provider": provider, "model": model, "spec": resolve_video_prompt_spec(provider, model).key}
+    return None
+
+
+def is_video_prompt_model_stale(item: Mapping[str, Any], target: Mapping[str, Any] | None) -> bool:
+    """提示词是否按「另一个视频模型」的口径写的（软 stale：建议重写，不阻断生成）。
+
+    ``target`` 为 None（当前未配置模型）或条目没有 ``basis.target``（存量 / 手工）时不判，
+    不误报。
+    """
+
+    if target is None:
+        return False
+    basis = video_prompt_basis(item)
+    if basis is None:
+        return False
+    written = basis.get("target")
+    if not isinstance(written, Mapping):
+        return False
+    return (str(written.get("provider") or ""), str(written.get("model") or "")) != (
+        str(target.get("provider") or ""),
+        str(target.get("model") or ""),
+    )
 
 
 def is_video_prompt_stale(item: Mapping[str, Any], grid: ShotGrid | None) -> bool:
@@ -108,6 +145,8 @@ class VideoPromptTargets:
     awaiting_grid: tuple[str, ...]
     #: 提示词按旧宫格写的：标 stale，不阻断视频生成，重写只单个走详情。
     stale: tuple[str, ...]
+    #: 提示词按另一个视频模型的口径写的：软 stale，建议重写，不阻断生成。
+    model_stale: tuple[str, ...] = ()
 
 
 def plan_video_prompt_targets(
@@ -115,6 +154,7 @@ def plan_video_prompt_targets(
     *,
     id_field: str,
     grids: Mapping[str, ShotGrid],
+    target: Mapping[str, Any] | None = None,
 ) -> VideoPromptTargets:
     """纯结构判定：不读文件、不落盘、不碰请求期的计费。
 
@@ -128,6 +168,7 @@ def plan_video_prompt_targets(
     targets: list[str] = []
     awaiting: list[str] = []
     stale: list[str] = []
+    model_stale: list[str] = []
     for item in items:
         raw_id = item.get(id_field)
         if not raw_id:
@@ -147,11 +188,14 @@ def plan_video_prompt_targets(
             targets.append(unit_id)
         elif is_video_prompt_stale(item, grid):
             stale.append(unit_id)
+        elif is_video_prompt_model_stale(item, target):
+            model_stale.append(unit_id)
     return VideoPromptTargets(
         unit_ids=tuple(unit_ids),
         targets=tuple(targets),
         awaiting_grid=tuple(awaiting),
         stale=tuple(stale),
+        model_stale=tuple(model_stale),
     )
 
 
@@ -159,10 +203,12 @@ __all__ = [
     "CELLS_REVISION_LENGTH",
     "VideoPromptTargets",
     "grid_cells_revision",
+    "is_video_prompt_model_stale",
     "is_video_prompt_stale",
     "plan_video_prompt_targets",
     "video_prompt_basis",
     "video_prompt_basis_for",
     "video_prompt_body_text",
+    "video_prompt_target_for_project",
     "video_prompt_text",
 ]

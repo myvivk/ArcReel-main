@@ -42,7 +42,7 @@ from lib.references.reference_admission import admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.factory_episode import require_factory_script
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
-from lib.script.grid.video_prompt_targets import plan_video_prompt_targets
+from lib.script.grid.video_prompt_targets import plan_video_prompt_targets, video_prompt_target_for_project
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
 from lib.script.short_drama_source import read_short_drama_source_markdown, short_drama_source_relative_path
@@ -791,6 +791,7 @@ class WorkflowStateService:
         kind: str | None,
         *,
         episode: int,
+        target: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """「视频提示词」产物集合：宫格已确认且正文空着的进 missing，按旧宫格写的进 stale。
 
@@ -807,12 +808,14 @@ class WorkflowStateService:
             items=items,
             id_field=id_field,
         )
-        plan = plan_video_prompt_targets(items, id_field=id_field, grids=grids)
+        plan = plan_video_prompt_targets(items, id_field=id_field, grids=grids, target=target)
         missing = set(plan.targets)
         stale = set(plan.stale)
         awaiting = set(plan.awaiting_grid)
         collection["missing_ids"] = list(plan.targets)
         collection["stale_ids"] = list(plan.stale)
+        # 按另一个视频模型的口径写的：建议重写，不进自动补缺批次（避免换模型即批量烧钱）。
+        collection["model_stale_ids"] = list(plan.model_stale)
         # 宫格尚未生成完成的分镜：不进本批，行上只按它报数（D-20）。
         collection["awaiting_grid_ids"] = list(plan.awaiting_grid)
         collection["current_ids"] = [
@@ -1489,7 +1492,13 @@ class WorkflowStateService:
                 else _not_applicable_collection()
             )
             artifacts["video_prompts"] = (
-                self._video_prompt_collection(project_path, items, kind, episode=number)
+                self._video_prompt_collection(
+                    project_path,
+                    items,
+                    kind,
+                    episode=number,
+                    target=video_prompt_target_for_project(project),
+                )
                 if generation_mode == "storyboard"
                 else _not_applicable_collection()
             )

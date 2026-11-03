@@ -25,6 +25,7 @@ from arcreel_market_core.comfyui.bindings import (
     align_frames,
     bound_fps,
     int_literal_of,
+    literal_of,
     positive_number,
     step_of,
     targets_of,
@@ -176,8 +177,8 @@ def native_short_edge(definition: Mapping[str, Any]) -> int | None:
 
 
 def duration_is_fixed(bindings: Mapping[str, Any]) -> bool:
-    """时长这一维 ArcReel 驱动不动：``frames`` 没有绑定，帧数只能是 workflow 的字面值。"""
-    return not targets_of(bindings.get("frames"))
+    """时长这一维 ArcReel 驱动不动：``frames`` 与 ``duration`` 都没绑定。"""
+    return not targets_of(bindings.get("frames")) and not targets_of(bindings.get("duration"))
 
 
 def frame_rate_is_missing(definition: Mapping[str, Any]) -> bool:
@@ -189,6 +190,9 @@ def frame_rate_is_missing(definition: Mapping[str, Any]) -> bool:
     """
     bindings: Mapping[str, Any] = definition["bindings"]
     workflow: Mapping[str, Any] = definition["workflow"]
+    if targets_of(bindings.get("duration")):
+        # 秒数直接写，不再需要帧率换算出整秒档位。
+        return False
     targets = targets_of(bindings.get("frames"))
     if not targets or bound_fps(workflow, bindings) is not None:
         return False
@@ -215,6 +219,17 @@ def native_duration(definition: Mapping[str, Any]) -> int | None:
     """
     bindings: Mapping[str, Any] = definition["bindings"]
     workflow: Mapping[str, Any] = definition["workflow"]
+    duration_targets = targets_of(bindings.get("duration"))
+    if duration_targets:
+        values = [
+            value
+            for target in duration_targets
+            if (value := positive_number(literal_of(workflow, target))) is not None
+        ]
+        if len(values) != len(duration_targets) or len(set(values)) != 1:
+            return None
+        seconds = round(values[0])
+        return seconds if seconds > 0 else None
     frames_targets = targets_of(bindings.get("frames"))
     literals = [
         (target, value)
@@ -252,6 +267,8 @@ def keeps_its_own_frame_count(definition: Mapping[str, Any]) -> bool:
     """
     bindings: Mapping[str, Any] = definition["bindings"]
     workflow: Mapping[str, Any] = definition["workflow"]
+    if targets_of(bindings.get("duration")):
+        return False
     targets = targets_of(bindings.get("frames"))
     if not targets:
         return False

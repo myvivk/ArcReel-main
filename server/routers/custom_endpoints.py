@@ -20,7 +20,9 @@ from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from arcreel_market_core.comfyui.validator import structural_diagnostics
 from arcreel_market_core.endpoint_definition import (
+    COMFYUI_KIND,
     DefinitionDiagnostics,
     SchemaVersionLevel,
     VersionRelation,
@@ -31,14 +33,23 @@ from arcreel_market_core.endpoint_definition import (
     validate_definition,
     version_relation,
 )
-from lib.custom_provider import make_endpoint_key, make_provider_id
+from lib.backends.artifact_download_guard import artifact_http_client
+from lib.custom_provider import (
+    is_custom_provider,
+    make_endpoint_key,
+    make_provider_id,
+    parse_provider_id,
+)
 from lib.custom_provider.comfyui.import_shapes import ImportShape, route_import_payload, ui_workflow_refusal
-from lib.custom_provider.discovery_formats import endpoint_attachment_holds
+from lib.custom_provider.comfyui.inference import infer_bindings
+from lib.custom_provider.discovery_formats import endpoint_attachment_holds, is_runninghub_protocol
 from lib.custom_provider.endpoint_resolution import derive_mirror_columns
+from lib.custom_provider.runninghub.client import RunningHubClient
 from lib.db import get_async_session
 from lib.db.base import dt_to_iso
 from lib.db.models.custom_endpoint import CustomEndpoint
 from lib.db.repositories.custom_endpoint_repo import CustomEndpointRepository, EndpointReference
+from lib.db.repositories.custom_provider_repo import CustomProviderRepository
 from lib.infra.api_errors import ConflictError, NotFoundError, UnprocessableError
 from server.i18n import Translator
 from server.routers import comfyui_inference, endpoint_tests
@@ -131,6 +142,22 @@ class ValidateResponse(BaseModel):
     import_shape: ImportShape
     # 原始 API workflow 的包装结果；另两种形状为 null，客户端继续用自己手上那份。
     wrapped_definition: dict[str, Any] | None = None
+
+
+class PullRunningHubRequest(BaseModel):
+    """从 RunningHub 拉取 workflow：供应商凭证或内联凭证，二选一。"""
+
+    provider_id: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    workflow_id: str
+
+
+class PullRunningHubResponse(BaseModel):
+    """拉取结果：可继续编辑的定义 + 绑定推断（与现有推断接口同形）。"""
+
+    definition: dict[str, Any]
+    inference: dict[str, Any]
 
 
 class EndpointReferenceDescriptor(BaseModel):
@@ -366,6 +393,69 @@ async def validate_endpoint_definition(
     )
 
 
+@router.post("/pull-runninghub")
+async def pull_runninghub_workflow(
+    body: PullRunningHubRequest,
+    _t: Translator,
+    session: AsyncSession = Depends(get_async_session),
+) -> PullRunningHubResponse:
+    """按 RunningHub workflowId 拉取 API workflow，返回可继续编辑的定义与绑定推断。
+
+    只读 workflow，不提交任务、不扣币。凭证可以是已保存的 RunningHub 供应商，也可以是内联
+    base_url + api_key；APIKEY 不回显。
+    """
+    base_url, api_key = await _runninghub_credentials(body, session)
+    workflow_id = body.workflow_id.strip()
+    if not workflow_id:
+        raise UnprocessableError("runninghub_workflow_id_required_for_pull")
+    async with artifact_http_client(timeout=30) as http:
+        workflow = await RunningHubClient(base_url=base_url, api_key=api_key).fetch_workflow_json(http, workflow_id)
+    definition: dict[str, Any] = {
+        "kind": COMFYUI_KIND,
+        "schema_version": "1.0.0",
+        "meta": {
+            "name": f"RunningHub 工作流 {workflow_id[-8:]}",
+            "author": "RunningHub",
+            "version": "1.0.0",
+        },
+        "media_type": "video",
+        "workflow": dict(workflow),
+        "bindings": {},
+        "workflow_id": workflow_id,
+    }
+    diagnostics = structural_diagnostics(definition)
+    if diagnostics.errors:
+        raise UnprocessableError("custom_endpoint_definition_invalid").with_diagnostic(diagnostics.to_payload(_t))
+    inference = infer_bindings(definition).to_payload(_t)
+    return PullRunningHubResponse(definition=definition, inference=inference)
+
+
+async def _runninghub_credentials(
+    body: PullRunningHubRequest,
+    session: AsyncSession,
+) -> tuple[str, str]:
+    if body.provider_id:
+        if body.base_url or body.api_key:
+            raise UnprocessableError("endpoint_test_credentials_ambiguous")
+        if not is_custom_provider(body.provider_id):
+            raise UnprocessableError("endpoint_test_provider_not_custom", provider_id=body.provider_id)
+        try:
+            row_id = parse_provider_id(body.provider_id)
+        except ValueError:
+            raise UnprocessableError("endpoint_test_provider_not_custom", provider_id=body.provider_id) from None
+        provider = await CustomProviderRepository(session).get_provider(row_id)
+        if provider is None:
+            raise NotFoundError("provider_not_found")
+        if not is_runninghub_protocol(provider.discovery_format):
+            raise UnprocessableError("runninghub_provider_required")
+        if not provider.base_url or not provider.api_key:
+            raise UnprocessableError("endpoint_test_credentials_required")
+        return provider.base_url, provider.api_key
+    if not body.base_url or not body.api_key:
+        raise UnprocessableError("endpoint_test_credentials_required")
+    return body.base_url, body.api_key
+
+
 @router.get("/{endpoint_id}")
 async def get_endpoint(
     endpoint_id: int,
@@ -396,6 +486,8 @@ async def update_endpoint(
         await _check_kind_change_keeps_attachments(repo, endpoint_id, mirror.kind, _t)
     if mirror.media_type != current.media_type:
         await _check_media_type_change_has_no_attachments(repo, endpoint_id, mirror.media_type)
+    if mirror.kind == COMFYUI_KIND and not str(definition.get("workflow_id") or "").strip():
+        await _check_runninghub_attachments_keep_workflow_id(repo, endpoint_id)
     row = await repo.update(
         endpoint_id,
         definition=definition,
@@ -457,6 +549,24 @@ async def _check_media_type_change_has_no_attachments(
             model=attachments[0].model_id,
             provider=make_provider_id(attachments[0].provider_id),
         )
+
+
+async def _check_runninghub_attachments_keep_workflow_id(
+    repo: CustomEndpointRepository,
+    endpoint_id: int,
+) -> None:
+    """RunningHub 在用端点的 workflowId 不得被清空。
+
+    供应商保存期已经要求「挂 RunningHub 的端点必须有 workflowId」；整份替换定义是另一条能把
+    它清空的写入路径。不清空时随便改，清空则等生成时才在传输层失败——在端点保存期就拒掉。
+    """
+    for attachment in await repo.list_attachments(make_endpoint_key(endpoint_id)):
+        if is_runninghub_protocol(attachment.discovery_format):
+            raise UnprocessableError(
+                "runninghub_workflow_id_required_for_attachment",
+                model=attachment.model_id,
+                provider=make_provider_id(attachment.provider_id),
+            )
 
 
 @router.delete("/{endpoint_id}", status_code=204)

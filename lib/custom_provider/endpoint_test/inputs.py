@@ -39,6 +39,9 @@ class EndpointTestCredentials:
 
     base_url: str
     api_key: str
+    #: 调用走哪套 transport：``comfyui``（原生）或 ``runninghub``。读库入口取供应商的
+    #: ``discovery_format``；内联入口由调用方给，缺省保持历史行为（原生 ComfyUI）。
+    protocol: str = "comfyui"
 
 
 @dataclass(frozen=True)

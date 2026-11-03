@@ -28,8 +28,12 @@ import {
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
+import { ProviderModelSelect } from "@/components/shared/ProviderModelSelect";
+import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
+import type { ModelCandidatesResponse } from "@/types/system";
 import { useAppStore } from "@/stores/app-store";
 import { useAssistantStore } from "@/stores/assistant-store";
+import { useProjectsStore } from "@/stores/projects-store";
 import {
   usePromptAuthoringStore,
   type PromptAuthoringField,
@@ -126,6 +130,66 @@ export function PromptAuthoringDialog({
   const [instructions, setInstructions] = useState(savedInstructions);
   const [submitting, setSubmitting] = useState(false);
   const [overwrite, setOverwrite] = useState<PromptOverwrite | null>(null);
+  const project = useProjectsStore((state) => state.currentProjectData);
+  const projectRecord = (project ?? {}) as Record<string, unknown>;
+  const [videoModel, setVideoModel] = useState(
+    typeof projectRecord.video_provider_r2v === "string" ? projectRecord.video_provider_r2v : "",
+  );
+  // 项目没选模型时的生效模型：项目默认 → 全局默认。提示词要按模型方言写，弹出这个框却不知道
+  // 会跑哪个模型，就只能给通用口径——所以这里必须把「跟随默认」解析成一个具体模型并写进项目，
+  // 写作侧（按项目模型取方言）才拿得到。
+  const [globalVideoModel, setGlobalVideoModel] = useState("");
+  const effectiveVideoModel =
+    videoModel ||
+    (typeof projectRecord.video_backend === "string" ? projectRecord.video_backend : "") ||
+    globalVideoModel;
+  const videoFieldSelected = fields.includes("video_prompt");
+  // 目标模型候选来自供应商能力目录，且不看当前配置了谁（include_unconfigured）：允许先按
+  // 目标模型写提示词、再配密钥。按项目生成模式取桶：故事板只列 i2v，参考生视频只列 r2v。
+  const [videoCandidates, setVideoCandidates] = useState<ModelCandidatesResponse | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([API.getModelCandidates({ includeUnconfigured: true }), API.getSystemConfig()])
+      .then(([result, config]) => {
+        if (!alive) return;
+        setVideoCandidates(result);
+        setGlobalVideoModel(
+          config.settings.default_video_backend_r2v || config.settings.default_video_backend || "",
+        );
+      })
+      .catch(() => {
+        if (alive) setVideoCandidates(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // 视频生成固定走参考图模式（K 帧 + 资产图都按参考图下发），故候选只取 r2v 桶：
+  // 不收参考图的模型（如纯 i2v 的 Hailuo）不再出现在这里。
+  const videoModelOptions = useMemo(
+    () => videoCandidates?.video.buckets.r2v ?? videoCandidates?.video.default ?? [],
+    [videoCandidates],
+  );
+
+  const changeVideoModel = async (next: string) => {
+    setVideoModel(next);
+    try {
+      // 「跟随默认」不是一个模型：写作侧按项目配置取提示词方言，必须落成具体模型，
+      // 否则又会退回通用口径。
+      await API.updateProject(projectName, { video_provider_r2v: next || globalVideoModel || null });
+      await refreshAfterWrite(projectName, t);
+    } catch (err) {
+      useAppStore.getState().pushToast(errMsg(err), "error");
+    }
+  };
+
+  /** 提交前把「跟随默认」落成具体模型：没落盘的话，写作任务取不到方言。 */
+  const persistEffectiveVideoModel = async () => {
+    if (!effectiveVideoModel) return;
+    if (projectRecord.video_provider_r2v === effectiveVideoModel) return;
+    await API.updateProject(projectName, { video_provider_r2v: effectiveVideoModel });
+    await refreshAfterWrite(projectName, t);
+  };
 
   // 脚本在弹窗打开期间变化（条目被删）时，自选范围只算仍在脚本里的条目，按剧本顺序。
   const selectedIds = useMemo(
@@ -153,6 +217,7 @@ export function PromptAuthoringDialog({
     if (submitting || scopeEmpty || guardBusy()) return;
     setSubmitting(true);
     try {
+      await persistEffectiveVideoModel();
       await enqueuePromptAuthoring(projectName, episode, {
         entry_ids: entryIds,
         rewrite,
@@ -179,6 +244,7 @@ export function PromptAuthoringDialog({
     if (submitting || scopeEmpty) return;
     setSubmitting(true);
     try {
+      await persistEffectiveVideoModel();
       await API.savePromptAuthoringInstructions(projectName, episode, instructions.trim());
     } catch (err) {
       useAppStore.getState().pushToast(errMsg(err), "error");
@@ -327,6 +393,31 @@ export function PromptAuthoringDialog({
                   )}
                 </div>
               )}
+
+              {videoFieldSelected ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t("prompt_authoring_video_model")}</Label>
+                  <ProviderModelSelect
+                    value={videoModel}
+                    options={videoModelOptions}
+                    providerNames={videoCandidates?.provider_names ?? {}}
+                    modelNames={videoCandidates?.model_names}
+                    onChange={(next) => void changeVideoModel(next)}
+                    allowDefault
+                    defaultLabel={t("prompt_authoring_video_model_default")}
+                    fallbackValue={effectiveVideoModel || undefined}
+                    fallbackLabel={t("prompt_authoring_video_model_default")}
+                    placeholder={t("prompt_authoring_video_model_placeholder")}
+                    aria-label={t("prompt_authoring_video_model")}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("prompt_authoring_video_model_hint")}
+                  </p>
+                  {videoCandidates && videoModelOptions.length === 0 ? (
+                    <p className="text-xs text-warn">{t("no_video_providers_hint")}</p>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={fieldId}>{t("prompt_authoring_instructions_label")}</Label>

@@ -25,6 +25,7 @@ VIDEO_BINDING_KEYS = (
     "width",
     "height",
     "frames",
+    "duration",
     "fps",
     "seed",
     "output",

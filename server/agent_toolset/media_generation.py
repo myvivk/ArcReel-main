@@ -227,6 +227,8 @@ GENERATE_VIDEOS = generation_tool(
         "（逐 unit 的 outcome 为 generate / reuse / blocked，附编排时长、申请档位、tier_changed、"
         "estimated_cost 与 problems，另有 estimated_total 与 confirmed_request_durations），"
         "报价与正式提交一致；需要用户先确认费用时先预检。"
+        "frame_mode 默认 reference（K 帧全部按参考图下发，并带上引用资产的资产图）；"
+        "first_last 仅用于只收首帧+尾帧、不收参考图的模型。"
         "用户确认后正式提交时原样带上报价单的 confirmed_request_durations，"
         "就不会再返回档位确认；两次调用之间档位变了，仍会要求重新确认。"
         "终态结果的 generation_result 按 requested / succeeded / failed / blocked 逐 ID 给出结局，"

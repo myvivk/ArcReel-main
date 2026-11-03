@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from lib.config.resolver import ConfigResolver
 from lib.db import async_session_factory
@@ -92,7 +93,9 @@ async def _shot_grid_plan(
         )
 
 
-async def _video_plan(project_name: str, episode: int, user_id: str) -> StoryboardVideoBatchPlan:
+async def _video_plan(
+    project_name: str, episode: int, user_id: str, frame_mode: str = "reference"
+) -> StoryboardVideoBatchPlan:
     with _planning_errors(project_name, episode):
         return await load_storyboard_video_batch_plan(
             get_project_manager(),
@@ -101,7 +104,14 @@ async def _video_plan(project_name: str, episode: int, user_id: str) -> Storyboa
             episode_id=episode,
             user_id=user_id,
             config_resolver=ConfigResolver(async_session_factory),
+            frame_mode=frame_mode,
         )
+
+
+class VideoBatchRequest(BaseModel):
+    """批量分镜视频的请求体：帧模式决定 K 帧与资产图怎么下发。"""
+
+    frame_mode: Literal["first_last", "reference"] = "reference"
 
 
 @router.post("/storyboards/batch/preview")
@@ -183,11 +193,16 @@ async def submit_shot_grid_batch_route(
 
 @router.post("/videos/batch/preview")
 async def preview_storyboard_video_batch(
-    project_name: str, episode: int, user: CurrentUser, _t: Translator, names: DisplayNamesCatalog
+    project_name: str,
+    episode: int,
+    user: CurrentUser,
+    _t: Translator,
+    names: DisplayNamesCatalog,
+    body: VideoBatchRequest | None = None,
 ) -> dict[str, Any]:
     """规划一批分镜视频但不建任务：要生成的分镜、跳过项、整批准入结论与能算出时的预估费用。"""
 
-    plan = await _video_plan(project_name, episode, user.id)
+    plan = await _video_plan(project_name, episode, user.id, frame_mode=(body.frame_mode if body else "reference"))
     estimated = await estimate_storyboard_video_batch_cost(plan, async_session_factory)
     return {
         "targets": [{"unit_id": unit_id} for unit_id in plan.target_ids],
@@ -199,11 +214,16 @@ async def preview_storyboard_video_batch(
 
 @router.post("/videos/batch")
 async def submit_storyboard_video_batch_route(
-    project_name: str, episode: int, user: CurrentUser, _t: Translator, names: DisplayNamesCatalog
+    project_name: str,
+    episode: int,
+    user: CurrentUser,
+    _t: Translator,
+    names: DisplayNamesCatalog,
+    body: VideoBatchRequest | None = None,
 ) -> dict[str, Any]:
     """重新规划后提交一批分镜视频。整批准入未通过时以 200 返回结论、一个任务也不建。"""
 
-    plan = await _video_plan(project_name, episode, user.id)
+    plan = await _video_plan(project_name, episode, user.id, frame_mode=(body.frame_mode if body else "reference"))
     payload: dict[str, Any] = {
         "admission": localized_admission_payload(plan.admission, _t, names),
         "skipped": _skipped(plan.skips),

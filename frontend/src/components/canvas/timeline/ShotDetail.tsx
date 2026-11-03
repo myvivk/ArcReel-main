@@ -439,6 +439,23 @@ function ShotDetailContent({
   const videoDisabled = editingBlocked || refreshPending || !!generatingVideo || !hasConfirmedMaterials;
   // 「生成/重写视频提示词」随参考素材一起走：素材确认后才可打开编写弹窗。
   const videoPromptFilled = videoText.trim().length > 0;
+  // 提示词是写给哪个模型的：与项目当前视频模型不一致时提示重写（不阻断生成）。
+  const promptTarget = assets?.video_prompt_basis?.target;
+  const projectRecord = (project ?? {}) as Record<string, unknown>;
+  // 提示词里记的「写给谁」不等于「这次会跑谁」：项目用参考生视频时写的是 r2v 桶，
+  // 只配了全局默认时退到 video_backend。两处都空说明无法判定，stale 提示按「不知道」处理，
+  // 不去拿写入目标冒充当前模型。
+  const rawCurrentVideoModel =
+    typeof projectRecord.video_provider_r2v === "string"
+      ? projectRecord.video_provider_r2v
+      : typeof projectRecord.video_backend === "string"
+        ? projectRecord.video_backend
+        : "";
+  const currentVideoModel = rawCurrentVideoModel.trim();
+  const writtenModel =
+    promptTarget?.provider && promptTarget?.model ? `${promptTarget.provider}/${promptTarget.model}` : "";
+  const promptModelStale = videoPromptFilled && Boolean(writtenModel) && Boolean(currentVideoModel)
+    && writtenModel !== currentVideoModel;
   const videoPromptDisabled = editingBlocked || refreshPending || materialsBusy || needsRefresh
     || !!generatingStoryboard || !!generatingVideo;
   const openVideoPrompt = () => {
@@ -667,7 +684,17 @@ function ShotDetailContent({
             ) : null}
             {promptActions("video")}
             <span className="text-xs text-subtle-foreground">{t("shot_mention_hint")}</span>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {t("shot_video_prompt_model_label", {
+                model: writtenModel || currentVideoModel || t("shot_video_prompt_model_generic"),
+              })}
+            </span>
           </div>
+          {promptModelStale ? (
+            <p className="text-xs text-warn">
+              {t("shot_video_prompt_model_stale", { model: writtenModel, current: currentVideoModel })}
+            </p>
+          ) : null}
           <MentionTextarea
             ariaLabel={t("detail_video_prompt_title")}
             value={videoText}

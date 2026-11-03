@@ -123,11 +123,16 @@ class TestParametersInput(BaseModel):
 
 
 class TestCredentialsInput(BaseModel):
-    """凭证两版：``provider_id`` 读库，或内联 ``base_url`` + ``api_key``。"""
+    """凭证两版：``provider_id`` 读库，或内联 ``base_url`` + ``api_key``。
+
+    ``protocol`` 只影响内联凭证走哪套 transport；按 provider_id 读库时由供应商的
+    ``discovery_format`` 决定，客户端不用传。
+    """
 
     provider_id: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    protocol: Literal["comfyui", "runninghub"] | None = None
 
 
 class ModelRefInput(BaseModel):
@@ -313,11 +318,19 @@ async def _resolve_credentials(
         # 渲染出一个空鉴权请求才失败。
         if (require_base_url and not provider.base_url) or (require_api_key and not provider.api_key):
             return None
-        return EndpointTestCredentials(base_url=provider.base_url or "", api_key=provider.api_key or "")
+        return EndpointTestCredentials(
+            base_url=provider.base_url or "",
+            api_key=provider.api_key or "",
+            protocol=provider.discovery_format,
+        )
     if (body_credentials.base_url or not require_base_url) and (
         body_credentials.api_key is not None or not require_api_key
     ):
-        return EndpointTestCredentials(base_url=body_credentials.base_url or "", api_key=body_credentials.api_key or "")
+        return EndpointTestCredentials(
+            base_url=body_credentials.base_url or "",
+            api_key=body_credentials.api_key or "",
+            protocol=body_credentials.protocol or "comfyui",
+        )
     return None
 
 
@@ -335,7 +348,7 @@ async def _required_credentials(
     )
     if credentials is None:
         if not require_base_url and not require_api_key:
-            return EndpointTestCredentials(base_url="", api_key="")
+            return EndpointTestCredentials(base_url="", api_key="", protocol="comfyui")
         raise BadRequestError("endpoint_test_credentials_required")
     return credentials
 
@@ -571,7 +584,7 @@ async def _model_ref_target(
         if diagnostics is not None:
             builtin_definition, base_url, api_key = diagnostics
             definition = _accepted_definition(dict(builtin_definition), _t, mode=EndpointTestMode.TRIAL_RUN)
-            credentials = EndpointTestCredentials(base_url=base_url, api_key=api_key)
+            credentials = EndpointTestCredentials(base_url=base_url, api_key=api_key, protocol="comfyui")
         target = model_ref_target(model_ref.provider_id, model_ref.model_id, resolver=resolver, definition=definition)
         return target, credentials, definition
     provider = await _custom_provider(model_ref.provider_id, session)
@@ -602,7 +615,11 @@ async def _model_ref_target(
         # 内置声明式端点（newapi-video / v2 / minimax 系）与 ce-* 一样有定义：结果体的渲染请求、
         # 逐阶段提取与提交前渲染闸按同一条路给出，不因定义随版发布而缺一段诊断。
         definition = _accepted_definition(dict(endpoint_spec.definition), _t, mode=EndpointTestMode.TRIAL_RUN)
-    credentials = EndpointTestCredentials(base_url=provider.base_url, api_key=provider.api_key)
+    credentials = EndpointTestCredentials(
+        base_url=provider.base_url,
+        api_key=provider.api_key,
+        protocol=provider.discovery_format,
+    )
     target = model_ref_target(
         model_ref.provider_id,
         model_ref.model_id,

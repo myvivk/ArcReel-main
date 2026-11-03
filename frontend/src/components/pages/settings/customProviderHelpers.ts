@@ -29,6 +29,16 @@ export function isComfyuiProtocol(format: DiscoveryFormat): boolean {
   return format === "comfyui";
 }
 
+/** 模型发现协议是否为 RunningHub。 */
+export function isRunninghubProtocol(format: DiscoveryFormat): boolean {
+  return format === "runninghub";
+}
+
+/** 是否以 workflow 为调用形态（原生 ComfyUI 或 RunningHub）。 */
+export function isWorkflowProtocol(format: DiscoveryFormat): boolean {
+  return isComfyuiProtocol(format) || isRunninghubProtocol(format);
+}
+
 /** 一个调用端点是否为 ComfyUI 端点。与 isComfyuiProtocol 同理：字面量只在这里出现一次。 */
 export function isComfyuiEndpoint(endpoint: Pick<EndpointDescriptor, "kind">): boolean {
   return endpoint.kind === "comfyui";
@@ -38,8 +48,10 @@ export function isComfyuiEndpoint(endpoint: Pick<EndpointDescriptor, "kind">): b
 export function urlPreviewFor(format: DiscoveryFormat, rawBaseUrl: string): string | null {
   const trimmed = rawBaseUrl.trim().replace(/\/+$/, "");
   if (!trimmed) return null;
-  // ComfyUI 没有 /models，探针打的是 /system_stats；预览跟着探针走才有指认价值。
+  // ComfyUI 没有 /models，探针打的是 /system_stats；RunningHub 打账户信息；
+  // 预览跟着探针走才有指认价值。
   if (isComfyuiProtocol(format)) return `${trimmed}/system_stats`;
+  if (isRunninghubProtocol(format)) return `${trimmed}/uc/openapi/accountStatus`;
   if (format === "openai") {
     const base = trimmed.match(/\/v\d+$/) ? trimmed : `${trimmed}/v1`;
     return `${base}/models`;

@@ -89,6 +89,9 @@ MESSAGES = {
     "val_utterance_speaker_type": "{prefix} speaker 必须是字符串或 null",
     "val_utterance_dialogue_speaker": "{prefix} dialogue 必须带非空 speaker",
     "val_utterance_voiceover_speaker": "{prefix} voiceover 不得带 speaker",
+    "val_utterance_at_invalid": "{prefix} at 必须是非负数字（秒）",
+    "val_utterance_shot_invalid": "{prefix} shot 必须是大于等于 1 的整数",
+    "val_utterance_anchor_conflict": "{prefix} at 与 shot 只能二选一",
     "val_scene_speech_overflow": (
         "{prefix}: 估算说话时长 {spoken:.1f} 秒超过分镜时长 {duration} 秒逾 {tolerance:.0%}"
         "（容差上界 {budget:.1f} 秒），长对白可能说不完或语速畸快（仅提示，不阻塞保存）"
@@ -276,6 +279,7 @@ MESSAGES = {
     "val_ce_comfyui_fps_conflict": (
         "帧率有多个互相矛盾的来源（{values}）：时长换算成帧数只能按一个帧率，请只保留一处帧率来源"
     ),
+    "val_ce_comfyui_duration_frames_conflict": "duration（时长）与 frames（帧数）不能同时绑定：同一维会被写两次，请只保留一处",
     "val_ce_comfyui_ui_format_workflow": "这是 ComfyUI 的 UI 格式 workflow，提交不了：请在 ComfyUI 里改用「Export (API)」导出",
     # ---- ComfyUI 端点 · 节点绑定推断的信号说明与提示 ----
     "val_ce_infer_manual_binding": "已保存的节点绑定，沿用用户确认过的落点",

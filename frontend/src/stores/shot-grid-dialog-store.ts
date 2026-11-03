@@ -12,6 +12,8 @@ export interface ShotGridDialogRequest {
   plan: ShotGridPlan | null;
   /** 本分镜的出场资产清单：逐格提示词里的 @ 候选只从这份清单里取。 */
   referenceNames?: ReferenceNameSets;
+  /** 已确认宫格走「重新生成」时打开：允许改描述并再次生成，规格仍锁定。 */
+  allowConfirmedRegenerate?: boolean;
 }
 
 interface ShotGridDialogState {

@@ -1156,6 +1156,14 @@ class DataValidator:
                 errors.append(_m("val_utterance_dialogue_speaker", prefix=uprefix))
             elif kind == "voiceover" and has_speaker:
                 errors.append(_m("val_utterance_voiceover_speaker", prefix=uprefix))
+            at = item.get("at")
+            if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float)) or at < 0):
+                errors.append(_m("val_utterance_at_invalid", prefix=uprefix))
+            shot = item.get("shot")
+            if shot is not None and (isinstance(shot, bool) or not isinstance(shot, int) or shot < 1):
+                errors.append(_m("val_utterance_shot_invalid", prefix=uprefix))
+            if at is not None and shot is not None:
+                errors.append(_m("val_utterance_anchor_conflict", prefix=uprefix))
 
     @staticmethod
     def _warn_scene_speech_overflow(

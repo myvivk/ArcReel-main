@@ -182,6 +182,17 @@ _TASK_FAILURE_ACTIONS: dict[str, GenerationAction] = {
     "comfyui_output_missing": GenerationAction.CONFIGURE_PROVIDER,
     "comfyui_output_type_mismatch": GenerationAction.CONFIGURE_PROVIDER,
     "comfyui_output_container_mismatch": GenerationAction.CONFIGURE_PROVIDER,
+    # RunningHub：鉴权 / 工作流 / 余额 / 节点错误都指向配置；上传与执行丢失可重试。
+    "runninghub_auth_failed": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_workflow_not_found": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_insufficient_coins": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_task_failed": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_node_errors": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_output_missing": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_output_type_mismatch": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_output_container_mismatch": GenerationAction.CONFIGURE_PROVIDER,
+    "runninghub_upload_failed": GenerationAction.RETRY,
+    "runninghub_job_lost": GenerationAction.RETRY,
     # 供应商已出片、只是没取回来：重发同一请求会再建一个付费任务，正确的一步是接续取件。
     "artifact_download_failed": GenerationAction.RETRY_ARTIFACT_DOWNLOAD,
     "execution_identity_unrecoverable": GenerationAction.RETRY,

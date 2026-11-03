@@ -57,6 +57,32 @@ def storyboard_asset_links(project: Mapping[str, Any], item: Mapping[str, Any], 
     return "Asset references:\n" + "\n".join(links) if links else ""
 
 
+def storyboard_video_asset_trim_warning(
+    dropped_assets: Sequence[tuple[str, str, Path]],
+    *,
+    limit: int,
+    frame_count: int,
+) -> dict[str, Any] | None:
+    """资产图因参考图上限被裁时返回 ``{key, params}`` warning；未裁返回 ``None``。
+
+    与任务 ``result.warnings``、提示词预览的 ``RenderedPrompt.warnings`` 同形，读侧按
+    ``storyboard_video_assets_trimmed`` 渲染；K 帧不参与裁剪，``frame_count`` 只用于把
+    “上限里有多少是 K 帧”说清楚。
+    """
+
+    if not dropped_assets:
+        return None
+    return {
+        "key": "storyboard_video_assets_trimmed",
+        "params": {
+            "count": len(dropped_assets),
+            "names": "、".join(name for _kind, name, _path in dropped_assets),
+            "limit": limit,
+            "frame_count": frame_count,
+        },
+    }
+
+
 def storyboard_frame_evidence(
     slots: StoryboardVideoSlots,
     *,

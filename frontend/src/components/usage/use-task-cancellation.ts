@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { API, ApiRequestError } from "@/api";
 import type { EpisodeItemRef } from "@/types";
@@ -51,6 +52,7 @@ export function useTaskCancellation(
   scopeKey: string | null,
   onCancelled?: () => void | Promise<void>,
 ): TaskCancellation {
+  const { t } = useTranslation("dashboard");
   const [request, setRequest] = useState<CancelRequest | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -117,8 +119,24 @@ export function useTaskCancellation(
     }
     try {
       try {
-        if (request.kind === "single") await API.cancelTask(request.taskId);
-        else await API.cancelAllQueued(request.projectName);
+        if (request.kind === "single") {
+          await API.cancelTask(request.taskId);
+        } else {
+          const result = await API.cancelAllQueued(request.projectName);
+          if (result.skipped_running_count > 0) {
+            // 预览之后、确认之前被 worker 领走的任务已经进入 running，取消不了；
+            // 不能再静默关闭确认框，否则用户以为全部取消成功。
+            setFailed(true);
+            setFailureDetail(
+              t("cancel_all_skipped_running", {
+                cancelled: result.cancelled_count,
+                skipped: result.skipped_running_count,
+              }),
+            );
+            await onCancelled?.();
+            return;
+          }
+        }
       } catch (error) {
         // 取消没有落到服务端：确认态留在原地并标记失败，用户看得到原因、也能重试。
         setFailed(true);
@@ -139,7 +157,7 @@ export function useTaskCancellation(
       }
       setCancelling(false);
     }
-  }, [request, onCancelled]);
+  }, [request, onCancelled, t]);
 
   const dismiss = useCallback(() => {
     setRequest(null);

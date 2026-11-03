@@ -411,7 +411,15 @@ export function PresentationPlayer({
         }}
         onRateChange={(event) => synchronizeNarrationControls(event.currentTarget)}
         onPlay={(event) => {
-          if (!stopAtPresentationBoundary(event.currentTarget)) synchronizeNarration(true);
+          const video = event.currentTarget;
+          const start = presentation.video.start_microseconds / 1_000_000;
+          const boundary =
+            (presentation.video.start_microseconds + presentation.video.duration_microseconds) / 1_000_000;
+          // 播到边界后再次点播放：先回到本段起点再播，否则边界钳制会立刻把它按停。
+          if (video.currentTime >= boundary - 0.05) {
+            video.currentTime = start;
+          }
+          if (!stopAtPresentationBoundary(video)) synchronizeNarration(true);
         }}
         onPlaying={(event) => {
           if (!stopAtPresentationBoundary(event.currentTarget)) synchronizeNarration(true);

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from random import Random
@@ -26,6 +27,8 @@ from lib.custom_provider.comfyui.comfyui_backend import ComfyuiVideoBackend
 from lib.custom_provider.comfyui.comfyui_client import client_id_for, normalize_comfyui_base_url
 from lib.custom_provider.comfyui.comfyui_image_backend import ComfyuiImageBackend
 from lib.custom_provider.comfyui.request_builder import BuiltWorkflow, MediaInputs, build_workflow
+from lib.custom_provider.runninghub.backend import RunningHubImageBackend, RunningHubVideoBackend
+from lib.custom_provider.runninghub.node_info import build_node_info_list
 
 from .inputs import EndpointTestAssets, EndpointTestCredentials, EndpointTestParameters
 from .preview import (
@@ -40,6 +43,10 @@ from .trial_run import TrialRunTarget, provider_from_base_url
 
 #: 提交之后才有的值：预览恒保持占位符，与声明式那一侧的 ``{{ task_id }}`` 同形。
 UNRESOLVED_PROMPT_ID = "{{ prompt_id }}"
+
+#: RunningHub 预览里 workflowId / taskId 的占位符，与 prompt_id 同形。
+UNRESOLVED_WORKFLOW_ID = "{{ workflow_id }}"
+UNRESOLVED_TASK_ID = "{{ task_id }}"
 
 #: 测试连接发出的那一笔在 ComfyUI 上的名字前缀，接一段随机后缀。
 _TRIAL_RUN_LABEL_PREFIX = "endpoint-test-"
@@ -64,6 +71,8 @@ class ComfyuiConversions:
     width: int | None
     height: int | None
     frames: int | None
+    #: 直接写进 ``duration`` 绑定的秒数；``None`` 表示未绑定或请求没给时长。
+    duration: float | None
     seed: int | None
     #: 从正文里拆出、写进负向节点的排除项文本。
     negative_prompt: str
@@ -80,6 +89,7 @@ class ComfyuiConversions:
             width=built.width,
             height=built.height,
             frames=built.frames,
+            duration=built.duration,
             seed=built.seed,
             negative_prompt=built.negative_prompt,
             dropped_nodes=built.dropped_nodes,
@@ -94,6 +104,7 @@ class ComfyuiConversions:
             "width": self.width,
             "height": self.height,
             "frames": self.frames,
+            "duration": self.duration,
             "seed": self.seed,
             "negative_prompt": self.negative_prompt,
             "dropped_nodes": list(self.dropped_nodes),
@@ -120,7 +131,6 @@ def preview_comfyui_request(
     """
     api_key = masked_api_key(credentials.api_key) if credentials else UNRESOLVED_API_KEY
     base_url = normalize_comfyui_base_url(credentials.base_url) if credentials and credentials.base_url else ""
-    headers, query = render_auth(definition.get("auth") or {}, api_key=api_key)
     built = build_workflow(
         definition,
         prompt=parameters.prompt,
@@ -131,6 +141,15 @@ def preview_comfyui_request(
         media=_preview_media(definition, assets, placeholder_missing=placeholder_missing_assets),
         rng=rng,
     )
+    if credentials is not None and credentials.protocol == "runninghub":
+        return _preview_runninghub_request(
+            definition,
+            parameters,
+            built=built,
+            api_key=api_key,
+            base_url=base_url,
+        )
+    headers, query = render_auth(definition.get("auth") or {}, api_key=api_key)
     return RequestPreview(
         submit=PreviewedRequest(
             method="POST",
@@ -151,16 +170,53 @@ def preview_comfyui_request(
     )
 
 
+def _preview_runninghub_request(
+    definition: Mapping[str, Any],
+    parameters: EndpointTestParameters,
+    *,
+    built: BuiltWorkflow,
+    api_key: str,
+    base_url: str,
+) -> RequestPreview:
+    """预览 RunningHub 的 create / outputs 两段请求体。"""
+    workflow_id = str(definition.get("workflow_id") or "").strip() or UNRESOLVED_WORKFLOW_ID
+    body = {
+        "apiKey": api_key,
+        "workflowId": workflow_id,
+        "nodeInfoList": build_node_info_list(definition, built),
+        # 官方字段是 JSON 字符串；预览也按真发形状给，用户能看出它确实带上了整份 workflow。
+        "workflow": json.dumps(built.workflow, ensure_ascii=False, separators=(",", ":")),
+    }
+    headers = {"Authorization": "Bearer " + api_key}
+    return RequestPreview(
+        submit=PreviewedRequest(
+            method="POST",
+            url=_preview_url(base_url, "/task/openapi/create", {}),
+            headers=headers,
+            body=body,
+        ),
+        poll=PreviewedRequest(
+            method="POST",
+            url=_preview_url(base_url, "/task/openapi/outputs", {}),
+            headers=headers,
+            body={"apiKey": api_key, "taskId": UNRESOLVED_TASK_ID},
+        ),
+        result=None,
+        conversions=ComfyuiConversions.of(built, parameters).to_payload(),
+    )
+
+
 def comfyui_credential_needs(definition: Mapping[str, Any]) -> tuple[bool, bool]:
     """这份定义要不要 ``base_url`` / ``api_key``。
 
-    ``base_url`` 恒需要：ComfyUI 的路由全在服务地址根下，定义里一个绝对地址都不写。``api_key``
-    只在 ``auth`` 节真会发出凭据时需要——ComfyUI 原生无鉴权，凭据只有套在反向代理后面的部署才
-    有。「非空」按两张表里有没有条目算（:func:`declares_credentials`），不按 ``auth`` 这个对象
-    本身算：``{"headers": {}}`` 是合法定义、渲染出来一个头都没有，为它索要 api_key 会把一台不
-    设防的 ComfyUI 挡在预览与测试连接之外。
+    ``base_url`` 恒需要：workflow 的路由全在服务地址根下，定义里一个绝对地址都不写。``api_key``
+    在原生 ComfyUI 上只在 ``auth`` 节真会发出凭据时需要——ComfyUI 原生无鉴权，凭据只有套在反向
+    代理后面的部署才有。「非空」按两张表里有没有条目算（:func:`declares_credentials`），不按
+    ``auth`` 这个对象本身算：``{"headers": {}}`` 是合法定义、渲染出来一个头都没有，为它索要
+    api_key 会把一台不设防的 ComfyUI 挡在预览与测试连接之外。带 ``workflow_id`` 的定义是
+    RunningHub 端点，凭据必填。
     """
-    return True, declares_credentials(definition.get("auth") or {})
+    return True, declares_credentials(definition.get("auth") or {}) or bool(definition.get("workflow_id"))
 
 
 def comfyui_target(
@@ -183,11 +239,34 @@ def comfyui_target(
     """
     label = provider or provider_from_base_url(credentials.base_url)
     media_type = str(definition.get("media_type") or "video")
-    # 这一笔在 ComfyUI 队列界面上的名字（``client_id`` 是 ``arcreel-<job_label>``，上传的素材
-    # 也按它命名）。测试连接不走 worker，没有 task_id，backend 的回落值是一串随机 hex——用户
-    # 在自己手动跑的队列里认不出哪一笔是刚点的「测试连接」。后缀保留一段随机串：同一个端点可以
-    # 被连着测好几次，重名会让上传的素材互相覆盖。
+    # 这一笔在队列界面上的名字（``client_id`` 是 ``arcreel-<job_label>``，上传的素材也按它命名）。
+    # 测试连接不走 worker，没有 task_id，backend 的回落值是一串随机 hex——用户在自己手动跑的
+    # 队列里认不出哪一笔是刚点的「测试连接」。后缀保留一段随机串：同一个端点可以被连着测好几次，
+    # 重名会让上传的素材互相覆盖。
     job_label = f"{_TRIAL_RUN_LABEL_PREFIX}{token_hex(4)}"
+
+    if credentials.protocol == "runninghub":
+
+        async def build_runninghub() -> RunningHubVideoBackend | RunningHubImageBackend:
+            backend_class = RunningHubImageBackend if media_type == "image" else RunningHubVideoBackend
+            return backend_class(
+                provider_id=label,
+                model=parameters.model,
+                base_url=credentials.base_url,
+                api_key=credentials.api_key,
+                definition=definition,
+                job_label=job_label,
+            )
+
+        return TrialRunTarget(
+            provider=label,
+            model=parameters.model,
+            build_backend=build_runninghub,
+            definition=definition,
+            media_type=media_type,
+            # RunningHub 按次扣 RH 币：测试连接是一笔真实付费任务，必须先过能力闸。
+            gate_capabilities=True,
+        )
 
     async def build() -> ComfyuiVideoBackend | ComfyuiImageBackend:
         backend_class = ComfyuiImageBackend if media_type == "image" else ComfyuiVideoBackend

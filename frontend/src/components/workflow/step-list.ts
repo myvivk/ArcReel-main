@@ -44,7 +44,10 @@ export interface StepListContext {
 }
 interface Facts { plan: WorkflowPlan; content: WorkflowContent; steps: Map<string, WorkflowPlanStep>; }
 
-function ids(collection: WorkflowArtifactCollection | undefined, key: "current_ids" | "stale_ids" | "missing_ids") {
+function ids(
+  collection: WorkflowArtifactCollection | undefined,
+  key: "current_ids" | "stale_ids" | "missing_ids" | "model_stale_ids",
+) {
   const value = collection?.[key];
   return Array.isArray(value) ? value : [];
 }
@@ -297,6 +300,8 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
     ...status.artifacts.video_prompts, missing_ids: [...ids(status.artifacts.video_prompts, "missing_ids"), ...stale], stale_ids: [],
   }, ["video_prompt"]);
   if (stale.length) videoPrompts.notes.push({ key: "video-prompt-stale", tone: "warn", text: t("dashboard:video_prompt_stale_hint", { count: stale.length }) });
+  const modelStale = ids(status.artifacts.video_prompts, "model_stale_ids");
+  if (modelStale.length) videoPrompts.notes.push({ key: "video-prompt-model-stale", tone: "warn", text: t("dashboard:video_prompt_model_stale_hint", { count: modelStale.length }) });
   rows.push(videoPrompts);
   if (status.artifacts.audio && status.artifacts.audio.state !== "not_applicable") rows.push(row("voice", t("workflow:row_voice"), status.artifacts.audio, []));
   rows.push(row("videos", t("workflow:row_videos"), status.artifacts.videos, ["video"]), editRow(facts, ctx));

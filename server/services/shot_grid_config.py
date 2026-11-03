@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,6 +37,7 @@ from lib.script.grid.keyframe_parser import (
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
 from lib.script.grid.shot_prompt_builder import keyframe_cell_problem, shot_grid_cells
+from lib.script.shot_prompt_standard import dialogue_line_problem
 from lib.script.storyboard_sequence import get_storyboard_items
 
 logger = logging.getLogger(__name__)
@@ -67,11 +69,15 @@ _AUTHORED_USER_TEMPLATE = """【分镜画面】
 - 相邻格不要同景别、同机位、同姿态；每次换格都要有可见变化
 - 最后一格收在稳定状态（动作完成后的定姿），不要停在过程里
 - 资产直接写名字，不要写 @[] 之类的引用记号
+- 每个出场资产至少出现一次（用资产名点名）；漏掉任何一个都算不合格
 - 不得增删事件，所有格必须在同一时空里连续发生；明确的剪接点写成断点，不硬接成连续动作
 """
 
 #: 引用字段名 → 资产类型标签，喂给 AI 时只给名字与类型。
 _REFERENCE_TYPE_LABELS = {"product": "商品", "character": "角色", "scene": "场景", "prop": "道具"}
+
+#: 逐格景别只接受这五档；与用户提示里的词表一致，避免模型返回“大远景”等未要求档位。
+_AUTHORED_SHOT_SIZES = ("远景", "全景", "中景", "近景", "特写")
 
 
 class _AuthoredFrame(BaseModel):
@@ -212,10 +218,12 @@ def save_grid_draft(
     return manager.update_formal(grid.id, write_prompt) or grid
 
 
-def _shot_asset_lines(shot: dict[str, Any], char_field: str | None, scene_field: str, prop_field: str) -> str:
+def _shot_asset_entries(
+    shot: dict[str, Any], char_field: str | None, scene_field: str, prop_field: str
+) -> list[tuple[str, str]]:
     """这一分镜登记的资产名单（名字 + 类型），按字段序。"""
 
-    lines: list[str] = []
+    entries: list[tuple[str, str]] = []
     for field_name, asset_type in (
         ("products_in_shot", "product"),
         (char_field, "character"),
@@ -227,26 +235,66 @@ def _shot_asset_lines(shot: dict[str, Any], char_field: str | None, scene_field:
         names = shot.get(field_name)
         if not isinstance(names, list):
             continue
-        lines.extend(
-            f"- {name.strip()}（{_REFERENCE_TYPE_LABELS[asset_type]}）"
+        entries.extend(
+            (name.strip(), asset_type)
             for name in names
             if isinstance(name, str) and name.strip()
         )
+    return entries
+
+
+def _shot_asset_lines(entries: list[tuple[str, str]]) -> str:
+    """资产名 + 类型；外观由参考图承担，不把登记描述喂给逐格作者。"""
+
+    lines = [f"- {name}（{_REFERENCE_TYPE_LABELS[asset_type]}）" for name, asset_type in entries]
     return "\n".join(lines) if lines else "- （这一分镜没有登记资产）"
+
+
+def _asset_aliases(name: str) -> tuple[str, ...]:
+    """资产覆盖检查的别名：全名 + 以 ``・`` / ``/`` 分段后的长片段。
+
+    ``外景・萧家演武广场・日`` 允许模型写成「萧家演武广场」；``萧炎/少年`` 允许写「萧炎」。
+    单字片段（如「日」）不参与匹配，避免误判。
+    """
+
+    aliases = {name}
+    for part in re.split(r"[・/]", name):
+        part = part.strip()
+        if len(part) >= 2:
+            aliases.add(part)
+    return tuple(aliases)
+
+
+def _missing_asset_names(asset_names: list[str], text: str) -> list[str]:
+    """返回没有出现在文本里的资产名。"""
+
+    return [name for name in asset_names if not any(alias in text for alias in _asset_aliases(name))]
 
 
 #: 逐格提示词是单 shot 粒度：首次 + 最多两次带原因重试（rows/cols/输入固定）。
 _AUTHORED_GRID_ATTEMPTS = 3
 
 
-def _serialize_authored_frames(frames: list[_AuthoredFrame], count: int) -> str:
-    """模型必须提供恰好指定数量的完整关键帧，不截断、不补写。"""
+def _serialize_authored_frames(frames: list[_AuthoredFrame], count: int, asset_names: list[str]) -> str:
+    """模型必须提供恰好指定数量的完整关键帧，不截断、不补写；逐项校验后再格式化。"""
 
     if len(frames) != count or any(not frame.description.strip() for frame in frames):
         raise ValueError(f"模型需返回 {count} 个非空关键帧")
+    descriptions: list[str] = []
     for index, frame in enumerate(frames, start=1):
+        if frame.shot_size.strip() not in _AUTHORED_SHOT_SIZES:
+            raise ValueError(
+                f"第{index}格景别「{frame.shot_size.strip() or '空'}」不合法；"
+                f"只能是 {'/'.join(_AUTHORED_SHOT_SIZES)}"
+            )
         if problem := keyframe_cell_problem(frame.description):
             raise ValueError(f"第{index}格{problem}")
+        if problem := dialogue_line_problem(frame.description, label=f"第{index}格"):
+            raise ValueError(problem)
+        descriptions.append(frame.description)
+    missing = _missing_asset_names(asset_names, "\n".join(descriptions))
+    if missing:
+        raise ValueError(f"缺少资产：{'、'.join(missing)}；每个出场资产至少出现一次")
     return format_grid_prompt(
         [
             ShotFrame(number=index + 1, shot_size=frame.shot_size, text=frame.description)
@@ -299,9 +347,11 @@ async def author_grid_cells(
     generator = await TextGenerator.create(
         TextTaskType.SCRIPT, project_name, purpose=CallPurpose.SCRIPT_GENERATION, user_id=user_id
     )
+    asset_entries = _shot_asset_entries(shot, char_field, scene_field, prop_field)
+    asset_names = [name for name, _ in asset_entries]
     base_prompt = _AUTHORED_USER_TEMPLATE.format(
         scene=scene_text.strip(),
-        assets=_shot_asset_lines(shot, char_field, scene_field, prop_field),
+        assets=_shot_asset_lines(asset_entries),
         style=(project.get("style") or "").strip() or "（未设置）",
         count=count,
     )
@@ -327,7 +377,7 @@ async def author_grid_cells(
             raise BadGatewayError("shot_grid_author_failed") from exc
         try:
             authored = _AuthoredGridPrompt.model_validate_json(result.text)
-            return _serialize_authored_frames(authored.frames, count)
+            return _serialize_authored_frames(authored.frames, count, asset_names)
         except (ValidationError, ValueError) as exc:
             last_error = exc
             rejection = str(exc)

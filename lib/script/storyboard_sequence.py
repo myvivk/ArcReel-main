@@ -10,10 +10,69 @@ from pathlib import Path
 from typing import Any
 
 from lib.infra.path_safety import safe_join, try_safe_join
+from lib.project.asset_types import ASSET_SPECS
 from lib.project.resource_paths import END_FRAME_RESOURCE_TYPE, resource_relative_path
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.script_skeleton import SKELETONS
+
+_VIDEO_ASSET_FIELDS = (("character", "characters_in_scene"), ("scene", "scenes"), ("prop", "props"))
+
+
+def resolve_storyboard_video_asset_images(
+    *,
+    project_path: Path,
+    project: dict[str, Any],
+    item: dict[str, Any],
+) -> list[tuple[str, str, Path]]:
+    """解析参考生视频要随请求下发的资产图，按「角色 → 场景 → 道具」并保持清单顺序。
+
+    返回 ``(asset_type, 登记名, 路径)``。缺登记、缺资产图或文件不在的条目直接略过——它们
+    不进请求，也就不能被正文编号指认。数组顺序即编号顺序：资产图在前、K 帧在后。
+    """
+
+    resolved: list[tuple[str, str, Path]] = []
+    seen: set[str] = set()
+    for asset_type, field in _VIDEO_ASSET_FIELDS:
+        names = item.get(field)
+        if not isinstance(names, list):
+            continue
+        spec = ASSET_SPECS[asset_type]
+        bucket = project.get(spec.bucket_key)
+        if not isinstance(bucket, dict):
+            continue
+        for name in names:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            entry = bucket.get(name)
+            if not isinstance(entry, dict):
+                continue
+            relative = entry.get(spec.sheet_field)
+            if not isinstance(relative, str) or not relative.strip():
+                continue
+            path = try_safe_join(project_path, relative)
+            if path is None or not path.is_file() or str(path) in seen:
+                continue
+            seen.add(str(path))
+            resolved.append((asset_type, name.strip(), path))
+    return resolved
+
+
+def split_storyboard_video_asset_images(
+    asset_images: Sequence[tuple[str, str, Path]],
+    *,
+    max_reference_images: int | None,
+    frame_count: int,
+) -> tuple[list[tuple[str, str, Path]], list[tuple[str, str, Path]]]:
+    """按 ``max_reference_images`` 的剩余名额切分资产图，返回 ``(随请求下发, 被裁掉)``。
+
+    K 帧优先占用名额，资产图只拿剩下的；``max_reference_images`` 为 ``None`` / ``0`` 表示
+    后端不按数量裁剪，全部保留。切分与裁剪口径只有这一处，准入、执行、预览共用。
+    """
+
+    limit = max_reference_images or 0
+    room = max(0, limit - frame_count) if limit else len(asset_images)
+    return list(asset_images[:room]), list(asset_images[room:])
 
 
 @dataclass(frozen=True)

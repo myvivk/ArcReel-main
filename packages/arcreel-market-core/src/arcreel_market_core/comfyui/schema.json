@@ -35,6 +35,15 @@
       "description": "反向代理的凭据模板；ComfyUI 本体零鉴权，整节缺省或为空对象即不带凭证。",
       "$ref": "#/$defs/auth"
     },
+    "workflow_id": {
+      "description": "云端 workflow 服务（如 RunningHub）上的工作流 ID；原生自建 ComfyUI 留空。RunningHub 供应商的模型行要求它非空。",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "not": {
+        "pattern": "\\n"
+      }
+    },
     "workflow": {
       "$ref": "#/$defs/workflow"
     },
@@ -531,6 +540,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/framesTarget"
+          }
+        },
+        "duration": {
+          "description": "时长（秒）写入目标：直接写本次请求的 duration_seconds，不再经帧率换算。与 frames 二选一。",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/writeTarget"
           }
         },
         "fps": {

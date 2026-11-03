@@ -137,7 +137,7 @@ export interface EndpointDefinition {
 }
 
 /**
- * 节点绑定的语义键名录。视频端点用全部十一个，图像端点没有首尾帧与时间轴那四个。
+ * 节点绑定的语义键名录。视频端点用全部十二个，图像端点没有首尾帧与时间轴的五个。
  * 与服务端 `packages/arcreel-market-core/src/arcreel_market_core/comfyui/bindings.py` 同名同序。
  */
 export const COMFYUI_VIDEO_BINDING_KEYS = [
@@ -149,6 +149,7 @@ export const COMFYUI_VIDEO_BINDING_KEYS = [
   "width",
   "height",
   "frames",
+  "duration",
   "fps",
   "seed",
   "output",
@@ -183,7 +184,8 @@ export interface ComfyuiConsumerTarget {
 /**
  * 一条节点绑定的落点。各语义键的可选键由服务端 schema 约束：`output` 没有 `input`，
  * `fps` 的 `direction` 恒为 `read`，`width` / `height` / `frames` 带 `step`，
- * `frames` 可带手填 `fps`，`seed` 带 `policy`，`reference_images` 带 `consumer`。
+ * `frames` 可带手填 `fps`，`duration` 直接写秒数（无 step），`seed` 带 `policy`，
+ * `reference_images` 带 `consumer`。
  */
 export interface ComfyuiBindingTarget {
   node: string;
@@ -214,6 +216,8 @@ export interface ComfyuiEndpointDefinition {
   meta: EndpointMeta;
   media_type: ComfyuiMediaType;
   auth?: EndpointAuth;
+  /** RunningHub 等云端 workflow 服务的 workflowId；原生自建 ComfyUI 留空。 */
+  workflow_id?: string;
   workflow: Record<string, unknown>;
   bindings: ComfyuiBindings;
 }
@@ -282,6 +286,12 @@ export interface ComfyuiInferResponse {
   import_shape: EndpointImportShape;
   /** 原始 API workflow 的包装结果；载荷本就是定义时为 null。 */
   wrapped_definition: ComfyuiEndpointDefinition | null;
+}
+
+/** 按 RunningHub workflowId 拉取的结果：定义 + 同形的绑定推断。 */
+export interface PullRunningHubResponse {
+  definition: ComfyuiEndpointDefinition;
+  inference: ComfyuiInferResponse;
 }
 
 /** 导入、校验与保存这条路上流过的定义：两种 kind 都可能。 */
@@ -383,6 +393,8 @@ export interface EndpointTestCredentials {
   provider_id?: string;
   base_url?: string;
   api_key?: string;
+  /** 内联凭证走哪套 workflow transport；按 provider_id 读库时由供应商决定。 */
+  protocol?: "comfyui" | "runninghub";
 }
 
 /** 端点测试 multipart 素材；键与服务端表单字段同名。 */
@@ -411,6 +423,8 @@ export interface ComfyuiRequestConversions {
   width: number | null;
   height: number | null;
   frames: number | null;
+  /** 直接写进 duration 绑定的秒数；缺省或 null 表示没有绑定或请求没给时长。 */
+  duration?: number | null;
   seed: number | null;
   negative_prompt: string;
   /** 这次按参考图张数改图删掉的节点。 */

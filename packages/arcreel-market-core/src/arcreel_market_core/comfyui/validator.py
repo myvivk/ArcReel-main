@@ -116,6 +116,7 @@ def _semantic_issues(document: Mapping[str, Any]) -> Iterator[DefinitionIssue]:
     yield from _media_type_issues(bindings, media_type)
     yield from _target_issues(bindings, workflow, media_type)
     yield from _collision_issues(bindings, media_type)
+    yield from _duration_frames_conflict_issues(bindings, media_type)
     yield from _fps_issues(bindings, workflow, media_type)
     yield from _api_key_outside_auth_issues(document)
 
@@ -279,6 +280,22 @@ def _collision_issues(bindings: Mapping[str, Any], media_type: str) -> Iterator[
                 )
                 continue
             owners[landing] = key
+
+
+def _duration_frames_conflict_issues(
+    bindings: Mapping[str, Any], media_type: str
+) -> Iterator[DefinitionIssue]:
+    """时长与帧数只能选一个：两个语义键同时写会把同一维改两次。"""
+
+    if "duration" not in BINDING_KEYS_BY_MEDIA_TYPE[media_type]:
+        return
+    if not targets_of(bindings.get("frames")) or not targets_of(bindings.get("duration")):
+        return
+    yield DefinitionIssue(
+        join_path("bindings", "duration"),
+        DefinitionErrorCode.COMFYUI_DURATION_FRAMES_CONFLICT,
+        {"binding_key": "duration", "other_key": "frames"},
+    )
 
 
 def _fps_issues(bindings: Mapping[str, Any], workflow: Mapping[str, Any], media_type: str) -> Iterator[DefinitionIssue]:

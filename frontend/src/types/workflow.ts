@@ -121,6 +121,8 @@ export interface WorkflowArtifactCollection {
   missing_ids?: string[];
   /** 视频提示词专用：宫格还没确认、因此不进本批的分镜。 */
   awaiting_grid_ids?: string[];
+  /** 视频提示词专用：按另一个视频模型的口径写的，建议重写但不阻断生成。 */
+  model_stale_ids?: string[];
   path?: string;
   [key: string]: unknown;
 }

@@ -131,6 +131,16 @@ MESSAGES = {
     "task_fail_comfyui_output_missing": "ComfyUI đã chạy xong nhưng node thành phẩm {nodes} không tạo ra tệp nào; hãy kiểm tra liên kết node của nó và chuỗi tạo thành phẩm của workflow",
     "task_fail_comfyui_output_type_mismatch": "ComfyUI tạo ra {filename}, không phải loại tệp mà endpoint này cần xuất (cần {expected}); hãy trỏ liên kết node thành phẩm tới node xuất thành phẩm cuối cùng, hoặc đổi node lưu đó sang định dạng được hỗ trợ (với SaveVideo, hãy chọn h264-mp4)",
     "task_fail_comfyui_output_container_mismatch": "Nội dung của {filename} do ComfyUI tạo ra không phải container mà endpoint này cần xuất (cần {expected}); hãy đổi node lưu sang định dạng được hỗ trợ (với SaveVideo, hãy chọn h264-mp4)",
+    "task_fail_runninghub_auth_failed": "RunningHub từ chối yêu cầu này: APIKEY không hợp lệ, đã hết hạn hoặc không có quyền; hãy cấu hình lại trong Nhà cung cấp",
+    "task_fail_runninghub_workflow_not_found": "RunningHub không tìm thấy workflow, hoặc APIKEY hiện tại không có quyền truy cập; hãy kiểm tra workflow ID trên endpoint: {detail}",
+    "task_fail_runninghub_insufficient_coins": "RunningHub không đủ số dư, tác vụ chưa được gửi: {detail}",
+    "task_fail_runninghub_task_failed": "RunningHub thực thi thất bại: {detail}",
+    "task_fail_runninghub_upload_failed": "Tải tư liệu lên RunningHub thất bại: {detail}",
+    "task_fail_runninghub_job_lost": "RunningHub không còn biết đến lần chạy này ({task_id}); hãy thử lại",
+    "task_fail_runninghub_output_missing": "RunningHub đã chạy xong nhưng không tạo ra tệp {media_type}; hãy kiểm tra node thành phẩm và liên kết node",
+    "task_fail_runninghub_output_type_mismatch": "RunningHub tạo ra {filename}, không phải loại tệp mà endpoint này cần xuất (cần {expected}); hãy kiểm tra liên kết node thành phẩm",
+    "task_fail_runninghub_output_container_mismatch": "Nội dung của {filename} do RunningHub tạo ra không phải container mà endpoint này cần xuất (cần {expected}); hãy đổi node lưu sang định dạng được hỗ trợ",
+    "task_fail_runninghub_node_errors": "RunningHub từ chối workflow này; có {nodes} node báo lỗi, đầu tiên: {summary}",
     "task_fail_artifact_download_failed": "Đã tạo video nhưng tải tệp xuống thất bại; hãy thử tải lại: {detail}",
     "task_fail_cascade_blocked_dependency": "Bị chặn do tác vụ phụ thuộc {dependency_task_id} thất bại: {reason}",
     "prompt_must_be_string_or_scene_object": "prompt phải là chuỗi hoặc đối tượng chứa scene/composition",
@@ -420,8 +430,14 @@ MESSAGES = {
     "connectivity_check_unsupported_format": "Không hỗ trợ kiểm tra kết nối với {discovery_format}",
     "connectivity_check_comfyui_ok": "ComfyUI có thể truy cập, phiên bản {version}",
     "connectivity_check_comfyui_ok_unknown_version": "ComfyUI có thể truy cập; không trả về số phiên bản",
+    "connectivity_check_runninghub_ok": "RunningHub có thể truy cập: {coins} xu RH, {running} tác vụ đang chạy",
+    "connectivity_check_runninghub_auth_failed": "APIKEY không hợp lệ hoặc đã hết hạn; hãy kiểm tra trong bảng điều khiển RunningHub",
     "discovery_not_applicable_comfyui": (
         "Giao thức ComfyUI không có danh sách mô hình để phát hiện: gọi được gì là do chính workflow quyết định. "
+        "Hãy nhập một endpoint ComfyUI và gắn nó vào một dòng mô hình"
+    ),
+    "discovery_not_applicable_runninghub": (
+        "Giao thức RunningHub không có danh sách mô hình để phát hiện: gọi được gì là do chính workflow quyết định. "
         "Hãy nhập một endpoint ComfyUI và gắn nó vào một dòng mô hình"
     ),
     "custom_endpoint_kind_conflicts_with_attachment": (
@@ -437,6 +453,20 @@ MESSAGES = {
     ),
     "comfyui_provider_requires_comfyui_endpoint": (
         "Nhà cung cấp giao thức ComfyUI chỉ nhận endpoint ComfyUI; {endpoint} của mô hình {model_id} thì không"
+    ),
+    "runninghub_provider_requires_workflow_endpoint": (
+        "Nhà cung cấp RunningHub chỉ nhận endpoint workflow; {endpoint} của mô hình {model_id} thì không"
+    ),
+    "runninghub_provider_required": "Thao tác này cần nhà cung cấp RunningHub",
+    "runninghub_workflow_id_required": (
+        "Endpoint trên nhà cung cấp RunningHub phải có workflow ID: {endpoint} của mô hình {model_id} chưa có"
+    ),
+    "runninghub_workflow_id_required_for_pull": "Hãy nhập workflow ID RunningHub",
+    "runninghub_workflow_id_required_for_attachment": (
+        "Endpoint này đang được mô hình {model} (nhà cung cấp {provider}) trên RunningHub sử dụng; không thể xóa workflow ID"
+    ),
+    "capability_overrides_not_supported_for_workflow": (
+        "Mô hình {model_id} dùng endpoint workflow, năng lực chỉ suy ra từ liên kết node; không hỗ trợ ghi đè năng lực"
     ),
     "capability_overrides_not_supported_for_comfyui": (
         "Mô hình {model_id} dùng endpoint ComfyUI, năng lực chỉ suy ra từ liên kết node; không hỗ trợ ghi đè năng lực"
@@ -511,7 +541,9 @@ MESSAGES = {
     "ref_duration_exceeded": "Kịch bản dài {total}s, vượt mức thời lượng lớn nhất của {model}; đã tạo ở {duration}s nên video ngắn hơn kịch bản",
     "ref_duration_rounded_up": "Kịch bản dài {total}s, không thuộc các mức thời lượng của {model}; đã tạo ở {duration}s nên video dài hơn kịch bản",
     "comfyui_multiple_outputs": "Lần chạy này ComfyUI tạo ra {count} tệp; đã giữ {filename}",
+    "runninghub_multiple_outputs": "Lần chạy này RunningHub tạo ra {count} tệp; đã giữ {filename}",
     "ref_too_many_images": "Số lượng ảnh tham chiếu {count} vượt giới hạn {max_count} của {model}, đã giữ {max_count} ảnh đầu tiên",
+    "storyboard_video_assets_trimmed": "Giới hạn ảnh tham chiếu là {limit} (trong đó {frame_count} là khung hình then chốt); {count} ảnh tài sản không được gửi kèm: {names}. Chúng sẽ không được đánh số trong prompt",
     "ref_payload_too_large": "Dữ liệu ảnh tham chiếu vượt giới hạn của nhà cung cấp, đã thử lại với mức nén bổ sung",
     "ref_payload_floor_exceeded": "Ảnh tham chiếu quá lớn hoặc quá nhiều; ngay cả khi nén ở mức chất lượng thấp nhất vẫn vượt giới hạn kích thước yêu cầu của nhà cung cấp. Vui lòng giảm số lượng ảnh tham chiếu hoặc độ phân giải rồi thử lại",
     "ref_sora_single_ref": "Chế độ tham chiếu Sora hiện không hỗ trợ nhiều ảnh, đã hạ về một ảnh",

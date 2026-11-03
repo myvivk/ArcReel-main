@@ -28,6 +28,7 @@ from uuid import uuid4
 import httpx
 
 from arcreel_market_core.video_backend_contract import (
+    ReferenceAudioMode,
     ResumeExpiredError,
     VideoAudioMode,
     VideoCapabilities,
@@ -39,7 +40,12 @@ from lib.backends.backend_runtime import ProviderJobIdPersistenceMixin, notify_p
 from lib.custom_provider.comfyui.capabilities import derive_video_capabilities
 from lib.custom_provider.comfyui.comfyui_client import ComfyuiClient, client_id_for, upload_filename
 from lib.custom_provider.comfyui.comfyui_execution import HTTP_TIMEOUT_SECONDS, ComfyuiExecution, PickedArtifact
-from lib.custom_provider.comfyui.request_builder import BuiltWorkflow, MediaInputs, build_workflow
+from lib.custom_provider.comfyui.request_builder import (
+    BuiltWorkflow,
+    MediaInputs,
+    build_workflow,
+    reference_audio_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +225,20 @@ class ComfyuiVideoBackend(ProviderJobIdPersistenceMixin):
                     http, path, filename=upload_filename(job_label, "reference_images", path, index)
                 )
             )
-        return MediaInputs(start_image=start, end_image=end, reference_images=tuple(references))
+        audio_slots = len(reference_audio_targets(self._definition.get("workflow") or {}))
+        audios: list[str] = []
+        for index, path in enumerate((request.reference_audio_files or [])[:audio_slots]):
+            audios.append(
+                await self._client.upload_image(
+                    http, path, filename=upload_filename(job_label, "reference_audios", path, index)
+                )
+            )
+        return MediaInputs(
+            start_image=start,
+            end_image=end,
+            reference_images=tuple(references),
+            reference_audios=tuple(audios),
+        )
 
     async def _upload_one(
         self,
@@ -247,13 +266,18 @@ def binding_video_capabilities(definition: Mapping[str, Any]) -> VideoCapabiliti
     （``endpoints.comfyui_endpoint_spec``）与 backend 自己的声明共用这一份，两处不各写一份——
     它们各自喂给能力闸门的不同一段，说的却必须是同一件事。
 
-    参考音频三项与 ``max_prompt_chars`` 保持默认：绑定表里没有对应的语义键。
+    参考音频按 workflow 里接到 ``ref_audios.ref_audio_N`` 的 LoadAudio 槽位判定：这类
+    autogrow 音频入口没有独立的绑定语义键，但确实是模型的音色输入通道。``max_prompt_chars``
+    保持默认。
     """
     bound = derive_video_capabilities(definition)
+    audio_slots = len(reference_audio_targets(definition.get("workflow") or {}))
     return VideoCapabilities(
         text_to_video=bound.text_to_video,
         first_frame=bound.first_frame,
         last_frame=bound.last_frame,
         max_reference_images=bound.max_reference_images,
+        reference_audio_mode=ReferenceAudioMode.DIRECT if audio_slots else ReferenceAudioMode.NONE,
+        max_reference_audio_count=audio_slots,
         audio_track=VideoAudioMode(bound.audio_track),
     )

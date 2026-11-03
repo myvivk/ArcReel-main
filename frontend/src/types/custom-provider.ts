@@ -8,8 +8,8 @@ export type MediaType = "text" | "image" | "video" | "audio";
 export type ImageCap = "text_to_image" | "image_to_image";
 
 /** 模型发现协议：决定「模型发现」与「连通性检查」按哪套接口进行，不决定模型的调用协议。
- *  comfyui 取值下模型发现不适用，只做连通性检查。 */
-export type DiscoveryFormat = "openai" | "google" | "comfyui";
+ *  comfyui / runninghub 取值下模型发现不适用，只做连通性检查；两者都是 workflow transport。 */
+export type DiscoveryFormat = "openai" | "google" | "comfyui" | "runninghub";
 
 export interface EndpointDescriptor {
   key: string;
@@ -17,6 +17,8 @@ export interface EndpointDescriptor {
   family: string;
   /** 实现形态：python = backend 代码，declarative = 声明式定义，comfyui = 一份 ComfyUI workflow。 */
   kind: "python" | "declarative" | "comfyui";
+  /** 端点定义里声明的 workflowId；RunningHub 供应商要求它非空。 */
+  workflow_id?: string | null;
   /** 归属：builtin = 随版发布、只读，custom = 用户自建，可编辑删除。 */
   source: "builtin" | "custom";
   display_name_key: string;

@@ -149,6 +149,18 @@ FAILURE_CODE_KEYS: dict[str, str] = {
     "comfyui_output_missing": "task_fail_comfyui_output_missing",
     "comfyui_output_type_mismatch": "task_fail_comfyui_output_type_mismatch",
     "comfyui_output_container_mismatch": "task_fail_comfyui_output_container_mismatch",
+    # RunningHub 使用同一套 workflow 语义，但用户看到的供应商名不同；失败码与文案单独一套，
+    # 避免把「ComfyUI 重启了」这类话说给只有 RunningHub 账号的用户。
+    "runninghub_auth_failed": "task_fail_runninghub_auth_failed",
+    "runninghub_workflow_not_found": "task_fail_runninghub_workflow_not_found",
+    "runninghub_insufficient_coins": "task_fail_runninghub_insufficient_coins",
+    "runninghub_task_failed": "task_fail_runninghub_task_failed",
+    "runninghub_upload_failed": "task_fail_runninghub_upload_failed",
+    "runninghub_job_lost": "task_fail_runninghub_job_lost",
+    "runninghub_output_missing": "task_fail_runninghub_output_missing",
+    "runninghub_output_type_mismatch": "task_fail_runninghub_output_type_mismatch",
+    "runninghub_output_container_mismatch": "task_fail_runninghub_output_container_mismatch",
+    "runninghub_node_errors": "task_fail_runninghub_node_errors",
     "artifact_download_failed": "task_fail_artifact_download_failed",
     "restart_lost_checkpoint_no_job_id": "task_fail_restart_lost_checkpoint_no_job_id",
     "execution_identity_unrecoverable": "task_fail_execution_identity_unrecoverable",
@@ -347,7 +359,14 @@ def bound_reason(reason: str, limit: int) -> str:
 
 
 #: 文案里带一段「该端点应产出的扩展名」的两条失败码；清单在渲染时按落库的 media_type 现算。
-_COMFYUI_ARTIFACT_MISMATCH_CODES = frozenset({"comfyui_output_type_mismatch", "comfyui_output_container_mismatch"})
+_ARTIFACT_MISMATCH_CODES = frozenset(
+    {
+        "comfyui_output_type_mismatch",
+        "comfyui_output_container_mismatch",
+        "runninghub_output_type_mismatch",
+        "runninghub_output_container_mismatch",
+    }
+)
 
 
 def render_failure(error_message: str | None, translate: Callable[..., str], names: DisplayNames) -> str | None:
@@ -384,7 +403,7 @@ def render_failure(error_message: str | None, translate: Callable[..., str], nam
         detail = params.get("detail")
         if _is_validation_message(detail):
             params = {**params, "detail": render_message(detail["key"], detail["params"], translate, names)}
-    if code in _COMFYUI_ARTIFACT_MISMATCH_CODES:
+    if code in _ARTIFACT_MISMATCH_CODES:
         media_type = params.get("media_type")
         params = {**params, "expected": expected_suffixes_text(media_type if isinstance(media_type, str) else "")}
     return render_generation_input_error(FAILURE_CODE_KEYS[code], params, translate, names)

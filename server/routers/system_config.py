@@ -177,9 +177,16 @@ class _ModelCandidate:
 
 
 async def _enumerate_candidates(
-    svc: ConfigService, session: AsyncSession, locale: str = DEFAULT_LOCALE
+    svc: ConfigService,
+    session: AsyncSession,
+    locale: str = DEFAULT_LOCALE,
+    *,
+    include_unconfigured: bool = False,
 ) -> tuple[list[_ModelCandidate], dict[str, str]]:
-    """列出所有可选模型（内置 ready 供应商 + 已启用的自定义模型），并附任务类型桶归属。
+    """列出所有可选模型（内置供应商 + 已启用的自定义模型），并附任务类型桶归属。
+
+    默认只列已配置（ready）供应商；``include_unconfigured=True`` 时把未配置的内置供应商
+    也列出来——调用方（如提示词步骤的目标模型下拉）要在配置密钥之前就按目标模型写提示词。
 
     hidden 模型在这里统一剔除：registry 声明 hidden 的语义就是「从 UI 下拉剔除、条目仍保留
     供算价」，默认层与任务类型桶层同受此约束（能力过滤只加在桶层）。
@@ -194,7 +201,7 @@ async def _enumerate_candidates(
     provider_names: dict[str, str] = {}
 
     for provider_id, meta in PROVIDER_REGISTRY.items():
-        if provider_id not in ready_providers:
+        if not include_unconfigured and provider_id not in ready_providers:
             continue
         provider_names[provider_id] = translate_or(f"provider_name_{provider_id}", meta.display_name, locale)
         for model_id, model_info in meta.models.items():
@@ -421,13 +428,17 @@ async def get_model_candidates(
     svc: Annotated[ConfigService, Depends(get_config_service)],
     locale: Locale,
     session: AsyncSession = Depends(get_async_session),
+    include_unconfigured: bool = False,
 ) -> ModelCandidatesResponse:
     """任务类型桶下拉的候选数据源：默认层全量 + 每个任务类型桶按能力过滤后的模型列表。
 
     默认层不过滤 —— 默认层不承诺能力，能力不满足由解析闸报错兜底；只有桶层承诺「配进去的
-    组合执行得了」，故按桶过滤。
+    组合执行得了」，故按桶过滤。``include_unconfigured=true`` 额外列出未配置的内置供应商，
+    供提示词步骤在配置密钥之前就能按目标模型规范写作。
     """
-    candidates, provider_names = await _enumerate_candidates(svc, session, locale)
+    candidates, provider_names = await _enumerate_candidates(
+        svc, session, locale, include_unconfigured=include_unconfigured
+    )
 
     media: dict[str, MediaCandidates] = {}
     for media_type, buckets in BUCKETS_BY_MEDIA_TYPE.items():

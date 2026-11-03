@@ -23,7 +23,7 @@ import { FieldHint, FieldRow } from "./CustomProviderFieldRow";
 import {
   capabilityFieldsFor,
   globalBucketRefsFor,
-  isComfyuiProtocol,
+  isWorkflowProtocol,
   priceLabel,
   withLastFrameOverride,
 } from "./customProviderHelpers";
@@ -505,7 +505,7 @@ function ModelFields({ row, protocol, providerId, onUpdate, onRemove }: ModelFie
 
       {/* 能力覆盖（仅 video endpoint；首批只开放 last_frame）。ComfyUI 端点的能力只从节点绑定推导，
           服务端对该协议的覆盖写入一律 422，故不给入口。 */}
-      {media === "video" && !isComfyuiProtocol(protocol) && (
+      {media === "video" && !isWorkflowProtocol(protocol) && (
         <FieldRow label={t("cap_override_last_frame_label")}>
           <CapabilityOverrideRow
             override={row.capability_overrides?.last_frame}

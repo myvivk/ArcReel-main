@@ -73,7 +73,7 @@ export function VideoGenerationDialog({
   const { t } = useTranslation("dashboard");
   const project = useProjectsStore((state) => state.currentProjectData);
   const projectRecord = useMemo(() => (project ?? {}) as Record<string, unknown>, [project]);
-  const initialModel = typeof projectRecord.video_provider_i2v === "string" ? projectRecord.video_provider_i2v : "";
+  const initialModel = typeof projectRecord.video_provider_r2v === "string" ? projectRecord.video_provider_r2v : "";
   const initialSettings = (projectRecord.model_settings ?? {}) as Record<string, { resolution?: string | null }>;
   const initialResolution = initialSettings[initialModel]?.resolution ?? "";
   const initialAudio = projectRecord.video_generate_audio === true ? true : projectRecord.video_generate_audio === false ? false : null;
@@ -84,21 +84,51 @@ export function VideoGenerationDialog({
   const [ambiance, setAmbiance] = useState(() => readAmbiance(scene.video_prompt));
   const [utterances, setUtterances] = useState<Utterance[]>(() => scene.utterances ?? []);
   const [seed, setSeed] = useState("");
-  const [frameMode, setFrameMode] = useState<"first_last" | "reference">("first_last");
   const [model, setModel] = useState(initialModel);
   const [resolution, setResolution] = useState(initialResolution);
+  // 只走参考生视频：K 帧全部按参考图下发，帧模式不再暴露给用户。
+  const frameMode = "reference" as const;
   const [audio, setAudio] = useState<boolean | null>(initialAudio);
   const [binding, setBinding] = useState(initialBinding);
   const [voiceStyles, setVoiceStyles] = useState<Record<string, string>>({});
   const [bgmName, setBgmName] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  // 候选视频模型：弹窗里能选的不只是「跟随全局」，用户知道这次要用哪个模型，
+  // 提示词格式随模型走，选择权必须在用户手上。
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([]);
+  const [globalDefault, setGlobalDefault] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    void API.previewScriptItemPrompts(projectName, segmentId, scriptFile)
+    void Promise.all([API.getModelCandidates(), API.getSystemConfig()])
+      .then(([candidates, config]) => {
+        if (!alive) return;
+        const pool = candidates.video.buckets.r2v ?? candidates.video.default;
+        setModelOptions(
+          pool.map((value) => ({ value, label: candidates.model_names[value] ?? value })),
+        );
+        setGlobalDefault(
+          config.settings.default_video_backend_r2v || config.settings.default_video_backend || "",
+        );
+      })
+      .catch(() => {
+        // 候选取不到不影响生成：保留当前值，模型仍按项目已保存的配置走。
+        if (alive) setModelOptions([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    void API.previewScriptItemPrompts(projectName, segmentId, scriptFile, {
+      videoBackend: model || undefined,
+    })
       .then((result) => {
         if (!alive) return;
         setPreview(result.video.text ?? result.video.unavailable ?? null);
@@ -109,17 +139,17 @@ export function VideoGenerationDialog({
     return () => {
       alive = false;
     };
-  }, [open, projectName, segmentId, scriptFile]);
+  }, [open, projectName, segmentId, scriptFile, model]);
 
   const summary = useMemo(() => {
     const aspect = typeof projectRecord.aspect_ratio === "string" ? projectRecord.aspect_ratio : "16:9";
     return {
       aspect,
-      modelLabel: model || "跟随全局",
+      modelLabel: model || (globalDefault ? `跟随全局（${globalDefault}）` : "跟随全局"),
       resolutionLabel: !model ? "选模型后设置" : resolution || "模型默认",
       audioLabel: audio === false ? "无声" : audio === true ? "有声" : "跟随全局",
     };
-  }, [projectRecord, model, resolution, audio]);
+  }, [projectRecord, model, resolution, audio, globalDefault]);
 
   const characterRecords = useMemo(() => {
     const bucket = (project?.characters ?? {}) as Record<string, { voice_style?: string; reference_audio?: string }>;
@@ -173,7 +203,7 @@ export function VideoGenerationDialog({
     setError(null);
     try {
       const projectUpdates: Record<string, unknown> = {};
-      if (model !== initialModel) projectUpdates.video_provider_i2v = model || null;
+      if (model !== initialModel) projectUpdates.video_provider_r2v = model || null;
       if (model && (resolution !== initialResolution || model !== initialModel)) {
         projectUpdates.model_settings = {
           ...initialSettings,
@@ -265,11 +295,23 @@ export function VideoGenerationDialog({
               <div className="grid grid-cols-2 gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label>视频模型</Label>
-                  <Input
+                  <select
+                    className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                     value={model}
                     onChange={(event) => setModel(event.target.value)}
-                    placeholder="provider/model，留空跟随全局"
-                  />
+                  >
+                    <option value="">
+                      跟随全局{globalDefault ? `（${globalDefault}）` : ""}
+                    </option>
+                    {modelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                    {model && !modelOptions.some((option) => option.value === model) ? (
+                      <option value={model}>{model}</option>
+                    ) : null}
+                  </select>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>分辨率</Label>
@@ -368,32 +410,12 @@ export function VideoGenerationDialog({
 
             <section className="flex flex-col gap-2">
               <Label>帧模式</Label>
-              <div className="flex flex-col gap-2 text-sm">
-                <label className="flex items-start gap-2">
-                  <input
-                    type="radio"
-                    name="frame-mode"
-                    checked={frameMode === "first_last"}
-                    onChange={() => setFrameMode("first_last")}
-                  />
-                  <span>
-                    首尾帧模式
-                    <span className="block text-xs text-muted-foreground">K0 首帧 + K3 尾帧；K1/K2 不送，保起止承接</span>
-                  </span>
-                </label>
-                <label className="flex items-start gap-2">
-                  <input
-                    type="radio"
-                    name="frame-mode"
-                    checked={frameMode === "reference"}
-                    onChange={() => setFrameMode("reference")}
-                  />
-                  <span>
-                    参考图模式
-                    <span className="block text-xs text-muted-foreground">K0–K3 全部按参考图按序送；不发首/尾帧，保角色一致性</span>
-                  </span>
-                </label>
-              </div>
+              <p className="text-sm">
+                参考图模式
+                <span className="block text-xs text-muted-foreground">
+                  K0–K3 全部按参考图按序送；不发首/尾帧，保角色一致性
+                </span>
+              </p>
             </section>
 
             <section className="grid grid-cols-2 gap-3">
@@ -414,7 +436,9 @@ export function VideoGenerationDialog({
             </section>
 
             <details className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm">查看当前已保存的视频提示词</summary>
+              <summary className="cursor-pointer text-sm">
+                查看将按所选模型发送的提示词（已保存内容；改完点「保存并生成」后按新内容重算）
+              </summary>
               <pre className="relative mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
                 {preview ?? "暂无预览"}
               </pre>

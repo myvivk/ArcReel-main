@@ -34,7 +34,12 @@ from lib.custom_provider.capabilities import (
     strip_incoherent_audio_overrides,
     system_video_capabilities,
 )
-from lib.custom_provider.discovery_formats import endpoint_attachment_holds, is_comfyui_protocol
+from lib.custom_provider.discovery_formats import (
+    endpoint_attachment_holds,
+    is_comfyui_protocol,
+    is_runninghub_protocol,
+    is_workflow_protocol,
+)
 from lib.custom_provider.endpoint_resolution import endpoint_spec_from_row, resolve_endpoint_spec
 from lib.custom_provider.endpoints import (
     ENDPOINT_REGISTRY,
@@ -61,7 +66,7 @@ def _validate_endpoint(value: str) -> str:
 # 写入路径上的 endpoint 字段统一走运行时校验，键集合自动跟随 ENDPOINT_REGISTRY；
 # 响应路径不需校验，直接 str。
 EndpointType = Annotated[str, AfterValidator(_validate_endpoint)]
-DiscoveryFormatLiteral = Literal["openai", "google", "comfyui"]
+DiscoveryFormatLiteral = Literal["openai", "google", "comfyui", "runninghub"]
 
 # 并发上限定型字段：可空正整数（≥1）；None = 未设置 → 容量装载回退全局默认。
 MaxWorkers = Annotated[int | None, Field(default=None, ge=1)]
@@ -297,6 +302,10 @@ class ConnectivityCheckResponse(BaseModel):
     success: bool
     message: str
     model_count: int = 0
+    # RunningHub 的账户探针回显；其余协议留空。前端只读结构化字段，不从 message 里抠数字。
+    remain_coins: str | None = None
+    running_tasks: str | None = None
+    api_type: str | None = None
 
 
 class DiscoverResponse(BaseModel):
@@ -330,6 +339,8 @@ class EndpointDescriptor(BaseModel):
     # 声明式端点的显示名（定义里的 meta.name，专有名词不翻译）；Python 内置为 None，
     # 由前端按 display_name_key 取 i18n 文案。两者恰有其一，前端取名时先看本字段。
     display_name: str | None = None
+    # RunningHub 等云端 workflow 服务的 workflowId；原生 ComfyUI 端点为 None。
+    workflow_id: str | None = None
     request_method: str
     request_path_template: str
     image_capabilities: list[str] | None = None  # image 类填能力字符串列表，其他为 None
@@ -671,36 +682,54 @@ def _check_protocol_constraints(
     specs: Mapping[str, EndpointSpec],
     _t: Callable[..., str],
 ) -> None:
-    """ComfyUI 协议特有的两条写入约束：端点挂接双向配对，能力覆盖关闭。
+    """workflow 协议特有的写入约束：端点挂接双向配对、能力覆盖关闭、RunningHub 必须带 workflowId。
 
-    挂接配对是双向的（``docs/adr/0081``）：ComfyUI 端点的运行时只对 ComfyUI 服务有意义，声明式
-    端点对 ComfyUI 服务同样无意义。错挂在保存期毫无征兆，要等发起生成才在传输层露出来，故两个
-    方向都在写入侧拒。判定本身在 :func:`endpoint_attachment_holds`，此处只负责挑出违规的那个方向。
+    挂接配对是双向的（``docs/adr/0081``）：workflow 端点只挂 workflow 协议供应商（原生 ComfyUI 或
+    RunningHub），声明式端点对 workflow 服务同样无意义。错挂在保存期毫无征兆，要等发起生成才在
+    传输层露出来，故两个方向都在写入侧拒。判定本身在 :func:`endpoint_attachment_holds`。
 
-    本判定须排在 :func:`_check_model_capability_overrides` 之前：ComfyUI 端点的能力位全空，
+    本判定须排在 :func:`_check_model_capability_overrides` 之前：workflow 端点的能力位全空，
     它的覆盖同样过不了通用校验，先判协议才给得出「该协议不支持覆盖」这条专用文案，而不是
     「endpoint 不支持尾帧」。
 
-    能力覆盖对该协议关闭：ComfyUI 端点的能力由节点绑定推导，覆盖值在执行层没有对应物。回显侧
-    的对应处置是忽略存量值（见 :func:`lib.custom_provider.capabilities.filter_valid_overrides`）。
-
-    只对 comfyui 协议生效，其余协议的自由挂接与覆盖编辑一概不变。
+    RunningHub 的 workflowId 存在端点定义上，而端点与供应商分两次保存；供应商保存是唯一能同时
+    看到「这条模型行 + 它的端点定义」的时刻，故在这里要求非空，而不是等生成时才失败。
     """
-    comfyui_provider = is_comfyui_protocol(discovery_format)
+    workflow_provider = is_workflow_protocol(discovery_format)
+    runninghub_provider = is_runninghub_protocol(discovery_format)
     for m in models:
         spec = specs[m.endpoint]
         if not endpoint_attachment_holds(endpoint_kind=spec.kind, discovery_format=discovery_format):
             key = (
-                "comfyui_provider_requires_comfyui_endpoint"
-                if comfyui_provider
+                "runninghub_provider_requires_workflow_endpoint"
+                if runninghub_provider
+                else "comfyui_provider_requires_comfyui_endpoint"
+                if workflow_provider
                 else "comfyui_endpoint_requires_comfyui_provider"
             )
             raise HTTPException(status_code=422, detail=_t(key, model_id=m.model_id, endpoint=m.endpoint))
-        if comfyui_provider and m.capability_overrides:
+        if workflow_provider and m.capability_overrides:
             raise HTTPException(
                 status_code=422,
-                detail=_t("capability_overrides_not_supported_for_comfyui", model_id=m.model_id),
+                detail=_t("capability_overrides_not_supported_for_workflow", model_id=m.model_id),
             )
+        if runninghub_provider:
+            definition = spec.definition or {}
+            if not str(definition.get("workflow_id") or "").strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=_t("runninghub_workflow_id_required", model_id=m.model_id, endpoint=m.endpoint),
+                )
+
+
+def _check_runninghub_credentials(
+    discovery_format: str,
+    api_key: str | None,
+    _t: Callable[..., str],
+) -> None:
+    """RunningHub 必须有 APIKEY；空密钥会让每条出站请求都 401，保存期就拒掉。"""
+    if is_runninghub_protocol(discovery_format) and not str(api_key or "").strip():
+        raise HTTPException(status_code=422, detail=_t("missing_credentials"))
 
 
 async def _resolve_model_endpoint_specs(
@@ -843,6 +872,7 @@ async def create_provider(
 ):
     """创建自定义供应商，可同时创建模型列表。"""
     specs: dict[str, EndpointSpec] = {}
+    _check_runninghub_credentials(body.discovery_format, body.api_key, _t)
     if body.models:
         _check_duplicate_model_ids(body.models, _t)
         specs = await _resolve_model_endpoint_specs(session, body.models, _t)
@@ -949,6 +979,11 @@ async def full_update_provider(
     provider = await repo.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail=_t("provider_not_found"))
+    _check_runninghub_credentials(
+        provider.discovery_format,
+        body.api_key if body.api_key is not None else provider.api_key,
+        _t,
+    )
     _check_protocol_constraints(body.models, provider.discovery_format, specs, _t)
     _check_model_capability_overrides(body.models, _t, specs)
     kwargs: dict = {
@@ -1114,9 +1149,16 @@ async def _run_discover(
     from lib.config.url_utils import InvalidAnthropicBaseUrlError
     from lib.custom_provider.discovery import UnsupportedDiscoveryFormatError, discover_models
 
-    if is_comfyui_protocol(discovery_format):
+    if is_workflow_protocol(discovery_format):
         # 结构化的「不适用」而非 422：这不是一次失败的发现，是该协议本就没有这一步。
-        return DiscoverResponse(not_applicable=True, reason=_t("discovery_not_applicable_comfyui"))
+        return DiscoverResponse(
+            not_applicable=True,
+            reason=_t(
+                "discovery_not_applicable_runninghub"
+                if is_runninghub_protocol(discovery_format)
+                else "discovery_not_applicable_comfyui"
+            ),
+        )
     try:
         discover = discover_models_fn or discover_models
         models = await discover(
@@ -1163,6 +1205,11 @@ async def _run_connectivity_check(
             # 不进 to_thread：ComfyUI 探针走 httpx 直调，本就是协程，另外两条是同步 SDK 调用。
             result = await asyncio.wait_for(
                 _check_comfyui(base_url, api_key, _t),
+                timeout=_CONNECTIVITY_CHECK_TIMEOUT,
+            )
+        elif is_runninghub_protocol(discovery_format):
+            result = await asyncio.wait_for(
+                _check_runninghub(base_url, api_key, _t),
                 timeout=_CONNECTIVITY_CHECK_TIMEOUT,
             )
         else:
@@ -1270,3 +1317,37 @@ async def _check_comfyui(
         else _t("connectivity_check_comfyui_ok_unknown_version")
     )
     return ConnectivityCheckResponse(success=True, message=message)
+
+
+async def _check_runninghub(
+    base_url: str,
+    api_key: str,
+    _t: Callable[..., str],
+) -> ConnectivityCheckResponse:
+    """通过账户信息探针验证 RunningHub APIKEY 可达，并回显 RH 币与运行中任务数。
+
+    探针是免费的 ``POST /uc/openapi/accountStatus``：不提交任务、不扣币。出站与生成路径共用
+    ``artifact_http_client`` 的目的地校验。
+    """
+    from lib.custom_provider.runninghub.client import RunningHubClient
+    from lib.custom_provider.runninghub.failures import AUTH_FAILED, RunningHubError
+
+    client = RunningHubClient(base_url=base_url, api_key=api_key)
+    try:
+        async with artifact_http_client(timeout=_CONNECTIVITY_CHECK_TIMEOUT) as http:
+            account = await client.account_status(http)
+    except RunningHubError as exc:
+        if exc.code == AUTH_FAILED:
+            return ConnectivityCheckResponse(success=False, message=_t("connectivity_check_runninghub_auth_failed"))
+        raise
+    return ConnectivityCheckResponse(
+        success=True,
+        message=_t(
+            "connectivity_check_runninghub_ok",
+            coins=account.remain_coins or "-",
+            running=account.running_tasks or "-",
+        ),
+        remain_coins=account.remain_coins,
+        running_tasks=account.running_tasks,
+        api_type=account.api_type,
+    )

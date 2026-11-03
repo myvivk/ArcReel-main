@@ -23,7 +23,7 @@ from lib.artifacts.artifact_activation import (
 )
 from lib.artifacts.artifact_input_claims import resolve_usable_storyboard_video_slots
 from lib.artifacts.artifact_manifest import ArtifactKey
-from lib.config.resolver import ConfigResolver, video_bucket_for_generation_mode
+from lib.config.resolver import ConfigResolver, video_bucket_for_request
 from lib.generation.generation_queue import get_generation_queue
 from lib.generation.generation_queue_client import TaskSpec
 from lib.infra.api_errors import BadRequestError, ConflictError, NotFoundError
@@ -252,10 +252,10 @@ async def generate_video(
 
     project = await asyncio.to_thread(_sync)
 
-    # 归桶按项目生成模式求值（docs/adr/0054），与执行层 lane 声明同源、不第二次硬编码 i2v；
-    # 上面的生成模式检查已挡掉参考生视频，此处对能到达的项目恒为 i2v。解析闸预检让能力缺失 /
+    # 归桶按项目生成模式 + 本次帧模式求值（docs/adr/0054）：storyboard 的 reference 帧模式
+    # 实际下发的是参考图数组，语义上属于 r2v；只有 first_last 才是 i2v。解析闸预检让能力缺失 /
     # 悬空引用在提交入口即返回修复指引，而非任务面板里的异步失败。
-    _video_bucket = video_bucket_for_generation_mode(project.get("generation_mode"))
+    _video_bucket = video_bucket_for_request(project.get("generation_mode"), req.frame_mode)
     await require_video_bucket_capability(project, _video_bucket)
     await require_audio_switch_supported(project, _video_bucket)
 

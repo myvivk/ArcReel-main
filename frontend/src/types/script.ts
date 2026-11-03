@@ -140,6 +140,14 @@ export interface GeneratedAssets {
   video_thumbnail: string | null;
   video_uri: string | null;
   narration_audio?: string | null;       // narration audio file path
+  /** 视频提示词的写作依据：宫格指纹 + 写给了哪个模型（换模型后据此提示重写）。 */
+  video_prompt_basis?: {
+    grid_id?: string;
+    layout?: string;
+    cells_revision?: string;
+    written_at?: string;
+    target?: { provider?: string; model?: string; spec?: string };
+  };
   status: AssetStatus;
 }
 

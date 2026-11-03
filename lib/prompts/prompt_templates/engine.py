@@ -30,7 +30,14 @@ class TemplateError(ValueError):
 
 
 #: 模版可声明的全部轴；设置页按轴名取显示文案，未列出的键在加载期 fail loud。
-TemplateAxis = Literal["content_mode", "generation_mode", "source_kind", "asset_type", "ad_duration_tier"]
+TemplateAxis = Literal[
+    "content_mode",
+    "generation_mode",
+    "source_kind",
+    "asset_type",
+    "ad_duration_tier",
+    "video_prompt_negative",
+]
 
 
 #: 模版所属的制作步骤；设置页按取值显示步骤名，未列出的取值在加载期 fail loud。

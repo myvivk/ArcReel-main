@@ -1,6 +1,6 @@
 # 短剧工厂源稿与视觉制作
 
-修改短剧工件入库、源稿读取、资产准备、AI 分镜、参考素材、视频提示词或视频请求前，先阅读本文。功能要求以 `方案设计/` 中的六份方案为准；本文记录工程接口和跨步骤不变量。
+修改短剧工件入库、源稿读取、资产准备、机械分镜与分镜提示词、参考素材或视频请求前，先阅读本文。功能要求以 `方案设计/` 中的方案为准；本文记录工程接口和跨步骤不变量。
 
 ## 六步职责
 
@@ -8,10 +8,10 @@
 | --- | --- | --- | --- |
 | 工厂生成 | 创意简报、篇幅档位、全剧总集数、已有系列工件 | 七类 Markdown 工件 | 原样写入工件，并登记 OWN 集源文 |
 | 资产准备 | 本集源稿、人物圣经、大纲、连续性台账、分集规划 | 本集角色、场景、道具的登记、描述和资产图 | 项目资产表及资产文件 |
-| AI 分镜 | 已保存的本集源稿、已登记且有描述的资产、本集事实卡（钩子 / 情绪流变 / 资产外形与来路） | 12–15 秒分镜段、分镜提示词、原稿锚点、动作与台词 | `scripts/episode_N.json` 视觉制作状态 |
-| 参考素材 | 分镜提示词、引用资产、宫格规格 | 宫格图、按时序编号的 K 帧、确认绑定 | 宫格记录、图片及视觉制作状态的素材绑定 |
-| 视频提示词 | 本集源稿、分镜提示词、已确认 K 帧的文本上下文 | `video_prompt` 与 `video_prompt_basis` | 对应分镜的视频提示词字段 |
-| 视频生成 | 已保存的视频提示词、已确认 K 帧、前镜接续来源、角色声音配置 | 视频及完整输入证据 | 视频文件、版本、清单与分镜视频产物字段 |
+| 机械分镜 | 已保存的本集源稿、已登记且有描述的资产 | 12–15 秒分镜段、出场资产、逐字口播、原文锚、视觉改编摘要；`image_prompt` 留空待编写 | `scripts/episode_N.json` 的结构层 |
+| 分镜提示词 | 机械分镜产物（分镜号、时长、资产、口播、原文锚、视觉改编）、项目风格与资产事实 | 唯一动态分镜提示词 `image_prompt` | `scripts/episode_N.json` 的视觉层 |
+| 参考素材 | 动态分镜提示词、引用资产、宫格规格 | 宫格图、按时序编号的 K 帧、确认绑定 | 宫格记录、图片及视觉制作状态的素材绑定 |
+| 视频生成 | 动态分镜提示词、已确认 K 帧、引用资产图、角色声音配置 | 视频及完整输入证据 | 视频文件、版本、清单与分镜视频产物字段 |
 
 工厂源稿是剧情与对白的唯一真相源。后五步只读源稿，不改写、不迁移源稿路径。`scripts/episode_N.json` 是派生的视觉制作状态，不称为工厂「正式脚本」。原生小说规划、事件提取、脚本内容确认不参与工厂生产。
 
@@ -54,13 +54,13 @@ HTTP 前缀为 `/api/v1`：
 
 资产集合从本集源稿与分集规划读取，不从派生 JSON 反推，也不把全系列资产混入本集。上下文包括 `character-bible.md`、`series-outline.md`、`ledger.md` 和当前集规划。
 
-未登记或已登记但缺描述的本集资产阻断 AI 分镜。即使源稿已写外观，未登记资产也须先经过资产步骤；AI 分镜不会代为登记。跨类型同名按各自类型处理。
+未登记或已登记但缺描述的本集资产阻断机械分镜。即使源稿已写外观，未登记资产也须先经过资产步骤；跨类型同名按各自类型处理。
 
 AI 补描述以源稿动作、台词和系列设定为依据。已有描述不覆盖，空白模型结果记单项失败。生成资产图前跳过已就绪资产，并展示本集实际预估。
 
-前端 `EpisodeAssetsView` 展示角色、场景、道具页签。页头生成入口改为「交给 Agent」：Agent 用 `patch_project` 登记/描述，缺图再走 `generate_assets`；页面保留查看与编辑。
+资产准备是同一 Agent 会话内的复合步骤：登记/补齐描述后，Agent 汇总本集待生成资产图的 ID 与数量并等待用户明确确认；确认后调用 `generate_assets`，等待批次终态、逐 ID 检查并按回执修复可恢复失败。所有确认的资产图完成后再刷新计划并结束会话。前端 `EpisodeAssetsView` 展示角色、场景、道具页签；页面入口交给 Agent，由 `patch_project` 登记/描述并按上述确认流程生成图片，页面保留查看与编辑。
 
-## AI 分镜与重新分镜
+## 机械分镜与分镜提示词
 
 生产入口保留以下 URL 名称：
 
@@ -71,38 +71,33 @@ Content-Type: application/json
 {
   "source_revision": "<sha256>",
   "confirm_artifacts": false,
-  "planning_strength": 2,
   "force_regenerate": false,
   "regenerate_scene_ids": []
 }
 ```
 
-路由调用 `server/services/short_drama_workflow.py:import_short_drama_episode`，必须传 `save_source=False`、`ai_planning=True`。该路径仅调用文本模型，既不读取视频模型档位，也不生成媒体。
+路由调用 `server/services/short_drama_workflow.py:import_short_drama_episode`。该路径只做确定性结构生成：不调用文本模型、不读供应商配置、不生成媒体。
 
-- 空 `regenerate_scene_ids` 表示整体分镜；非空表示只重写所选分镜。
-- `planning_strength` 为 1–3；强制重生成在全选与部分选择时均可用。
-- 同源、同强度且不强制重生成时可复用已有结果，并保留人工修改和媒体状态。
-- 部分重写保留未选分镜的全部状态，清空所选分镜旧的 `video_prompt`。
-- 有已有媒体且未确认影响时返回 409。
-- AI 结果必须覆盖所有 beat，保留动作、神态、台词与原始 `source_text`，每段按 12–15 秒组织。
-- 景别、机位、运镜、主体动作与神态分别校验；拒绝泛写、缺环境、未登记锚点、编号变化和高重复段落。
-- 台词只存在于 `utterances` / `source_text`；`image_prompt` 与后续 `video_prompt.action` 都不得出现「台词：/对白：/画外音：」原句行。新模型输出含台词行时质量闸直接拒绝并回喂，只有读取历史脏脚本时 `parse_scene_shots` 才安全剥离并留日志/告警。
-- 场景/人物/道具按幕解析：`scenes` 取规划声明的场景或提示词里的登记场景 token（二者不一致即拒），`characters_in_scene` 取本幕动作 beat 中出现的登记角色 + 台词 speaker，`props` 取本幕 beat 文本中出现的登记道具；转换层与质量闸使用同一份 `SceneAssets`，token 必须落在本幕清单内。只在 `[人物]/[道具]` 声明、却未在本幕 beat 出场的资产不再获得参考图。
-- 工厂源稿允许先列全部 `[场景]` 再写 beat：连续 `[场景]` 行作为同一块的场景清单解析，场景归属由每幕提示词的场景 token 指认，不再把所有 beat 归到最后一个场景块。
-- 规划输入除 beats 与资产名外，还带「本集事实卡」：`【黄金钩子】`、`【情绪流变】`、`【本集时长】` 与已登记的场景 / 人物 / 道具 `description`（`build_episode_brief`）。模型据此写穿戴、持物、道具形状与来路，不得自创卡片外的事实；把「末端系着同心结」写成「整条盘成同心结」这类补全属于事实冲突。
-- 各幕 `duration_seconds` 合计必须等于源稿 `【本集时长】`（±5%），缺口整批拒绝并回喂相差秒数；`duration_shortfall` 只作诊断保留。`force=False` 复用现有脚本时按同一条复算，不足即要求 `force_regenerate=true`。
-- 地点资产与 `[场景]` 声明解耦：`[场景]` 只声明「完整场景」并受工厂机检 ≤2 约束；钩子、情绪流变、回忆里出现的地点仍须登记为场景资产。分镜侧按「已登记场景的地点名出现在本集源稿、却未写进 `[场景]`」判定为**碎片空间**（`_fragment_scenes`，无白名单），把该地点连同描述写进事实卡并允许其 token：碎片空间可以出画面、可以拿参考图，但规则要求只能以光 / 声 / 叠影出现，不得当作本幕主空间，也不得把发生在那里的动作搬进本幕。换成任何地点、任何一集都按同一口径识别。
-- 校验失败带原因返修，最多 `_PLAN_ATTEMPTS` 轮；耗尽后失败，不用机械骨架回落。
-- 返修分两级：beat 覆盖/顺序/时长/场景解析等全局结构失败才全量重生成；全局通过、仅单个 scene 的 lint 失败时，下一轮只发送该 scene 的固定 beat 组、本幕允许资产、旧 description/image_prompt 与拒绝原因，要求返回单个 scene 替换稿。替换稿必须保持 beat_ids 与 duration 不变，拼回后再次做覆盖与全 scene lint；局部连续失败或拼回后全局校验失败才回退全量。全量与局部修复共用 5 轮预算，每轮仍写一条 `quality_gate_round`，进度与 `planning_rounds` 语义不变。
-- 规划缓存版本为 `v6`（校验口径与输入事实卡变更即失效）；`force=False` 复用现有脚本前会按新闸复核台词行、单幕元数据与各幕时长合计，不合规则明确要求 `force_regenerate=true`，不静默复用脏脚本。
+- 空 `regenerate_scene_ids` 表示整体机械分镜；非空表示按同一份源稿重切，并把点名分镜的提示词清回待编写。
+- `planning_strength` 已废弃；旧客户端传了也会被忽略，服务端不再返回该字段。
+- 同一 `source_revision` 与 `splitter_version`、且未强制重切时直接复用既有结构（响应 `reused=true`），不写盘。
+- 结构规则：beat 连续覆盖、不劈断；单段 12–15 秒；切点优先 `[场景]` 块边界，台词拍不单独成段首；台词按语速估算并给画面留至少一个镜头预算，超窗整批拒绝。
+- 时长按 beat 权重分摊并校准到源稿 `【本集时长】`；窗口装不下时 `duration_shortfall` 只作诊断，不让窗口为凑数让步。
+- 场景/人物/道具由代码确定性归属：`characters_in_scene` 取本段动作 beat 中出现的登记角色 + 台词 speaker；`props` 取本段 beat 文本中出现的登记道具；`scenes` 按「块内唯一场景 → beat 文本点名 → 全集唯一场景 → 首场景 + `scene_attribution_ambiguous` 告警」判定。
+- 碎片空间沿用 `_fragment_scenes`：已登记但未写进 `[场景]` 的地点只以光 / 声 / 叠影出现，由提示词步骤写进首镜。
+- `image_prompt` 留空（`null`）并置 `pending_authoring=true`；分镜提示词由下一步 `generate_episode_script` 读取该产物编写，参考素材与视频在提示词写齐前不得消费。
+- 有已有媒体且未确认影响时返回 409；结构变化或点名重切后，所选分镜的参考素材与视频按 Artifact Manifest 判为过期。
+- 提交时在项目事务内复核源稿 revision、资产前提与视觉状态 fingerprint；任一变化都拒绝覆盖。正式文件写入使用 `run_sync_transaction`。
 
-MiniMax 等 `json_schema` 不可靠的供应商，分镜请求改走轻量 Markdown（`【分镜N｜beats a-b｜N秒】` + `描述：` + `【镜头N｜景别】` 块），由本地解析成同一 `ScenePlanResult`；后续质量闸、缓存与落盘事务不变。其他供应商仍走原生结构化输出。
+Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_drama_episode`：新分镜省略 `regenerate_scene_ids`；部分重切传 ID；全量重切传 `force_regenerate`；已有分镜图或视频时须先取得用户同意并传 `confirm_artifacts`。Agent 不参与结构判定，也不在分镜步骤里写提示词。
 
-Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_drama_episode`：新分镜省略 `regenerate_scene_ids`；部分重写传 ID；全量重写传 `force_regenerate`；已有分镜图或视频时须先取得用户同意并传 `confirm_artifacts`。质量校验、返修轮次与落盘事务完全一致，Agent 不参与判定。
+成功响应由 `ShortDramaImportResult.as_dict()` 提供：集号、分镜数、源稿路径/revision、`mode="mechanical"`、`splitter_version`、`pending_authoring`、`reused`、`warnings`，以及适用的重写和时长诊断。
 
-模型调用前冻结当前视觉状态的 canonical fingerprint。提交时在项目事务内复核源稿 revision、资产前提及视觉状态 fingerprint；任一变化都拒绝覆盖。正式文件写入使用 `run_sync_transaction`，请求取消也要等待事务结算。
+提示词编写步骤（`server/text_generation.py:generate_episode_script`）：
 
-成功响应由 `ShortDramaImportResult.as_dict()` 提供，包括集号、分镜数、源稿路径/revision、缓存与 AI 编写状态，以及适用的重写和时长诊断。
+- 只读正式脚本里的分镜产物：`scene_id`、时长、出场资产、`utterances`、`source_text`、`scene_description`，外加已编写相邻分镜的「上一分镜末镜」作承接上下文；不重新解析 Markdown 分镜。
+- 只写 `image_prompt`；输出 schema、lint、四层结构、时间轴覆盖、承接与碎片空间校验沿用原有质量闸；失败最多 5 轮返修，耗尽整批拒绝、不写半成品。
+- 写回后清除 `pending_authoring`；`image_prompt` 变化使参考素材与视频过期。
 
 主要拒绝：
 
@@ -112,45 +107,33 @@ Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_
 | 409 | `short_drama_source_conflict` | 源稿在执行期间变化 |
 | 409 | `short_drama_script_conflict` | 视觉制作状态在执行期间变化 |
 | 409 | `short_drama_reimport_confirmation_required` | 需确认已有媒体影响 |
-| 422 | `short_drama_import_refused` | 缺资产前提、解析失败或 AI 返修耗尽，详情附原因 |
+| 422 | `short_drama_import_refused` | 缺资产前提、解析失败、台词超窗或源稿无法成段，详情附原因 |
 
-## 参考素材与视频提示词
+## 参考素材与唯一动态提示词
 
-参考素材编辑器保存才落盘；取消、Esc、关闭和 AI 回填都不保存。手写格数必须与规格一致，不截尾、不自动补成另一规格。生成与确认分别执行，确认前不得编写视频提示词。
+参考素材编辑器保存才落盘；取消、Esc、关闭和 AI 回填都不保存。手写格数必须与规格一致，不截尾、不自动补成另一规格。生成与确认分别执行；只有 confirmed 宫格可以进入视频生成。
 
 参考素材的逐格提示词按单 shot 生成：spec 固定 rows/cols，输入固定该分镜的 scene/登记资产/项目画风；每格必须是冻结的单一瞬间，写了镜头运动、先后动作或渐变过程会被 `keyframe_cell_problem` 拒绝并带原因重试，最多再试两次，耗尽仍以原 `shot_grid_author_failed` 失败，不落盘、不影响其他 shot。
 
 确认按宫格、切图、复制、绑定与清单登记的同一事务提交。`cell_paths` 从 `cells` 派生，顺序即 K0…Kn；解除确认解绑但保留图片。规格变化才重置出图，未变化的保存保留实际切图。
 
-同分镜存在多个宫格记录时，`select_shot_grids` 统一按脚本显式绑定、confirmed、completed、最新的顺序选择；绑定缺失时不冒用其他记录。工作流、提示词生成和路由共用这个选择器。可消费的参考素材仅认 confirmed。
+同分镜存在多个宫格记录时，`select_shot_grids` 统一按脚本显式绑定、confirmed、completed、最新的顺序选择；绑定缺失时不冒用其他记录。工作流、路由和视频准入共用这个选择器。视频消费只认 confirmed。
 
-视频提示词独立生成，输入包括源稿、当前分镜提示词和同一冻结宫格的 K 帧文本上下文。`video_prompt.action` 是 K0→Kn 的增量文档：静态外观、构图、景别、机位与光线由分镜提示词和 K 帧承载，`action` 只写状态之间怎么变，运镜只由 `camera_motion` 承载；每个 K 间隔至少保留一个必要动作。正文 K 引用、包装字段、镜头语言、静态外观词密度、与上游文本的整句相似度和时间轴覆盖均校验（`lib/script/shot_prompt_standard.py`）；接近阈值、未阻断的复述记入评分指标的 `warnings`，由 `scripts/score_video_prompts.py` 汇总成集级报告。提交前复核完整宫格、图片 SHA、源稿身份和视觉状态 fingerprint；只写视频字段，不重写上游。
+`image_prompt` 是参考素材与视频生成共同消费的唯一动态提示词。分镜提示词编写与显式提示词重写共用 `storyboard_motion_prompt_problem`：按 entry 校验时间轴、四层制作信息、资产 token 和前向 K 引用；失败条目带原因重试，成功条目保持不变。整批与局部修复共用 `_PROMPT_AUTHORING_ATTEMPTS=5` 的调用预算，耗尽仍不落半成品。
 
-提示词编写（image_prompt / video_prompt）先在整批响应上按 entry 逐条校验；某条失败后只重发该条目的上下文、旧视觉层与拒绝原因，成功条目原样保留，拼回后整批复验。video_prompt 的正文/K 引用错误也走同一条带原因重试路径，不再让一个条目直接拖垮整批；整批与局部修复共用 `_PROMPT_AUTHORING_ATTEMPTS=5` 的调用预算。K 帧/宫格输入、`video_prompt_basis`、覆盖确认与落盘事务保持不变，耗尽仍不落半成品。
-
-`video_prompt_basis` 记录源稿、分镜与素材依据。素材变化后提示建议重写；视频请求仍按当前实际图片组织，不静默裁剪。
+历史 `video_prompt` 与 `generated_assets.video_prompt_basis` 只用于无损读取旧项目。新流程不生成、不编辑、不比较这两个字段，也不把它们纳入工作流、准入或产物时效。
 
 ## 视频输入与连续性
 
-`lib/script/storyboard_sequence.py` 纯解析完整单集顺序，`lib/script/storyboard_video_request.py` 统一输出声明、资产链接、声音顺序与图片证据。
+`lib/script/storyboard_sequence.py` 解析 confirmed 宫格、引用资产图与完整单集顺序，`lib/script/storyboard_video_request.py` 统一输出资产链接、声音顺序与图片证据。
 
-| 槽位 | 有前镜接续来源 | 首镜或接续来源缺失 |
-| --- | --- | --- |
-| `start_image` | 前镜成片实际尾帧 → 前镜用户快照 → 前镜宫格末格 | 本镜 K0，无宫格则分镜图 |
-| `reference_images` | 本镜 K0…K(n-1) | 本镜 K1…K(n-1) |
-| `end_image` | 本镜 Kn | 本镜 Kn；仅一格时省略 |
+分镜视频固定使用 reference/r2v，不接受 `first_last` 或用户可选 `frame_mode`。`start_image` 与 `end_image` 均不下发；`reference_images` 的顺序固定为角色资产图 → 场景资产图 → 道具资产图 → K0…Kn。K 帧优先占用模型参考图上限，剩余名额再按该顺序保留资产图；K 帧本身超过上限时准入失败，整批零入队。
 
-无宫格仅发送首帧。每格只占一个槽，不重复下发首末格。worker 才抽取前镜成片的实际尾帧，预览不抽帧、不写盘。抽帧缓存不覆盖用户快照。
-
-`EndFrameRow` 的 upload/select/clear 三个端点、`end_frames/scene_{id}.png` 路径和本镜的 `end_frame_image` 字段保留。快照供下一镜的 `start_image` 消费，本镜 `end_image` 来自宫格末格，因此快照入口不按模型尾帧能力告警。
-
-准入使用重新投影后的实际参考数组长度；超限整批零入队，付费前再次校验。选中子集也必须传完整单集顺序，不能把子集第一镜误判为首镜。K 引用必须属于实际下发编号，无宫格时任何 K 引用都非法。
+视频准入同时要求合法动态 `image_prompt` 和完整 confirmed 宫格绑定。准入、提示词预览与 worker 共用同一参考图投影；付费前再次复核参考图、源文件 SHA、提示词和声音输入，禁止并发替换后仍按旧输入计费。
 
 音色复刻按角色台词 speaker 首现顺序去重，正文「音频 N」与真实文件同序。per-image 绑定只使用宫格格文本中显式的角色提及；映射到实际参考数组下标，缺证据拒绝。音频段数和总时长沿用能力硬闸。
 
-视频版本、checkpoint 与 currency 保留全量图片来源、每格 K 编号、宫格 ID/规格/整图 SHA、资产身份链接及声音依据。付费前复核前镜和本镜依赖、源文件 SHA 和最终文本，禁止并发替换后仍按旧输入计费。
-
-方案 6 的 R19 下发措辞及资产链接格式仍属草案，需要实际供应商验证；R20 存量 `reference_video` 处置尚未定，不能自行选择迁移或删除。
+视频版本、checkpoint 与 currency 保留唯一动态提示词、全量实际下发图片、每格 K 编号、宫格 ID/规格/整图 SHA、资产身份链接及声音依据。
 
 ## 页面与工作流
 
@@ -159,9 +142,9 @@ Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_
 - 无 JSON 时也计算本集资产缺口，下一步为 `prepare_episode_assets` 或 `plan_short_drama_storyboards`。
 - `prepare_episode_assets` 由 Agent 用 `patch_project` 登记/描述；`plan_short_drama_storyboards` 由 Agent 调同名工具。Web 按钮保留为手动入口。
 - 工厂不受原生 episode plan、script plan、内容确认或旧待修复草稿影响。
-- 分镜提示词已齐、仅缺视频提示词时进入 `author_video_prompts`，不回到 AI 分镜。
+- 分镜提示词与 confirmed 参考素材已齐时直接进入 `generate_videos`；不存在 `author_video_prompts` 动作。
 - 工厂时间线与工作流隐藏重复的独立分镜图生成步骤，参考素材是对应媒体入口。
-- AI 分镜开窗和提交均校验只读、占用与资产前提；写入成功后才刷新，刷新失败只重试刷新，不重复提交。
+- 分镜提示词编写的开窗和提交均校验只读、占用与资产前提；写入成功后才刷新，刷新失败只重试刷新，不重复提交。
 
 ## 兼容接口
 
@@ -179,8 +162,8 @@ Agent 入口 `plan_short_drama_storyboards` 与上述路由共用 `import_short_
 - 无 JSON 的工厂源稿阅读、资产集合、描述前提与原生规划隔离。
 - AI 全量/部分重写、缓存、无机械回落及源稿/视觉状态并发冲突。
 - 宫格取消不保存、规格与格数硬匹配、确认/解除确认与任务失败恢复。
-- confirmed 唯一消费前提、同镜多记录选择、K 引用与视频提示词提交复核。
-- 全单集前镜上下文、槽位去重、实际尾帧抽取、音频顺序与整批超限零入队。
-- 付费前依赖变更拒绝，以及前镜、全部 K 帧和整图变化的 currency 判断。
+- confirmed 唯一消费前提、同镜多记录选择、唯一动态提示词格式与前向 K 引用禁止。
+- reference/r2v 固定模式、资产图 → K 帧顺序、K 帧优先占位、音频顺序与整批超限零入队。
+- 付费前依赖变更拒绝，以及动态提示词、资产图、全部 K 帧和整图变化的 currency 判断。
 
-本项目不运行 `pnpm e2e:record` 与 `pnpm e2e`；响应形状变化只做静态核对，页面与滚动变更只做代码走读。需要人工确认时，按六步入口、只读源稿、弹窗取消与关闭、占用状态、成功后的刷新和失败后的恢复逐项操作浏览器。
+本项目不运行 `pnpm e2e:record` 与 `pnpm e2e`；响应形状变化只做静态核对，页面与滚动变更只做代码走读。需要人工确认时，按五步入口、只读源稿、弹窗取消与关闭、占用状态、成功后的刷新和失败后的恢复逐项操作浏览器。

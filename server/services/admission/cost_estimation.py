@@ -19,7 +19,7 @@ from lib.config.image_resolution import resolve_image_resolution
 from lib.config.resolver import (
     ConfigResolver,
     VideoGenerationType,
-    video_bucket_for_generation_mode,
+    video_bucket_for_request,
 )
 from lib.custom_provider import is_custom_provider
 from lib.db.repositories.custom_provider_repo import CustomProviderPrice, CustomProviderRepository
@@ -277,7 +277,7 @@ class CostEstimationService:
             storyboard_facts = await evaluate_video_request_facts(
                 project_data,
                 route="storyboard",
-                generation_type="i2v",
+                generation_type=video_bucket_for_request(project_data.get("generation_mode"), "reference"),
                 identity=CONFIGURED_VIDEO_IDENTITY,
                 resolver=r,
             )
@@ -376,10 +376,8 @@ class CostEstimationService:
                 bucket_audio,
             ) in video_identity.items()
         }
-        # 项目层展示的视频模型按项目 generation_mode 定桶：``models`` 回答的是「当前项目配置」
-        # 的生成模式主桶；参考生视频内无参考图视频单元的逐 unit 降级计价在集级估算路径内完成，不改变项目层
-        # 展示身份。
-        project_video = video_pricing[video_bucket_for_generation_mode(project_data.get("generation_mode"))]
+        # 项目视频固定按 reference/r2v 桶展示和计价，与分镜视频准入及执行同源。
+        project_video = video_pricing[video_bucket_for_request(project_data.get("generation_mode"), "reference")]
 
         # 预计算图片单价
         image_unit_cost: tuple[float, str] | None = None

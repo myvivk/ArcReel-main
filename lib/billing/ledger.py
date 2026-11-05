@@ -318,6 +318,18 @@ class Ledger:
             await UsageRepository(session).finish_call(call_id, status=status, settlement=settlement)
         self._emit_recorded(project_name, call_id, status)
 
+    async def settle_session_calls_cancelled(self, session_id: str) -> int:
+        """立即收口指定 Agent 会话留下的 pending 文本调用。"""
+        async with self._session_factory() as session:
+            settled = await UsageRepository(session).settle_pending_calls_for_session(session_id)
+        by_project: dict[str, list[dict[str, Any]]] = {}
+        for item in settled:
+            if item.project_name:
+                by_project.setdefault(item.project_name, []).append(build_usage_record_change(item.call_id, item.status))
+        for project_name, changes in by_project.items():
+            self._publish(project_name, changes)
+        return len(settled)
+
     async def settle_interrupted_calls(self, *, taskless_started_before: datetime | None) -> int:
         """服务启动收口：把没有存活任务的 pending 调用行翻成终态，返回翻掉的行数。
 

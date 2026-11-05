@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection
 
 from lib.script.shot_prompt_standard import (
@@ -17,9 +16,8 @@ from lib.script.shot_prompt_standard import (
     lint_shot_prompt,
     seam_prop_problem,
     shot_blocks,
+    storyboard_motion_prompt_problem,
 )
-
-_SOUND = re.compile("唱报|宣读|喊声|画外音|听见|唱礼|对白|台词|旁白")
 
 
 def _dimension(
@@ -55,11 +53,11 @@ def review_storyboard_prompt(
                 _dimension("richness", 0, 20, ["没有可评的镜头正文"], ["补主体动作、神态与环境"]),
                 _dimension("continuity", 0, 20, ["没有镜头，无法承接"], ["先建立第一个镜头"]),
                 _dimension("assets", 0, 20, ["没有资产引用"], ["用登记名 + 场景 token"]),
-                _dimension("boundary", 0, 10, ["没有正文"], ["只写画面，不写台词/声音"]),
-                _dimension("duration", 0, 10, ["没有镜头，无法配时长"], ["按 2–6 秒/镜头拆"]),
+                _dimension("boundary", 0, 10, ["没有正文"], ["台词留在 utterances，提示词只写制作信息"]),
+                _dimension("duration", 0, 10, ["没有镜头，无法配时长"], ["用连续时间段覆盖完整时长"]),
             ],
             "defects": [{"id": "empty_storyboard", "severity": "blocker", "message": "分镜提示词为空"}],
-            "advice": ["先写至少一个【镜头1｜景别】块，再补主体、环境与光线。"],
+            "advice": ["先写至少一个【镜头1｜景别】块，再补齐动态、调度、画面与光线、声音四层。"],
         }
 
     lint = lint_shot_prompt(
@@ -68,15 +66,25 @@ def review_storyboard_prompt(
         allowed_names=registered_names,
         character_names=character_names,
     )
+    motion_problem = storyboard_motion_prompt_problem(scene_text, duration_seconds)
+    duration_problem = (
+        motion_problem
+        if motion_problem and any(term in motion_problem for term in ("时间段", "时间轴", "时长", "秒"))
+        else None
+    )
+    format_problem = motion_problem if motion_problem and duration_problem is None else None
     diagnostics = block_diagnostics(scene_text, character_names=character_names)
     defects: list[dict[str, object]] = []
     advice: list[str] = []
 
-    format_findings = [lint] if lint else []
-    format_score = 20 if not lint else 10
+    format_findings = list(dict.fromkeys(problem for problem in (lint, format_problem) if problem))
+    format_score = 20 if not format_findings else 10
     if lint:
         defects.append({"id": "storyboard_lint", "severity": "high", "message": lint})
         advice.append("先把分镜 lint 报出的格式问题改掉，再谈画面丰满度。")
+    if format_problem and format_problem != lint:
+        defects.append({"id": "storyboard_motion_format", "severity": "high", "message": format_problem})
+        advice.append("每个镜头块都要包含主体动态、空间调度、画面与光线、声音四层。")
 
     richness_score = 20
     richness_findings: list[str] = []
@@ -138,21 +146,15 @@ def review_storyboard_prompt(
         boundary_score = 0
         boundary_findings.append(problem)
         defects.append({"id": "dialogue_in_image", "severity": "high", "message": problem})
-    if _SOUND.search(scene_text):
-        boundary_score = max(0, boundary_score - 5)
-        boundary_findings.append("画面提示词里出现了声音词；声音应由 utterances / ambiance_audio 承载")
-        defects.append({"id": "sound_in_image", "severity": "medium", "message": boundary_findings[-1]})
     if boundary_findings:
-        advice.append("画面只写看得见的内容；台词和音效移到 utterances / ambiance_audio。")
+        advice.append("台词原句只放在 utterances；声音层只写环境声、动作声和已知声源。")
 
     duration_findings: list[str] = []
-    duration_score = 10
-    seconds = int(duration_seconds or 0)
-    shot_count = len(blocks)
-    if seconds <= 0 or not (shot_count * 2 <= seconds <= shot_count * 6):
-        duration_score = 5
-        duration_findings.append(f"{shot_count} 个镜头配 {seconds or '未知'} 秒，不满足每镜 2–6 秒")
-        defects.append({"id": "duration_fit", "severity": "low", "message": duration_findings[-1]})
+    duration_score = 10 if duration_problem is None else 0
+    if duration_problem:
+        duration_findings.append(duration_problem)
+        defects.append({"id": "duration_fit", "severity": "high", "message": duration_problem})
+        advice.append("时间轴从 0 秒开始连续衔接，末镜结束时间必须等于分镜时长。")
 
     dimensions = [
         _dimension("format", format_score, 20, format_findings, []),

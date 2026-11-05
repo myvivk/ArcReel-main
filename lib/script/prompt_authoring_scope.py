@@ -1,9 +1,8 @@
-"""提示词编写的对象选择：本次为哪些条目写哪些视觉层字段，显式重写会替换哪些已有内容。
+"""动态分镜提示词的对象选择：本次编写哪些条目，显式重写会替换哪些已有内容。
 
-分镜类条目默认只写 ``image_prompt``：视频提示词依赖已确认参考素材，必须显式传
-``fields=["video_prompt"]`` 单独编写。补缺以整份视觉层字段为单位：已有的保留，只补本次字段范围内
-缺失的那一份，不看结构化提示词内部的空字段；参考生视频单元的正文即视觉层，按待编写标记展开，
-正文非空也照常改写，标记清除后只有显式重写才改写。点名条目只划定范围，不等于授权覆盖。
+分镜类条目只编写 ``image_prompt``。它是参考素材与视频生成共同消费的唯一动态分镜提示词；
+历史 ``video_prompt`` 可继续随脚本读取，但不再属于提示词编写能力。补缺保留已有正文，只写空缺；
+参考生视频单元的正文即视觉层，按待编写标记展开。点名条目只划定范围，不等于授权覆盖。
 """
 
 from __future__ import annotations
@@ -12,18 +11,17 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from lib.script.grid.video_prompt_targets import video_prompt_text
 from lib.script.script_models import PENDING_AUTHORING_FIELD
 
 #: 各条目形态的视觉层字段。参考生视频单元的正文即其视觉层。
 VISUAL_LAYER_FIELDS: dict[str, tuple[str, ...]] = {
-    "segments": ("image_prompt", "video_prompt"),
-    "scenes": ("image_prompt", "video_prompt"),
-    "shots": ("image_prompt", "video_prompt"),
+    "segments": ("image_prompt",),
+    "scenes": ("image_prompt",),
+    "shots": ("image_prompt",),
     "video_units": ("text",),
 }
 
-#: 省略 ``fields`` 时的编写字段。分镜类先写分镜提示词；视频提示词等参考素材确认后单独写。
+#: 省略 ``fields`` 时的编写字段。
 DEFAULT_AUTHORING_FIELDS: dict[str, tuple[str, ...]] = {
     "segments": ("image_prompt",),
     "scenes": ("image_prompt",),
@@ -31,7 +29,7 @@ DEFAULT_AUTHORING_FIELDS: dict[str, tuple[str, ...]] = {
     "video_units": ("text",),
 }
 
-PromptAuthoringField = Literal["image_prompt", "video_prompt"]
+PromptAuthoringField = Literal["image_prompt"]
 
 
 def visual_field_filled(value: Any) -> bool:
@@ -45,7 +43,7 @@ def visual_layer_complete(kind: str, item: Mapping[str, Any]) -> bool:
 
 
 def _field_filled(item: Mapping[str, Any], field: str) -> bool:
-    return bool(video_prompt_text(item)) if field == "video_prompt" else visual_field_filled(item.get(field))
+    return visual_field_filled(item.get(field))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,8 +81,6 @@ def _limited_fields(kind: str, fields: Iterable[str] = ()) -> tuple[str, ...]:
     unknown = [field for field in requested if field not in allowed]
     if unknown:
         raise ValueError(f"{kind} 不支持这些提示词字段: {unknown}")
-    if kind != "video_units" and {"image_prompt", "video_prompt"} <= set(requested):
-        raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
     return requested
 
 
@@ -153,7 +149,6 @@ class PromptOverwriteRequired(ValueError):
 #: 丢失清单里视觉层字段的文案 key。
 _FIELD_KEYS: dict[str, str] = {
     "image_prompt": "prompt_overwrite_field_image_prompt",
-    "video_prompt": "prompt_overwrite_field_video_prompt",
     "text": "prompt_overwrite_field_text",
 }
 

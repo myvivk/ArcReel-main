@@ -24,7 +24,7 @@ from lib.artifacts.artifact_activation import (
 )
 from lib.artifacts.artifact_input_claims import resolve_usable_storyboard_video_slots
 from lib.artifacts.artifact_manifest import ArtifactKey
-from lib.config.resolver import ConfigResolver, video_bucket_for_generation_mode
+from lib.config.resolver import ConfigResolver, video_bucket_for_request
 from lib.db import async_session_factory
 from lib.db.base import DEFAULT_USER_ID
 from lib.generation.batch_admission import (
@@ -50,25 +50,29 @@ from lib.generation.video_request_facts import (
     VideoRequestFactsFailure,
     evaluate_video_request_facts,
 )
-from lib.prompts.model_specs import VideoPromptSpec, resolve_video_prompt_spec
+from lib.prompts.model_specs import VideoPromptSpec, parse_backend_ref, resolve_video_prompt_spec
 from lib.prompts.prompt_utils import (
     VideoReferenceLabel,
-    is_structured_video_prompt,
     render_storyboard_video_prompt,
 )
 from lib.references.reference_admission import admit_storyboard_item
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.grid.keyframe_parser import keyframe_reference_problems
-from lib.script.grid.video_prompt_targets import video_prompt_target_for_project
 from lib.script.script_models import get_generated_assets
 from lib.script.storyboard_sequence import (
     StoryboardImageUnavailable,
     StoryboardVideoSlots,
     apply_storyboard_frame_mode,
+    require_confirmed_storyboard_grid,
     resolve_storyboard_video_asset_images,
     split_storyboard_video_asset_images,
+    storyboard_motion_prompt_item_problem,
 )
-from lib.script.storyboard_video_request import resolve_storyboard_audio_inputs, storyboard_asset_links
+from lib.script.storyboard_video_request import (
+    resolve_storyboard_audio_inputs,
+    resolve_storyboard_video_prompt,
+    storyboard_asset_links,
+)
 from lib.speech.speech_composition import (
     SpeechAdmission,
     SpeechAdmissionError,
@@ -412,7 +416,7 @@ async def admit_storyboard_video_batch(
         user_id=user_id,
         queue=queue,
     )
-    generation_type = video_bucket_for_generation_mode(project.get("generation_mode"))
+    generation_type = video_bucket_for_request(project.get("generation_mode"), "reference")
     catalog = build_reference_catalog(project)
     if items and video_request_facts is None:
         video_request_facts = await evaluate_video_request_facts(
@@ -476,10 +480,11 @@ def _project_language(project: Mapping[str, Any]) -> str | None:
 def _project_spec(project: Mapping[str, Any]) -> VideoPromptSpec | None:
     """项目当前视频模型对应的提示词规范；未配置模型时 None（通用口径）。"""
 
-    target = video_prompt_target_for_project(project)
-    if target is None:
-        return None
-    return resolve_video_prompt_spec(target["provider"], target["model"])
+    for key in ("video_provider_r2v", "video_provider_i2v", "video_backend"):
+        provider, model = parse_backend_ref(project.get(key))
+        if provider and model:
+            return resolve_video_prompt_spec(provider, model)
+    return None
 
 
 def storyboard_video_prompt(
@@ -494,16 +499,7 @@ def storyboard_video_prompt(
     references: Sequence[VideoReferenceLabel] | None = None,
     language: str | None = None,
 ) -> str:
-    prompt = item.get("video_prompt")
-    if not prompt:
-        item_id = item.get("segment_id") or item.get("scene_id")
-        raise ValueError(f"分镜缺少 video_prompt 字段: {item_id}")
-    if isinstance(prompt, dict) and not is_structured_video_prompt(prompt):
-        item_id = item.get("segment_id") or item.get("scene_id")
-        raise ValueError(f"分镜 video_prompt 为对象但格式不符合结构化规范: {item_id}")
-    if not isinstance(prompt, (dict, str)):
-        item_id = item.get("segment_id") or item.get("scene_id")
-        raise TypeError(f"分镜 video_prompt 类型无效（期望 str 或 dict）: {item_id}")
+    prompt = resolve_storyboard_video_prompt(item, spec)
     # 与执行路径共用 render_storyboard_video_prompt：入队快照与实发文本同构，反向约束尾词
     # 由该出口统一追加（执行期对已带尾词的字符串幂等）。
     rendered = render_storyboard_video_prompt(
@@ -528,7 +524,7 @@ def storyboard_video_prompt(
     if problems:
         item_id = item.get("segment_id") or item.get("scene_id") or item.get("shot_id")
         raise ValueError(
-            f"分镜 video_prompt 引用了不存在的关键帧: {'、'.join(problems)}（本分镜宫格共 {count} 格，id={item_id}）"
+            f"动态分镜提示词引用了不存在的关键帧: {'、'.join(problems)}（本分镜宫格共 {count} 格，id={item_id}）"
         )
     return rendered
 
@@ -564,7 +560,7 @@ async def audio_switch_conflict(
     try:
         await assert_audio_switch_supported(
             project,
-            video_bucket_for_generation_mode(project.get("generation_mode")),
+            video_bucket_for_request(project.get("generation_mode"), "reference"),
             request_facts=request_facts,
         )
     except AudioSwitchConflict as exc:
@@ -587,7 +583,6 @@ def _video_reference_plan(
     id_field: str,
     resource_id: str,
     resolver: ArtifactCurrencyResolver | None,
-    frame_mode: str,
     max_reference_images: int | None,
 ) -> tuple[StoryboardVideoSlots, list[VideoReferenceLabel]]:
     """本次请求实际会下发的参考图序列：资产图（参考图模式）+ K 帧，顺序即编号。
@@ -596,6 +591,9 @@ def _video_reference_plan(
     ``max_reference_images`` 的剩余名额截断，不会挤掉 K 帧、也不会超发。
     """
 
+    require_confirmed_storyboard_grid(item, resource_id)
+    if problem := storyboard_motion_prompt_item_problem(project, item):
+        raise ValueError(f"动态分镜提示词不符合视频生成要求: {problem}")
     slots = resolve_usable_storyboard_video_slots(
         project_path=project_dir,
         project=project,
@@ -605,7 +603,7 @@ def _video_reference_plan(
         id_field=id_field,
         resolver=resolver,
     )
-    slots = apply_storyboard_frame_mode(slots, frame_mode if frame_mode in {"first_last", "reference"} else "reference")
+    slots = apply_storyboard_frame_mode(slots, "reference")
     references: list[VideoReferenceLabel] = []
     if slots.reference_only:
         assets = resolve_storyboard_video_asset_images(project_path=project_dir, project=project, item=item)
@@ -637,7 +635,6 @@ def build_storyboard_video_specs(
     resolver: ArtifactCurrencyResolver | None = None,
     voice_characters: dict[str, Any] | None = None,
     storyboard_items: Sequence[Any] | None = None,
-    frame_mode: str = "reference",
     max_reference_images: int | None = None,
 ) -> tuple[list[TaskSpec], list[UnitAdmissionTicket]]:
     """Build the Storyboard-mode specs, refusing each unit that cannot be requested.
@@ -687,7 +684,6 @@ def build_storyboard_video_specs(
                 id_field=id_field,
                 resource_id=str(item_id),
                 resolver=resolver,
-                frame_mode=frame_mode,
                 max_reference_images=max_reference_images,
             )
         except (OSError, ValueError) as exc:
@@ -719,7 +715,7 @@ def build_storyboard_video_specs(
                 refused_ticket(
                     str(item_id),
                     code=GenerationProblemCode.UNIT_REQUEST_INVALID,
-                    detail=f"{item_type} {item_id} 的 video_prompt 无效: {exc}",
+                    detail=f"{item_type} {item_id} 的动态分镜提示词无效: {exc}",
                     action=GenerationAction.FIX_INPUT,
                 )
             )
@@ -728,7 +724,7 @@ def build_storyboard_video_specs(
         # duration 是能力维度，留待执行层在 provider 解析后校验（见 ADR-0001）；
         # 原样透传调用方显式指定的值，不在入队侧做 int() 截断式归一化（否则会把
         # 本应被执行层拒绝的非法值静默修正）。缺省由执行层按 caps 收口默认。
-        extra_payload: dict[str, Any] = {"frame_mode": frame_mode}
+        extra_payload: dict[str, Any] = {"frame_mode": "reference"}
         extra_payload["storyboard_reference_count"] = len(references)
         duration = item.get("duration_seconds")
         if duration is not None:
@@ -768,7 +764,7 @@ async def storyboard_video_request_facts(
     return await evaluate_video_request_facts(
         project,
         route="storyboard",
-        generation_type=video_bucket_for_generation_mode(project.get("generation_mode")),
+        generation_type=video_bucket_for_request(project.get("generation_mode"), "reference"),
         identity=CONFIGURED_VIDEO_IDENTITY,
         resolver=config_resolver or ConfigResolver(async_session_factory),
     )
@@ -837,7 +833,6 @@ async def admit_storyboard_video_request(
             count = (spec.payload or {}).get("storyboard_reference_count", 0)
             if project_dir is not None:
                 try:
-                    frame_mode = str((spec.payload or {}).get("frame_mode") or "reference")
                     slots, references = _video_reference_plan(
                         project_dir=project_dir,
                         project=project,
@@ -847,7 +842,6 @@ async def admit_storyboard_video_request(
                         id_field=id_field,
                         resource_id=spec.resource_id,
                         resolver=None,
-                        frame_mode=frame_mode,
                         max_reference_images=request_facts.max_reference_images,
                     )
                     count = len(references) or len(slots.references)

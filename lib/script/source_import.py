@@ -34,6 +34,7 @@ MAX_SOURCE_CHARS = 50_000
 #: 短原文放宽 beat 下限的阈值：梗概类短文本很难写满 10 个 beat。
 SHORT_SOURCE_CHARS = 1_500
 
+
 #: 连续性上下文最多回看的前序集数；更早的声明只作兜底，不无限增长提示词。
 MAX_CONTINUITY_EPISODES = 5
 
@@ -63,6 +64,7 @@ class SourceImportTier:
     max_seconds: int
     max_scenes: int
     min_dialogue_lines: int
+    min_spoken_chars: int
     requires_mid_hook: bool
 
 
@@ -73,7 +75,8 @@ _STANDARD_TIER = SourceImportTier(
     min_seconds=90,
     max_seconds=120,
     max_scenes=2,
-    min_dialogue_lines=4,
+    min_dialogue_lines=16,
+    min_spoken_chars=420,
     requires_mid_hook=False,
 )
 _LONG_TIER = SourceImportTier(
@@ -83,7 +86,8 @@ _LONG_TIER = SourceImportTier(
     min_seconds=165,
     max_seconds=195,
     max_scenes=3,
-    min_dialogue_lines=8,
+    min_dialogue_lines=24,
+    min_spoken_chars=720,
     requires_mid_hook=True,
 )
 _MANJU_TIER = SourceImportTier(
@@ -93,7 +97,8 @@ _MANJU_TIER = SourceImportTier(
     min_seconds=60,
     max_seconds=90,
     max_scenes=2,
-    min_dialogue_lines=4,
+    min_dialogue_lines=10,
+    min_spoken_chars=300,
     requires_mid_hook=False,
 )
 
@@ -123,6 +128,7 @@ def _replace_target(tier: SourceImportTier, target_seconds: int) -> SourceImport
         max_seconds=tier.max_seconds,
         max_scenes=tier.max_scenes,
         min_dialogue_lines=tier.min_dialogue_lines,
+        min_spoken_chars=tier.min_spoken_chars,
         requires_mid_hook=tier.requires_mid_hook,
     )
 
@@ -429,6 +435,7 @@ def validate_structure(
     props = _unique(name for block in blocks for name in block.props if name)
     beats = [beat for block in blocks for beat in block.beats]
     dialogue_lines = sum(1 for beat in beats if beat.kind == "dialogue")
+    spoken_chars = sum(len(beat.text.strip()) for beat in beats if beat.kind == "dialogue")
 
     if not locations:
         failures.append("缺少 [场景] 声明")
@@ -451,6 +458,17 @@ def validate_structure(
         failures.append(f"动作/台词拍数为 {len(beats)}，少于下限 {min_beats}")
     if dialogue_lines < tier.min_dialogue_lines:
         failures.append(f"台词行数为 {dialogue_lines}，少于本档下限 {tier.min_dialogue_lines}")
+    if spoken_chars < tier.min_spoken_chars:
+        failures.append(
+            f"口播字数为 {spoken_chars}，少于本档下限 {tier.min_spoken_chars}"
+            "（角色台词与旁白/画外音合计，按约 5 字/秒折算）"
+        )
+    max_spoken_chars = round(tier.target_seconds * 4.5)
+    if spoken_chars > max_spoken_chars:
+        failures.append(
+            f"口播字数为 {spoken_chars}，超过本档上限 {max_spoken_chars}"
+            "（机械分镜每段还要留约 1.2 秒画面；请延长单集目标时长，而不是压缩剧情）"
+        )
     failures.extend(_declaration_order_failures(text, parsed))
     return failures
 
@@ -509,7 +527,6 @@ __all__ = [
     "MAX_CONTINUITY_EPISODES",
     "MAX_SOURCE_CHARS",
     "ORIGINAL_DIR",
-    "SHORT_SOURCE_CHARS",
     "DeclaredAsset",
     "OriginalMeta",
     "OriginalSource",

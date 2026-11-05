@@ -1,4 +1,4 @@
-import type { ImagePrompt, VideoPrompt } from "@/types";
+import type { ImagePrompt } from "@/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -17,29 +17,5 @@ export function isStructuredImagePrompt(value: unknown): value is ImagePrompt {
     typeof composition.shot_type === "string" &&
     typeof composition.lighting === "string" &&
     typeof composition.ambiance === "string"
-  );
-}
-
-/**
- * 严格守卫：VideoPrompt 必须含 action + camera_motion + ambiance_audio；dialogue 可省略，
- * 但若提供必须是 {speaker, line} 数组。
- */
-export function isStructuredVideoPrompt(value: unknown): value is VideoPrompt {
-  if (
-    !isRecord(value) ||
-    typeof value.action !== "string" ||
-    typeof value.camera_motion !== "string" ||
-    typeof value.ambiance_audio !== "string"
-  ) {
-    return false;
-  }
-  const dialogue = value.dialogue;
-  if (dialogue === undefined) return true;
-  if (!Array.isArray(dialogue)) return false;
-  return dialogue.every(
-    (item) =>
-      isRecord(item) &&
-      typeof item.speaker === "string" &&
-      typeof item.line === "string",
   );
 }

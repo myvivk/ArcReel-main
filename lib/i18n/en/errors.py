@@ -14,11 +14,7 @@ MESSAGES = {
     "shot_grid_scene_not_sequence": "Rewrite the storyboard prompt as a shot sequence: [Shot N | shot size] description, one shot per cell.",
     "shot_grid_author_failed": "AI failed to draft the shot prompts. Retry later or write them manually.",
     "shot_grid_generation_failed": "The reference material task stopped. Generate it again.",
-    "video_prompt_grid_unconfirmed": "Reference materials are unconfirmed or keyframe images are missing. Generate and confirm them first.",
-    "video_prompt_inputs_changed": "Reference materials changed while the prompt was being written. Reload and write the video prompt again.",
-    "video_prompt_body_wrapped": "The video prompt contains system wrapper fields. Remove them and write it again.",
-    "video_prompt_source_unaligned": "The shot does not match the current Markdown source. Generate the storyboard again or correct its source anchor.",
-    "video_prompt_storyboard_missing": "This episode has no shots yet. Generate an AI storyboard from its Markdown source or create shots manually.",
+    "prompt_authoring_storyboard_missing": "This episode has no shots yet. Generate an AI storyboard from its Markdown source or create shots manually.",
     "story_plan_conflict": "Story planning changed elsewhere. Reload before saving.",
     "story_plan_invalid": "A record is incomplete or its references no longer exist. Check its episode, characters and content.",
     "story_plan_source_changed": "The source script changed. Extract the event again before confirming.",
@@ -295,7 +291,6 @@ MESSAGES = {
     "prompt_overwrite_entries": "Entries to be overwritten: {entries}",
     "prompt_overwrite_entry": "{id} ({fields})",
     "prompt_overwrite_field_image_prompt": "image prompt",
-    "prompt_overwrite_field_video_prompt": "video prompt",
     "prompt_overwrite_field_text": "unit text",
     "prompt_overwrite_required": "AI rewrite replaces existing prompts. Review the entries to be overwritten, acknowledge the overwrite and retry",
     "prompt_authoring_task_active": "A prompt-writing task for this episode is already running. Wait for it to finish before submitting again",
@@ -767,6 +762,11 @@ MESSAGES = {
     "source_import_mode_required": "This project is not in source-import mode",
     "source_import_text_required": "Paste the source text first",
     "source_import_text_too_long": "The source text exceeds the 50,000-character limit. Split it and import in parts",
+    "source_import_source_not_ready": "The source does not yet support a high-quality short-drama adaptation. Review the gaps and add source material.",
+    "source_import_validation_failed": "Source assessment failed. Please try again later.",
+    "source_import_source_too_thin": (
+        "The source text does not contain enough dialogue to produce a qualified script: {reason}"
+    ),
     "source_import_original_not_found": "No source text has been imported for this episode",
     "source_import_conflict": "The source text or script has changed. Refresh and try again",
     "source_import_confirmation_required": (

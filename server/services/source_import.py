@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from lib.infra.api_errors import (
     UnprocessableError,
 )
 from lib.infra.async_thread import run_sync_transaction
+from lib.infra.text_utils import strip_json_code_fences
 from lib.project.asset_types import asset_name_comparison_key
 from lib.project.project_change_hints import emit_project_change_hint
 from lib.project.project_manager import ProjectManager
@@ -39,6 +41,7 @@ from lib.prompts.source_import_prompts import (
     SourceImportPromptContext,
     build_source_import_prompt,
     build_source_import_repair_prompt,
+    build_source_readiness_prompt,
 )
 from lib.script.short_drama_import import assets_missing_description
 from lib.script.short_drama_source import ShortDramaSourceConflict
@@ -75,6 +78,38 @@ _MAX_PREVIOUS_LINES = 20
 
 #: 结构校验失败 / 机检失败最多各返修一次（共 2 次生成）。
 _GENERATION_ATTEMPTS = 2
+
+
+@dataclass(frozen=True, slots=True)
+class SourceImportIssue:
+    code: str
+    problem: str
+    suggestion: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"code": self.code, "problem": self.problem, "suggestion": self.suggestion}
+
+
+@dataclass(frozen=True, slots=True)
+class SourceImportValidation:
+    """模型评估的原文准入结果；``as_dict`` 即 HTTP 响应体。"""
+
+    ok: bool
+    summary: str
+    issues: tuple[SourceImportIssue, ...]
+    evidence: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "ok": self.ok,
+            "summary": self.summary,
+            "issues": [issue.as_dict() for issue in self.issues],
+            "evidence": list(self.evidence),
+        }
+        if self.warnings:
+            payload["warnings"] = list(self.warnings)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +206,28 @@ def _validate_text(text: str) -> None:
         if code in {"source_import_text_required", "source_import_text_too_long"}:
             raise UnprocessableError(code) from exc
         raise
+
+
+def _require_source_density(text: str, tier: SourceImportTier) -> None:
+    """原文撑不满本档口播下限时先给明确出路，不让模型靠编对白凑字数。"""
+
+    source_chars = len(text.strip())
+    if source_chars >= tier.min_spoken_chars:
+        return
+    raise UnprocessableError(
+        "source_import_source_too_thin",
+        reason=(
+            f"原文约 {source_chars} 字，本档 {tier.target_seconds} 秒至少需要约 "
+            f"{tier.min_spoken_chars} 字口播（按 5 字/秒折算）；"
+            "请补充原文，或把项目单集目标时长调短后再导入"
+        ),
+    ).with_diagnostic(
+        {
+            "source_chars": source_chars,
+            "min_spoken_chars": tier.min_spoken_chars,
+            "target_seconds": tier.target_seconds,
+        }
+    )
 
 
 def _check_expected_revision(
@@ -306,10 +363,16 @@ def _machine_failures(
     tier: SourceImportTier,
     previous: PreviousEpisodeContext,
 ) -> list[QualityIssue]:
+    # E12 是工厂稿的 2 秒/拍密度门（ceil(秒数/2) 拍）。导入原文按 12–15 秒一段组织、
+    # 动作写自然段，拍数天然远低于该阈值；这条由改写提示词自己的拍数区间约束，不再回带。
+    # E1 是工厂稿「对白 + 动作 + 断章画面」的正文体量门（标准档 350~500）。导入路径的
+    # 口播密度已由 validate_structure 按角色台词/口播字数单独校验；动作行写得具体时
+    # 917 字正文可以只有 498 字口播，继续用 E1 会把合格剧本误判为超长。
+    ignored = {"E12", "E1"}
     return [
         issue
         for issue in check_episode(markdown, profile=tier.name, previous=previous.markdowns)
-        if issue.level == "fail"
+        if issue.level == "fail" and issue.code not in ignored
     ]
 
 
@@ -466,6 +529,75 @@ def _save_import(
     )
 
 
+def _parse_readiness_result(raw: str) -> SourceImportValidation:
+    try:
+        payload = json.loads(strip_json_code_fences(raw))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise BadGatewayError("source_import_validation_failed") from exc
+    if not isinstance(payload, dict) or type(payload.get("ready")) is not bool:
+        raise BadGatewayError("source_import_validation_failed")
+    summary = payload.get("summary")
+    raw_issues = payload.get("issues")
+    raw_evidence = payload.get("evidence")
+    raw_warnings = payload.get("warnings", [])
+    if (
+        not isinstance(summary, str)
+        or not isinstance(raw_issues, list)
+        or not isinstance(raw_evidence, list)
+        or not isinstance(raw_warnings, list)
+    ):
+        raise BadGatewayError("source_import_validation_failed")
+    issues: list[SourceImportIssue] = []
+    for item in raw_issues:
+        if not isinstance(item, dict) or not all(
+            isinstance(item.get(key), str) for key in ("code", "problem", "suggestion")
+        ):
+            raise BadGatewayError("source_import_validation_failed")
+        issues.append(SourceImportIssue(item["code"], item["problem"], item["suggestion"]))
+    evidence = tuple(item for item in raw_evidence if isinstance(item, str))
+    warnings = tuple(item.strip() for item in raw_warnings if isinstance(item, str) and item.strip())
+    ready = payload["ready"]
+    if (ready and issues) or (not ready and not issues):
+        raise BadGatewayError("source_import_validation_failed")
+    return SourceImportValidation(ready, summary, tuple(issues), evidence, warnings)
+
+
+async def _assess_source_readiness(
+    *, text: str, tier: SourceImportTier, generator: TextGenerator, project_name: str
+) -> SourceImportValidation:
+    prompt = build_source_readiness_prompt(text, tier)
+    try:
+        result = await generator.generate(
+            TextGenerationRequest(prompt=prompt),
+            project_name=project_name,
+            require_complete=True,
+        )
+    except Exception as exc:
+        logger.exception("source readiness assessment failed for %s", project_name)
+        raise BadGatewayError("source_import_validation_failed") from exc
+    return _parse_readiness_result(result.text)
+
+
+async def validate_source_episode(
+    *,
+    projects: ProjectManager,
+    project_name: str,
+    episode: int,
+    text: str,
+    user_id: str,
+) -> SourceImportValidation:
+    """模型评估原文是否足以改编；不写原文，也不生成剧本。"""
+
+    project = await asyncio.to_thread(_load_project, projects, project_name)
+    _require_source_import(project)
+    _episode_entry(project, episode)
+    _validate_text(text)
+    tier = derive_tier(project.get(EPISODE_TARGET_DURATION_FIELD))
+    _require_source_density(text, tier)
+    generator = await _create_generator(project_name, user_id)
+    return await _assess_source_readiness(text=text, tier=tier, generator=generator, project_name=project_name)
+
+
 async def import_source_episode(
     *,
     projects: ProjectManager,
@@ -493,10 +625,18 @@ async def import_source_episode(
     )
     _check_expected_revision(expected_revision, baseline_original_revision, baseline_script_revision)
 
-    if not confirm_artifacts and await _has_media_artifacts(projects, project_name, entry):
+    tier = derive_tier(project.get(EPISODE_TARGET_DURATION_FIELD))
+    _require_source_density(text, tier)
+    generator = await _create_generator(project_name, user_id)
+    readiness = await _assess_source_readiness(text=text, tier=tier, generator=generator, project_name=project_name)
+    if not readiness.ok:
+        raise UnprocessableError("source_import_source_not_ready").with_diagnostic(readiness.as_dict())
+    if await _has_media_artifacts(projects, project_name, entry) and not confirm_artifacts:
         raise ConflictError("source_import_confirmation_required")
 
-    tier = derive_tier(project.get(EPISODE_TARGET_DURATION_FIELD))
+    if confirm_artifacts and not await _has_media_artifacts(projects, project_name, entry):
+        raise ConflictError("source_import_conflict")
+
     previous = await asyncio.to_thread(
         collect_previous_episode_context,
         project_dir,
@@ -504,7 +644,6 @@ async def import_source_episode(
         episode,
     )
     prompt = build_source_import_prompt(_prompt_context(project, entry, episode, tier, previous, text))
-    generator = await _create_generator(project_name, user_id)
     model = {"provider": generator.provider_id, "model": generator.model}
     markdown, quality = await _generate_with_repair(
         generator,

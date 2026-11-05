@@ -35,7 +35,8 @@ PATCH_EPISODE_SCRIPT = ToolDeclaration(
     description=(
         "按 canonical revision 原子执行有序剧本 operations（update / insert / move / remove / split）。"
         'update 的结构固定为 {"op": "update", "id": "<条目id>", "fields": {...}}：条目 id 写进 id，'
-        "要改的字段（如 image_prompt / video_prompt）全部写进 fields 映射，平铺在 operation 上会被整批拒绝。"
+        "要改的字段（如 image_prompt）全部写进 fields 映射，平铺在 operation 上会被整批拒绝；"
+        "video_prompt 已退役，只读兼容历史数据，不接受写入。"
         "base_revision 不知道就整个字段省略（服务端按当前 revision 执行），不要填占位文字或凭空编造——"
         "格式不符会被整批拒绝；确要校验并发时传 get_episode_script 返回的原样 revision。"
         "先在内存形成完整 candidate，再统一校验 schema、项目引用、Artifact Manifest 与 SpeechComposition；"
@@ -44,8 +45,8 @@ PATCH_EPISODE_SCRIPT = ToolDeclaration(
         "after_id 省略时插到最前，空脚本的第一条即如此；新条目是全新身份，同号旧条目留下的媒体与版本历史一并清除。"
         "move 调整顺序：把 id 移到 after_id 之后，after_id 省略时移到最前；条目连同已生成的媒体一起移动。"
         "移动后，前一条分镜变了的分镜图（章节切分点上的除外）转为过期，不列入 regeneration_required_ids，是否重新生成由用户决定。"
-        "脚本里现有条目的付费媒体不会被删除或清空；改了 image_prompt / "
-        "video_prompt 的条目列在 regeneration_required_ids，须紧接着显式重新生成；画面描述里未绑定的 @[名称] "
+        "脚本里现有条目的付费媒体不会被删除或清空；改了 image_prompt 的条目列在 "
+        "regeneration_required_ids，须紧接着显式重新生成参考素材与视频；画面描述里未绑定的 @[名称] "
         "列在 warnings。写入对应原文 source_text 时，项目有源文则须是本集源文的逐字片段，否则以 "
         "source_text_not_verbatim 拒绝。剧本不存在时返回 script_not_found problem。"
     ),

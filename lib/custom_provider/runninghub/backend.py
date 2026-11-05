@@ -68,6 +68,13 @@ def _workflow_id_of(definition: Mapping[str, Any]) -> str:
     return workflow_id
 
 
+def _instance_type_of(definition: Mapping[str, Any]) -> str | None:
+    """RunningHub 显存实例：default 24G / plus 48G / ultra 84G；非法值退回平台默认。"""
+
+    value = str(definition.get("instance_type") or "").strip().lower()
+    return value if value in {"default", "plus", "ultra"} else None
+
+
 def _targets(raw: object) -> list[Mapping[str, Any]]:
     return [target for target in raw if isinstance(target, Mapping)] if isinstance(raw, list) else []
 
@@ -128,6 +135,7 @@ class RunningHubVideoBackend(ProviderJobIdPersistenceMixin):
                 workflow_id=_workflow_id_of(self._definition),
                 node_info_list=build_node_info_list(self._definition, built),
                 workflow=built.workflow,
+                instance_type=_instance_type_of(self._definition),
                 record=lambda stage, body: notify_provider_response(request, stage, body),
             )
             await self._persist_provider_job_id(request, task_id, provider=self._provider, endpoint=self._base_url)
@@ -313,6 +321,7 @@ class RunningHubImageBackend:
                 workflow_id=_workflow_id_of(self._definition),
                 node_info_list=build_node_info_list(self._definition, built),
                 workflow=built.workflow,
+                instance_type=_instance_type_of(self._definition),
                 record=record,
             )
             picked = await self._execution.fetch_artifact(

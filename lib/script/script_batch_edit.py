@@ -652,7 +652,6 @@ def blank_item_after(script: dict[str, Any], after_id: str | None) -> dict[str, 
         "duration_seconds": duration if isinstance(duration, int) and not isinstance(duration, bool) else 8,
         **copy.deepcopy(_BLANK_ITEM_FIELDS[kind]),
         "image_prompt": None,
-        "video_prompt": None,
     }
 
 
@@ -706,6 +705,11 @@ def _apply_operation(
         item = items[item_index]
         before_content_admission = admit_script_unit(kind, item, ignore_marker=True, policy=policy)
         for field, value in operation.fields.items():
+            if field.split(".", 1)[0] == "video_prompt":
+                raise _OperationApplyError(
+                    "video_prompt is retired and read-only; update image_prompt instead",
+                    location=("fields", *_parse_path(field)),
+                )
             try:
                 patch_field(script, item_id, field, value)
             except ScriptEditError as exc:
@@ -732,6 +736,11 @@ def _apply_operation(
     if isinstance(operation, InsertAfterOperation):
         items, id_field, kind = resolve_items(script)
         item = copy.deepcopy(operation.item)
+        if "video_prompt" in item:
+            raise _OperationApplyError(
+                "video_prompt is retired and cannot be supplied on new items",
+                location=("item", "video_prompt"),
+            )
         item_id = item.get(id_field)
         if not isinstance(item_id, str) or not item_id:
             raise _OperationApplyError(

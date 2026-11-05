@@ -14,29 +14,38 @@ from lib.infra.content_digest import sha256_file
 from lib.infra.path_safety import safe_join
 from lib.project.asset_types import ASSET_SPECS, asset_name_comparison_key
 from lib.prompts.prompt_utils import utterances_to_dialogue
+from lib.prompts.storyboard_video_projection import project_storyboard_prompt
+from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.grid.video_prompt_targets import video_prompt_body_text
-from lib.script.shot_prompt_standard import dialogue_line_problem
-from lib.script.storyboard_sequence import StoryboardVideoSlots, find_storyboard_item, resolve_storyboard_image_ref
+from lib.script.storyboard_sequence import (
+    StoryboardVideoAssetImage,
+    StoryboardVideoSlots,
+    find_storyboard_item,
+    resolve_storyboard_image_ref,
+)
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.reference_audio import resolve_reference_audio_paths
 from lib.speech.voice_settings import VoiceRenderSettings
 
 
-def validate_storyboard_video_prompt(item: Mapping[str, Any]) -> None:
-    """视频提示词不得出现台词原句：画面只写动作/神态/环境，台词只由 utterances 承载。
+def resolve_storyboard_video_prompt(item: Mapping[str, Any], spec: object = None) -> object:
+    """交给 ``render_storyboard_video_prompt`` 的文本输入。
 
-    在最终请求组装处（``storyboard_asset_links`` 的调用方）硬拦：新编写产物由编写任务
-    直接返回可修复错误，存量脏数据也会在计费前被拒，而不是把台词送进视频模型。
+    - 通用口径：分镜提示词字符串，逐字渲染；
+    - 目标模型有规范：分镜提示词投影成 ``action`` / ``shot_cameras``，让方言按自己的
+      镜头分段、时间码与逐镜运镜渲染，而不是把「【镜头N｜景别】0-3秒」原文直接塞给它。
     """
-    problem = dialogue_line_problem(video_prompt_body_text(item), label="video_prompt.action")
-    if problem:
-        raise ValueError(problem)
+
+    scene = shot_scene_text(item)
+    if not scene.strip():
+        raise ValueError("分镜缺少 image_prompt（分镜提示词）")
+    if spec is None or getattr(spec, "is_generic", True):
+        return scene
+    return project_storyboard_prompt(item, duration_seconds=item.get("duration_seconds"))
 
 
 def storyboard_asset_links(project: Mapping[str, Any], item: Mapping[str, Any], project_name: str) -> str:
     """Link referenced identities to their entries in the project's asset table."""
-    validate_storyboard_video_prompt(item)
     links: list[str] = []
     for spec in ASSET_SPECS.values():
         bucket = project.get(spec.bucket_key)
@@ -81,6 +90,23 @@ def storyboard_video_asset_trim_warning(
             "frame_count": frame_count,
         },
     }
+
+
+def storyboard_asset_image_evidence(
+    asset_images: Sequence[StoryboardVideoAssetImage],
+) -> list[dict[str, object]]:
+    """Hash the ordered asset images actually attached before the K frames."""
+
+    return [
+        {
+            "role": "reference_image",
+            "sha256": sha256_file(path),
+            "resource_id": f"{kind}:{name}",
+            "kind": "asset_sheet",
+            "keyframe_index": None,
+        }
+        for kind, name, path in asset_images
+    ]
 
 
 def storyboard_frame_evidence(

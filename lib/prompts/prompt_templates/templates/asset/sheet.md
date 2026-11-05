@@ -25,6 +25,8 @@ protected: false
 
 {{ variant("asset/sheet/title", asset_type) }}
 
+{{ partial("shared/asset_description_rule") }}
+
 {{ description }}
 
 {{ variant("asset/sheet/layout", asset_type) }}

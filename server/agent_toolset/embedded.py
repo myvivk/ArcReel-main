@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
@@ -71,6 +72,20 @@ def embedded_server(
         declaration = declared.get(tool_name)
         if declaration is None:
             raise ValueError(f"Tool '{tool_name}' not found")
+        session_id = caller.session_id
+        task = asyncio.current_task()
+        if session_id and task is not None:
+            from server.agent_runtime.tool_tasks import register, unregister
+
+            register(session_id)
+            try:
+                if isinstance(declaration, UnscopedToolDeclaration):
+                    outcome = await invoke_unscoped_declaration(declaration, arguments, caller, services)
+                else:
+                    outcome = await invoke_declaration(declaration, arguments, scope, caller, services)
+                return embedded_result(declaration, outcome)
+            finally:
+                unregister(session_id, task)
         if isinstance(declaration, UnscopedToolDeclaration):
             outcome = await invoke_unscoped_declaration(declaration, arguments, caller, services)
         else:

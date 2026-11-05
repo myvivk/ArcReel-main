@@ -4,10 +4,10 @@ Helpers for storyboard sequence ordering and dependency planning.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from lib.infra.path_safety import safe_join, try_safe_join
 from lib.project.asset_types import ASSET_SPECS
@@ -15,8 +15,88 @@ from lib.project.resource_paths import END_FRAME_RESOURCE_TYPE, resource_relativ
 from lib.script.script_editor import resolve_items
 from lib.script.script_models import get_generated_assets
 from lib.script.script_skeleton import SKELETONS
+from lib.script.shot_prompt_standard import lint_shot_prompt, storyboard_motion_prompt_problem
 
-_VIDEO_ASSET_FIELDS = (("character", "characters_in_scene"), ("scene", "scenes"), ("prop", "props"))
+StoryboardVideoAssetKind = Literal["character", "scene", "prop"]
+StoryboardVideoAssetImage = tuple[StoryboardVideoAssetKind, str, Path]
+
+_VIDEO_ASSET_FIELDS: tuple[tuple[StoryboardVideoAssetKind, str], ...] = (
+    ("character", "characters_in_scene"),
+    ("scene", "scenes"),
+    ("prop", "props"),
+)
+
+
+def storyboard_motion_prompt(item: Mapping[str, Any]) -> str:
+    """返回同时供参考素材与视频生成使用的唯一动态分镜提示词。"""
+
+    prompt = item.get("image_prompt")
+    if isinstance(prompt, str):
+        text = prompt.strip()
+    elif isinstance(prompt, Mapping):
+        scene = prompt.get("scene")
+        text = scene.strip() if isinstance(scene, str) else ""
+    else:
+        text = ""
+    if not text:
+        item_id = item.get("scene_id") or item.get("segment_id") or item.get("shot_id")
+        raise ValueError(f"分镜缺少 image_prompt 动态分镜提示词: {item_id}")
+    return text
+
+
+def storyboard_motion_prompt_item_problem(project: Mapping[str, Any], item: Mapping[str, Any]) -> str | None:
+    """按项目登记资产、分镜出场清单和时长预检唯一动态分镜提示词。"""
+
+    try:
+        prompt = storyboard_motion_prompt(item)
+    except ValueError as exc:
+        return str(exc)
+    registered: list[str] = []
+    for spec in ASSET_SPECS.values():
+        bucket = project.get(spec.bucket_key)
+        if isinstance(bucket, Mapping):
+            registered.extend(str(name) for name in bucket if str(name).strip())
+    allowed: list[str] = []
+    for _kind, field in _VIDEO_ASSET_FIELDS:
+        names = item.get(field)
+        if isinstance(names, list):
+            allowed.extend(str(name) for name in names if isinstance(name, str) and name.strip())
+    products = item.get("products_in_shot")
+    if isinstance(products, list):
+        allowed.extend(str(name) for name in products if isinstance(name, str) and name.strip())
+    characters = project.get(ASSET_SPECS["character"].bucket_key)
+    character_names = tuple(str(name) for name in characters) if isinstance(characters, Mapping) else ()
+    if problem := lint_shot_prompt(
+        prompt,
+        registered_names=registered,
+        allowed_names=allowed,
+        character_names=character_names,
+    ):
+        return problem
+    return storyboard_motion_prompt_problem(prompt, item.get("duration_seconds"))
+
+
+def require_confirmed_storyboard_grid(item: Mapping[str, Any], resource_id: str) -> Mapping[str, Any]:
+    """要求分镜绑定一份已确认、带完整 K 帧路径的 ShotGrid。"""
+
+    assets = item.get("generated_assets")
+    binding = assets.get("shot_grid") if isinstance(assets, Mapping) else None
+    if not isinstance(binding, Mapping):
+        raise StoryboardImageBindingRequired(f"confirmed shot grid binding missing: {resource_id}")
+    grid_id = binding.get("grid_id")
+    confirmed_at = binding.get("confirmed_at")
+    cell_paths = binding.get("cell_paths")
+    if (
+        not isinstance(grid_id, str)
+        or not grid_id.strip()
+        or not isinstance(confirmed_at, str)
+        or not confirmed_at.strip()
+        or not isinstance(cell_paths, list)
+        or not cell_paths
+        or any(not isinstance(path, str) or not path.strip() for path in cell_paths)
+    ):
+        raise StoryboardImageBindingRequired(f"confirmed shot grid binding incomplete: {resource_id}")
+    return binding
 
 
 def resolve_storyboard_video_asset_images(
@@ -24,14 +104,14 @@ def resolve_storyboard_video_asset_images(
     project_path: Path,
     project: dict[str, Any],
     item: dict[str, Any],
-) -> list[tuple[str, str, Path]]:
+) -> list[StoryboardVideoAssetImage]:
     """解析参考生视频要随请求下发的资产图，按「角色 → 场景 → 道具」并保持清单顺序。
 
     返回 ``(asset_type, 登记名, 路径)``。缺登记、缺资产图或文件不在的条目直接略过——它们
     不进请求，也就不能被正文编号指认。数组顺序即编号顺序：资产图在前、K 帧在后。
     """
 
-    resolved: list[tuple[str, str, Path]] = []
+    resolved: list[StoryboardVideoAssetImage] = []
     seen: set[str] = set()
     for asset_type, field in _VIDEO_ASSET_FIELDS:
         names = item.get(field)
@@ -59,11 +139,11 @@ def resolve_storyboard_video_asset_images(
 
 
 def split_storyboard_video_asset_images(
-    asset_images: Sequence[tuple[str, str, Path]],
+    asset_images: Sequence[StoryboardVideoAssetImage],
     *,
     max_reference_images: int | None,
     frame_count: int,
-) -> tuple[list[tuple[str, str, Path]], list[tuple[str, str, Path]]]:
+) -> tuple[list[StoryboardVideoAssetImage], list[StoryboardVideoAssetImage]]:
     """按 ``max_reference_images`` 的剩余名额切分资产图，返回 ``(随请求下发, 被裁掉)``。
 
     K 帧优先占用名额，资产图只拿剩下的；``max_reference_images`` 为 ``None`` / ``0`` 表示
@@ -142,14 +222,24 @@ def apply_storyboard_frame_mode(
 
     ``first_last``：只留首帧与尾帧，K1/K2 等中间参考图全部丢掉——供应商不接受
     「参考图 + 首尾帧」混用时，这是保证起止承接的模式。
-    ``reference``：所有帧（含首/尾）都按参考图按序下发，不再声明首/尾帧。
+    ``reference``：只把当前分镜的完整 K0…Kn 按参考图下发，不混入上一镜末帧，也不再声明首/尾帧。
     """
 
     if mode == "reference":
         references = list(slots.references)
         if slots.end is not None:
             references.append(slots.end)
-        return replace(slots, references=tuple(references), end=None, reference_only=True)
+        if not slots.continues_previous:
+            references.insert(0, slots.start)
+        if not references:
+            raise StoryboardImageUnavailable("reference mode requires current storyboard frames")
+        return replace(
+            slots,
+            start=references[0],
+            references=tuple(references[1:]),
+            end=None,
+            reference_only=True,
+        )
     return replace(slots, references=(), reference_only=False)
 
 

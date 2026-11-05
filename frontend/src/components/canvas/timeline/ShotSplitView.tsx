@@ -42,7 +42,6 @@ interface ShotSplitViewProps {
     segmentId: string,
     scriptFile?: string,
     seed?: number | null,
-    frameMode?: "first_last" | "reference",
   ) => void | Promise<void>;
   onGenerateNarration?: (segmentId: string) => void;
   onRestoreStoryboard?: () => Promise<unknown> | void;

@@ -97,7 +97,6 @@ import type {
   EpisodeItemRef} from "@/types";
 
 import type { SaveShotGridDraftPayload, SaveShotGridPayload, ShotGridPlan, ShotGridVersion } from "@/types/shot-grid";
-import type { VideoPromptScoreResponse } from "@/types/prompt-score";
 import type { StoryboardScoreResponse, ReferenceReviewResponse, VideoReviewResponse } from "@/types/review";
 import type {
   PresentationReadModel,
@@ -174,6 +173,7 @@ import type {
   SourceImportOriginal,
   SourceImportOriginalSaved,
   SourceImportResult,
+  SourceImportValidation,
   SuccessResponse,
   TaskListFilters,
   UsageRecordsQuery,
@@ -200,6 +200,7 @@ export type {
   SourceImportOriginal,
   SourceImportQualityWarning,
   SourceImportResult,
+  SourceImportValidation,
   UsageRecordsQuery,
   UsageSummaryQuery,
   VersionInfo,
@@ -1212,10 +1213,11 @@ class API {
     projectName: string,
     itemId: string,
     scriptFile: string,
-    options?: { signal?: AbortSignal; videoBackend?: string },
+    options?: { signal?: AbortSignal; videoBackend?: string; draft?: boolean },
   ): Promise<ItemPromptPreview> {
     const params: Record<string, string> = { script_file: scriptFile };
     if (options?.videoBackend) params.video_backend = options.videoBackend;
+    if (options?.draft) params.draft = "true";
     const query = new URLSearchParams(params).toString();
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/script-items/${encodeURIComponent(itemId)}/prompt-preview?${query}`,
@@ -1286,12 +1288,12 @@ class API {
     );
   }
 
-  /** 从已保存的 Markdown 源稿重建正式剧本：整体 AI 分镜，或只重生成所选分镜。 */
-  static async reimportShortDramaSource(    projectName: string,
+  /** 从已保存的 Markdown 源稿机械重建分镜结构：整体机械分镜，或只重切所选分镜。 */
+  static async reimportShortDramaSource(
+    projectName: string,
     episode: number,
     sourceRevision: string,
     confirmArtifacts: boolean,
-    planningStrength = 2,
     forceRegenerate = false,
     regenerateSceneIds?: string[],
     options: { signal?: AbortSignal } = {},
@@ -1300,10 +1302,19 @@ class API {
     scenes: number;
     source_path: string;
     source_revision: string;
-    planning_strength: number;
-    planning_cached: boolean;
-    ai_authoring?: boolean;
+    mode?: string;
+    splitter_version?: number;
+    pending_authoring?: number;
+    reused?: boolean;
+    warnings?: Array<{ code: string; scene_id: string; detail: string; candidates: string[] }>;
+    declared_seconds?: number;
+    actual_seconds?: number;
+    duration_shortfall?: boolean;
     regenerated_scenes?: number;
+    /** 历史响应字段，只为旧调用方与测试桩兼容；服务端不再返回。 */
+    planning_strength?: number;
+    planning_cached?: boolean;
+    ai_authoring?: boolean;
     assets_without_description?: Array<{ type: string; name: string; reason: string }>;
   }> {
     return this.request(
@@ -1314,7 +1325,6 @@ class API {
         body: JSON.stringify({
           source_revision: sourceRevision,
           confirm_artifacts: confirmArtifacts,
-          planning_strength: planningStrength,
           force_regenerate: forceRegenerate,
           ...(regenerateSceneIds?.length ? { regenerate_scene_ids: regenerateSceneIds } : {}),
         }),
@@ -1336,6 +1346,19 @@ class API {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/source-import`,
       { method: "POST", body: JSON.stringify(body), signal: options.signal },
+    );
+  }
+
+  /** 由文本模型评估原文是否满足单集改编条件；不写原文、不生成剧本。 */
+  static async validateSourceScript(
+    projectName: string,
+    episode: number,
+    text: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<SourceImportValidation> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/episodes/${episode}/source-import/validate`,
+      { method: "POST", body: JSON.stringify({ text }), signal: options.signal },
     );
   }
 
@@ -1694,29 +1717,24 @@ class API {
    * 生成视频
    * @param projectName - 项目名称
    * @param segmentId - 分镜 ID
-   * @param prompt - 视频生成 prompt（支持字符串或结构化对象）
    * @param scriptFile - 剧本文件名
    * @param durationSeconds - 时长（秒）
    */
   static async generateVideo(
     projectName: string,
     segmentId: string,
-    prompt: string | Record<string, unknown>,
     scriptFile: string,
     durationSeconds: number = 4,
     seed: number | null = null,
-    frameMode: "first_last" | "reference" = "reference",
   ): Promise<{ success: boolean; task_id: string; deduped: boolean; message: string }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/generate/video/${encodeURIComponent(segmentId)}`,
       {
         method: "POST",
         body: JSON.stringify({
-          prompt,
           script_file: scriptFile,
           duration_seconds: durationSeconds,
           seed,
-          frame_mode: frameMode,
         }),
       }
     );
@@ -2925,17 +2943,6 @@ class API {
 
   // ==================== Per-shot multi-frame grid API ====================
 
-  /** 只读视频提示词评分；不写项目、不入队。 */
-  static async getVideoPromptScore(
-    projectName: string,
-    episode: number,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<VideoPromptScoreResponse> {
-    return this.request(`/projects/${encodeURIComponent(projectName)}/episodes/${episode}/video-prompt-score`, {
-      signal: options.signal,
-    });
-  }
-
   /** 只读分镜提示词评分。 */
   static async getStoryboardScore(
     projectName: string,
@@ -3039,7 +3046,7 @@ class API {
     });
   }
 
-  /** 按已保存的宫格入队：逐格文本以 `ShotGrid.prompt` 优先，空则回退 scene 现解析。 */
+  /** 按已保存的宫格入队：画面直接使用当前分镜提示词。 */
   static async generateShotGrid(projectName: string, scriptFile: string, shotId: string) {
     const params = new URLSearchParams({ script_file: scriptFile, shot_id: shotId });
     return this.request<{ task_id: string; status: string }>(

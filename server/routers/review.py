@@ -6,22 +6,23 @@ import asyncio
 
 from fastapi import APIRouter
 
+from lib.artifacts.artifact_activation import active_artifact_currency_resolver
+from lib.artifacts.artifact_manifest import ArtifactStatus
 from lib.episode.episode_paths import episode_script_filename
 from lib.infra.media_probe import MediaProbeError, probe_video_frame_times
 from lib.project.project_manager import get_project_manager
 from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.grid.shot_grid_manager import ShotGridManager
-from lib.script.grid.video_prompt_targets import video_prompt_text
 from lib.script.prompt_review import review_storyboard_prompt
 from lib.script.reference_review import review_reference_material
 from lib.script.shot_prompt_standard import (
     handoff_problem,
     seam_prop_problem,
-    video_prompt_delta_metrics,
 )
-from lib.script.storyboard_sequence import get_storyboard_items
+from lib.script.storyboard_sequence import get_storyboard_items, storyboard_motion_prompt_item_problem
 from lib.video_review.signals import SignalDetectionError, signals_for
 from server.auth import CurrentUser
+from server.services.admission.video_batch_admission import video_target_states
 
 router = APIRouter()
 
@@ -185,35 +186,12 @@ async def get_video_review(project_name: str, episode: int, shot_id: str, user: 
     else:
         defects.append({"id": "video_missing", "severity": "high", "message": "该分镜还没有视频"})
 
-    action = video_prompt_text(scene)
-    grid_id = (assets.get("shot_grid") or {}).get("grid_id") if isinstance(assets, dict) else None
-    grid = ShotGridManager(project_path).get(str(grid_id)) if isinstance(grid_id, str) and grid_id else None
-    references = tuple(cell.prompt for cell in grid.cells) if grid is not None else ()
     characters = {str(name) for name in (project.get("characters") or {})}
     props = {str(name) for name in (project.get("props") or {})}
-    registered_names = characters | props | {str(name) for name in (project.get("scenes") or {})}
-    scene_characters = scene.get("characters_in_scene")
-    scene_props = scene.get("props")
-    metrics = video_prompt_delta_metrics(
-        shot_scene_text(scene),
-        action,
-        reference_texts=references,
-        registered_names=registered_names,
-        character_names=[str(name) for name in scene_characters] if isinstance(scene_characters, list) else (),
-        prop_names=[str(name) for name in scene_props] if isinstance(scene_props, list) else (),
-    )
-    prompt_score = round(metrics.score * 25 / 100) if action else 0
-    if not action:
-        defects.append({"id": "video_prompt_missing", "severity": "high", "message": "还没有视频提示词"})
-    elif metrics.problem:
-        defects.append({"id": "video_prompt_problem", "severity": "high", "message": metrics.problem})
-    defects.extend(
-        {"id": "video_prompt_mention", "severity": "high", "message": problem} for problem in metrics.mention_problems
-    )
-    defects.extend(
-        {"id": "video_prompt_mention_hint", "severity": "low", "message": mention_hint}
-        for mention_hint in metrics.mention_warnings
-    )
+    prompt_problem = storyboard_motion_prompt_item_problem(project, scene)
+    prompt_score = 25 if prompt_problem is None else 0
+    if prompt_problem:
+        defects.append({"id": "storyboard_motion_prompt", "severity": "high", "message": prompt_problem})
 
     continuity_score = 20
     if index > 0:
@@ -226,13 +204,13 @@ async def get_video_review(project_name: str, episode: int, shot_id: str, user: 
             defects.append({"id": "prop_seam", "severity": "high", "message": problem})
     continuity_score = max(0, continuity_score)
 
-    current_grid_id = (assets.get("shot_grid") or {}).get("grid_id") if isinstance(assets, dict) else None
-    basis = assets.get("video_prompt_basis") if isinstance(assets, dict) else None
-    basis_grid_id = basis.get("grid_id") if isinstance(basis, dict) else None
     version_score = 0 if not video_path or not video_path.is_file() else 10
-    if video_path is not None and video_path.is_file() and (not current_grid_id or basis_grid_id != current_grid_id):
-        version_score = 0
-        defects.append({"id": "video_stale", "severity": "high", "message": "视频或提示词已落后于当前宫格"})
+    if video_path is not None and video_path.is_file():
+        resolver = active_artifact_currency_resolver(project_path, project)
+        state = video_target_states([scene], id_field, episode=episode, resolver=resolver).get(shot_id)
+        if state is None or state.status != ArtifactStatus.CURRENT:
+            version_score = 0
+            defects.append({"id": "video_stale", "severity": "high", "message": "视频已落后于当前提示词或参考素材"})
 
     measured = technical_score + structure_score + prompt_score + continuity_score + version_score
     score = round(measured * 100 / 90)

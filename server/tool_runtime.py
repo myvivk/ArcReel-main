@@ -14,7 +14,7 @@ import stat
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -29,7 +29,7 @@ from lib.backends.text_backends.base import (
     TextTaskType,
 )
 from lib.backends.text_generator import TextGenerator
-from lib.config.resolver import ConfigResolver, caps_generation_mode, video_bucket_for_generation_mode
+from lib.config.resolver import ConfigResolver, caps_generation_mode, video_bucket_for_request
 from lib.db import async_session_factory
 from lib.episode.episode_ids import describe_episode_for_agent
 from lib.episode.episode_paths import (
@@ -154,7 +154,6 @@ from server.text_generation import (
     TextGenerationError,
     TextGenerationRequest,
     TextGenerationResult,
-    VideoRequestFactsUnavailableError,
     prompt_authoring_preflight,
 )
 from server.text_generation import (
@@ -191,6 +190,12 @@ class CallerContext:
     source: Literal["embedded", "mcp", "webui"]
     batch_waiter: BatchWaiter | None = None
     report_progress: ProgressReporter | None = None
+    # 内嵌 Agent 会话的稳定 ID；文本工具用它关联并在会话中断时结算 pending 调用。
+    session_id_provider: Callable[[], str | None] | None = None
+
+    @property
+    def session_id(self) -> str | None:
+        return self.session_id_provider() if self.session_id_provider is not None else None
 
     def waiting_with(self, **options: Any) -> CallerContext:
         """给等待器绑定额外选项（如 ``on_enqueued`` / ``stop_on_failure``）；没有等待器时原样返回。"""
@@ -478,7 +483,7 @@ class PatchEpisodeScriptRequest(BaseModel):
 
 
 _SPEECH_PROBLEM_CODES = frozenset(code.value for code in SpeechProblemCode)
-_REGENERATION_FIELDS = frozenset({"image_prompt", "video_prompt"})
+_REGENERATION_FIELDS = frozenset({"image_prompt"})
 
 
 class ScriptSpeechProblem(BaseModel):
@@ -505,7 +510,7 @@ class ScriptSpeechAdmission(BaseModel):
 class ScriptPatchResult(ScriptBatchEditResult):
     """``patch_episode_script`` 的结果：剧本批量编辑结果，加上给 Agent 的后续动作提示。
 
-    - ``regeneration_required_ids``：提交成功且改了 image_prompt / video_prompt 的条目，须紧接着重新生成对应图 / 视频；
+    - ``regeneration_required_ids``：提交成功且改了 image_prompt 的条目，须紧接着重新生成对应参考素材 / 视频；
     - ``speech_admission``：首个问题属于发声组合时，被点名单元的全部发声问题。
     未绑定 mention 的提示沿用 ``warnings``。
     """
@@ -599,8 +604,6 @@ async def _run_text_generation(
         return ToolOutcome(problem=_not_admitted_problem(exc))
     except TextOutputTruncatedError as exc:
         return ToolOutcome(problem=truncation_problem(exc))
-    except VideoRequestFactsUnavailableError as exc:
-        return ToolOutcome(problem=video_facts_problem(exc.failure, str(exc)))
     except TextGenerationError as exc:
         return ToolOutcome(problem=ToolProblem("generation_refused", str(exc)))
     except Exception as exc:
@@ -776,9 +779,9 @@ class GenerateEpisodeScriptRequest(BaseModel):
             "光一句 rewrite=true 等于「没说改哪层就改分镜提示词」，服务端直接拒绝"
         ),
     )
-    fields: list[Literal["image_prompt", "video_prompt"]] | SkipJsonSchema[None] = Field(
+    fields: list[Literal["image_prompt"]] | SkipJsonSchema[None] = Field(
         default=None,
-        description="仅编写指定提示词字段；省略时默认写 image_prompt，video_prompt 必须在参考素材确认后单独请求",
+        description="仅编写动态分镜提示词 image_prompt；省略时使用同一默认值",
     )
     overwrite_revision: str | SkipJsonSchema[None] = Field(
         default=None,
@@ -787,12 +790,6 @@ class GenerateEpisodeScriptRequest(BaseModel):
         ),
     )
     dry_run: bool = Field(default=False, description=_DRY_RUN_DESCRIPTION)
-
-    @model_validator(mode="after")
-    def _single_prompt_field(self) -> Self:
-        if self.fields is not None and {"image_prompt", "video_prompt"} <= set(self.fields):
-            raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
-        return self
 
     def text_request(self) -> TextGenerationRequest:
         return TextGenerationRequest(
@@ -914,14 +911,15 @@ class PlanShortDramaStoryboardsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     episode_id: PositiveEpisode = Field(description=EPISODE_ID_DESCRIPTION)
-    planning_strength: int = Field(default=2, ge=1, le=3, description="内容优化强度 1–3；默认 2（标准）")
+    #: 已废弃：机械分镜没有规划强度；保留字段只为兼容旧调用方，服务端不读取。
+    planning_strength: int | None = Field(default=None, ge=1, le=3)
     force_regenerate: bool = Field(
         default=False,
-        description="全量重新分镜；已有分镜时覆盖前必须先取得用户同意",
+        description="全量重切分镜；已有分镜时覆盖前必须先取得用户同意",
     )
     regenerate_scene_ids: list[Annotated[str, Field(min_length=1)]] = Field(
         default_factory=list,
-        description="只重写这些分镜 ID；空数组表示整体分镜",
+        description="只把这些分镜的提示词清回待编写并重切结构；空数组表示整体分镜",
     )
     confirm_artifacts: bool = Field(
         default=False,
@@ -942,18 +940,17 @@ _STORYBOARD_PROBLEM_ACTIONS = {
 async def plan_short_drama_storyboards(
     request: ToolRequest[PlanShortDramaStoryboardsRequest],
     scope: ProjectScope,
-    caller: CallerContext,
+    _caller: CallerContext,
     services: Services,
 ) -> ToolOutcome[Any]:
-    """AI 分镜 / 重新分镜：与 Web 按钮共用 ``import_short_drama_episode`` 同一套质量闸。
+    """机械分镜 / 重新分镜：与 Web 按钮共用 ``import_short_drama_episode``。
+
+    分镜结构（边界、时长、出场资产、逐字口播、原文锚）由代码确定性生成，不调用文本模型；
+    ``image_prompt`` 留空并置待编写，交给 ``generate_episode_script`` 作为下一步编写。
 
     新分镜：空 ``regenerate_scene_ids``、``force_regenerate=false``。
-    部分重写：传 ``regenerate_scene_ids``，未选分镜与媒体原样保留。
-    全量重写：``force_regenerate=true``；已有媒体时还须 ``confirm_artifacts=true``。
-
-    质量不在 Agent 侧：结构、格式、源稿覆盖与返修全部由服务端校验，失败整批拒绝、不落盘。
-    内嵌会话宿主若注入了 ``report_progress``，每轮质量闸结果实时写入事件日志（用户可见），
-    同时整批轮次随结果 ``planning_rounds`` 返回给 Agent。
+    部分重切：传 ``regenerate_scene_ids``，未选分镜与媒体原样保留。
+    全量重切：``force_regenerate=true``；已有媒体时还须 ``confirm_artifacts=true``。
     """
     from lib.script.short_drama_source import load_short_drama_source
     from server.services.short_drama_workflow import (
@@ -981,10 +978,8 @@ async def plan_short_drama_storyboards(
             projects=services.projects,
             expected_source_revision=source.revision,
             confirm_artifacts=value.confirm_artifacts,
-            planning_strength=value.planning_strength,
             force_regenerate=value.force_regenerate,
             regenerate_scene_ids=value.regenerate_scene_ids,
-            on_round=caller.report_progress,
         )
     except ShortDramaWorkflowError as exc:
         return ToolOutcome(
@@ -998,7 +993,7 @@ async def plan_short_drama_storyboards(
     except FileNotFoundError as exc:
         return ToolOutcome(problem=ToolProblem("project_not_found", str(exc)))
     except Exception as exc:
-        return ToolOutcome(problem=ToolProblem("short_drama_ai_planning_failed", str(exc)))
+        return ToolOutcome(problem=ToolProblem("short_drama_import_failed", str(exc)))
     return ToolOutcome(value=result.as_dict())
 
 
@@ -1584,11 +1579,12 @@ async def get_video_capabilities(
 ) -> ToolOutcome[dict[str, Any]]:
     try:
         project = await asyncio.to_thread(services.projects.load_project, scope.project_name)
-        payload = await services.capabilities.video_capabilities_for_project(project)
+        generation_type = video_bucket_for_request(caps_generation_mode(project), "reference")
+        payload = await services.capabilities.video_capabilities_for_project(project, generation_type=generation_type)
         payload["duration_constraints"] = duration_constraints_payload(
             await capability_request_facts(
                 project,
-                generation_type=video_bucket_for_generation_mode(caps_generation_mode(project)),
+                generation_type=generation_type,
                 config_resolver=services.capabilities,
             )
         )
@@ -1677,6 +1673,13 @@ def _project_patch_operations(
         if isinstance(operation, PatchUpdateOperation):
             item_id = operation.id
             for field, value in operation.fields.items():
+                if field.split(".", 1)[0] == "video_prompt":
+                    raise ScriptEditError(
+                        "video_prompt 已退役且只用于读取历史数据；请修改唯一动态分镜提示词 image_prompt",
+                        operation_index=index,
+                        location=("fields", *field.split(".")),
+                        unit_id=item_id,
+                    )
                 apply(
                     lambda field=field, value=value, item_id=item_id: patch_field(preview, item_id, field, value),
                     location=("fields", *field.split(".")),

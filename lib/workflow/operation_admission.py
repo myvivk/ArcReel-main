@@ -44,7 +44,7 @@ class AdmissionReason(StrEnum):
 
     NO_AVAILABLE_VIDEO = "no_available_video"
     NO_MISSING_SHOT_GRID = "no_missing_shot_grid"
-    NO_MISSING_VIDEO_PROMPT = "no_missing_video_prompt"
+    STORYBOARD_PROMPT_PENDING = "storyboard_prompt_pending"
 
 
 class OperationAdmission(BaseModel):
@@ -124,39 +124,22 @@ def admit_shot_grids(
     generation_mode: object,
     formal_script: bool,
     missing_ids: Sequence[str],
+    pending_prompt_ids: Sequence[str] = (),
 ) -> OperationAdmission:
     """参考素材（单分镜宫格）：分镜图项目里，正式脚本在位且有分镜缺参考素材。
 
     与「分镜图」行同一把尺子：没有正式脚本就无从谈产物；一个都不缺时这条操作无事可做。
-    参考生视频与广告不走这一步，报「不适用」而不是「缺东西」。
+    机械分镜后仍有分镜缺提示词时先拒绝：参考素材消费的是 ``image_prompt``，待编写条目
+    还没到能生成参考素材的时候。
     """
     if content_mode != "drama" or generation_mode != "storyboard":
         return NOT_APPLICABLE
     if not formal_script:
         return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
+    if pending_prompt_ids:
+        return _refused(AdmissionReason.STORYBOARD_PROMPT_PENDING)
     if not missing_ids:
         return _refused(AdmissionReason.NO_MISSING_SHOT_GRID)
-    return ADMITTED
-
-
-def admit_author_video_prompts(
-    content_mode: object,
-    *,
-    generation_mode: object,
-    formal_script: bool,
-    target_ids: Sequence[str],
-) -> OperationAdmission:
-    """视频提示词编写：分镜图项目里，宫格已确认且视频提示词还空着的分镜至少一个。
-
-    没有已确认的参考素材就无从按 K 帧写动作；一个都不缺时这条操作无事可做。
-    """
-
-    if content_mode != "drama" or generation_mode != "storyboard":
-        return NOT_APPLICABLE
-    if not formal_script:
-        return _refused(AdmissionReason.FORMAL_SCRIPT_MISSING)
-    if not target_ids:
-        return _refused(AdmissionReason.NO_MISSING_VIDEO_PROMPT)
     return ADMITTED
 
 
@@ -167,7 +150,6 @@ __all__ = [
     "AdmissionState",
     "OperationAdmission",
     "admit_author_prompts",
-    "admit_author_video_prompts",
     "admit_edit_timeline",
     "admit_shot_grids",
     "pending_authoring_entry_ids",

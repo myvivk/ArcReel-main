@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 /** 「编写提示词」弹窗的范围：当前单条、全部待编写、自选多条。 */
 export type PromptAuthoringScope = "current" | "pending" | "custom";
-export type PromptAuthoringField = "image_prompt" | "video_prompt";
 
 export interface PromptAuthoringOpenRequest {
   projectName: string;
@@ -12,11 +11,7 @@ export interface PromptAuthoringOpenRequest {
   currentEntryId?: string | null;
   /** 打开时默认走重写，用于当前条目已有旧提示词但需要按最新标准重新生成。 */
   defaultRewrite?: boolean;
-  /** 打开时默认只编写指定提示词字段。 */
-  defaultFields?: PromptAuthoringField[];
-  /** 锁定字段选择，用于分镜详情里的分阶段按钮。 */
-  lockFields?: boolean;
-  /** 打开时预选的自选范围（视频提示词整集补缺只针对宫格已确认的那批）。 */
+  /** 打开时预选的自选范围。 */
   defaultEntryIds?: string[];
 }
 

@@ -104,8 +104,7 @@ class WorkflowTaskObservation(BaseModel):
     batch_id: str | None = None
     task_type: str
     status: str
-    #: 文本任务本次编写的字段（``["image_prompt"]`` / ``["video_prompt"]``）；其余任务为 ``None``。
-    #: 同一任务类型承载两种编写，归行只能靠它区分（D-19）。
+    #: 文本任务本次编写的字段（当前仅 ``["image_prompt"]``）；其余任务为 ``None``。
     fields: list[str] | None = None
     provider_checkpoint: WorkflowProviderCheckpoint | None = None
 
@@ -155,13 +154,12 @@ _ARTIFACT_BY_STEP: dict[str, str] = {
     "asset_sheets": "asset_sheets",
     "final_script": "script",
     "shot_grid": "shot_grids",
-    "video_prompt": "video_prompts",
     "video": "videos",
     "edit": "edit_timelines",
 }
 
 _TASK_STEP: dict[str, str] = {
-    "text_episode_script": "final_script",
+    "text_episode_script": "storyboard_prompt",
     **dict.fromkeys(ASSET_SPECS, "asset_sheets"),
     "shot_grid": "shot_grid",
     "video": "video",
@@ -169,10 +167,7 @@ _TASK_STEP: dict[str, str] = {
 
 
 def _task_step(observation: WorkflowTaskObservation) -> str | None:
-    """任务归入的步骤：草稿 AI 修复按草稿归入脚本规划或正式脚本（提示词编写草稿），其余按任务类型。"""
-    if observation.task_type == "text_episode_script" and observation.fields == ["video_prompt"]:
-        # 视频提示词与分镜提示词同任务类型：按 payload 的 fields 归行（D-19）。
-        return "video_prompt"
+    """任务按任务类型归入制作步骤。"""
     return _TASK_STEP.get(observation.task_type)
 
 
@@ -181,12 +176,11 @@ _ACTION_STEP: dict[WorkflowActionType, str] = {
     WorkflowActionType.COLLECT_PROJECT_INPUT: "project_input",
     WorkflowActionType.RETRY_PROJECT_MIGRATION: "project_input",
     WorkflowActionType.CREATE_EPISODE: "project_input",
-    WorkflowActionType.AUTHOR_PROMPTS: "final_script",
+    WorkflowActionType.AUTHOR_PROMPTS: "storyboard_prompt",
     WorkflowActionType.PREPARE_EPISODE_ASSETS: "asset_sheets",
     WorkflowActionType.PLAN_SHORT_DRAMA_STORYBOARDS: "final_script",
     WorkflowActionType.GENERATE_ASSET_SHEETS: "asset_sheets",
     WorkflowActionType.GENERATE_SHOT_GRIDS: "shot_grid",
-    WorkflowActionType.AUTHOR_VIDEO_PROMPTS: "video_prompt",
     WorkflowActionType.GENERATE_VIDEOS: "video",
     WorkflowActionType.CREATE_EDIT_TIMELINE: "edit",
 }
@@ -221,6 +215,8 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
     if step_id == "project_input":
         return content.episode_count > 0
     if step_id == "final_script":
+        return has_items
+    if step_id == "storyboard_prompt":
         return has_items and not content.pending_authoring_ids
     if step_id == "asset_sheets":
         return (
@@ -233,15 +229,6 @@ def _step_done(step_id: str, status: WorkflowStatus) -> bool:
         return has_items
     if step_id == "shot_grid":
         return has_items and not artifacts.get("shot_grids", {}).get("missing_ids")
-    if step_id == "video_prompt":
-        # 过期不算完成：宫格重出之后提示词要按新 K 帧重写（D-18）。
-        prompts = artifacts.get("video_prompts", {})
-        return (
-            has_items
-            and not prompts.get("missing_ids")
-            and not prompts.get("stale_ids")
-            and not prompts.get("awaiting_grid_ids")
-        )
     if step_id == "video":
         return has_items and not artifacts.get("videos", {}).get("missing_ids")
     if step_id == "edit":
@@ -388,7 +375,7 @@ def build_workflow_plan(
         structure_step.problems = [workflow_problem(problem) for problem in structure_problems]
         structure_step.requested_ids = _problem_unit_ids(structure_problems)
         structure_step.action = _structure_action(structure_problems, script_revision=script_revision)
-        for media_step in ("shot_grid", "video_prompt", "video"):
+        for media_step in ("shot_grid", "video"):
             if by_id[media_step].state is not WorkflowStepState.SKIPPED:
                 by_id[media_step].state = WorkflowStepState.PENDING
                 by_id[media_step].action = None

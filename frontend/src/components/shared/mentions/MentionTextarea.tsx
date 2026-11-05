@@ -8,7 +8,7 @@ import type { AssetKind } from "@/types/reference-video";
 import { MentionPicker, type MentionCandidateGroups } from "./MentionPicker";
 
 /**
- * 编辑「分镜 / 视频提示词」里的 `名字@[登记名]` 引用。
+ * 编辑动态分镜提示词里的 `名字@[登记名]` 引用。
  *
  * 正文仍是一段纯文本（后端按 `@[…]` 解析），输入框因此保持原样；`Textarea` 的文字透明，
  * 后面叠一层字符级镜像 `<pre>`：镜像只画样式、不接收指针事件，光标与选区由输入框负责。
@@ -30,7 +30,7 @@ export interface MentionTextareaProps {
   /** 拼候选缩略图 URL 用；缺省只显示类型圆点。 */
   projectName?: string;
   /**
-   * 选中候选后写进正文的形态：`prefixed` 写标准分镜形态 `名字@[登记名]`（分镜 / 视频提示词）；
+   * 选中候选后写进正文的形态：`prefixed` 写标准动态分镜形态 `名字@[登记名]`；
    * `wrapped` 只写 `@[登记名]`（参考素材逐格提示词——那里裸名字会被自动链接，重复名字会出两张图）。
    */
   insertForm?: "prefixed" | "wrapped";

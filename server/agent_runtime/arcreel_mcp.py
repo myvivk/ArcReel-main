@@ -7,6 +7,7 @@ Agent 工具集声明，由内嵌 adapter 暴露。
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from claude_agent_sdk import McpSdkServerConfig
@@ -26,11 +27,12 @@ def build_arcreel_mcp_server(
     data_root: Path,
     user_id: str = DEFAULT_USER_ID,
     report_progress: ProgressReporter | None = None,
+    session_id_provider: Callable[[], str | None] | None = None,
 ) -> McpSdkServerConfig:
     """以会话项目构建暴露全部 ArcReel 工具的 in-process MCP server；生成类工具等到批次终态再返回。
 
-    ``report_progress`` 由会话层注入：质量闸的每轮结果经它实时写入事件日志（用户可见），
-    并在工具返回时随 ``planning_rounds`` 进入主 Agent 上下文。
+    ``report_progress`` 由会话层注入：仍在跑质量闸的操作可经它实时写入事件日志（用户可见）。
+    机械分镜不调用模型、没有返修轮次；分镜提示词编写的失败原因随工具结果返回。
     """
     return embedded_server(
         AGENT_TOOLSET,
@@ -42,6 +44,7 @@ def build_arcreel_mcp_server(
             source="embedded",
             batch_waiter=batch_enqueue_and_wait,
             report_progress=report_progress,
+            session_id_provider=session_id_provider,
         ),
         services=Services.defaults(ProjectManager(data_root)),
     )

@@ -156,15 +156,6 @@ class GenerateVideosRequest(BaseModel):
             "（逐 unit 的去向、编排时长、申请档位、是否变档、预计费用与缺口）。"
         ),
     )
-    frame_mode: Literal["first_last", "reference"] = Field(
-        default="reference",
-        description=(
-            "帧的下发方式。first_last：首帧 + 尾帧（中间 K 帧不发），适配只收首尾帧的模型；"
-            "reference：所有 K 帧按参考图下发，并额外带上分镜引用资产的资产图"
-            "（顺序为角色→场景→道具→K 帧，提示词按该顺序编号）。"
-            "模型不接受首帧与参考图混用时只能用 first_last。"
-        ),
-    )
 
     @model_validator(mode="before")
     @classmethod
@@ -453,7 +444,6 @@ class _StoryboardBatch:
     builder: GenerationResultBuilder
     states: dict[str, GenerationTargetState]
     log: list[str]
-    frame_mode: str = "reference"
 
     def result(self) -> ToolOutcome[Any]:
         """把已记录的逐目标结论折成响应；预检时折成报价单。"""
@@ -484,7 +474,6 @@ class _StoryboardBatch:
             skip_ids=skip_ids,
             voice_characters=voice_characters,
             storyboard_items=self.screening.items,
-            frame_mode=self.frame_mode,
         )
 
     def _record(self, successes: list[BatchTaskResult], failures: list[BatchTaskResult]) -> None:
@@ -570,9 +559,7 @@ def _check_target_episode(call: _VideoCall, request: _VideoRequestContext, episo
         raise ValueError(f"target.episode_id={episode} 与剧本所属的集 ID {actual_episode} 不一致")
 
 
-async def _generate_episode(
-    call: _VideoCall, request: _VideoRequestContext, log: list[str], frame_mode: str = "reference"
-) -> ToolOutcome[Any]:
+async def _generate_episode(call: _VideoCall, request: _VideoRequestContext, log: list[str]) -> ToolOutcome[Any]:
     project_dir = request.project_dir
 
     screening = _screen_script_targets(request.script, requested_ids=None)
@@ -598,7 +585,6 @@ async def _generate_episode(
         builder=builder,
         states=states,
         log=log,
-        frame_mode=frame_mode,
     )
     for done_id in already_done:
         state = _state_for(states, str(done_id))
@@ -635,9 +621,7 @@ async def _generate_episode(
     )
 
 
-async def _generate_all(
-    call: _VideoCall, request: _VideoRequestContext, log: list[str], frame_mode: str = "reference"
-) -> ToolOutcome[Any]:
+async def _generate_all(call: _VideoCall, request: _VideoRequestContext, log: list[str]) -> ToolOutcome[Any]:
     project_dir = request.project_dir
 
     screening = _screen_script_targets(request.script, requested_ids=None)
@@ -665,7 +649,6 @@ async def _generate_all(
         builder=builder,
         states=states,
         log=log,
-        frame_mode=frame_mode,
     )
     if not selection.targets and not unavailable_tickets and not screen_refused:
         if call.preview:
@@ -715,7 +698,6 @@ async def _generate_selected(
     *,
     scene_ids: list[str],
     force: bool,
-    frame_mode: str = "reference",
 ) -> ToolOutcome[Any]:
     project_dir = request.project_dir
 
@@ -782,7 +764,6 @@ async def _generate_selected(
         builder=builder,
         states=states,
         log=log,
-        frame_mode=frame_mode,
     )
 
     specs, spec_refused = await batch.build_specs(items=selected, skip_ids=already_done)
@@ -810,14 +791,12 @@ async def generate_videos(
         context = _video_request_context(call, args)
         if isinstance(target, EpisodeTarget):
             _check_target_episode(call, context, target.episode_id)
-            return await _generate_episode(call, context, log, args.frame_mode)
+            return await _generate_episode(call, context, log)
         if isinstance(target, AllTarget):
-            return await _generate_all(call, context, log, args.frame_mode)
+            return await _generate_all(call, context, log)
         # 去重以避免同一 ID 重复入队；保留首次出现顺序便于人读日志。
         scene_ids = normalize_requested_ids(target.ids, field="target.ids") or []
-        return await _generate_selected(
-            call, context, log, scene_ids=scene_ids, force=args.force, frame_mode=args.frame_mode
-        )
+        return await _generate_selected(call, context, log, scene_ids=scene_ids, force=args.force)
     except SpeechAdmissionError as exc:
         return _speech_admission_error(_OPERATION, exc, log)
     except Exception as exc:

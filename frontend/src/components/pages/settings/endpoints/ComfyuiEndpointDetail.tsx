@@ -113,6 +113,7 @@ export function ComfyuiEndpointDetail({
   const nameId = useId();
   const mediaLabelId = useId();
   const workflowIdId = useId();
+  const instanceTypeId = useId();
 
   const [definition, setDefinition] = useState(initialDefinition);
   const [bindings, setBindings] = useState<ComfyuiBindings>(() =>
@@ -425,6 +426,27 @@ export function ComfyuiEndpointDetail({
             />
             <p className="text-xs text-muted-foreground">{t("ce_rh_workflow_id_hint")}</p>
           </div>
+          {definition.workflow_id ? (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor={instanceTypeId} className="text-sm font-medium">
+                {t("ce_rh_instance_type_label")}
+              </label>
+              <select
+                id={instanceTypeId}
+                value={definition.instance_type ?? "default"}
+                onChange={(event) => {
+                  const instanceType = event.target.value as "default" | "plus" | "ultra";
+                  setDefinition((current) => ({ ...current, instance_type: instanceType }));
+                }}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              >
+                <option value="default">{t("ce_rh_instance_default")}</option>
+                <option value="plus">{t("ce_rh_instance_plus")}</option>
+                <option value="ultra">{t("ce_rh_instance_ultra")}</option>
+              </select>
+              <p className="text-xs text-muted-foreground">{t("ce_rh_instance_type_hint")}</p>
+            </div>
+          ) : null}
           <div className="flex flex-col gap-1.5">
             <label htmlFor={nameId} className="text-sm font-medium">
               {t("ce_cf_name_label")}

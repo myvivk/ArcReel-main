@@ -676,8 +676,9 @@ class SessionManager:
         can_use_tool: Callable[[str, dict[str, Any], Any], Any] | None = None,
         locale: str = DEFAULT_LOCALE,
         stderr: Callable[[str], None] | None = None,
-        session_id: str | None = None,
         tool_progress: ProgressReporter | None = None,
+        session_id_provider: Callable[[], str | None] | None = None,
+        session_id: str | None = None,
     ) -> Any:
         """委派给 ``OptionsAssembler.build``——SessionManager 不再直接构建 options 与
         hook，仅调用装配器；凭证注入、prompt 装配、hook 工厂均由装配器持有。"""
@@ -687,8 +688,9 @@ class SessionManager:
             can_use_tool=can_use_tool,
             locale=locale,
             stderr=stderr,
-            session_id=session_id,
             tool_progress=tool_progress,
+            session_id_provider=session_id_provider,
+            session_id=session_id,
         )
 
     def _build_session_store(self):
@@ -866,6 +868,7 @@ class SessionManager:
                 locale=locale,
                 stderr=startup_stderr,
                 tool_progress=self._build_tool_progress(managed_ref),
+                session_id_provider=lambda: managed_ref[0].session_id if managed_ref[0] is not None else temp_id,
             )
         except Exception as exc:
             sdk_stderr = startup_stderr.render()
@@ -1265,6 +1268,7 @@ class SessionManager:
                 stderr=startup_stderr,
                 session_id=None if resumable else meta.id,
                 tool_progress=self._build_tool_progress(managed_ref),
+                session_id_provider=lambda: managed_ref[0].session_id if managed_ref[0] is not None else session_id,
             )
         except Exception as exc:
             sdk_stderr = startup_stderr.render()
@@ -1689,6 +1693,9 @@ class SessionManager:
             managed.status = "error"
             return managed.status
 
+        from server.agent_runtime.tool_tasks import cancel_session
+
+        cancel_session(managed.resolved_sdk_id or managed.session_id)
         managed.last_activity = time.monotonic()
         # 这一轮的 result 记下中断结局，CLI 报 idle 后会话落到 "interrupted"
         return managed.status
@@ -1786,6 +1793,11 @@ class SessionManager:
         managed.turn_outcome = outcome
         managed.last_turn_result = result_msg
         managed.last_activity = time.monotonic()
+        if outcome == "interrupted":
+            try:
+                await self.ledger.settle_session_calls_cancelled(managed.resolved_sdk_id or managed.session_id)
+            except Exception:
+                logger.exception("收口 interrupted 会话的文本调用失败 session_id=%s", managed.session_id)
         if outcome == "error":
             logger.warning(
                 "assistant session result error",
@@ -1882,6 +1894,11 @@ class SessionManager:
         managed.last_activity = time.monotonic()
         await self.meta_store.update_status(managed.session_id, status)
         managed.interrupt_requested = False
+        if status == "interrupted":
+            try:
+                await self.ledger.settle_session_calls_cancelled(managed.resolved_sdk_id or managed.session_id)
+            except Exception:
+                logger.exception("收口 interrupted 会话的文本调用失败 session_id=%s", managed.session_id)
 
         # 事件日志侧补写 typed 中断条目：此路径下 inbox 处理已终止，
         # SDK 自己的回显不会再经写入点入日志。尾检去重保证与已入日志的

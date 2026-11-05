@@ -11,7 +11,6 @@ from typing import Any
 
 from lib.config.resolver import ConfigResolver
 from lib.episode.episode_ids import describe_episode_for_agent
-from lib.generation.video_request_facts import VideoRequestFactsError, VideoRequestFactsFailure
 from lib.i18n import _ as translate
 from lib.infra.schema_guards import is_int, is_str
 from lib.project.project_manager import ProjectManager
@@ -37,7 +36,7 @@ class TextGenerationRequest:
     entry_ids: tuple[str, ...] = ()
     #: 提示词编写显式重写范围内条目的本次字段；为 False 时只补缺失的本次字段。
     rewrite: bool = False
-    #: 提示词编写的字段范围；为空时分镜类默认只写 image_prompt，video_prompt 须显式单独请求。
+    #: 提示词编写的字段范围；当前只允许唯一动态分镜提示词 image_prompt。
     fields: tuple[str, ...] = ()
     #: 用户认可覆盖的正式脚本指纹，取自 ``prompt_overwrite.revision``。
     overwrite_revision: str | None = None
@@ -51,10 +50,8 @@ class TextGenerationRequest:
         if any(not is_str(entry_id) or not entry_id for entry_id in entry_ids):
             raise ValueError("entry_ids must be non-empty strings")
         fields = tuple(self.fields)
-        if any(field not in {"image_prompt", "video_prompt"} for field in fields):
-            raise ValueError("fields must be image_prompt/video_prompt")
-        if {"image_prompt", "video_prompt"} <= set(fields):
-            raise ValueError("fields must choose either image_prompt or video_prompt, not both")
+        if any(field != "image_prompt" for field in fields):
+            raise ValueError("fields must contain only image_prompt")
         object.__setattr__(self, "entry_ids", entry_ids)
         object.__setattr__(self, "fields", fields)
 
@@ -106,17 +103,6 @@ def _prompt_overwrite_error(episode_label: str, exc: PromptOverwriteRequired) ->
     )
 
 
-class VideoRequestFactsUnavailableError(TextGenerationError):
-    """视频请求事实解析不出（模型能力不满足、时长档位缺失等），文本任务无法继续；携带失败对象。
-
-    ``failure`` 的问题码、参数与修复指引原样进入工具问题与任务失败，读侧按问题码渲染原因。
-    """
-
-    def __init__(self, failure: VideoRequestFactsFailure) -> None:
-        super().__init__(video_facts_failure_text(failure))
-        self.failure = failure
-
-
 def _instructions(value: Any) -> str | None:
     if value is None:
         return None
@@ -127,15 +113,6 @@ def _instructions(value: Any) -> str | None:
             f"❌ 参数错误：instructions 过长（{len(value)} 字符，上限 {MAX_INSTRUCTIONS_LEN}），请精简后重试"
         )
     return value.strip() or None
-
-
-def video_facts_failure_text(failure: VideoRequestFactsFailure) -> str:
-    """视频请求事实解析不出时回给 Agent 的说明：按问题码陈述原因与出路，附问题码与参数摘要。
-
-    问题码与参数就是失败契约，与预检、执行同码。
-    """
-    params: dict[str, Any] = failure.parameters()
-    return f"❌ {translate(failure.code, **params)}（{failure.summary()}）"
 
 
 class OperationNotAdmittedError(TextGenerationError):
@@ -195,6 +172,22 @@ async def generate_episode_script(
     episode = request.episode
     instructions = _instructions(request.instructions)
     project_path = projects.get_project_path(project_name)
+    declared_prompt_spec: str | None = None
+    try:
+        from server.services.tasks.generation_context import VideoLaneRequest, resolve_generation_context
+
+        project = await asyncio.to_thread(projects.load_project, project_name)
+        context = await resolve_generation_context(
+            project_name,
+            None,
+            project=project,
+            project_path=project_path,
+            video=VideoLaneRequest(generation_type="r2v"),
+        )
+        declared_prompt_spec = context.video.prompt_spec
+    except Exception:
+        # 写作侧拿不到端点规范时退回按 provider/model 名匹配，不阻断提示词编写。
+        declared_prompt_spec = None
     await asyncio.to_thread(
         prompt_authoring_preflight,
         project_path,
@@ -211,6 +204,7 @@ async def generate_episode_script(
                 ScriptGenerator,
                 project_path,
                 config_resolver=config_resolver,
+                video_prompt_spec=declared_prompt_spec,
             )
             prompt = await generator.build_prompt(
                 episode,
@@ -224,6 +218,7 @@ async def generate_episode_script(
         generator = await ScriptGenerator.create(
             project_path,
             config_resolver=config_resolver,
+            video_prompt_spec=declared_prompt_spec,
         )
         rewritten: list[str] = []
         skipped: list[str] = []
@@ -243,8 +238,6 @@ async def generate_episode_script(
         # 点名的条目不在正式剧本内是调用方的错：报「拒绝生成」而不是让它冒成 internal_error，
         # 后者会引导 Agent 原样重试同一份必然失败的参数。
         raise TextGenerationError(f"❌ 编写范围无效: {exc}") from exc
-    except VideoRequestFactsError as exc:
-        raise VideoRequestFactsUnavailableError(exc.failure) from exc
     except FileNotFoundError as exc:
         raise TextGenerationError(f"❌ 文件错误: {exc}") from exc
     skipped_note = (

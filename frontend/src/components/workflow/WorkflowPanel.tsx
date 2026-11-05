@@ -29,7 +29,6 @@ import { useEpisodeLedger } from "@/hooks/useEpisodeLedger";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAppStore } from "@/stores/app-store";
 import { useProjectsStore } from "@/stores/projects-store";
-import { usePromptAuthoringStore } from "@/stores/prompt-authoring-store";
 import { useShortDramaGenerateStore } from "@/stores/short-drama-generate-store";
 import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
 import { useWorkflowStore } from "@/stores/workflow-store";
@@ -97,7 +96,6 @@ function useEditOverview(projectName: string, episodeId: number | null, refetchO
 const CLOSES_POPOVER = new Set<StepAct["intent"]["type"]>([
   "agent",
   "open_author_prompts",
-  "open_video_prompts",
   "asset_batch",
   "storyboard_batch",
   "view_unit",
@@ -246,17 +244,6 @@ export function WorkflowPanel({ projectName, episode, onViewUnit, onRegenerate, 
           return;
         case "open_author_prompts":
           onAuthorPrompts?.();
-          return;
-        case "open_video_prompts":
-          // 整集补缺只写视频提示词：范围预选这批，字段锁定（D-20）。
-          usePromptAuthoringStore.getState().open({
-            projectName,
-            episode: episodeId,
-            scope: "custom",
-            defaultEntryIds: intent.entryIds,
-            defaultFields: ["video_prompt"],
-            lockFields: true,
-          });
           return;
         case "asset_batch":
           setAssetBatchEpisode(intent.episodeId);

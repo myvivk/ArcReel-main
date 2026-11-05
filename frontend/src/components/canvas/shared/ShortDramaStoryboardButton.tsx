@@ -10,7 +10,6 @@ import { useAssistantStore } from "@/stores/assistant-store";
 import { useDemoWorkbench } from "@/onboarding/use-demo-workbench";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Dialog,
   DialogBody,
@@ -34,7 +33,7 @@ type MissingAsset = { type: string; name: string };
 interface Props {
   projectName: string;
   episode: number;
-  /** 本集现有分镜数：0 时叫「AI 分镜」，≥1 时叫「AI 重新分镜」。 */
+  /** 本集现有分镜数：0 时叫「机械分镜」，≥1 时叫「重新分镜」。 */
   storyboardCount: number;
   /** 本集现有分镜 ID（scene_id）：重新分镜时可只勾选部分分镜重写，其余原样保留。 */
   sceneIds: string[];
@@ -58,10 +57,10 @@ function sceneLabel(sceneId: string): string {
 }
 
 /**
- * 分镜页的「AI 分镜 / AI 重新分镜」入口：读本集已保存的 Markdown 源稿重建分镜。
- * AI 分镜是唯一生成方式（没有快速切分/机械回落），校验不过就带原因返修。
+ * 分镜页的「机械分镜 / 重新分镜」入口：读本集已保存的 Markdown 源稿重建分镜结构。
+ * 结构由服务端代码确定性切分，不调用模型；分镜提示词是下一步，由「编写提示词」补齐。
  * 本集引用的资产缺外观描述时入口置灰，提示先去资产页补齐；不新增资产、不生成图片或视频，
- * 视频提示词留待宫格确认后编写。
+ * 唯一动态分镜提示词在该阶段生成，后续参考素材与视频共同使用。
  */
 export function ShortDramaStoryboardButton(props: Props) {
   return <ShortDramaStoryboardAction key={`${props.projectName}:${props.episode}`} {...props} />;
@@ -87,15 +86,14 @@ function ShortDramaStoryboardAction({
   const controllerRef = useRef<AbortController | null>(null);
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [planningStrength, setPlanningStrength] = useState(2);
   const [forceRegenerate, setForceRegenerate] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
     scenes: number;
     partial: boolean;
-    missing: MissingAsset[];
-    cached: boolean;
+    pending: number;
+    reused: boolean;
   } | null>(null);
   const [pendingResult, setPendingResult] = useState<typeof result>(null);
   const [handoffConfirmOpen, setHandoffConfirmOpen] = useState(false);
@@ -148,18 +146,16 @@ function ShortDramaStoryboardAction({
         episode,
         revision,
         hasStoryboards,
-        planningStrength,
         forceRegenerate,
         partial ? selectedIds : undefined,
         { signal: controller.signal },
       );
       controller.signal.throwIfAborted();
-      const resMissing = res.assets_without_description ?? [];
       const completed = {
         scenes: partial ? res.regenerated_scenes ?? res.scenes : res.scenes,
         partial,
-        missing: resMissing,
-        cached: res.planning_cached,
+        pending: res.pending_authoring ?? 0,
+        reused: res.reused ?? false,
       };
       setPendingResult(completed);
       const refreshed = await refreshAfterWrite(projectName, t);
@@ -167,11 +163,12 @@ function ShortDramaStoryboardAction({
       if (refreshed !== "success") return;
       setPendingResult(null);
       setResult(completed);
-      if (resMissing.length > 0) {
+      const warnings = res.warnings ?? [];
+      if (warnings.length > 0) {
         useAppStore.getState().pushToast(
-          t("short_drama_ai_storyboard_missing", {
-            count: resMissing.length,
-            assets: resMissing.map((asset) => asset.name).join("、"),
+          t("short_drama_mechanical_storyboard_warnings", {
+            count: warnings.length,
+            scenes: warnings.map((warning) => warning.scene_id).join("、"),
           }),
           "warning",
         );
@@ -212,16 +209,16 @@ function ShortDramaStoryboardAction({
     if (readonly || blocked || busy || submitting || !source?.exists) return;
     const scope = hasStoryboards
       ? `${
-          partial && selectedIds.length > 0 ? `只重写所选分镜 ${selectedIds.join("、")}` : "先问我全量还是部分"
-        }，强度 ${planningStrength}${forceRegenerate ? "，强制忽略缓存" : ""}；` +
+          partial && selectedIds.length > 0 ? `只重切所选分镜 ${selectedIds.join("、")}` : "先问我全量还是部分"
+        }${forceRegenerate ? "，强制重切" : ""}；` +
         "已有分镜图或视频时先确认是否覆盖，得到同意后再传 confirm_artifacts=true。"
-      : `本集全量，强度 ${planningStrength}。`;
+      : "本集全量。";
     const risk = hasStoryboards
-      ? `本集已有 ${storyboardCount} 个分镜：重分镜会覆盖这些分镜的结构和提示词，并让已有参考素材、视频提示词和视频过期；已生成媒体保留但需重做。`
+      ? `本集已有 ${storyboardCount} 个分镜：重切会覆盖这些分镜的结构，并把它们的提示词清回待编写，已有参考素材和视频会过期；已生成媒体保留但需重做。`
       : "";
     const prompt =
-      `请用 plan_short_drama_storyboards 为第 ${episode} 集执行 AI 分镜。${scope}${risk}` +
-      ` 不要自己改 scripts/episode_${episode}.json；完成后刷新计划、汇报并结束本轮。`;
+      `请用 plan_short_drama_storyboards 为第 ${episode} 集执行机械分镜（不调用模型）。${scope}${risk}` +
+      ` 分镜结构落盘后，下一步用 generate_episode_script 编写分镜提示词；不要自己改 scripts/episode_${episode}.json；完成后刷新计划、汇报并结束本轮。`;
     useAssistantStore.getState().setInput(prompt);
     useAppStore.getState().setAssistantPanelOpen(true);
   };
@@ -383,32 +380,6 @@ function ShortDramaStoryboardAction({
                 <span>{t("short_drama_ai_storyboard_force_regenerate")}</span>
               </label>
 
-              <div className="flex flex-col gap-1">
-                <span className="text-muted-foreground">{t("short_drama_ai_storyboard_strength")}</span>
-                <ToggleGroup
-                  value={[String(planningStrength)]}
-                  onValueChange={(values) => {
-                    if (values[0]) setPlanningStrength(Number(values[0]));
-                  }}
-                  variant="outline"
-                  size="sm"
-                  disabled={submitting || readonly}
-                  aria-label={t("short_drama_ai_storyboard_strength")}
-                >
-                  {[1, 2, 3].map((level) => (
-                    <ToggleGroupItem
-                      key={level}
-                      value={String(level)}
-                    >
-                      {t(`short_drama_ai_storyboard_strength_${level}`)}
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-                <p className="text-xs text-muted-foreground">
-                  {t("short_drama_ai_storyboard_strength_hint")}
-                </p>
-              </div>
-
               {result ? (
                 <div className="flex flex-col gap-2 border-t border-border pt-3">
                   <p className="flex items-center gap-2 text-good">
@@ -416,24 +387,12 @@ function ShortDramaStoryboardAction({
                     {result.partial
                       ? t("short_drama_ai_storyboard_partial_result", { scenes: result.scenes })
                       : t("short_drama_ai_storyboard_result", { scenes: result.scenes })}
-                    {result.cached ? ` · ${t("short_drama_ai_storyboard_cache_hit")}` : ""}
+                    {result.reused ? ` · ${t("short_drama_mechanical_storyboard_reused")}` : ""}
                   </p>
-                  {result.missing.length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-warn">
-                      <AlertTriangle aria-hidden className="size-4 shrink-0" />
-                      <span>
-                        {t("short_drama_ai_storyboard_missing", {
-                          count: result.missing.length,
-                          assets: result.missing.map(missingLabel).join("、"),
-                        })}
-                      </span>
-                      <Link
-                        href={`/${ASSET_ROUTE[result.missing[0].type] ?? WORKSPACE_ROUTE_CHARACTERS}?focus=${encodeURIComponent(result.missing[0].name)}`}
-                        className="focus-ring rounded-sm underline underline-offset-2 hover:text-foreground"
-                      >
-                        {t("short_drama_ai_storyboard_fix_missing")}
-                      </Link>
-                    </div>
+                  {result.pending > 0 ? (
+                    <p className="text-muted-foreground">
+                      {t("short_drama_mechanical_storyboard_pending", { count: result.pending })}
+                    </p>
                   ) : null}
                 </div>
               ) : null}

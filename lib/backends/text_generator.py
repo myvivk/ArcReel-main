@@ -109,6 +109,7 @@ class TextGenerator:
         project_name: str | None = None,
         *,
         require_complete: bool = False,
+        session_id: str | None = None,
     ) -> TextGenerationResult:
         """生成文本并自动记录用量。
 
@@ -129,6 +130,7 @@ class TextGenerator:
             provider=self._provider_id,
             user_id=self._user_id,
             purpose=self._purpose,
+            session_id=session_id,
         ) as call:
             try:
                 result = await self.backend.generate(request)

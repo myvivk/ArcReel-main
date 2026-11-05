@@ -1,14 +1,4 @@
-"""Per-shot multi-frame grid planning API.
-
-单分镜出图优先使用 ``ShotGrid.prompt``：弹窗仅在「确定」时落盘，
-POST /generate 与任务层都用它；``image_prompt.scene`` 仅作「prompt 为空」时的回退（整集批量
-走这条，不预存 prompt）。AI 生成提示词的同步端点 ``/author-prompt`` 把 scene + 资产 + 画风
-喂给模型，产出纯逐格文本回填弹窗输入框；前端在 AI 返回与关闭弹窗时把文本存成草稿
-（``PUT /draft``，D-5），「确定」才保存规格并入队。
-
-保存与逐格文本生成与 Agent 工具共用 :mod:`server.services.shot_grid_config` 的同一份判定；
-领域异常由 app 级 handler 翻成 HTTP 状态与本地化文案。
-"""
+"""参考素材宫格 API：生成直接使用当前分镜提示词，旧逐格编辑端点保留兼容。"""
 
 from __future__ import annotations
 
@@ -37,14 +27,13 @@ from lib.infra.path_safety import safe_join
 from lib.project.project_manager import get_project_manager
 from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
-    parse_grid_prompt_cells,
     parse_scene_shots,
     scene_revision_of,
     shot_scene_text,
 )
 from lib.script.grid.shot_grid_manager import ShotGridManager
 from lib.script.grid.shot_models import ShotGrid
-from lib.script.grid.shot_prompt_builder import cell_duplication_problem, shot_grid_cells
+from lib.script.grid.shot_prompt_builder import shot_grid_cells
 from lib.script.grid.splitter import split_grid_image
 from lib.script.storyboard_sequence import get_storyboard_items
 from server.auth import CurrentUser
@@ -251,8 +240,7 @@ def save_shot_grid(project_name: str, req: SaveShotGridRequest):
 
 @router.post("/generate")
 async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, user: CurrentUser, t: Translator):
-    """保存过的宫格按 ``ShotGrid.prompt`` 出图；prompt 为空时回退到 ``image_prompt.scene`` 现解析
-    （整集批量走这条，不预存 prompt）。不预存任何草稿（D-1 / D-3 / D-7）。"""
+    """按已保存规格入队，画面直接取当前分镜提示词。"""
 
     project_manager = get_project_manager()
     project_path = project_manager.get_project_path(project_name)
@@ -265,52 +253,20 @@ async def generate_shot_grid(project_name: str, script_file: str, shot_id: str, 
     if grid.status == "generating":
         return {"task_id": grid.task_id, "status": grid.status}
 
-    # 逐格文本：用户填的 prompt 优先，否则现解析 scene（批量同路径）。
-    frames = parse_grid_prompt_cells(grid.prompt) if grid.prompt else []
-    if grid.prompt.strip() and len(frames) != grid.rows * grid.cols:
-        raise HTTPException(status_code=422, detail=t("shot_grid_cells_invalid", count=grid.rows * grid.cols))
+    # 单分镜与批量统一：当前分镜提示词是画面来源，历史逐格 prompt 不再覆盖它。
+    items, id_field, _, _, _ = get_storyboard_items(script)
+    shot = next((item for item in items if str(item.get(id_field, "")) == shot_id), None)
+    if shot is None:
+        raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
+    scene_text = shot_scene_text(shot)
+    if not scene_text.strip():
+        raise HTTPException(status_code=400, detail=t("shot_grid_scene_missing"))
+    try:
+        frames = list(parse_scene_shots(scene_text).shots)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=t("shot_grid_scene_not_sequence")) from exc
     if not frames:
-        script = project_manager.load_script(project_name, script_file)
-        items, id_field, _, _, _ = get_storyboard_items(script)
-        shot = next((item for item in items if str(item.get(id_field, "")) == shot_id), None)
-        if shot is None:
-            raise HTTPException(status_code=404, detail=t("shot_grid_shot_missing"))
-        if not shot_scene_text(shot).strip():
-            raise HTTPException(status_code=400, detail=t("shot_grid_scene_missing"))
-        try:
-            frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=t("shot_grid_scene_not_sequence")) from exc
-        # 镜头少于格数时，宫格是帧位（首帧/延续帧/尾帧），不是一镜一格：让模型按帧位写逐格文本，
-        # 而不是把末镜重复填空。失败才回退到机械对齐，保证出图不因文本调用失败而卡死。
-        if len(frames) < grid.rows * grid.cols:
-            try:
-                authored = await author_grid_cells(
-                    project_manager,
-                    project_name,
-                    script_file=script_file,
-                    episode=grid.episode,
-                    shot_id=shot_id,
-                    rows=grid.rows,
-                    cols=grid.cols,
-                    user_id=user.id,
-                )
-                authored_frames = parse_grid_prompt_cells(authored)
-                if len(authored_frames) == grid.rows * grid.cols:
-                    frames = authored_frames
-                    # 逐格文本是出图的唯一输入（ADR 0099 D-2）；补格结果不回写 prompt，
-                    # 执行端会重新解析 scene 并机械补帧，刚生成的逐格文本就被丢掉了。
-                    grid.prompt = authored
-            except Exception as exc:
-                logger.warning("grid frame authoring failed for %s: %s", shot_id, exc)
-            if len(frames) < grid.rows * grid.cols:
-                raise HTTPException(
-                    status_code=422,
-                    detail="宫格逐格文本生成失败：镜头数不足，无法按帧位补齐（可重试或改用更小格数）",
-                )
-            problem = cell_duplication_problem(frames)
-            if problem:
-                raise HTTPException(status_code=422, detail=f"宫格逐格文本不合格：{problem}（可重试）")
+        raise HTTPException(status_code=422, detail=t("shot_grid_scene_not_sequence"))
     # 重新生成前把上一版 confirmed 快照成历史记录；当前记录随后会被清空，但旧图必须还能看。
     if grid.status == "confirmed" and grid.composite_path:
         source = project_path / grid.composite_path

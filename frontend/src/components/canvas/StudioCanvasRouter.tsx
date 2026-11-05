@@ -48,15 +48,12 @@ const StoryPlanningCanvas = lazyNamed(() => import("./story/StoryPlanningCanvas"
 const EPISODE_ROUTE_PATH = `/${WORKSPACE_ROUTE_EPISODES}/:episodeId`;
 
 // ---------------------------------------------------------------------------
-// resolveSegmentPrompt -- shared segment lookup for generate storyboard/video
+// resolveSegmentPrompt -- shared dynamic prompt lookup for storyboard/video
 // ---------------------------------------------------------------------------
-
-type PromptField = "image_prompt" | "video_prompt";
 
 function resolveSegmentPrompt(
   scripts: Record<string, EpisodeScript>,
   segmentId: string,
-  field: PromptField,
   scriptFile?: string,
 ): { resolvedFile: string; prompt: unknown; duration: number } | null {
   const resolvedFile = scriptFile ?? Object.keys(scripts)[0];
@@ -67,7 +64,7 @@ function resolveSegmentPrompt(
   const seg = script.scenes.find((s) => s.scene_id === segmentId);
   return {
     resolvedFile,
-    prompt: seg?.[field] ?? "",
+    prompt: seg?.image_prompt ?? "",
     duration: seg?.duration_seconds ?? 4,
   };
 }
@@ -228,7 +225,7 @@ export function StudioCanvasRouter() {
   const handleGenerateStoryboard = useCallback(async (segmentId: string, scriptFile?: string) => {
     const scripts = useProjectsStore.getState().currentScripts;
     if (!currentProjectName || !scripts) return;
-    const resolved = resolveSegmentPrompt(scripts, segmentId, "image_prompt", scriptFile);
+    const resolved = resolveSegmentPrompt(scripts, segmentId, scriptFile);
     if (!resolved) return;
     try {
       await enqueueStoryboard(
@@ -247,21 +244,18 @@ export function StudioCanvasRouter() {
       segmentId: string,
       scriptFile?: string,
       seed?: number | null,
-      frameMode: "first_last" | "reference" = "first_last",
     ) => {
       const scripts = useProjectsStore.getState().currentScripts;
       if (!currentProjectName || !scripts) return;
-      const resolved = resolveSegmentPrompt(scripts, segmentId, "video_prompt", scriptFile);
+      const resolved = resolveSegmentPrompt(scripts, segmentId, scriptFile);
       if (!resolved) return;
       try {
         await enqueueVideo(
           currentProjectName,
           segmentId,
-          resolved.prompt as string | Record<string, unknown>,
           resolved.resolvedFile,
           resolved.duration,
           seed,
-          frameMode,
         );
     } catch (err) {
       useAppStore.getState().pushToast(tRef.current("generate_video_failed", { message: errMsg(err) }), "error");

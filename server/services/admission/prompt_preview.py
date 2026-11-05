@@ -15,6 +15,7 @@ warning，用户在生成前就能看到有参考图不会随请求发出。视�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -42,14 +43,18 @@ from lib.prompts.model_specs import VideoPromptSpec, resolve_video_prompt_spec
 from lib.prompts.prompt_utils import VideoReferenceLabel
 from lib.script.script_models import resolve_content_mode
 from lib.script.storyboard_sequence import (
+    StoryboardImageBindingRequired,
     apply_storyboard_frame_mode,
     find_storyboard_item,
     get_storyboard_items,
+    require_confirmed_storyboard_grid,
     resolve_storyboard_video_asset_images,
     split_storyboard_video_asset_images,
+    storyboard_motion_prompt_item_problem,
 )
 from lib.script.storyboard_video_request import (
     resolve_storyboard_audio_inputs,
+    resolve_storyboard_video_prompt,
     storyboard_asset_links,
     storyboard_video_asset_trim_warning,
 )
@@ -194,9 +199,7 @@ async def resolve_candidate_video_context(
     if not provider or not model:
         return None
     spec: VideoPromptSpec | None = (
-        resolve_video_prompt_spec(declared=declared)
-        if declared
-        else resolve_video_prompt_spec(provider, model)
+        resolve_video_prompt_spec(declared=declared) if declared else resolve_video_prompt_spec(provider, model)
     )
 
     facts: VideoRequestFacts | None = None
@@ -222,13 +225,15 @@ async def preview_item_prompts(
     item_id: str,
     *,
     video_backend: str | None = None,
+    draft: bool = False,
     projects: ProjectManager | None = None,
 ) -> ItemPromptPreview:
     """渲染一个分镜条目的分镜图与视频最终提示词文本。
 
     ``video_backend`` 是生成弹窗里选中的候选模型（``provider/model``）。给了就按它解析视频
     lane 的提示词规范——模型决定用哪套方言，面板上看到的就是这次真正会发出去的文本；不给则
-    沿用项目当前配置。``projects`` 供工具运行时把已解析的 ProjectManager 注入进来。
+    沿用项目当前配置。``draft`` 允许参考素材 K 帧尚未确认时渲染草稿（不含 K 帧声明），
+    供写作阶段核对目标模型方言。``projects`` 供工具运行时把已解析的 ProjectManager 注入进来。
     """
 
     def _load() -> tuple[dict[str, Any], Path, dict[str, Any], dict[str, Any], str]:
@@ -304,6 +309,15 @@ async def preview_item_prompts(
     )
 
     def _render_both() -> ItemPromptPreview:
+        # 规范只解析一次：渲染进 `_render` 的正文与 render_video 里用的 spec 必须是同一个，
+        # 否则 H3 这类方言会被当成通用口径渲染。
+        prompt_spec = (
+            candidate_spec
+            if candidate_spec is not None
+            else resolve_video_prompt_spec(video_facts.provider_id, video_facts.model_id)
+            if isinstance(video_facts, VideoRequestFacts)
+            else None
+        )
         storyboard_image = image
         if storyboard_image is None:
             assert generation_input is not None
@@ -322,60 +336,71 @@ async def preview_item_prompts(
         video_warnings: list[dict[str, Any]] = []
 
         def render_video(_prompt: object) -> str:
-            script_input = resolve_usable_episode_script_input(
-                project_path=project_path,
-                project=project,
-                script=script,
-                script_filename=script_file,
-            )
-            items, id_field, *_ = get_storyboard_items(script)
-            slots = resolve_usable_storyboard_video_slots(
-                project_path=project_path,
-                project=project,
-                episode=script_input.episode,
-                items=items,
-                id_field=id_field,
-                resource_id=item_id,
-            )
-            # 生成固定走参考图模式：预览与实发同一份参考图序列（资产图在前、K 帧在后）。
-            slots = apply_storyboard_frame_mode(slots, "reference")
-            references: list[VideoReferenceLabel] = []
+            has_grid = True
+            try:
+                require_confirmed_storyboard_grid(item, item_id)
+            except StoryboardImageBindingRequired:
+                if not draft:
+                    raise
+                # 草稿只给写作阶段核对目标模型方言：没有 K 帧，不声明参考图编号，
+                # 也不把「这次真正发什么」说满；正式预览仍要求 confirmed 宫格。
+                has_grid = False
+            if problem := storyboard_motion_prompt_item_problem(project, item):
+                raise ValueError(f"动态分镜提示词不符合视频生成要求: {problem}")
             asset_links = storyboard_asset_links(project, item, project_name)
-            if isinstance(video_facts, VideoRequestFacts):
-                assets = resolve_storyboard_video_asset_images(
-                    project_path=project_path, project=project, item=item
+            slots = None
+            references: list[VideoReferenceLabel] = []
+            audio_speakers: tuple[str, ...] = ()
+            if has_grid:
+                script_input = resolve_usable_episode_script_input(
+                    project_path=project_path,
+                    project=project,
+                    script=script,
+                    script_filename=script_file,
                 )
-                limit = video_facts.max_reference_images or 0
-                selected_assets, dropped_assets = split_storyboard_video_asset_images(
-                    assets,
-                    max_reference_images=limit,
-                    frame_count=len(slots.frames),
+                items, id_field, *_ = get_storyboard_items(script)
+                slots = resolve_usable_storyboard_video_slots(
+                    project_path=project_path,
+                    project=project,
+                    episode=script_input.episode,
+                    items=items,
+                    id_field=id_field,
+                    resource_id=item_id,
                 )
-                if (
-                    trim_warning := storyboard_video_asset_trim_warning(
-                        dropped_assets,
-                        limit=limit,
+                # 生成固定走参考图模式：预览与实发同一份参考图序列（资产图在前、K 帧在后）。
+                slots = apply_storyboard_frame_mode(slots, "reference")
+                if isinstance(video_facts, VideoRequestFacts):
+                    assets = resolve_storyboard_video_asset_images(
+                        project_path=project_path, project=project, item=item
+                    )
+                    limit = video_facts.max_reference_images or 0
+                    selected_assets, dropped_assets = split_storyboard_video_asset_images(
+                        assets,
+                        max_reference_images=limit,
                         frame_count=len(slots.frames),
                     )
-                ) is not None:
-                    video_warnings.append(trim_warning)
+                    if (
+                        trim_warning := storyboard_video_asset_trim_warning(
+                            dropped_assets,
+                            limit=limit,
+                            frame_count=len(slots.frames),
+                        )
+                    ) is not None:
+                        video_warnings.append(trim_warning)
+                    references.extend(VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets)
                 references.extend(
-                    VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets
+                    VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
+                    for _role, frame in slots.frames
+                    if frame.keyframe_index is not None
                 )
-            references.extend(
-                VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
-                for _role, frame in slots.frames
-                if frame.keyframe_index is not None
-            )
-            audio_speakers: tuple[str, ...] = ()
-            if isinstance(video_facts, VideoRequestFacts):
-                audio_speakers = resolve_storyboard_audio_inputs(
-                    project=project,
-                    project_path=project_path,
-                    item=item,
-                    slots=slots,
-                    voice=VoiceRenderSettings.from_request_facts(video_facts),
-                ).speakers
+                if isinstance(video_facts, VideoRequestFacts):
+                    audio_speakers = resolve_storyboard_audio_inputs(
+                        project=project,
+                        project_path=project_path,
+                        item=item,
+                        slots=slots,
+                        voice=VoiceRenderSettings.from_request_facts(video_facts),
+                    ).speakers
             return storyboard_video_prompt(
                 item,
                 content_mode=content_mode,
@@ -383,18 +408,16 @@ async def preview_item_prompts(
                 slots=slots,
                 asset_links=asset_links,
                 audio_speakers=audio_speakers,
-                spec=(
-                    candidate_spec
-                    if candidate_spec is not None
-                    else resolve_video_prompt_spec(video_facts.provider_id, video_facts.model_id)
-                    if isinstance(video_facts, VideoRequestFacts)
-                    else None
-                ),
+                spec=prompt_spec,
                 references=references or None,
                 language=(project.get("source_language") if isinstance(project.get("source_language"), str) else None),
             )
 
-        video = _render(item.get("video_prompt"), render_video)
+        # 缺正文（待生成 / 空）交给 `_render` 按 pending/missing 分类；其余按目标模型投影。
+        resolved_video_prompt: object = item.get("image_prompt")
+        with contextlib.suppress(ValueError):
+            resolved_video_prompt = resolve_storyboard_video_prompt(item, prompt_spec)
+        video = _render(resolved_video_prompt, render_video)
         if video.text is not None and video_warnings:
             video = replace(video, warnings=tuple(video_warnings))
         return ItemPromptPreview(

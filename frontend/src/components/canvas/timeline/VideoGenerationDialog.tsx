@@ -15,15 +15,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { useProjectsStore } from "@/stores/projects-store";
 import { errMsg } from "@/utils/async";
 import { formatCost } from "@/utils/cost-format";
-import type { CostBreakdown, DramaScene, Utterance, VideoPrompt } from "@/types";
-import { isStructuredVideoPrompt } from "@/utils/prompt-shape";
+import type { CostBreakdown, DramaScene, Utterance } from "@/types";
 import { UtteranceListEditor } from "./UtteranceListEditor";
 
-/** 视频弹窗里可改的内容：画面提示词、发声条目；其余只读展示并给入口。 */
+/** 视频弹窗里可改的内容：发声条目与生成配置；动态分镜提示词只读消费。 */
 interface VideoGenerationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -36,24 +34,8 @@ interface VideoGenerationDialogProps {
   generating?: boolean;
   /** 弹窗内容保存到剧本；返回是否保存并刷新成功。 */
   onSavePatch: (patch: Record<string, unknown>) => Promise<boolean>;
-  /** 保存成功后的入队回调；seed 与帧模式只对本次请求生效。 */
-  onGenerate: (seed: number | null, frameMode: "first_last" | "reference") => Promise<void> | void;
-}
-
-function readAction(prompt: VideoPrompt | string | null): string {
-  if (typeof prompt === "string") return prompt;
-  if (!isStructuredVideoPrompt(prompt)) return "";
-  return typeof prompt.action === "string" ? prompt.action : "";
-}
-
-function readCamera(prompt: VideoPrompt | string | null): string {
-  if (!isStructuredVideoPrompt(prompt)) return "Static";
-  return typeof prompt.camera_motion === "string" ? prompt.camera_motion : "Static";
-}
-
-function readAmbiance(prompt: VideoPrompt | string | null): string {
-  if (!isStructuredVideoPrompt(prompt)) return "";
-  return typeof prompt.ambiance_audio === "string" ? prompt.ambiance_audio : "";
+  /** 保存成功后的入队回调；seed 只对本次请求生效。 */
+  onGenerate: (seed: number | null) => Promise<void> | void;
 }
 
 /** 视频生成配置弹窗：把一个分镜会送进视频模型的内容与当前参数收在一处。 */
@@ -79,15 +61,10 @@ export function VideoGenerationDialog({
   const initialAudio = projectRecord.video_generate_audio === true ? true : projectRecord.video_generate_audio === false ? false : null;
   const initialBinding = projectRecord.character_voice_binding === "reference_audio" ? "reference_audio" : "prompt";
 
-  const [action, setAction] = useState(() => readAction(scene.video_prompt));
-  const [camera, setCamera] = useState(() => readCamera(scene.video_prompt));
-  const [ambiance, setAmbiance] = useState(() => readAmbiance(scene.video_prompt));
   const [utterances, setUtterances] = useState<Utterance[]>(() => scene.utterances ?? []);
   const [seed, setSeed] = useState("");
   const [model, setModel] = useState(initialModel);
   const [resolution, setResolution] = useState(initialResolution);
-  // 只走参考生视频：K 帧全部按参考图下发，帧模式不再暴露给用户。
-  const frameMode = "reference" as const;
   const [audio, setAudio] = useState<boolean | null>(initialAudio);
   const [binding, setBinding] = useState(initialBinding);
   const [voiceStyles, setVoiceStyles] = useState<Record<string, string>>({});
@@ -195,7 +172,7 @@ export function VideoGenerationDialog({
   };
 
   const busy = saving || Boolean(generating);
-  const invalid = !action.trim() || utterances.some((u) => u.kind === "dialogue" && !u.speaker.trim());
+  const invalid = utterances.some((u) => u.kind === "dialogue" && !u.speaker.trim());
 
   const confirm = async () => {
     if (busy || invalid) return;
@@ -223,14 +200,13 @@ export function VideoGenerationDialog({
         await API.updateCharacter(projectName, item.speaker, { voice_style: style });
       }
 
-      const video_prompt = { action: action.trim(), camera_motion: camera.trim() || "Static", ambiance_audio: ambiance.trim() };
-      const saved = await onSavePatch({ video_prompt, utterances });
+      const saved = await onSavePatch({ utterances });
       if (!saved) throw new Error("保存失败，未提交生成");
       const parsedSeed = seed.trim() ? Number(seed) : null;
       if (parsedSeed !== null && (!Number.isInteger(parsedSeed) || !Number.isSafeInteger(parsedSeed))) {
         throw new Error("seed 必须是整数");
       }
-      await onGenerate(parsedSeed, frameMode);
+      await onGenerate(parsedSeed);
       onOpenChange(false);
     } catch (err) {
       setError(errMsg(err));
@@ -255,26 +231,6 @@ export function VideoGenerationDialog({
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-5">
-            <section className="flex flex-col gap-2">
-              <Label>画面提示词（会送进视频模型）</Label>
-              <Textarea
-                value={action}
-                onChange={(event) => setAction(event.target.value)}
-                rows={6}
-                placeholder="0-3秒：…&#10;3-6秒：…"
-              />
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label>运镜</Label>
-                  <Input value={camera} onChange={(event) => setCamera(event.target.value)} placeholder="Push In" />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>环境音</Label>
-                  <Input value={ambiance} onChange={(event) => setAmbiance(event.target.value)} placeholder="烛火、门轴、脚步" />
-                </div>
-              </div>
-            </section>
-
             <section className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <Label>台词与画外音</Label>
@@ -437,7 +393,7 @@ export function VideoGenerationDialog({
 
             <details className="rounded-md border border-border p-3">
               <summary className="cursor-pointer text-sm">
-                查看将按所选模型发送的提示词（已保存内容；改完点「保存并生成」后按新内容重算）
+                查看将按所选模型发送的提示词
               </summary>
               <pre className="relative mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
                 {preview ?? "暂无预览"}

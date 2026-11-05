@@ -9,17 +9,11 @@ import asyncio
 from typing import Annotated, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from lib.episode.episode_paths import episode_script_filename
 from lib.infra.api_errors import ConflictError, UnprocessableError
 from lib.project.project_manager import get_project_manager
-from lib.script.grid.keyframe_parser import keyframe_reference_problems, shot_scene_text
-from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
-from lib.script.grid.video_prompt_targets import video_prompt_body_text, video_prompt_text
 from lib.script.prompt_authoring_scope import prompt_overwrite_with_text
-from lib.script.shot_prompt_standard import seam_prop_problem, video_prompt_delta_metrics
-from lib.script.storyboard_sequence import get_storyboard_items
 from server.agent_toolset.envelope import json_value
 from server.auth import CurrentUser
 from server.i18n import Translator
@@ -38,7 +32,7 @@ from server.tool_runtime import (
 router = APIRouter()
 
 _Instructions = Annotated[str, Field(max_length=MAX_INSTRUCTIONS_LEN)]
-_PromptField = Literal["image_prompt", "video_prompt"]
+_PromptField = Literal["image_prompt"]
 
 
 class PromptAuthoringInstructions(BaseModel):
@@ -61,17 +55,11 @@ class AuthorPromptsRequest(PromptAuthoringInstructions):
     fields: list[_PromptField] | None = Field(
         default=None,
         min_length=1,
-        description="仅编写指定提示词字段；省略时默认写分镜提示词，视频提示词须在参考素材确认后单独请求",
+        description="仅编写动态分镜提示词 image_prompt；省略时使用同一默认值",
     )
     overwrite_revision: str | None = Field(
         default=None, description="认可覆盖的视觉制作状态版本，取自 prompt_overwrite.revision"
     )
-
-    @model_validator(mode="after")
-    def _single_prompt_field(self) -> "AuthorPromptsRequest":
-        if self.fields is not None and {"image_prompt", "video_prompt"} <= set(self.fields):
-            raise ValueError("image_prompt 和 video_prompt 不能在同一次提示词编写中同时生成")
-        return self
 
 
 def _raise_problem(problem: ToolProblem, episode: int, _t: Translator) -> None:
@@ -91,53 +79,6 @@ def _raise_problem(problem: ToolProblem, episode: int, _t: Translator) -> None:
     raise UnprocessableError("prompt_authoring_refused", reason=text).with_diagnostic(problem.detail)
 
 
-def _reject_out_of_range_keyframes(project_name: str, episode: int, req: "AuthorPromptsRequest", t: Translator) -> None:
-    """写视频提示词前先答「这次会不会失败」：已有正文里越界的 K 直接 422（D-17）。
-
-    补缺模式不重写已有正文，但同一分镜的旧文本越界会让整条写回被拒、整集任务白跑一遍。
-    重写模式会覆盖旧正文，不做这项前置检查。
-    """
-
-    if req.fields != ["video_prompt"] or req.rewrite:
-        return
-    pm = get_project_manager()
-    try:
-        script = pm.load_script(project_name, episode_script_filename(episode))
-    except (FileNotFoundError, ValueError):
-        # 缺少视觉制作状态时由常规准入拒绝。
-        return
-    items, id_field, _, _, _ = get_storyboard_items(script)
-    wanted = set(req.entry_ids or [])
-    grids = select_shot_grids(
-        (
-            grid
-            for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
-            if grid.episode == episode and grid.status == "confirmed"
-        ),
-        items=items,
-        id_field=id_field,
-    )
-    for item in items:
-        unit_id = str(item.get(id_field, ""))
-        if wanted and unit_id not in wanted:
-            continue
-        grid = grids.get(unit_id)
-        text = video_prompt_body_text(item)
-        if grid is None or not text:
-            continue
-        problems = keyframe_reference_problems(text, len(grid.cells))
-        if problems:
-            raise UnprocessableError(
-                "prompt_authoring_refused",
-                reason=t(
-                    "shot_grid_keyframe_out_of_range",
-                    ids=unit_id,
-                    refs="、".join(problems),
-                    count=len(grid.cells),
-                ),
-            ).with_diagnostic({"entry_id": unit_id, "references": problems, "cell_count": len(grid.cells)})
-
-
 @router.put("/projects/{project_name}/episodes/{episode}/prompt-authoring/instructions")
 async def save_prompt_authoring_instructions(project_name: str, episode: int, req: PromptAuthoringInstructions):
     """只保存本集的附加指令（「交给 Agent」路径用），不提交生成。"""
@@ -150,76 +91,6 @@ async def save_prompt_authoring_instructions(project_name: str, episode: int, re
         req.instructions,
     )
     return {"success": True}
-
-
-@router.get("/projects/{project_name}/episodes/{episode}/video-prompt-score")
-async def get_video_prompt_score(project_name: str, episode: int, user: CurrentUser):
-    """只读评分：返回本集每条视频提示词的确定性增量指标，不写项目、不入队。"""
-
-    pm = get_project_manager()
-    filename = episode_script_filename(episode)
-    script = await asyncio.to_thread(pm.load_script, project_name, filename)
-    items, id_field, _, _, _ = get_storyboard_items(script)
-    grids = select_shot_grids(
-        (
-            grid
-            for grid in ShotGridManager(pm.get_project_path(project_name)).list_all()
-            if grid.episode == episode and grid.script_file == filename and grid.status in {"confirmed", "completed"}
-        ),
-        items=items,
-        id_field=id_field,
-    )
-    project = await asyncio.to_thread(pm.load_project, project_name)
-    registered_props = {str(name) for name in (project.get("props") or {})}
-    registered_names = {
-        str(name) for bucket in ("characters", "scenes", "props") for name in (project.get(bucket) or {})
-    }
-    scenes = []
-    previous_item = None
-    for item in items:
-        scene_id = str(item.get(id_field, ""))
-        action = video_prompt_text(item)
-        grid = grids.get(scene_id)
-        reference_texts = tuple(cell.prompt for cell in grid.cells) if grid is not None else ()
-        scene_characters = item.get("characters_in_scene")
-        scene_props = item.get("props")
-        metrics = video_prompt_delta_metrics(
-            shot_scene_text(item),
-            action,
-            reference_texts=reference_texts,
-            registered_names=registered_names,
-            character_names=[str(name) for name in scene_characters] if isinstance(scene_characters, list) else (),
-            prop_names=[str(name) for name in scene_props] if isinstance(scene_props, list) else (),
-        )
-        seam = (
-            seam_prop_problem(
-                shot_scene_text(previous_item),
-                shot_scene_text(item),
-                registered_props=registered_props,
-            )
-            if previous_item is not None
-            else None
-        )
-        scenes.append(
-            {
-                "scene_id": scene_id,
-                "duration_seconds": item.get("duration_seconds"),
-                "action_chars": metrics.action_chars,
-                "sentence_count": metrics.sentence_count,
-                "max_similarity": round(metrics.max_similarity, 3),
-                "max_verbatim_run": metrics.max_verbatim_run,
-                "static_density": round(metrics.static_density, 3),
-                "warnings": list(metrics.warnings),
-                "mention_problems": list(metrics.mention_problems),
-                "mention_warnings": list(metrics.mention_warnings),
-                "score": metrics.score,
-                "passed": metrics.passed,
-                "problem": metrics.problem,
-                "seam_problem": seam,
-            }
-        )
-        previous_item = item
-    return {"episode": episode, "scenes": scenes}
 
 
 @router.post("/projects/{project_name}/episodes/{episode}/prompt-authoring")
@@ -244,7 +115,6 @@ async def author_prompts(
         EpisodeInstructionKind.PROMPT_AUTHORING,
         req.instructions,
     )
-    await asyncio.to_thread(_reject_out_of_range_keyframes, project_name, episode, req, _t)
     outcome = await generate_episode_script(
         ToolRequest(
             GenerateEpisodeScriptRequest(

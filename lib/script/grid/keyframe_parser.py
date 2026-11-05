@@ -32,8 +32,18 @@ logger = logging.getLogger(__name__)
 #: scene 指纹长度：只留前 12 位十六进制，够辨识「分镜提示词已变更」，不把整段摘要写进记录。
 SCENE_REVISION_LENGTH = 12
 
-#: scene 的镜头标记：``【镜头N｜景别】``，景别可缺省（``【镜头N】``）。分隔符兼容全角｜与半角 |。
-_SHOT_MARK = re.compile(r"【\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?】")
+#: scene 的镜头标记：``【镜头N｜景别】``，景别可缺省（``【镜头N】``）；也接受 H3 的
+#: ``[Shot N]``（无景别字段，切换信息写在该段正文里）。分隔符兼容全角｜与半角 |。
+_SHOT_MARK = re.compile(
+    r"【\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?】|\[Shot\s*(\d+)\]",
+    re.IGNORECASE,
+)
+
+#: H3 的镜头切换前缀：``At 00:03.000, cut to 近景：``；抽 K 帧只要切换后的静态画面。
+_H3_CUT_PREFIX = re.compile(
+    r"^\s*At\s+\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*,\s*cut\s+to\s*[^：:\n]{0,16}[：:]\s*",
+    re.IGNORECASE,
+)
 
 #: 宫格镜头提示词的逐格标记：``第N格（景别）：``，括号与冒号兼容全角/半角，景别可缺省。
 _CELL_MARK = re.compile(r"^[ \t]*第\s*(\d+)\s*格\s*(?:[（(]\s*([^）)\n]*?)\s*[）)])?\s*[：:][ \t]*")
@@ -127,7 +137,7 @@ def parse_scene_shots(scene: str, *, warnings: list[str] | None = None) -> Scene
     ``warnings`` 与日志留下诊断信息；新生成路径不会依赖这条兜底。
 
     Raises:
-        ValueError: scene 为空，或没有任何 ``【镜头N`` 标记（旧单帧格式，按 0098 D-F 拒绝）。
+        ValueError: scene 为空。镜头标记 ``【镜头N】`` / ``[Shot N]`` 可缺省；缺省时整段视为一个镜头。
     """
 
     text = scene.strip()
@@ -141,16 +151,38 @@ def parse_scene_shots(scene: str, *, warnings: list[str] | None = None) -> Scene
             warnings.append(message)
     marks = list(_SHOT_MARK.finditer(text))
     if not marks:
-        raise ValueError("分镜提示词需按镜头序列重新编写：【镜头N｜景别】正文，一格一镜")
+        # 不再强制镜头标记：优先按连续时间段 0-6秒： 切镜，没有时间段时整段视为一个镜头。
+        segments = list(_SEGMENT_MARK.finditer(text))
+        if segments:
+            segment_shots: list[ShotFrame] = []
+            for position, segment in enumerate(segments):
+                end = segments[position + 1].start() if position + 1 < len(segments) else len(text)
+                body, keyframe = _split_keyframe(_clean_lines([text[segment.end() : end]]))
+                if body:
+                    segment_shots.append(
+                        ShotFrame(number=len(segment_shots) + 1, shot_size="", text=body, keyframe=keyframe)
+                    )
+            if segment_shots:
+                return SceneShots(
+                    opening=text[: segments[0].start()].strip(),
+                    shots=tuple(segment_shots),
+                    stripped_dialogue_lines=tuple(stripped),
+                )
+        return SceneShots(
+            opening="",
+            shots=(ShotFrame(number=1, shot_size="", text=text),),
+            stripped_dialogue_lines=tuple(stripped),
+        )
     opening = text[: marks[0].start()].strip()
     shots: list[ShotFrame] = []
     seen: set[int] = set()
     for position, mark in enumerate(marks):
-        number = int(mark.group(1))
+        number = int(mark.group(1) or mark.group(3))
         if number in seen:
             continue
         end = marks[position + 1].start() if position + 1 < len(marks) else len(text)
         body, keyframe = _split_keyframe(_clean_lines([text[mark.end() : end]]))
+        body = _H3_CUT_PREFIX.sub("", body, count=1).strip()
         if not body:
             continue
         seen.add(number)

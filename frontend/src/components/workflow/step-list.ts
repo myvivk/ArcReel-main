@@ -6,14 +6,13 @@ import { ROUTE_APP_SETTINGS, WORKSPACE_ROUTE_EPISODES, EPISODE_VIEW_PARAM, episo
 import { formatNameList } from "@/utils/list-format";
 import { prepareEpisodeAssetsPrompt } from "@/components/canvas/shared/assets-handoff";
 
-export type StepRowKey = "source" | "script" | "prompts" | "assets" | "materials" | "video_prompt" | "voice" | "videos" | "edit";
+export type StepRowKey = "source" | "script" | "prompts" | "assets" | "materials" | "voice" | "videos" | "edit";
 export type StepRowTone = "done" | "todo" | "partial" | "running" | "warn" | "danger";
 export type StepIntent =
   | { type: "agent"; text: string }
   | { type: "author_prompts" }
   | { type: "author_prompts_to_agent" }
   | { type: "open_author_prompts" }
-  | { type: "open_video_prompts"; entryIds: string[] }
   | { type: "asset_batch"; episodeId: number }
   | { type: "storyboard_batch"; episodeId: number; kind: StoryboardBatchKind }
   | { type: "create_edit_timeline" }
@@ -46,7 +45,7 @@ interface Facts { plan: WorkflowPlan; content: WorkflowContent; steps: Map<strin
 
 function ids(
   collection: WorkflowArtifactCollection | undefined,
-  key: "current_ids" | "stale_ids" | "missing_ids" | "model_stale_ids",
+  key: "current_ids" | "stale_ids" | "missing_ids",
 ) {
   const value = collection?.[key];
   return Array.isArray(value) ? value : [];
@@ -292,17 +291,9 @@ function buildRows(facts: Facts, ctx: StepListContext): StepRowView[] {
     key: "prompts", title: t("workflow:row_prompts"), tone: !formal ? "todo" : pending ? "partial" : "done",
     status: !formal ? t("workflow:status_none") : pending ? t("workflow:status_prompts_pending", { count: pending, total: content.script_item_count ?? 0 }) : t("workflow:status_prompts_done"),
     notes: [], acts: pending && ctx.canAuthorPrompts && plan.next_action.type !== "author_prompts" ? [{ key: "author-prompts", label: t("dashboard:prompt_authoring_open"), kind: "ai", intent: { type: "open_author_prompts" }, disabledReason: refusalReason(t, status.operations.author_prompts) }] : [],
-    steps: stepsFor(facts, ["final_script"]),
+    steps: stepsFor(facts, ["storyboard_prompt"]),
   });
   rows.push(row("materials", t("workflow:row_materials"), status.artifacts.shot_grids, ["shot_grid"]));
-  const stale = ids(status.artifacts.video_prompts, "stale_ids");
-  const videoPrompts = row("video_prompt", t("dashboard:detail_video_prompt_title"), {
-    ...status.artifacts.video_prompts, missing_ids: [...ids(status.artifacts.video_prompts, "missing_ids"), ...stale], stale_ids: [],
-  }, ["video_prompt"]);
-  if (stale.length) videoPrompts.notes.push({ key: "video-prompt-stale", tone: "warn", text: t("dashboard:video_prompt_stale_hint", { count: stale.length }) });
-  const modelStale = ids(status.artifacts.video_prompts, "model_stale_ids");
-  if (modelStale.length) videoPrompts.notes.push({ key: "video-prompt-model-stale", tone: "warn", text: t("dashboard:video_prompt_model_stale_hint", { count: modelStale.length }) });
-  rows.push(videoPrompts);
   if (status.artifacts.audio && status.artifacts.audio.state !== "not_applicable") rows.push(row("voice", t("workflow:row_voice"), status.artifacts.audio, []));
   rows.push(row("videos", t("workflow:row_videos"), status.artifacts.videos, ["video"]), editRow(facts, ctx));
   return rows.map(withRunning);
@@ -314,7 +305,7 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
   const owners: Partial<Record<WorkflowNextAction["type"], StepRowKey>> = {
     collect_project_input: "source", prepare_episode_assets: "assets", generate_asset_sheets: "assets",
     plan_short_drama_storyboards: "script", patch_episode_script: "script", author_prompts: "prompts",
-    generate_shot_grids: "materials", author_video_prompts: "video_prompt", generate_videos: "videos",
+    generate_shot_grids: "materials", generate_videos: "videos",
     create_edit_timeline: "edit", configure_provider: "videos", retry: "videos", fix_input: "videos",
     generate_dependency: "videos", repair_artifact_state: "videos", retry_artifact_download: "videos", confirm_request_duration: "videos",
   };
@@ -360,12 +351,6 @@ function buildNext(facts: Facts, rows: StepRowView[], ctx: StepListContext): Nex
         { key: "agent", label: t("workflow:act_agent"), kind: "agent", intent: { type: "author_prompts_to_agent" } },
         ...(ctx.canAuthorPrompts ? [{ key: "author", label: t("workflow:act_author_prompts"), kind: "ai", intent: { type: "author_prompts" } } satisfies StepAct] : []),
       ] };
-    case "author_video_prompts":
-      return {
-        ...base,
-        primary: [agentAct(t, t("workflow:agent_prefill_author_video_prompts", { episodeRef: ctx.episodeRef }))],
-        alternatives: [{ key: "video-prompts", label: t("workflow:act_author_video_prompts", { count: action.requested_ids.length }), kind: "ai", intent: { type: "open_video_prompts", entryIds: action.requested_ids } }],
-      };
     case "generate_asset_sheets":
       return {
         ...base,

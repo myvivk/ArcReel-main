@@ -151,8 +151,8 @@ def build_quality_gate_entry(round_: QualityGateRound) -> dict[str, Any]:
     """把质量闸的一轮结果定型为系统事件条目。
 
     live-only：只写事件日志（用户时间线读源），不写 SDK transcript——UI 专有
-    条目进 transcript 会被 resume 回喂给 Agent（ADR 0048）。主 Agent 侧的轮次
-    摘要另由工具结果 ``planning_rounds`` 承载。
+    条目进 transcript 会被 resume 回喂给 Agent（ADR 0048）。主 Agent 侧看到的
+    结果摘要由各工具自己的回执承载。
     """
     entry: dict[str, Any] = {
         "type": ENTRY_TYPE_SYSTEM,

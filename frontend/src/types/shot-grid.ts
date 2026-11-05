@@ -22,7 +22,7 @@ export interface ShotGridPlan {
   rows: number;
   cols: number;
   cells: ShotGridCell[];
-  /** 逐格镜头文本（`第N格（景别）：正文`），出图的优先输入；为空时回退到 scene 现解析。 */
+  /** 历史逐格镜头文本；当前生成直接使用分镜提示词，不读取该字段。 */
   prompt?: string;
   /** 出图时 `image_prompt.scene` 的指纹；与当前 scene 不一致时提示重新生成。 */
   scene_revision?: string | null;

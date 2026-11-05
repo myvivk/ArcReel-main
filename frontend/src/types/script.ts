@@ -140,7 +140,7 @@ export interface GeneratedAssets {
   video_thumbnail: string | null;
   video_uri: string | null;
   narration_audio?: string | null;       // narration audio file path
-  /** 视频提示词的写作依据：宫格指纹 + 写给了哪个模型（换模型后据此提示重写）。 */
+  /** 历史视频提示词写作依据；只用于读取旧项目。 */
   video_prompt_basis?: {
     grid_id?: string;
     layout?: string;
@@ -162,7 +162,8 @@ export interface NarrationSegment {
   props?: string[];
   /** `null` = 待编写：内容确认转出的正式脚本只有内容层，提示词尚未编写。 */
   image_prompt: ImagePrompt | string | null;
-  video_prompt: VideoPrompt | string | null;
+  /** 历史视频提示词；新流程不读取或写入。 */
+    video_prompt?: VideoPrompt | string | null;
   note?: string;
   /**
    * 尾帧快照路径（项目内相对路径）。视频从分镜图开场、过渡到这张图收尾。
@@ -186,7 +187,8 @@ export interface DramaScene {
   scene_description?: string;
   /** `null` = 待编写：内容确认转出的正式脚本只有内容层，提示词尚未编写。 */
   image_prompt: ImagePrompt | string | null;
-  video_prompt: VideoPrompt | string | null;
+    /** 历史视频提示词；新流程不读取或写入。 */
+    video_prompt?: VideoPrompt | string | null;
   /**
    * 分镜级有序发声序列：角色台词与画外音按时序排列。新结构（drama）；
    * 存量 drama 走后端读时迁移，前端读到时此字段可能缺省。
@@ -250,7 +252,8 @@ export interface AdShot {
   products_in_shot?: string[];
   /** 待编写分镜（手动新增）为 null，由提示词编写补出。 */
   image_prompt: ImagePrompt | string | null;
-  video_prompt: VideoPrompt | string | null;
+    /** 历史视频提示词；新流程不读取或写入。 */
+    video_prompt?: VideoPrompt | string | null;
   note?: string;
   /**
    * 尾帧快照路径（项目内相对路径）。视频从分镜图开场、过渡到这张图收尾。
@@ -278,7 +281,7 @@ export type EpisodeScript = NarrationEpisodeScript | DramaEpisodeScript | AdEpis
 export interface AuthorPromptsRequest {
   entry_ids?: string[] | null;
   rewrite?: boolean;
-  fields?: Array<"image_prompt" | "video_prompt"> | null;
+  fields?: Array<"image_prompt"> | null;
   instructions?: string | null;
   overwrite_revision?: string | null;
 }

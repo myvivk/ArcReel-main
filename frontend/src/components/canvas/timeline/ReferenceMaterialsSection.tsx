@@ -21,10 +21,8 @@ import { useProjectsStore } from "@/stores/projects-store";
 import { isResourceBusy, useTasksStore } from "@/stores/tasks-store";
 import { useShotGridDialogStore } from "@/stores/shot-grid-dialog-store";
 import { ShotGridDialogHost } from "./ShotGridDialog";
-import { enqueueShotGrid } from "@/actions/generation";
 import { refreshAfterWrite } from "@/components/canvas/shared/refreshAfterWrite";
 import { errMsg } from "@/utils/async";
-import type { ReferenceNameSets } from "@/utils/reference-mentions";
 
 interface ReferenceMaterialsSectionProps {
   projectName: string;
@@ -35,8 +33,6 @@ interface ReferenceMaterialsSectionProps {
   readOnly?: boolean;
   disabled?: boolean;
   saveFirst?: boolean;
-  /** 本分镜的出场资产清单：参考素材逐格提示词的 @ 候选从这里取。 */
-  referenceNames?: ReferenceNameSets;
   beforeGenerate: () => Promise<boolean>;
   onPlanChange: (plan: ShotGridPlan | null) => void;
   onBusyChange: (busy: boolean) => void;
@@ -54,7 +50,7 @@ const TERMINAL_TASK_STATUSES = new Set(["completed", "succeeded", "failed", "can
 
 export function ReferenceMaterialsSection({
   projectName, scriptFile, episode, shotId, aspectRatio = "9:16", readOnly, disabled,
-  saveFirst, beforeGenerate, onPlanChange, onBusyChange, onNeedsRefreshChange, referenceNames,
+  saveFirst, beforeGenerate, onPlanChange, onBusyChange, onNeedsRefreshChange,
 }: ReferenceMaterialsSectionProps) {
   const { t } = useTranslation("dashboard");
   const titleId = useId();
@@ -179,37 +175,6 @@ export function ReferenceMaterialsSection({
     onNeedsRefreshChange?.(needsRefresh);
   }, [needsRefresh, onNeedsRefreshChange]);
 
-  const runGenerate = async (layout?: ShotGridLayout) => {
-    if (!scriptFile || episode === undefined || readOnly || disabled || busy) return;
-    const controller = new AbortController();
-    operation.current?.abort();
-    operation.current = controller;
-    setSubmitting(true);
-    try {
-      if (controller.signal.aborted) return;
-      if (isResourceBusy("shot_grid", projectName, plan?.id ?? shotId)) return;
-      // 直接出图：不弹配置窗。保留已有逐格描述；没有描述时服务端才回退解析 image_prompt。
-      const [rows, cols] = layout ? LAYOUTS[layout] : [plan?.rows ?? 2, plan?.cols ?? 2];
-      const saved = await API.saveShotGrid(projectName, {
-        script_file: scriptFile,
-        episode,
-        shot_id: shotId,
-        rows,
-        cols,
-        prompt: plan?.prompt ?? "",
-      });
-      if (controller.signal.aborted) return;
-      updatePlan(saved);
-      await enqueueShotGrid(projectName, scriptFile, shotId, saved.id);
-      if (controller.signal.aborted) return;
-      setReloadKey((value) => value + 1);
-    } catch (cause) {
-      if (!controller.signal.aborted) setResult({ key: scopeKey, plan, error: errMsg(cause) });
-    } finally {
-      if (!controller.signal.aborted) setSubmitting(false);
-    }
-  };
-
   const generate = async (layout?: ShotGridLayout) => {
     if (!scriptFile || episode === undefined || readOnly || disabled || busy) return;
     if (saveFirst && !(await beforeGenerate())) return;
@@ -218,12 +183,19 @@ export function ReferenceMaterialsSection({
       setRegenerateRequest({ layout });
       return;
     }
-    await runGenerate(layout);
+    useShotGridDialogStore.getState().open({
+      projectName,
+      scriptFile,
+      episode,
+      shotId,
+      plan,
+      layout,
+    });
   };
 
   const configure = async () => {
     if (!scriptFile || episode === undefined || readOnly || disabled || busy) return;
-    // 已确认的宫格先确认「会作废 K 帧」，确认后仍进配置弹窗：描述原样回填，规格锁定。
+    // 已确认的宫格先确认「会作废 K 帧」，确认后仍进配置弹窗：直接使用当前分镜提示词，规格锁定。
     if (plan?.status === "confirmed") {
       void generate();
       return;
@@ -235,7 +207,6 @@ export function ReferenceMaterialsSection({
       episode,
       shotId,
       plan,
-      referenceNames,
     });
   };
 
@@ -249,7 +220,6 @@ export function ReferenceMaterialsSection({
       episode,
       shotId,
       plan,
-      referenceNames,
       allowConfirmedRegenerate: true,
     });
   };

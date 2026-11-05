@@ -27,9 +27,9 @@ _STEP_IDS = (
     "project_input",
     "asset_sheets",
     "final_script",
+    "storyboard_prompt",
     "script_structure",
     "shot_grid",
-    "video_prompt",
     "video",
     "edit",
 )

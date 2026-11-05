@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, CircleCheck, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 
-import { API, ApiRequestError, type SourceImportOriginal, type SourceImportResult } from "@/api";
+import {
+  API,
+  ApiRequestError,
+  type SourceImportOriginal,
+  type SourceImportResult,
+  type SourceImportValidation,
+} from "@/api";
 import { useLeaveGuard } from "@/components/shared/edit-unit/LeaveGuard";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -59,6 +65,9 @@ export function SourceImportPanel({
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [validation, setValidation] = useState<SourceImportValidation | null>(null);
+  const [validationText, setValidationText] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -111,7 +120,7 @@ export function SourceImportPanel({
   useEffect(() => () => controllerRef.current?.abort(), []);
 
   const saveOriginal = useCallback(async (): Promise<boolean> => {
-    if (saving || generating) return false;
+    if (saving || generating || validating) return false;
     if (tooLong) {
       setError(t("source_import_too_long", { limit: SOURCE_IMPORT_MAX_CHARS.toLocaleString(i18n.language) }));
       return false;
@@ -139,9 +148,13 @@ export function SourceImportPanel({
     } finally {
       setSaving(false);
     }
-  }, [episode, generating, i18n.language, original, projectName, saving, t, text, tooLong]);
+  }, [episode, generating, i18n.language, original, projectName, saving, t, text, tooLong, validating]);
 
-  const discardOriginal = useCallback(() => setDraft(original?.text ?? ""), [original]);
+  const discardOriginal = useCallback(() => {
+    setDraft(original?.text ?? "");
+    setValidation(null);
+    setValidationText(null);
+  }, [original]);
 
   // 原文编辑未保存时走现有离开拦截；首次导入时粘贴的原文同样受保护。
   useLeaveGuard({
@@ -159,7 +172,7 @@ export function SourceImportPanel({
   };
 
   const runImport = async (confirmArtifacts: boolean) => {
-    if (generating || saving) return;
+    if (generating || saving || validating) return;
     if (!text.trim()) {
       setError(t("source_import_text_required"));
       return;
@@ -173,7 +186,18 @@ export function SourceImportPanel({
     setGenerating(true);
     setError(null);
     setConfirming(false);
+    setValidation(null);
+    setValidationText(null);
     try {
+      const readiness = await API.validateSourceScript(projectName, episode, text, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setValidation(readiness);
+      setValidationText(text);
+      if (!readiness.ok) {
+        setGenerating(false);
+        setConfirming(false);
+        return;
+      }
       const result = await API.importSourceScript(
         projectName,
         episode,
@@ -190,6 +214,14 @@ export function SourceImportPanel({
       onImported(result);
     } catch (cause) {
       if (controller.signal.aborted) return;
+      if (cause instanceof ApiRequestError && cause.status === 422) {
+        const diagnostic = cause.diagnostic as SourceImportValidation | undefined;
+        if (diagnostic && typeof diagnostic === "object" && typeof diagnostic.ok === "boolean") {
+          setValidation(diagnostic);
+          setValidationText(text);
+          return;
+        }
+      }
       setError(errMsg(cause));
     } finally {
       if (controllerRef.current === controller) {
@@ -199,9 +231,38 @@ export function SourceImportPanel({
     }
   };
 
+  const runValidation = async () => {
+    if (generating || saving || validating) return;
+    if (!text.trim()) {
+      setError(t("source_import_text_required"));
+      return;
+    }
+    if (tooLong) {
+      setError(t("source_import_too_long", { limit: SOURCE_IMPORT_MAX_CHARS.toLocaleString(i18n.language) }));
+      return;
+    }
+    setValidating(true);
+    setError(null);
+    setValidation(null);
+    try {
+      const result = await API.validateSourceScript(projectName, episode, text);
+      setValidation(result);
+      setValidationText(text);
+    } catch (cause) {
+      if (cause instanceof ApiRequestError && cause.status === 502) {
+        setError(t("source_import_validation_unavailable"));
+      } else {
+        setError(errMsg(cause));
+      }
+    } finally {
+      setValidating(false);
+    }
+  };
+
   const limit = SOURCE_IMPORT_MAX_CHARS.toLocaleString(i18n.language);
-  const canGenerate = !loading && !generating && !saving && !tooLong && text.trim().length > 0;
-  const busy = generating || saving;
+  const canGenerate = !loading && !generating && !saving && !validating && !tooLong && text.trim().length > 0;
+  const canValidate = !loading && !generating && !saving && !validating && !tooLong && text.trim().length > 0;
+  const busy = generating || saving || validating;
 
   return (
     <section className="flex min-h-0 w-full flex-1 flex-col gap-4">
@@ -215,6 +276,19 @@ export function SourceImportPanel({
       </header>
       {/* 动作与其它页面一致：登记给「制作进度」的剧本行，由面板统一调度。 */}
       <EpisodeHeaderActions target="source">
+        <Button
+          variant="outline"
+          onClick={() => void runValidation()}
+          disabled={!canValidate}
+          title={t("source_import_validate_hint")}
+        >
+          {validating ? (
+            <Loader2 aria-hidden data-icon="inline-start" className="animate-spin" />
+          ) : (
+            <ShieldCheck aria-hidden data-icon="inline-start" />
+          )}
+          {t(validating ? "source_import_validating" : "source_import_validate")}
+        </Button>
         {hasScript ? (
           <>
             <Button variant="outline" onClick={() => void saveOriginal()} disabled={!dirty || busy || !text.trim()}>
@@ -247,6 +321,60 @@ export function SourceImportPanel({
           <Button variant="outline" onClick={cancelGenerate}>{t("common:cancel")}</Button>
         )}
       </EpisodeHeaderActions>
+
+      {validation && validationText === text && (
+        <Alert
+          variant={
+            validation.ok
+              ? (validation.warnings?.length ?? 0) > 0
+                ? "warning"
+                : "success"
+              : "destructive"
+          }
+          className="shrink-0"
+        >
+          {validation.ok && !(validation.warnings?.length ?? 0) ? (
+            <CircleCheck aria-hidden />
+          ) : (
+            <AlertTriangle aria-hidden />
+          )}
+          <AlertTitle>
+            {validation.ok
+              ? (validation.warnings?.length ?? 0) > 0
+                ? t("source_import_validation_warning_title")
+                : t("source_import_validation_passed")
+              : t("source_import_validation_failed")}
+          </AlertTitle>
+          <AlertDescription>
+            <p>{validation.summary}</p>
+            {validation.issues.length > 0 && (
+              <ul className="mt-2 list-disc space-y-2 pl-5">
+                {validation.issues.map((issue, index) => (
+                  <li key={`${issue.code}-${index}`}>
+                    <span>{issue.problem}</span>
+                    <p className="mt-0.5 font-medium">{issue.suggestion}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {validation.warnings?.length ? (
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                {validation.warnings.map((warning, index) => (
+                  <li key={index}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+            {validation.evidence.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer">{t("source_import_validation_evidence")}</summary>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {validation.evidence.map((item, index) => <li key={index}>{item}</li>)}
+                </ul>
+              </details>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* 重新导入的风险提示放在顶部：从制作进度触发时视图会切到这里，提示必须首屏可见。 */}
       {confirming && !generating && (
@@ -305,6 +433,8 @@ export function SourceImportPanel({
                 onChange={(event) => {
                   setDraft(event.target.value);
                   setSavedNotice(false);
+                  setValidation(null);
+                  setValidationText(null);
                 }}
                 placeholder={t("source_import_placeholder")}
                 aria-describedby={countId}

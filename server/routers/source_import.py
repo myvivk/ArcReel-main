@@ -16,7 +16,12 @@ from lib.project.project_change_hints import project_change_source
 from lib.project.project_manager import get_project_manager
 from server.auth import CurrentUser
 from server.dependencies import require_project_migration_ok
-from server.services.source_import import import_source_episode, load_original, save_original
+from server.services.source_import import (
+    import_source_episode,
+    load_original,
+    save_original,
+    validate_source_episode,
+)
 
 router = APIRouter(dependencies=[Depends(require_project_migration_ok)])
 
@@ -29,6 +34,12 @@ class SourceImportRequest(BaseModel):
     expected_revision: str | None = None
     #: 本集已有分镜图/视频时必须显式确认为 true，否则 409。
     confirm_artifacts: bool = False
+
+
+class SourceImportValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
 
 
 class SaveOriginalRequest(BaseModel):
@@ -61,6 +72,25 @@ async def import_episode_source(
             confirm_artifacts=req.confirm_artifacts,
             user_id=user.id,
         )
+    return result.as_dict()
+
+
+@router.post("/projects/{project_name}/episodes/{episode}/source-import/validate")
+async def validate_episode_source(
+    project_name: str,
+    episode: Annotated[int, PathParam(ge=1)],
+    req: SourceImportValidateRequest,
+    user: CurrentUser,
+) -> dict[str, object]:
+    """用文本模型评估原文可改编性；不写原文、不生成剧本。"""
+
+    result = await validate_source_episode(
+        projects=get_project_manager(),
+        project_name=project_name,
+        episode=episode,
+        text=req.text,
+        user_id=user.id,
+    )
     return result.as_dict()
 
 

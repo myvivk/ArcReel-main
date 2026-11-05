@@ -47,10 +47,17 @@ from lib.project.resource_paths import resource_relative_path
 from lib.script.script_editor import resolve_items
 from lib.script.storyboard_sequence import (
     apply_storyboard_frame_mode,
+    resolve_storyboard_video_asset_images,
     resolve_storyboard_video_inputs,
     resolve_storyboard_video_slots,
+    split_storyboard_video_asset_images,
+    storyboard_motion_prompt,
 )
-from lib.script.storyboard_video_request import storyboard_asset_links, storyboard_frame_evidence
+from lib.script.storyboard_video_request import (
+    storyboard_asset_image_evidence,
+    storyboard_asset_links,
+    storyboard_frame_evidence,
+)
 from lib.speech.character_voice import character_voice_binding
 from lib.speech.narration_config import PROJECT_TTS_SNAPSHOT_SCHEMA_VERSION, project_tts_settings
 from lib.speech.narration_delivery import build_narration_audio_basis
@@ -112,8 +119,8 @@ class VideoExecutionShape:
         if audio_speakers is None:
             raise ValueError("version record does not list its provider media")
         return cls(
-            voice_style_speakers=artifact_currency.voice_style_speakers,
             reference_audio_speakers=audio_speakers,
+            voice_style_speakers=artifact_currency.voice_style_speakers,
             reference_image_limit=artifact_currency.reference_image_limit,
             duration_tiers=artifact_currency.duration_tiers,
             storyboard_input_version=artifact_currency.visual_basis.kind_version,
@@ -173,10 +180,10 @@ def project_video_basis_components(
     )
 
     if resource_type == "videos":
-        prompt = item.get("video_prompt")
+        prompt = storyboard_motion_prompt(item)
         frame_evidence = None
         try:
-            if shape.storyboard_input_version == 2:
+            if shape.storyboard_input_version >= 2:
                 slots = resolve_storyboard_video_slots(
                     project_path=project_path,
                     items=storyboard_items if storyboard_items is not None else [item],
@@ -199,6 +206,18 @@ def project_video_basis_components(
                     id_field=id_field
                     or ("shot_id" if "shot_id" in item else "segment_id" if "segment_id" in item else "scene_id"),
                 )
+                if shape.storyboard_input_version >= 3:
+                    available_assets = resolve_storyboard_video_asset_images(
+                        project_path=project_path,
+                        project=project,
+                        item=item,
+                    )
+                    selected_assets, _dropped_assets = split_storyboard_video_asset_images(
+                        available_assets,
+                        max_reference_images=shape.reference_image_limit,
+                        frame_count=len(slots.frames),
+                    )
+                    frame_evidence = [*storyboard_asset_image_evidence(selected_assets), *frame_evidence]
             else:
                 storyboard, end_frame = resolve_storyboard_video_inputs(
                     project_path=project_path,
@@ -215,8 +234,9 @@ def project_video_basis_components(
             aspect_ratio=resolve_video_aspect_ratio(project),
             frame_evidence=frame_evidence,
             asset_links=storyboard_asset_links(project, item, project_path.name)
-            if shape.storyboard_input_version == 2
+            if shape.storyboard_input_version >= 2
             else "",
+            include_reference_assets=shape.storyboard_input_version >= 3,
         )
     elif resource_type == "reference_videos":
         declared = unit_reference_declarations(project, item)

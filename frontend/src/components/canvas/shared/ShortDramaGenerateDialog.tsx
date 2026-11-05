@@ -437,7 +437,7 @@ function ShortDramaGenerateDialog({ request, onClose }: DialogProps) {
       continuation: isContinuation || seriesStarted,
     }) +
       (rewriteRisk
-        ? `\n\n【重写风险】第 ${episode} 集已有工厂正文或资产。重写会覆盖本集正文，并使本集资产、分镜、参考素材、视频提示词和视频过期或需要重做；已生成媒体不会自动删除。执行前先向用户确认。`
+        ? `\n\n【重写风险】第 ${episode} 集已有工厂正文或资产。重写会覆盖本集正文，并使本集资产、分镜、参考素材和视频过期或需要重做；已生成媒体不会自动删除。执行前先向用户确认。`
         : "") +
       (storyContext ? "\n\n" + storyContext : "");
     useAssistantStore.getState().setInput(prompt);

@@ -69,7 +69,7 @@ class VideoArtifactCurrencyFacts:
             ("duration_basis", self.duration_basis),
             ("video_basis", self.video_basis),
         ):
-            supported = {1, 2} if field == "visual_basis" and value.kind == _STORYBOARD_VISUAL_KIND else {1}
+            supported = {1, 2, 3} if field == "visual_basis" and value.kind == _STORYBOARD_VISUAL_KIND else {1}
             if value.kind_version not in supported:
                 raise ValueError(f"{field} must use the supported kind version")
         if self.visual_basis.kind not in {_STORYBOARD_VISUAL_KIND, _REFERENCE_VISUAL_KIND}:
@@ -104,8 +104,10 @@ class VideoArtifactCurrencyFacts:
             raise ValueError("duration_tiers must be sorted positive tiers containing the paid request tier")
         limit = self.reference_image_limit
         if self.visual_basis.kind == _STORYBOARD_VISUAL_KIND:
-            if limit is not None:
-                raise ValueError("storyboard video facts cannot carry a reference-image limit")
+            if self.visual_basis.kind_version < 3 and limit is not None:
+                raise ValueError("legacy storyboard video facts cannot carry a reference-image limit")
+            if limit is not None and (type(limit) is not int or limit < 0):
+                raise ValueError("storyboard video facts require an unlimited or non-negative reference-image limit")
         elif limit is not None and (type(limit) is not int or limit < 0):
             raise ValueError("reference video facts require an unlimited or non-negative reference-image limit")
         if type(self.parent_version) is not int or self.parent_version < 0:
@@ -204,7 +206,7 @@ def _validate_visual_inputs(basis: ArtifactBasis) -> None:
     inputs = _basis_inputs(basis)
     if basis.kind == _STORYBOARD_VISUAL_KIND:
         expected = {"resource_id", "visual_prompt", "canvas", "frames"}
-        if basis.kind_version == 2:
+        if basis.kind_version >= 2:
             expected.add("asset_links")
         if set(inputs) != expected:
             raise ValueError("storyboard visual basis has invalid canonical inputs")
@@ -218,7 +220,7 @@ def _validate_visual_inputs(basis: ArtifactBasis) -> None:
         frames = inputs["frames"]
         frames_valid = (
             _storyboard_slots_valid(frames, inputs["resource_id"])
-            if basis.kind_version == 2
+            if basis.kind_version >= 2
             else (
                 isinstance(frames, list)
                 and len(frames) in {1, 2}
@@ -237,7 +239,7 @@ def _validate_visual_inputs(basis: ArtifactBasis) -> None:
             raise ValueError("storyboard visual basis has invalid canonical inputs")
         if not frames_valid:
             raise ValueError("storyboard visual basis has invalid frame evidence")
-        if basis.kind_version == 2 and not isinstance(inputs["asset_links"], str):
+        if basis.kind_version >= 2 and not isinstance(inputs["asset_links"], str):
             raise ValueError("storyboard asset links must be text")
         return
 
@@ -285,6 +287,7 @@ def _storyboard_slots_valid(value: object, resource_id: object) -> bool:
         return False
     roles: list[str] = []
     keys: list[int] = []
+    saw_keyframe = False
     for frame in value:
         if (
             not isinstance(frame, Mapping)
@@ -292,13 +295,17 @@ def _storyboard_slots_valid(value: object, resource_id: object) -> bool:
             or not _nonempty(frame["resource_id"])
             or not isinstance(frame["sha256"], str)
             or CONTENT_DIGEST_RE.fullmatch(frame["sha256"]) is None
-            or frame["kind"] not in {"grid_cell", "storyboard", "end_frame_snapshot", "video_last_frame"}
+            or frame["kind"] not in {"asset_sheet", "grid_cell", "storyboard", "end_frame_snapshot", "video_last_frame"}
             or frame["role"] not in {"start_image", "reference_image", "end_image"}
         ):
             return False
         roles.append(frame["role"])
         key = frame["keyframe_index"]
-        if frame["kind"] == "grid_cell":
+        if frame["kind"] == "asset_sheet":
+            if saw_keyframe or key is not None or frame["role"] != "reference_image" or "grid" in frame:
+                return False
+        elif frame["kind"] == "grid_cell":
+            saw_keyframe = True
             if type(key) is not int or key < 0:
                 return False
             if "grid" in frame:
@@ -320,7 +327,7 @@ def _storyboard_slots_valid(value: object, resource_id: object) -> bool:
                 keys.append(key)
         elif key is not None or frame["role"] != "start_image" or "grid" in frame:
             return False
-        if frame["role"] != "start_image" and frame["resource_id"] != resource_id:
+        if frame["kind"] != "asset_sheet" and frame["role"] != "start_image" and frame["resource_id"] != resource_id:
             return False
     # 参考图模式：所有帧都按 reference_image 按序下发，没有 start_image/end_image。
     if roles and all(role == "reference_image" for role in roles):

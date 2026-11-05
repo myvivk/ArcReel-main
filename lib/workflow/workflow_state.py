@@ -42,7 +42,7 @@ from lib.references.reference_admission import admit_storyboard_items
 from lib.references.reference_catalog import build_reference_catalog
 from lib.script.factory_episode import require_factory_script
 from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
-from lib.script.grid.video_prompt_targets import plan_video_prompt_targets, video_prompt_target_for_project
+from lib.script.mechanical_storyboard import MECHANICAL_STORYBOARD_VERSION
 from lib.script.script_models import get_generated_assets, script_duration_total
 from lib.script.script_skeleton import SKELETONS, STORYBOARD_ITEM_ID_PATTERN, ensure_route_skeleton, resolve_kind_items
 from lib.script.short_drama_source import read_short_drama_source_markdown, short_drama_source_relative_path
@@ -51,7 +51,6 @@ from lib.workflow.operation_admission import (
     AdmissionState,
     OperationAdmission,
     admit_author_prompts,
-    admit_author_video_prompts,
     admit_edit_timeline,
     admit_shot_grids,
     pending_authoring_entry_ids,
@@ -112,7 +111,6 @@ class WorkflowActionType(StrEnum):
     GENERATE_ASSET_SHEETS = "generate_asset_sheets"
     GENERATE_STORYBOARDS = "generate_storyboards"
     GENERATE_SHOT_GRIDS = "generate_shot_grids"
-    AUTHOR_VIDEO_PROMPTS = "author_video_prompts"
     GENERATE_VIDEOS = "generate_videos"
     CREATE_EDIT_TIMELINE = "create_edit_timeline"
 
@@ -783,48 +781,6 @@ class WorkflowStateService:
             )
         return collection
 
-    @classmethod
-    def _video_prompt_collection(
-        cls,
-        project_path: Path,
-        items: list[dict[str, Any]],
-        kind: str | None,
-        *,
-        episode: int,
-        target: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        """「视频提示词」产物集合：宫格已确认且正文空着的进 missing，按旧宫格写的进 stale。
-
-        它不是文件产物：正文读正式脚本，依据读 ``generated_assets.video_prompt_basis``（D-18），
-        所以不走 ``_classify_artifact``——没有路径可登记，时效按逐格指纹比对。
-        """
-
-        collection: dict[str, Any] = _empty_collection()
-        if kind is None:
-            return collection
-        id_field = SKELETONS[kind].id_field
-        grids = select_shot_grids(
-            (grid for grid in ShotGridManager(project_path).list_all() if grid.episode == episode),
-            items=items,
-            id_field=id_field,
-        )
-        plan = plan_video_prompt_targets(items, id_field=id_field, grids=grids, target=target)
-        missing = set(plan.targets)
-        stale = set(plan.stale)
-        awaiting = set(plan.awaiting_grid)
-        collection["missing_ids"] = list(plan.targets)
-        collection["stale_ids"] = list(plan.stale)
-        # 按另一个视频模型的口径写的：建议重写，不进自动补缺批次（避免换模型即批量烧钱）。
-        collection["model_stale_ids"] = list(plan.model_stale)
-        # 宫格尚未生成完成的分镜：不进本批，行上只按它报数（D-20）。
-        collection["awaiting_grid_ids"] = list(plan.awaiting_grid)
-        collection["current_ids"] = [
-            unit_id
-            for unit_id in plan.unit_ids
-            if unit_id not in missing and unit_id not in stale and unit_id not in awaiting
-        ]
-        return collection
-
     def get_status(self, project_name: str, episode: int | None = None) -> WorkflowStatus:
         project_path = self.pm.get_project_path(project_name)
         try:
@@ -1229,7 +1185,6 @@ class WorkflowStateService:
             "script": {"state": "missing"},
             "storyboards": _empty_collection(),
             "shot_grids": _empty_collection(),
-            "video_prompts": _empty_collection(),
             "videos": _empty_collection(),
             "audio": _empty_collection(),
         }
@@ -1491,17 +1446,6 @@ class WorkflowStateService:
                 if generation_mode == "storyboard"
                 else _not_applicable_collection()
             )
-            artifacts["video_prompts"] = (
-                self._video_prompt_collection(
-                    project_path,
-                    items,
-                    kind,
-                    episode=number,
-                    target=video_prompt_target_for_project(project),
-                )
-                if generation_mode == "storyboard"
-                else _not_applicable_collection()
-            )
             artifacts["videos"] = self._media_collection(
                 project_path,
                 items,
@@ -1563,15 +1507,19 @@ class WorkflowStateService:
             generation_mode=generation_mode,
             formal_script=formal_present,
             missing_ids=artifacts["shot_grids"].get("missing_ids", []),
+            pending_prompt_ids=pending_ids,
         )
-        operations[WorkflowActionType.AUTHOR_VIDEO_PROMPTS] = admit_author_video_prompts(
-            mode,
-            generation_mode=generation_mode,
-            formal_script=formal_present,
-            target_ids=artifacts["video_prompts"].get("missing_ids", []),
-        )
-
         episode_args = {"episode_id": number}
+        mechanical_meta = _script_data.get("short_drama_meta") if isinstance(_script_data, Mapping) else None
+        mechanical_options = (
+            mechanical_meta.get("mechanical_storyboard_options") if isinstance(mechanical_meta, Mapping) else None
+        )
+        mechanical_version = (
+            mechanical_options.get("splitter_version") if isinstance(mechanical_options, Mapping) else None
+        )
+        # 历史 AI 分镜没有 mechanical 版本，按「结构已在」处理，不强制重建；只有结构由旧版
+        # 机械切分器产出时才要求按新规则重切。
+        structure_current = mechanical_version is None or mechanical_version == MECHANICAL_STORYBOARD_VERSION
         if factory_source:
             if content.unregistered_references or content.referenced_assets_without_description or missing_sheets:
                 return respond(
@@ -1591,13 +1539,23 @@ class WorkflowStateService:
                         ),
                     ),
                 )
-            if not formal_present or not visual_source_current or not items or pending_ids:
+            if not formal_present or not visual_source_current or not items or not structure_current:
                 return respond(
                     target,
                     _action(
                         WorkflowActionType.PLAN_SHORT_DRAMA_STORYBOARDS,
-                        "factory source needs AI storyboard planning",
+                        "factory source needs mechanical storyboard structure",
                         args=episode_args,
+                    ),
+                )
+            if pending_ids:
+                return respond(
+                    target,
+                    _action(
+                        WorkflowActionType.AUTHOR_PROMPTS,
+                        "storyboard prompts are pending",
+                        args=episode_args,
+                        ids=list(pending_ids),
                     ),
                 )
         if not factory_source:
@@ -1621,16 +1579,6 @@ class WorkflowStateService:
                     "reference materials are missing",
                     args=episode_args,
                     ids=artifacts["shot_grids"]["missing_ids"],
-                ),
-            )
-        if generation_mode == "storyboard" and artifacts["video_prompts"]["missing_ids"]:
-            return respond(
-                target,
-                _action(
-                    WorkflowActionType.AUTHOR_VIDEO_PROMPTS,
-                    "video prompts are missing for confirmed reference materials",
-                    args=episode_args,
-                    ids=artifacts["video_prompts"]["missing_ids"],
                 ),
             )
         if artifacts["videos"]["missing_ids"]:
@@ -1714,7 +1662,6 @@ class WorkflowStateService:
                 "script": {"state": "missing"},
                 "storyboards": _empty_collection(),
                 "shot_grids": _empty_collection(),
-                "video_prompts": _empty_collection(),
                 "videos": _empty_collection(),
                 "audio": _empty_collection(),
             },

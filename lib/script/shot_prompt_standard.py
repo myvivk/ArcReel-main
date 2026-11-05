@@ -83,8 +83,8 @@ _PLACEHOLDER_PHRASES = ("一位人物", "一处场景", "气氛紧张", "人物�
 #: 镜头标记：``【镜头N｜景别】``，景别必填（校验口径）；解析容忍 ``【镜头N】`` 缺省形。
 _MARK = re.compile(r"【\s*镜头\s*(\d+)\s*(?:[｜|]\s*([^】\n]*?)\s*)?】")
 
-#: 台词行：``台词：…`` / ``对白：…`` / ``画外音：…``。image_prompt 与 video_prompt.action
-#: 只写画面看得见的内容，台词只由 ``utterances`` 承载。
+#: 台词行：``台词：…`` / ``对白：…`` / ``画外音：…``。动态提示词的声音层可写已知声源，
+#: 但台词原句只由 ``utterances`` 承载。
 _DIALOGUE_LINE = re.compile(r"^[ \t]*(?:台词|对白|画外音|旁白)\s*[：:].*$", re.MULTILINE)
 
 #: 引用 token：``@[登记名]``；供资产解析与校验共用同一条正则。
@@ -194,6 +194,30 @@ _SENTENCE_BREAK = re.compile(r"[。！？!?；;]+|\n+")
 #: 视频 action 的时间段：``0-3秒`` / ``3~6 秒`` / ``9 至 12 秒``。
 _TIME_SEGMENT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:-|–|—|~|至)\s*(\d+(?:\.\d+)?)\s*秒")
 
+#: 动态分镜提示词中，每个镜头块开头的时间段。H3 允许时间段前先放 `[推进]` 这类方括号运镜。
+_SHOT_TIMELINE = re.compile(r"^\s*(?:\[[^\]]+\]\s*)*(\d+(?:\.\d+)?)\s*(?:-|–|—|~|至)\s*(\d+(?:\.\d+)?)\s*秒\s*[：:]")
+#: H3 官方方括号运镜；有它时首句不再要求散文机位/运镜。
+_CAMERA_BRACKET = re.compile(
+    r"\[(?:推进|拉远|固定|左摇|右摇|上摇|下摇|变焦推近|变焦拉远|左移|右移|上升|下降|环绕|跟随)\]"
+)
+#: 组装期字段：台词/说话人编号/参考图编号/H3 切换与声景都必须由视频组装阶段注入，
+#: 写作阶段提前写进来会和 utterances / 参考图序列重复。
+_ASSEMBLY_ONLY = re.compile(
+    r"</?d>|\(\s*S\d+\s*\)|<Picture\s*\d+>|\boverall_soundscape\s*[：:]|\bDialogue\s*[：:]|"
+    r"\[Shot\s*\d+\]|画面\s*[：:]|环境声\s*[：:]|\bCamera_Motion\b|\bAmbiance_Audio\b|"
+    r"\bAt\s+\d{1,2}:\d{2}",
+    re.IGNORECASE,
+)
+
+#: 单一动态分镜提示词的可审查制作层。四层都在同一镜头块内，参考素材只抽取可见瞬间，
+#: 视频生成则消费完整动态描述。
+_MOTION_SECTION_LABELS = ("主体动态", "空间调度", "画面与光线", "声音")
+#: 只出现在旧四层写法里的标签；出现任意一个就按四层口径校验（「声音」两种写法都有）。
+_LEGACY_ONLY_SECTION_LABELS = ("主体动态", "空间调度", "画面与光线")
+
+#: 动态分镜提示词在 K 帧生成之前成文，正文不能预写尚不存在的 K 编号。
+_KEYFRAME_REFERENCE = re.compile(r"(?<![A-Za-z0-9_])[Kk]\d+")
+
 #: 剥掉镜头标记与引用 token 后的「裸文本」：动作 / 神态词只认它，资产外观描述与
 #: 镜头标记不能再替正文凑数（2026-10-24 评审拍板）。NFKC 折叠全角标点后再匹配。
 _BARE_NOISE = re.compile(r"【[^】\n]*】|@\[[^]\n]*\]")
@@ -241,11 +265,11 @@ def dialogue_lines(text: str) -> list[str]:
 
 
 def dialogue_line_problem(text: str, *, label: str = "image_prompt") -> str | None:
-    """画面提示词不得出现台词行：返回可回喂模型的原因，合格返回 ``None``。
+    """动态提示词不得出现台词原句行：返回可回喂模型的原因，合格返回 ``None``。
 
-    ``image_prompt`` 与 ``video_prompt.action`` 都只写画面看得见的内容；台词只由
-    ``utterances`` 承载。允许「启唇说话 / 冷笑 / 画外传来宣读声」这类动作或环境描述，
-    但不允许 ``台词：…`` / ``对白：…`` / ``画外音：…`` 原句行。
+    主体动态、空间调度和画面与光线只写可见内容；声音层允许「画外传来宣读声」等已知声源。
+    台词原句只由 ``utterances`` 承载，不允许 ``台词：…`` / ``对白：…`` /
+    ``画外音：…`` 原句行。
     """
     matches = list(_DIALOGUE_LINE.finditer(text))
     if not matches:
@@ -472,6 +496,106 @@ def action_timeline_problem(action: str, duration_seconds: object) -> str | None
     return None
 
 
+_GENERIC_AMBIENCE = re.compile("^(?:只有)?(?:氛围声|环境声|背景声|持续的环境音|持续底噪|无明显声音)[。；，, ]*$")
+_SOUND_CONTENT = re.compile(r"声音\s*[：:]\s*([^；\n。]*)(?:[；。]|$)")
+_VISIBLE_CHANGE = re.compile(
+    "抬|落|放|递|接|抓|握|攥|捏|推|拉|转|回头|走|跑|退|靠近|离开|站起|坐下|跪|"
+    "开口|说|喊|问|答|点头|摇头|看向|盯|瞥|睁|闭|眨|皱眉|咬|抿|笑|哭|泣|颤|喘|"
+    "亮|灭|打开|关上|碎|裂|落下|倒下|停住|顿住|僵住|松开|收回|抽出|掀|撕|摔|"
+    "变|显出|露出|浮现|消失|逼近|后退|转身|沉默|回应|拒绝|打断|愣|怔|目光|眼神|视线|"
+    "神色|神情|表情|面色|嘴角|唇|眉心|呼吸|手指|指尖|肩膀|身体|身子|身形|"
+    "冷笑|怒|惊|惧|悲|痛|慌|急|忧|焦|迟疑|犹豫|坚定|不甘|失落|疲惫|"
+    "镜头推进|镜头拉远|镜头横移|镜头跟随|镜头环绕|镜头摇向|镜头移向"
+)
+
+
+def storyboard_narrative_prompt_problem(scene: str) -> str | None:
+    """拒绝连续的纯氛围镜头；有具体可见动作 / 表演变化的无对白镜头允许通过。"""
+
+    blocks = shot_blocks(scene)
+    for previous, current in itertools.pairwise(blocks):
+        previous_sound = _SOUND_CONTENT.search(previous.body)
+        current_sound = _SOUND_CONTENT.search(current.body)
+        previous_is_ambience = (
+            previous_sound is not None
+            and bool(_GENERIC_AMBIENCE.fullmatch(previous_sound.group(1).strip()))
+            and not _VISIBLE_CHANGE.search(previous.body)
+        )
+        current_is_ambience = (
+            current_sound is not None
+            and bool(_GENERIC_AMBIENCE.fullmatch(current_sound.group(1).strip()))
+            and not _VISIBLE_CHANGE.search(current.body)
+        )
+        if previous_is_ambience and current_is_ambience:
+            return (
+                f"镜头{previous.number}–{current.number}连续只有泛化氛围声、没有具体可见变化；"
+                "请合并或改写至少一镜，使其呈现原稿 beat 引发的动作、表情、关系/信息变化或结果。"
+                "不得为此新增对白、旁白或剧情事实"
+            )
+    return None
+
+
+def storyboard_motion_prompt_problem(scene: str, duration_seconds: object) -> str | None:
+    """校验可同时驱动参考素材与视频生成的动态分镜提示词。
+
+    每个 ``【镜头N】`` 块必须带连续时间段，时间轴从 0 秒覆盖到分镜时长。块内可以沿用旧的
+    四层标签（主体动态 / 空间调度 / 画面与光线 / 声音），也可以按 H3 / fea_1026 的 action
+    写法：``[推进] 0-3秒：…`` 只写变化，声音可选 ``环境声：`` 行。提示词在 K 帧之前生成，
+    因此出现任何 K 编号都属于前向引用。
+    """
+
+    blocks = shot_blocks(scene)
+    if not blocks:
+        # 不再强制【镜头N】分段：H3 用 [Shot N]，通用模型也可能写成单段。只保留 K 帧前向引用
+        # 与“每个时间段单独一行”两道硬约束。
+        if _KEYFRAME_REFERENCE.search(scene):
+            return "动态分镜提示词不得引用 K 帧：K 帧尚未生成，提示词只能描述动作、表演、调度、画面与声音"
+        all_spans = list(
+            re.finditer(r"(?<![\d.])(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*秒\s*[：:]", scene)
+        )
+        line_spans = list(
+            re.finditer(r"(?m)^[ \t]*(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*秒\s*[：:]", scene)
+        )
+        if all_spans and len(line_spans) < len(all_spans):
+            return "每个时间段必须单独一行；不要写成 0-4秒：…4-8秒：… 这种一行连续段落"
+        return None
+    if _KEYFRAME_REFERENCE.search(scene):
+        return "动态分镜提示词不得引用 K 帧：K 帧尚未生成，提示词只能描述动作、表演、调度、画面与声音"
+    if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (int, float)):
+        return "分镜时长无效，无法校验动态分镜提示词的时间轴"
+    duration = float(duration_seconds)
+    if duration <= 0:
+        return "分镜时长必须大于 0 秒"
+
+    cursor = 0.0
+    for block in blocks:
+        match = _SHOT_TIMELINE.match(block.body)
+        if match is None:
+            return f"镜头{block.number} 缺时间段：正文必须以“{cursor:g}-N秒：”开头"
+        start, end = float(match.group(1)), float(match.group(2))
+        if abs(start - cursor) > 0.2:
+            return (
+                f"镜头{block.number} 的时间段从 {start:g} 秒开始，上一镜停在 {cursor:g} 秒；各镜头必须从 0 秒起连续衔接"
+            )
+        if end <= start:
+            return f"镜头{block.number} 的时间段 {start:g}-{end:g} 秒不成立：结束必须晚于开始"
+        # 旧四层写法：四层齐全才放行。H3 / fea_1026 的 action 写法只要求时间段 + 动作变化，
+        # 运镜由方括号或首句承载，声音可选「环境声：」行；不再强制「画面/声音」标记。
+        legacy = any(label in block.body for label in _LEGACY_ONLY_SECTION_LABELS)
+        if legacy:
+            missing = [
+                label
+                for label in _MOTION_SECTION_LABELS
+                if re.search(rf"{re.escape(label)}\s*[：:]", block.body) is None
+            ]
+            if missing:
+                return f"镜头{block.number} 缺制作层：{'、'.join(missing)}"
+        cursor = end
+    if abs(cursor - duration) > 0.25:
+        return f"镜头时间轴只覆盖到 {cursor:g} 秒，分镜时长是 {duration:g} 秒；需要连续覆盖完整时长"
+    return storyboard_narrative_prompt_problem(scene)
+
+
 def reference_tokens(text: str) -> list[str]:
     """正文里的 ``@[登记名]`` token（按出现序去重）。"""
     return list(dict.fromkeys(match.group(1).strip() for match in _TOKEN.finditer(text)))
@@ -643,11 +767,17 @@ def lint_shot_prompt(
     text = scene.strip()
     if not text:
         return "分镜提示词为空"
+    if _ASSEMBLY_ONLY.search(text):
+        return (
+            "提示词正文不能写台词、说话人编号、<d>、<Picture N>、[Shot N]、画面/环境声字段、"
+            "Camera_Motion、At/cut、overall_soundscape 或 Dialogue 段；这些由系统在视频组装阶段从 utterances/参考图注入"
+        )
     if problem := dialogue_line_problem(text):
         return problem
     blocks = shot_blocks(text)
     if not blocks:
-        return "分镜提示词里没有【镜头N】分镜块"
+        # 【镜头N】不再是硬要求；H3 用 [Shot N]，通用模型也可单段。这里只做资产 token 检查。
+        return _lint_tokens(text, registered, allowed)
     if [block.number for block in blocks] != list(range(1, len(blocks) + 1)):
         return "镜头编号必须从 1 开始连续递增，不重不漏"
     for block in blocks:
@@ -686,9 +816,10 @@ def _lint_block(block: ShotBlock, character_names: Collection[str] = ()) -> str 
             f"{label} 缺景别或景别不在词表内（须写成「【镜头{block.number}｜中景】…」，景别取 {'/'.join(SHOT_SIZES)}）"
         )
     first_sentence = _bare_text(block.body.split("。", 1)[0])
-    if not any(word in first_sentence for word in CAMERA_POSITIONS):
+    has_bracket_camera = _CAMERA_BRACKET.search(first_sentence) is not None
+    if not has_bracket_camera and not any(word in first_sentence for word in CAMERA_POSITIONS):
         return f"{label} 首句缺机位（如「平视机位，缓推。」，机位取 {'/'.join(CAMERA_POSITIONS)}）"
-    if not any(word in first_sentence for word in CAMERA_MOTIONS):
+    if not has_bracket_camera and not any(word in first_sentence for word in CAMERA_MOTIONS):
         return f"{label} 首句缺运镜（如「平视机位，缓推。」，运镜取 {'/'.join(CAMERA_MOTIONS)}）"
     bare = _bare_text(block.body)
     if len(block.body.strip()) < _BLOCK_MIN_CHARS:
@@ -780,6 +911,7 @@ __all__ = [
     "reference_tokens",
     "review_video_prompt_mentions",
     "shot_blocks",
+    "storyboard_motion_prompt_problem",
     "video_prompt_delta_metrics",
     "video_prompt_delta_problem",
 ]

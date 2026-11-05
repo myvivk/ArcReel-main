@@ -16,7 +16,7 @@ from lib.config.resolver import (
     ConfigResolver,
     VideoGenerationType,
     caps_generation_mode,
-    video_bucket_for_generation_mode,
+    video_bucket_for_request,
 )
 from lib.db import async_session_factory
 from lib.generation.video_request_facts import (
@@ -43,7 +43,7 @@ async def storyboard_request_facts(
     return await evaluate_video_request_facts(
         project,
         route="storyboard",
-        generation_type=video_bucket_for_generation_mode(caps_generation_mode(project)),
+        generation_type=video_bucket_for_request(caps_generation_mode(project), "reference"),
         identity=CONFIGURED_VIDEO_IDENTITY,
         resolver=config_resolver or ConfigResolver(async_session_factory),
     )
@@ -102,11 +102,11 @@ async def project_video_caps(
     由调用方各自降级。
 
     ``degraded_to`` 只用于日志，说明这次解析失败会让调用方退化成什么行为。
-    ``generation_type`` 未给定时按项目生成模式定桶；给定时按指定桶解析（参考生视频内无参考图视频单元
-    按 i2v 桶取档 / 计价的读侧）。
+    ``generation_type`` 未给定时按固定 reference/r2v 路线定桶；给定时按指定桶解析历史读侧。
     ``requested_generate_audio`` 独立于能力接口解析（见下方实现注释），双重失败时该键为 ``False``。
     """
     resolver = ConfigResolver(async_session_factory)
+    generation_type = generation_type or video_bucket_for_request(caps_generation_mode(project), "reference")
     try:
         return await resolver.video_capabilities_for_project(project, generation_type=generation_type)
     except (ValueError, SQLAlchemyError) as exc:

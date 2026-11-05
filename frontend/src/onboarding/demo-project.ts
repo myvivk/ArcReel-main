@@ -269,12 +269,6 @@ export function buildDemoScripts(t: DemoT): Record<string, DramaEpisodeScript> {
           ambiance: t(`demo_shot_${n}_ambiance`),
         },
       },
-      video_prompt: {
-        action: t(`demo_shot_${n}_video`),
-        camera_motion: skeleton.cameraMotion,
-        ambiance_audio: t(`demo_shot_${n}_audio`),
-        dialogue: [],
-      },
       generated_assets: {
         storyboard_image: skeleton.hasStoryboard
           ? demoPlaceholder(segmentId, "storyboard")

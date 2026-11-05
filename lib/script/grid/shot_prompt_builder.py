@@ -168,6 +168,7 @@ def build_shot_grid_prompt(
     style: str = "",
     style_description: str = "",
     scene_opening: str = "",
+    scene: str = "",
     references: Sequence[ReferenceImageSlot] = (),
 ) -> str:
     """渲染单分镜宫格的最终提示词（四段式，``storyboard/shot_grid`` 模版）。
@@ -178,6 +179,7 @@ def build_shot_grid_prompt(
         cells: 本次出图的逐格镜头序列，按出现序即阅读序（左→右、上→下）。
         style / style_description: 项目画风与画风描述。
         scene_opening: 分镜提示词 scene 的导语段，作为跨格基调进「风格与锚点」。
+        scene: 完整分镜提示词；提供时由生图模型直接选取关键瞬间，cells 仅用于旧调用兼容。
         references: 实际随请求发出的参考图，其位置即「图N」编号。
 
     Raises:
@@ -198,6 +200,7 @@ def build_shot_grid_prompt(
         grid_aspect_ratio=grid_aspect_ratio,
         panel_aspect_ratio=panel_aspect_ratio_for(grid_aspect_ratio, rows, cols),
         scene_opening=_render_cell_text(scene_opening, references) if scene_opening.strip() else None,
+        scene=_render_cell_text(scene, references) if scene.strip() else None,
         cells=[
             {
                 "number": frame.number,

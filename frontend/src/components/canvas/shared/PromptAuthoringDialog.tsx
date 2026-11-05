@@ -36,7 +36,6 @@ import { useAssistantStore } from "@/stores/assistant-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import {
   usePromptAuthoringStore,
-  type PromptAuthoringField,
   type PromptAuthoringOpenRequest,
   type PromptAuthoringScope,
 } from "@/stores/prompt-authoring-store";
@@ -73,7 +72,7 @@ export function PromptAuthoringHost({ projectName, episode, script, savedInstruc
   return (
     <PromptAuthoringDialog
       // 每次打开都从请求重新初始化范围与指令，不沿用上一次弹窗里未提交的状态。
-      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}:${request.defaultRewrite ? "rewrite" : "fill"}:${(request.defaultFields ?? []).join(",")}:${(request.defaultEntryIds ?? []).join(",")}`}
+      key={`${projectName}:${episode}:${request.scope}:${request.currentEntryId ?? ""}:${request.defaultRewrite ? "rewrite" : "fill"}:${(request.defaultEntryIds ?? []).join(",")}`}
       projectName={projectName}
       episode={episode}
       entries={entries}
@@ -105,7 +104,6 @@ export function PromptAuthoringDialog({
   const episodeLedger = useEpisodeLedger();
   const scopeLabelId = useId();
   const rewriteId = useId();
-  const fieldScopeId = useId();
   const fieldId = useId();
   const pendingCount = entries.filter((entry) => entry.pending).length;
   const currentEntryId =
@@ -122,10 +120,6 @@ export function PromptAuthoringDialog({
     return entries.filter((entry) => entry.pending).map((entry) => entry.id);
   });
   const [rewrite, setRewrite] = useState(request.defaultRewrite === true);
-  const [fields, setFields] = useState<PromptAuthoringField[]>(
-    () => request.defaultFields ?? ["image_prompt"],
-  );
-  const fieldsLocked = request.lockFields === true && fields.length === 1;
   const currentOnly = request.scope === "current" && currentEntryId !== null;
   const [instructions, setInstructions] = useState(savedInstructions);
   const [submitting, setSubmitting] = useState(false);
@@ -135,17 +129,15 @@ export function PromptAuthoringDialog({
   const [videoModel, setVideoModel] = useState(
     typeof projectRecord.video_provider_r2v === "string" ? projectRecord.video_provider_r2v : "",
   );
-  // 项目没选模型时的生效模型：项目默认 → 全局默认。提示词要按模型方言写，弹出这个框却不知道
-  // 会跑哪个模型，就只能给通用口径——所以这里必须把「跟随默认」解析成一个具体模型并写进项目，
-  // 写作侧（按项目模型取方言）才拿得到。
+  // 项目没选模型时的生效模型：项目默认 → 全局默认。提示词要按模型方言写，弹窗必须知道
+  // 会跑哪个模型，所以「跟随默认」要解析成一个具体模型并写进项目。
   const [globalVideoModel, setGlobalVideoModel] = useState("");
   const effectiveVideoModel =
     videoModel ||
     (typeof projectRecord.video_backend === "string" ? projectRecord.video_backend : "") ||
     globalVideoModel;
-  const videoFieldSelected = fields.includes("video_prompt");
-  // 目标模型候选来自供应商能力目录，且不看当前配置了谁（include_unconfigured）：允许先按
-  // 目标模型写提示词、再配密钥。按项目生成模式取桶：故事板只列 i2v，参考生视频只列 r2v。
+  // 候选来自供应商能力目录（include_unconfigured）：允许先按目标模型写提示词、再配密钥。
+  // 视频固定走参考图模式，故只列 r2v 桶。
   const [videoCandidates, setVideoCandidates] = useState<ModelCandidatesResponse | null>(null);
   useEffect(() => {
     let alive = true;
@@ -153,9 +145,7 @@ export function PromptAuthoringDialog({
       .then(([result, config]) => {
         if (!alive) return;
         setVideoCandidates(result);
-        setGlobalVideoModel(
-          config.settings.default_video_backend_r2v || config.settings.default_video_backend || "",
-        );
+        setGlobalVideoModel(config.settings.default_video_backend_r2v || config.settings.default_video_backend || "");
       })
       .catch(() => {
         if (alive) setVideoCandidates(null);
@@ -164,8 +154,6 @@ export function PromptAuthoringDialog({
       alive = false;
     };
   }, []);
-  // 视频生成固定走参考图模式（K 帧 + 资产图都按参考图下发），故候选只取 r2v 桶：
-  // 不收参考图的模型（如纯 i2v 的 Hailuo）不再出现在这里。
   const videoModelOptions = useMemo(
     () => videoCandidates?.video.buckets.r2v ?? videoCandidates?.video.default ?? [],
     [videoCandidates],
@@ -174,8 +162,7 @@ export function PromptAuthoringDialog({
   const changeVideoModel = async (next: string) => {
     setVideoModel(next);
     try {
-      // 「跟随默认」不是一个模型：写作侧按项目配置取提示词方言，必须落成具体模型，
-      // 否则又会退回通用口径。
+      // 「跟随默认」不是一个模型：写作侧按项目配置取提示词方言，必须落成具体模型。
       await API.updateProject(projectName, { video_provider_r2v: next || globalVideoModel || null });
       await refreshAfterWrite(projectName, t);
     } catch (err) {
@@ -221,7 +208,7 @@ export function PromptAuthoringDialog({
       await enqueuePromptAuthoring(projectName, episode, {
         entry_ids: entryIds,
         rewrite,
-        fields: fields,
+        fields: ["image_prompt"],
         instructions: instructions.trim() || null,
         overwrite_revision: overwriteRevision,
       });
@@ -256,7 +243,6 @@ export function PromptAuthoringDialog({
         episodeRef: episodeAgentRef(episodeLedger, episode, t),
         scopeLabel,
         rewrite,
-        fields: fields,
         instructions,
       }),
     );
@@ -333,13 +319,9 @@ export function PromptAuthoringDialog({
                           <span className="ml-auto text-xs text-muted-foreground">
                             {entry.pending
                               ? t("prompt_authoring_entry_pending")
-                              : fields[0] === "video_prompt"
-                                ? entry.videoPromptFilled
-                                  ? t("prompt_authoring_entry_has_video_prompt")
-                                  : t("prompt_authoring_entry_empty")
-                                : entry.hasContent
-                                  ? t("prompt_authoring_entry_has_prompt")
-                                  : t("prompt_authoring_entry_empty")}
+                              : entry.hasContent
+                                ? t("prompt_authoring_entry_has_prompt")
+                                : t("prompt_authoring_entry_empty")}
                           </span>
                         </Label>
                       </li>
@@ -365,59 +347,28 @@ export function PromptAuthoringDialog({
                 </div>
               </div>
 
-              {(
-                <div className="flex flex-col gap-2">
-                  <span id={fieldScopeId} className="text-sm font-medium">
-                    {t("prompt_authoring_field_label")}
-                  </span>
-                  {fieldsLocked ? (
-                    <p className="text-sm text-muted-foreground">
-                      {t(fields[0] === "video_prompt" ? "prompt_authoring_field_video" : "prompt_authoring_field_image")}
-                    </p>
-                  ) : (
-                    <RadioGroup
-                      aria-labelledby={fieldScopeId}
-                      value={fields[0] ?? "image_prompt"}
-                      onValueChange={(next) => setFields([next as PromptAuthoringField])}
-                      disabled={submitting}
-                    >
-                      <Label>
-                        <RadioGroupItem value="image_prompt" />
-                        {t("prompt_authoring_field_image")}
-                      </Label>
-                      <Label>
-                        <RadioGroupItem value="video_prompt" />
-                        {t("prompt_authoring_field_video")}
-                      </Label>
-                    </RadioGroup>
-                  )}
-                </div>
-              )}
-
-              {videoFieldSelected ? (
-                <div className="flex flex-col gap-1.5">
-                  <Label>{t("prompt_authoring_video_model")}</Label>
-                  <ProviderModelSelect
-                    value={videoModel}
-                    options={videoModelOptions}
-                    providerNames={videoCandidates?.provider_names ?? {}}
-                    modelNames={videoCandidates?.model_names}
-                    onChange={(next) => void changeVideoModel(next)}
-                    allowDefault
-                    defaultLabel={t("prompt_authoring_video_model_default")}
-                    fallbackValue={effectiveVideoModel || undefined}
-                    fallbackLabel={t("prompt_authoring_video_model_default")}
-                    placeholder={t("prompt_authoring_video_model_placeholder")}
-                    aria-label={t("prompt_authoring_video_model")}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {t("prompt_authoring_video_model_hint")}
-                  </p>
-                  {videoCandidates && videoModelOptions.length === 0 ? (
-                    <p className="text-xs text-warn">{t("no_video_providers_hint")}</p>
-                  ) : null}
-                </div>
-              ) : null}
+              <div className="flex flex-col gap-1.5">
+                <Label>{t("prompt_authoring_video_model")}</Label>
+                <ProviderModelSelect
+                  value={videoModel}
+                  options={videoModelOptions}
+                  providerNames={videoCandidates?.provider_names ?? {}}
+                  modelNames={videoCandidates?.model_names}
+                  onChange={(next) => void changeVideoModel(next)}
+                  allowDefault
+                  defaultLabel={t("prompt_authoring_video_model_default")}
+                  fallbackValue={effectiveVideoModel || undefined}
+                  fallbackLabel={t("prompt_authoring_video_model_default")}
+                  placeholder={t("prompt_authoring_video_model_placeholder")}
+                  aria-label={t("prompt_authoring_video_model")}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("prompt_authoring_video_model_hint")}
+                </p>
+                {videoCandidates && videoModelOptions.length === 0 ? (
+                  <p className="text-xs text-warn">{t("no_video_providers_hint")}</p>
+                ) : null}
+              </div>
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={fieldId}>{t("prompt_authoring_instructions_label")}</Label>

@@ -13,7 +13,8 @@ description: >-
 
 ## 共同约定
 
-- 所有资产 `description` 用**叙事式段落**，而不是关键词列表。
+- 所有资产 `description` 用**具体、完整的叙事式段落**，而不是关键词列表或泛化形容词。必须写出主体轮廓、至少 2-4 个可复现的辨识视觉锚点（形状/位置/颜色/材质/纹理等）及其关系；只写“美丽、神秘、古老、华丽”等评价不合格。优先整合人物圣经、资产标记行和剧情动作/台词中的明确事实；已有描述不得覆盖，禁止为凑细节编造来源没有的关键设定。关键外观资料缺失时列清缺项，请用户补充。
+- 类型细则遵循 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md`；角色写面部、发型、服装和配饰锚点，场景写布局/结构/固定陈设锚点，道具与商品写轮廓、材质、细节和部件位置。
 - 用户只需在 project.json 中维护 `description`；最终交给图像 backend 的完整 prompt
   （含布局 / 防崩短语 / 反向提示词）由 `lib/prompts/prompt_builders.py` 在 server 端拼好，
   WebUI 与 Skill 走同一份真相源。
@@ -26,7 +27,7 @@ description: >-
 
 ### description 编写指南
 
-生成或修改角色 `description` 时，严格遵循共享标准 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md`。该标准要求依据原始设定写成可直接登记的叙事段落；不把图像布局、白底、灯光或反向提示词混入描述。角色衍生只写相对本体的变化。信息不足时优先依据项目内设定工件补全（短剧项目为 `source/short_drama/character-bible.md` 人物圣经、系列大纲与单集原文标记行）；工件也没有的按题材合理、自洽地补全，无需向用户逐项确认。
+生成或修改角色 `description` 时，严格遵循共享标准 `lib/prompts/prompt_templates/templates/partials/shared/asset_description_rule.md`。该标准要求依据原始设定写成可直接登记的叙事段落；不把图像布局、白底、灯光或反向提示词混入描述。角色衍生只写相对本体的变化。信息不足时优先依据项目内设定工件补全（短剧项目为 `source/short_drama/character-bible.md` 人物圣经、系列大纲与单集原文标记行）；工件仍缺少关键视觉信息时明确列出缺项，请用户补充，不得按题材编造。
 
 ### 输出布局
 
@@ -106,10 +107,13 @@ description: >-
 
 ## 工作流程
 
-1. **加载项目元数据** — 从 Artifact Manifest 找出资产图状态为 `missing` 的资产
-2. **入队生成任务** — 只提交资产名；server 执行时按项目里存储的 description 渲染（`lib.prompts.prompt_builders` 注入布局 / 防崩 / 反向）。声明了原图却读不到时生成被拒（`asset_original_missing`），让用户重新上传原图或清掉原图字段
-3. **审核检查点** — 展示每张资产图，用户可批准、要求重新生成，或要求编辑
-4. **更新 project.json** — 更新 `character_sheet` / `scene_sheet` / `prop_sheet` / `product_sheet` 路径
+1. **加载项目元数据** — 从 Artifact Manifest 找出资产图状态为 `missing` 的资产，并检查本集资产描述是否过短、泛化或缺少辨识视觉锚点。
+2. **完善描述** — 对空描述或质量不足的描述，先读取人物圣经、源稿标记行、相关动作/台词和故事规划；用 `patch_project` 写入完整的叙事式视觉描述。已有描述只有在用户授权资产准备流程优化时才可改写；改写必须保留已确认事实，不得用无依据细节凑长度。
+3. **确认暂停** — 汇总将要生成/重生成的资产图 ID、数量、描述优化项及媒体过期影响；使用 `AskUserQuestion` 在当前会话等待用户明确确认。不要仅发一条“请确认”的普通文本后结束回合。
+4. **入队生成任务** — 收到确认答案后，在同一会话调用 `mcp__arcreel__generate_assets`；只提交资产名，server 按项目 description 渲染（`lib.prompts.prompt_builders` 注入布局 / 防崩 / 反向）。声明了原图却读不到时生成被拒（`asset_original_missing`），让用户重新上传原图或清掉原图字段。
+5. **等待并核对** — 等待批次终态，按 requested / succeeded / failed / blocked / skipped 逐 ID 检查；修复可恢复失败后重试。批次运行中或仍有未处理结果时保持会话，不结束会话。
+6. **审核检查点** — 展示每张资产图，用户可批准、要求重新生成，或要求编辑。
+7. **更新 project.json** — 更新 `character_sheet` / `scene_sheet` / `prop_sheet` / `product_sheet` 路径
 
 ## 审核检查点：编辑 vs 重新生成
 

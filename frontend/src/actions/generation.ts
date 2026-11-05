@@ -136,15 +136,13 @@ export async function enqueueStoryboard(
 export async function enqueueVideo(
   projectName: string,
   segmentId: string,
-  prompt: string | Record<string, unknown>,
   scriptFile: string,
   durationSeconds?: number,
   seed?: number | null,
-  frameMode: "first_last" | "reference" = "first_last",
 ): Promise<EnqueueResult> {
   const res = await submit(
     [markResource(projectName, "video", segmentId, "video")],
-    () => API.generateVideo(projectName, segmentId, prompt, scriptFile, durationSeconds, seed, frameMode),
+    () => API.generateVideo(projectName, segmentId, scriptFile, durationSeconds, seed),
     oneTaskId,
   );
   notifyEnqueued(res.deduped, i18n.t("dashboard:video_task_submitted_toast", { id: itemLabel(segmentId) }));
@@ -277,7 +275,7 @@ export async function enqueueImageEdit(
 }
 
 /**
- * 按已保存的宫格入队参考素材：逐格文本以 `ShotGrid.prompt` 优先，空则回退 scene 现解析。
+ * 按已保存的宫格入队参考素材：画面直接使用当前分镜提示词。
  */
 export async function enqueueShotGrid(
   projectName: string,

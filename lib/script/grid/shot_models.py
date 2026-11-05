@@ -46,9 +46,8 @@ class ShotGridCell:
 class ShotGrid:
     """一个分镜的参考素材宫格记录。
 
-    逐格镜头文本的真相源是 ``ShotGrid.prompt``（ADR 0099 D-2）：确定入队前它已由服务端解析
-    并回填留证，出图时原样再解析一次拼装出口，与 PUT / 整集批量共用。``scene_revision`` 是
-    保存时 ``image_prompt.scene`` 的指纹，与当前 scene 不一致时提示重新生成。
+    画面来源是当前分镜提示词；prompt 保留历史兼容，生成不读取它。
+    scene_revision 是生成时分镜提示词的指纹，用于检查后续变更。
     """
 
     id: str

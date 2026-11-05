@@ -248,6 +248,7 @@ class RunningHubClient:
         workflow_id: str,
         node_info_list: Sequence[Mapping[str, Any]],
         workflow: Mapping[str, Any] | None = None,
+        instance_type: str | None = None,
         record: RecordResponse | None = None,
     ) -> str:
         """提交一笔 workflow 任务，返回 ``taskId``。"""
@@ -258,6 +259,8 @@ class RunningHubClient:
             # 共享/普通 Key 即使传 true 也只是回落到公共队列，不会影响提交。
             "usePersonalQueue": True,
         }
+        if instance_type in {"default", "plus", "ultra"}:
+            body["instanceType"] = instance_type
         if node_info_list:
             body["nodeInfoList"] = list(node_info_list)
         if workflow is not None:

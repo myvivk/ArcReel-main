@@ -34,7 +34,7 @@ from lib.config.resolver import (
     ConfigResolver,
     VideoBucketCapabilityError,
     caps_generation_mode,
-    video_bucket_for_generation_mode,
+    video_bucket_for_request,
 )
 from lib.db import async_session_factory
 from lib.episode.episode_management import create_episode
@@ -775,7 +775,7 @@ async def get_video_capabilities(
         generation_type = (
             ("r2v" if uses_reference_images else "i2v")
             if uses_reference_images is not None
-            else video_bucket_for_generation_mode(caps_generation_mode(project))
+            else video_bucket_for_request(caps_generation_mode(project), "reference")
         )
         if video_backend:
             provider_id, model_id = split_video_backend_query(video_backend)
@@ -1239,6 +1239,10 @@ async def preview_script_item_prompts(
         None,
         description="生成弹窗里选中的候选视频模型（provider/model）；给出时按该模型渲染提示词格式",
     ),
+    draft: bool = Query(
+        False,
+        description="参考素材 K 帧未确认时仍渲染视频提示词草稿（不含 K 帧声明），供写作阶段核对模型方言",
+    ),
 ):
     """渲染该条目当前会送进图像 / 视频模型的最终提示词文本。
 
@@ -1250,7 +1254,7 @@ async def preview_script_item_prompts(
     此时报「先修复」比渲染一份不会被发出的文本诚实。
     """
     try:
-        preview = await preview_item_prompts(name, script_file, item_id, video_backend=video_backend)
+        preview = await preview_item_prompts(name, script_file, item_id, video_backend=video_backend, draft=draft)
     except ScriptItemNotFound as exc:
         raise NotFoundError("script_item_not_found", id=item_id) from exc
     except FileNotFoundError as exc:
@@ -1484,7 +1488,6 @@ async def update_scene(
                 "duration_seconds",
                 "scene_description",
                 "image_prompt",
-                "video_prompt",
                 "characters_in_scene",
                 "scenes",
                 "props",
@@ -1539,7 +1542,6 @@ _SHOT_UPDATABLE_FIELDS = (
     "voiceover_text",
     "duration_seconds",
     "image_prompt",
-    "video_prompt",
     "characters_in_shot",
     "scenes",
     "props",

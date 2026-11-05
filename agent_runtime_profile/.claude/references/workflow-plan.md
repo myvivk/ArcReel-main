@@ -6,9 +6,9 @@
 
 ## 回合边界
 
-Agent 每回合只执行一个动作：完成 `next_action` 后刷新计划、汇报并**结束本轮**，
-不依据刷新后的 `next_action` 在同一回合继续执行。用户说「继续 / 下一步」只推进一步。
-`next_action` 只是建议，不构成自动继续的授权。Web 步骤只导航，付费生成先报 ID 与数量并等用户确认。
+通常 Agent 每回合只执行一个动作。`prepare_episode_assets` 是复合动作例外：先登记资产、补齐或优化描述，再汇总待生成资产图 ID 与数量，并调用 `AskUserQuestion` 让当前会话暂停等待用户明确确认；不得只发普通文本请用户确认后结束回合，也不得把确认前工作派给子智能体。确认前不入队。确认后必须在同一会话继续调用 `generate_assets`，等待批次终态并逐 ID 核对，修复并重试可恢复失败；本批确认的所有资产图片完成后，才刷新计划并结束会话。等待用户答复、批次运行中、仍有待处理结果或可重试失败时不得结束会话。用户回复确认后必须从同一 session_id 继续。
+
+其他动作完成后刷新计划、汇报并结束本轮，不依据刷新后的 `next_action` 自动开始下一个动作。`next_action` 只是建议，不构成自动继续的授权。Web 步骤只导航，付费生成先报 ID 与数量并等用户确认。
 
 ## 四条状态轴
 
@@ -32,13 +32,12 @@ Agent 每回合只执行一个动作：完成 `next_action` 后刷新计划、�
 | `none` | 无变更；有 blocker 就展示原因。检查 issues 和完成状态。 |
 | `collect_project_input` | 使用 short-drama-factory 完成内容质量闭环并入库七类工件，或 Web 工件目录导入。 |
 | `create_episode` | Web 分集页新建工厂集账本，再交付工件。 |
-| `prepare_episode_assets` | Agent 用 patch_project 按工厂工件登记角色、场景、道具与叙事描述；先不生成资产图；只剩缺图时改用 generate_assets。 |
-| `generate_asset_sheets` | generate_assets 按目标集补齐缺图；先报缺失 ID 与数量，用户确认后入队。 |
-| `plan_short_drama_storyboards` | plan_short_drama_storyboards 从规范工厂源稿生成视觉派生状态：新分镜默认全量、强度 2；部分重写传 regenerate_scene_ids；全量重写或已有媒体先确认。集页入口改为「交给 Agent」。 |
-| `author_prompts` | generate_episode_script，独立 fields=["image_prompt"]。 |
+| `prepare_episode_assets` | Agent 用 patch_project 按工厂工件登记角色、场景、道具并写出完整、可辨识的描述；先汇总本集资产图 ID 与数量，用户确认后在同一会话调用 generate_assets，等待并处理整批终态，完成全部图片后才结束会话。 |
+| `generate_asset_sheets` | generate_assets 按目标集补齐缺图；先报缺失 ID 与数量，用户确认后入队，并等待整批图片完成后再结束本轮。 |
+| `plan_short_drama_storyboards` | plan_short_drama_storyboards 从规范工厂源稿机械生成分镜结构（不调用模型）：新分镜默认全量；部分重切传 regenerate_scene_ids；全量重切或已有媒体先确认。落盘后 image_prompt 为空、条目待编写，下一步走 generate_episode_script。集页入口改为「交给 Agent」。 |
+| `author_prompts` | generate_episode_script，独立 fields=["image_prompt"]；输入是上一步落盘的分镜结构。 |
 | `generate_storyboards` | 用户点名的工厂单图生成，经 generate_storyboards；不能替代 K 帧确认。 |
 | `generate_shot_grids` | configure_shot_grid 逐镜定规格与逐格文本（可先 author_shot_grid_prompt），再 generate_shot_grids 出图；K 帧确认留给用户在分镜详情完成。 |
-| `author_video_prompts` | 已确认 K 帧后 generate_episode_script，独立 fields=["video_prompt"]。 |
 | `generate_videos` | generate_videos；整批准入 admitted 后入队。 |
 | `create_edit_timeline` | 按 edit-video 新建本集剪辑时间线，按用户要求剪辑、预览和导出。 |
 | `patch_episode_script` | 按问题字段修改视觉状态；get_episode_script 取 revision 后一次 patch_episode_script。 |
@@ -47,7 +46,7 @@ Agent 每回合只执行一个动作：完成 `next_action` 后刷新计划、�
 | `fix_input` | 修复回执指出的输入，再刷新计划。 |
 | `generate_dependency` | 完成缺失依赖，再刷新计划。 |
 | `wait_for_task` | 查询已有 batch 和任务，等待终态，不再入队。 |
-| `replan_unit` | 在 AI 分镜步骤修复目标视觉分组；内容修改回到工厂返修。 |
+| `replan_unit` | 在机械分镜步骤重切目标分镜；内容修改回到工厂返修。 |
 | `confirm_request_duration` | 展示逐档位时长与费用，确认后把 confirmed_request_durations 带回原批。 |
 | `configure_provider` | Web 设置修复模型与供应商配置，重新查询能力与准入。 |
 | `repair_artifact_state` | 按回执修复产物登记或选择；不自动重生已付费媒体。 |
@@ -65,8 +64,8 @@ Agent 每回合只执行一个动作：完成 `next_action` 后刷新计划、�
 
 ## 来源与声音
 
-正式生成要求工厂源稿和视觉来源修订一致，源稿变更后先重新 AI 分镜。
-提示词先 image_prompt，再 K 帧确认，最后单独 video_prompt，不同字段不得同批写入。
+正式生成要求工厂源稿和视觉来源修订一致，源稿变更后先重新机械分镜。
+分镜步骤只产出结构（边界、时长、口播、原文锚、出场资产），`image_prompt` 由下一步编写；参考素材从中抽取 K 帧，K 帧确认后直接生成视频。
 
 角色声音、参考音频和旁白 TTS 保留。项目选 TTS 时按缺失补齐 narrator 单元音频，
 已经 stale 的音频仍复用，只有用户要求时重合成。TTS 不阻塞视频生成；后期配音项目无需 TTS。

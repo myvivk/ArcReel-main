@@ -1,7 +1,7 @@
 """
 script_generator.py - 剧本生成器
 
-读取工厂 AI 分镜派生状态，独立编写分镜提示词与视频提示词
+读取工厂 AI 分镜派生状态，编写唯一动态分镜提示词
 """
 
 import asyncio
@@ -9,7 +9,6 @@ import copy
 import functools
 import json
 import logging
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,11 +27,10 @@ from lib.artifacts.artifact_provenance import (
 from lib.backends.providers import CallPurpose
 from lib.backends.text_backends.base import DEFAULT_MAX_OUTPUT_TOKENS, TextGenerationRequest, TextTaskType
 from lib.backends.text_generator import TextGenerator
+from lib.config.registry import PROVIDER_REGISTRY
 from lib.config.resolver import ConfigResolver
 from lib.i18n import _ as translate
 from lib.infra.async_thread import run_sync_transaction
-from lib.infra.content_digest import sha256_file
-from lib.infra.path_safety import safe_join
 from lib.infra.text_utils import strip_json_code_fences
 from lib.project.project_manager import ProjectManager
 from lib.project.story_plan_docs import factory_authoring_context
@@ -42,15 +40,7 @@ from lib.prompts.prompt_builders_script import (
     render_drama_content_for_prompt_authoring,
     render_video_model_brief,
 )
-from lib.script.grid.keyframe_parser import format_action_segments, keyframe_reference_problems, shot_scene_text
-from lib.script.grid.shot_grid_manager import ShotGridManager, select_shot_grids
-from lib.script.grid.shot_models import ShotGrid
-from lib.script.grid.video_prompt_targets import (
-    video_prompt_basis_for,
-    video_prompt_body_text,
-    video_prompt_target_for_project,
-    video_prompt_text,
-)
+from lib.script.grid.keyframe_parser import shot_scene_text
 from lib.script.prompt_authoring_scope import (
     PromptAuthoringSelection,
     PromptOverwrite,
@@ -61,27 +51,19 @@ from lib.script.prompt_authoring_scope import (
 from lib.script.script_models import (
     PENDING_AUTHORING_FIELD,
     DramaImageVisualScript,
-    DramaVideoVisualScript,
-    DramaVisualScript,
 )
 from lib.script.script_revision import content_fingerprint, formal_script_filename
 from lib.script.script_skeleton import resolve_declared_kind, resolve_kind_items
 from lib.script.short_drama_import import assets_missing_description, fragment_scene_names, scene_place_name
-from lib.script.short_drama_source import (
-    ShortDramaSource,
-    load_short_drama_source,
-    short_drama_source_relative_path,
-)
+from lib.script.short_drama_source import load_short_drama_source, short_drama_source_relative_path
 from lib.script.shot_prompt_standard import (
-    action_timeline_problem,
     collapse_blank_lines,
     handoff_problem,
     lint_shot_prompt,
     seam_prop_problem,
-    video_prompt_delta_problem,
+    storyboard_motion_prompt_problem,
 )
-from lib.script.source_anchor import is_content_aligned_source_anchor
-from lib.script.storyboard_video_request import storyboard_asset_links
+from lib.script.storyboard_semantic_review import review_storyboard_semantics
 from lib.speech.speech_composition import require_script_unit_admitted, speech_policy_for_project
 
 logger = logging.getLogger(__name__)
@@ -95,10 +77,6 @@ _NO_ENTRY_TO_AUTHOR_NOTE = (
 #: 编写产物最多调用几次文本模型：首轮 + 带拒绝原因的返修轮；穷尽仍不合格就报错，
 #: 不落盘半成品（与 AI 分镜的 ``_PLAN_ATTEMPTS`` 同一闸、同一口径，D-10）。
 _PROMPT_AUTHORING_ATTEMPTS = 5
-
-#: 视频提示词后缀预算的下限（K 帧声明、资产链接、声音声明、编号声明、排除项）。
-#: 实际预留按条目算了 K 帧、资产链接与说话人，短条目也不低于该下限。
-_VIDEO_PROMPT_RESERVE_FLOOR = 200
 
 
 def _entry_asset_names(item: Mapping[str, Any]) -> set[str]:
@@ -115,23 +93,7 @@ def _entry_asset_names(item: Mapping[str, Any]) -> set[str]:
     return names
 
 
-def _scene_names(item: Mapping[str, Any], field: str) -> tuple[str, ...]:
-    """分镜条目某个结构化字段里的名字（不是字符串列表一律忽略）。"""
-    values = item.get(field)
-    if not isinstance(values, list):
-        return ()
-    return tuple(str(value) for value in values if isinstance(value, str) and value.strip())
-
-
-_VISUAL_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {"scenes": DramaVisualScript}
 _VISUAL_IMAGE_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {"scenes": DramaImageVisualScript}
-_VISUAL_VIDEO_RESPONSE_SCHEMA: dict[str, type[BaseModel]] = {"scenes": DramaVideoVisualScript}
-
-_VIDEO_PROMPT_WRAPPER = re.compile(
-    r"(?:(?:Avoid|Voice_Profiles|Dialogue|aspect_ratio|duration_seconds|negative_prompt|model)"
-    r"\s*[:：=]|</?(?:Avoid|Voice_Profiles|Dialogue)>|画面比例\s*[:：=])",
-    re.IGNORECASE,
-)
 
 
 def _require_rewrite_fields(kind: str, rewrite: bool, fields: Iterable[str]) -> None:
@@ -147,40 +109,23 @@ def _require_rewrite_fields(kind: str, rewrite: bool, fields: Iterable[str]) -> 
     if tuple(fields):
         return
     raise PromptAuthoringTargetError(
-        '显式重写必须用 fields 点名本次编写的字段（分镜类传 fields=["image_prompt"] 或 '
-        'fields=["video_prompt"]）；省略 fields 按分镜提示词重写，会让该分镜已生成的分镜图与'
+        '显式重写必须用 fields=["image_prompt"] 点名动态分镜提示词；'
+        "省略 fields 按分镜提示词重写，会让该分镜已生成的分镜图与"
         "已确认的宫格参考素材一并过期"
     )
 
 
 def _visual_response_schema(targets: "PromptAuthoringTargets") -> type[BaseModel]:
-    fields = {field for entry in targets.selection.entries for field in entry.fields}
-    if fields == {"image_prompt"}:
-        return _VISUAL_IMAGE_RESPONSE_SCHEMA[targets.kind]
-    if fields == {"video_prompt"}:
-        return _VISUAL_VIDEO_RESPONSE_SCHEMA[targets.kind]
-    return _VISUAL_RESPONSE_SCHEMA[targets.kind]
+    return _VISUAL_IMAGE_RESPONSE_SCHEMA[targets.kind]
 
 
 def _visual_field_instruction(targets: "PromptAuthoringTargets") -> str | None:
     fields = {field for entry in targets.selection.entries for field in entry.fields}
     if fields == {"image_prompt"}:
         return (
-            "本次只编写 image_prompt（分镜提示词）。不要输出 video_prompt；"
-            "视频提示词必须等参考素材生成并确认后再单独编写。"
-        )
-    if fields == {"video_prompt"}:
-        return (
-            "本次只编写 video_prompt（视频提示词），它是 K0→Kn 的动作增量，不是第二遍分镜画面。"
-            "只写从上一状态到下一状态的变化（触发、过程、落点）；分镜提示词与 K 帧已经写死的长相、服装、"
-            "构图、景别、机位、光线和动作起止状态不再复述，只在它们发生变化时写变化本身。"
-            "每个 K 帧间隔至少保留一个分镜已经写出的必要动作；不能为了简短把某个 K 之间的动作删掉。"
-            "不要复用分镜提示词或 K 帧里的原句/短语；同一个动作写成状态变化，保留动作义务而不是照抄措辞。"
-            "运镜只由 camera_motion 字段承载，action 不出现任何镜头语言。"
-            "每个时间段单独一行（如「0-3秒：…」换行「3-6秒：…」），覆盖全时长且不重叠；"
-            "首段从 K0 的可见状态起，末段落到 Kn 的可见状态。"
-            "只引用真实存在的 K（正文出现的 K 编号必须小于格数），台词不进 action；"
-            "不写 BGM、画面比例、时长与模型参数，也不要输出 image_prompt 或改写分镜提示词。"
+            "本次只编写 image_prompt：它是参考素材与视频生成共同消费的唯一动态分镜提示词。"
+            "每个镜头块必须包含连续时间段，以及主体动态、空间调度、画面与光线、声音四层制作信息。"
+            "提示词先于 K 帧生成，正文不得预写 K0、K1 等关键帧编号，也不要输出 video_prompt。"
         )
     return None
 
@@ -245,7 +190,7 @@ class ScriptGenerator:
     """
     剧本生成器
 
-    提示词编写只消费工厂 AI 分镜派生的正式脚本，独立编写分镜提示词与视频提示词
+    提示词编写只消费工厂 AI 分镜派生的正式脚本，编写唯一动态分镜提示词
     """
 
     # 类属性缺省，绕过 __init__ 构造的实例同样读到 None；解析时按需回退到生产 ConfigResolver。
@@ -257,6 +202,7 @@ class ScriptGenerator:
         generator: Optional["TextGenerator"] = None,
         *,
         config_resolver: ConfigResolver | None = None,
+        video_prompt_spec: str | None = None,
     ):
         """
         初始化生成器
@@ -265,10 +211,13 @@ class ScriptGenerator:
             project_path: 项目目录路径，如 projects/test0205
             generator: TextGenerator 实例（可选）。若为 None 则仅支持 build_prompt() dry-run。
             config_resolver: 能力解析器；缺省时解析期构造连接生产数据库的 ConfigResolver。
+            video_prompt_spec: 目标视频端点声明的提示词规范（如 ``minimax-h3-local``）；由调用方
+                从执行期同一份 generation context 解析后传入，决定写作侧按哪套方言注入。
         """
         self.project_path = Path(project_path)
         self.generator = generator
         self.config_resolver = config_resolver
+        self.video_prompt_spec = video_prompt_spec
         self._artifact_basis: ArtifactBasisDescriptor | None = None
 
         # 加载 project.json
@@ -289,11 +238,8 @@ class ScriptGenerator:
         """编写入口的资产完整性前置（D-10 第 0 步）：与 AI 分镜入口同一判定。
 
         流程上该集资产完整是分镜的前置，而资产在分镜之后仍可能被改动；写分镜提示词前重新检查，
-        缺登记或缺描述时拒绝并引导去资产页，不在编写弹窗里补资产。视频提示词等参考素材确认后才
-        编写，届时资产已就绪，不重复此闸。
+        缺登记或缺描述时拒绝并引导去资产页，不在编写弹窗里补资产。
         """
-        if set(fields) == {"video_prompt"}:
-            return
         source = load_short_drama_source(
             ProjectManager.for_project_dir(self.project_path), self.project_path.name, episode
         )
@@ -316,6 +262,7 @@ class ScriptGenerator:
         project_path: str | Path,
         *,
         config_resolver: ConfigResolver | None = None,
+        video_prompt_spec: str | None = None,
     ) -> "ScriptGenerator":
         """异步工厂方法，自动从 DB 加载供应商配置创建 TextGenerator。"""
         project_name = Path(project_path).name
@@ -325,6 +272,7 @@ class ScriptGenerator:
             project_path,
             generator,
             config_resolver=config_resolver,
+            video_prompt_spec=video_prompt_spec,
         )
 
     def _load_prompt_authoring_targets(
@@ -344,8 +292,6 @@ class ScriptGenerator:
         """
         self._require_factory_episode(episode)
         fields = tuple(fields)
-        if set(fields) == {"video_prompt"}:
-            self._video_prompt_source({}, episode)
         resolver = active_artifact_currency_resolver(self.project_path, self.project_json)
         if (
             resolver.resolve_usable_entry(ArtifactKey.episode_script(episode), artifact_path=f"scripts/{filename}")
@@ -374,37 +320,6 @@ class ScriptGenerator:
         unknown = [entry_id for entry_id in requested if entry_id not in known]
         if unknown:
             raise PromptAuthoringTargetError(f"entry_ids 不在集（id={episode}）正式脚本内: {unknown}")
-        if set(fields) == {"video_prompt"}:
-            source = self._video_prompt_source(script, episode)
-            if source is not None and not items:
-                raise PromptAuthoringTargetError(translate("video_prompt_storyboard_missing"))
-            grids = select_shot_grids(
-                (
-                    grid
-                    for grid in ShotGridManager(self.project_path).list_all()
-                    if grid.script_file == filename and grid.status == "confirmed"
-                ),
-                items=items,
-                id_field=id_field,
-            )
-            if requested:
-                for item in items:
-                    if str(item[id_field]) in requested:
-                        self._require_video_prompt_grid(item, grids.get(str(item[id_field])))
-            else:
-                requested = tuple(
-                    str(item[id_field])
-                    for item in items
-                    if shot_scene_text(item).strip() and str(item[id_field]) in grids
-                )
-                if not requested:
-                    return PromptAuthoringTargets(
-                        kind=kind,
-                        id_field=id_field,
-                        script=script,
-                        entries=(),
-                        selection=PromptAuthoringSelection(entries=(), skipped=()),
-                    )
         selection = select_prompt_authoring(
             items,
             kind=kind,
@@ -464,7 +379,7 @@ class ScriptGenerator:
             )
         )
         if targets is None:
-            raise PromptAuthoringTargetError(translate("video_prompt_storyboard_missing"))
+            raise PromptAuthoringTargetError(translate("prompt_authoring_storyboard_missing"))
         self._require_assets_ready(episode, fields)
         _require_overwrite_acknowledged(targets, formal_baseline, overwrite_revision)
         if rewritten_entry_ids is not None:
@@ -488,24 +403,51 @@ class ScriptGenerator:
             len(targets.entries),
             len(targets.items),
         )
-        video_inputs = await asyncio.to_thread(self._video_prompt_inputs, targets, episode)
         source = load_short_drama_source(
             ProjectManager.for_project_dir(self.project_path), self.project_path.name, episode
         )
 
-        def image_digests() -> dict[str, str]:
-            return {
-                path: sha256_file(safe_join(self.project_path, path))
-                for grid in (video_inputs or {}).values()
-                for path in grid.cell_paths
-            }
-
-        frozen_images = await asyncio.to_thread(image_digests)
-        base_prompt = await self._build_visual_prompt(episode, targets, instructions, video_inputs=video_inputs)
-        prompt_limit = await self._video_prompt_limit() if video_inputs is not None else None
+        base_prompt = await self._build_visual_prompt(episode, targets, instructions)
         registered = self._registered_asset_names()
         rejection: str | None = None
         visual_by_id: dict[str, dict] = {}
+
+        async def semantic_failures(visual_items: list[dict]) -> list[tuple[str, str]]:
+            originals = {str(item[targets.id_field]): item for item in targets.entries}
+            scene_items = [
+                item for item in visual_items if "image_prompt" in targets.fields_of(str(item[targets.id_field]))
+            ]
+            scenes = [
+                {
+                    "image_prompt": shot_scene_text(item),
+                    "duration_seconds": originals[str(item[targets.id_field])].get("duration_seconds"),
+                    "scene_description": originals[str(item[targets.id_field])].get("scene_description", ""),
+                }
+                for item in scene_items
+            ]
+            if not scenes:
+                return []
+            if self.generator is None:
+                raise ValueError("文本生成器未初始化，无法审查分镜连续性")
+            try:
+                issues = await review_storyboard_semantics(
+                    self.generator,
+                    project_name=self.project_path.name,
+                    scenes=scenes,
+                )
+            except ValueError as exc:
+                return [(str(item[targets.id_field]), f"语义连续性审查响应无效：{exc}") for item in scene_items]
+            failures: list[tuple[str, str]] = []
+            for index, issue in issues:
+                if index < 1 or index > len(scene_items):
+                    return [
+                        (str(item[targets.id_field]), f"语义连续性审查返回越界镜头索引：{index}")
+                        for item in scene_items
+                    ]
+                entry_id = str(scene_items[index - 1][targets.id_field])
+                failures.append((entry_id, f"分镜 {entry_id} 的语义连续性问题：{issue}"))
+            return failures
+
         pending_entry: str | None = None
         for _attempt in range(_PROMPT_AUTHORING_ATTEMPTS):
             if pending_entry is None:
@@ -532,10 +474,12 @@ class ScriptGenerator:
                     visual,
                     targets,
                     registered,
-                    video_inputs=video_inputs,
                     episode=episode,
-                    prompt_limit=prompt_limit,
                 )
+                if failures:
+                    pending_entry, rejection = failures[0]
+                    continue
+                failures = await semantic_failures(visual)
                 if failures:
                     pending_entry, rejection = failures[0]
                     continue
@@ -549,7 +493,6 @@ class ScriptGenerator:
                 old_visual=visual_by_id[pending_entry],
                 rejection=rejection or "未通过校验",
                 instructions=instructions,
-                video_inputs=video_inputs,
             )
             result = await self._generate_text(
                 TextGenerationRequest(
@@ -567,17 +510,17 @@ class ScriptGenerator:
                 rejection = f"分镜 {pending_entry} 局部修复只允许返回该条目一项"
                 continue
             replacement = parsed[0]
-            failures = self._authored_visual_failures(
-                [replacement], targets, registered, video_inputs=video_inputs, episode=episode
-            )
+            failures = self._authored_visual_failures([replacement], targets, registered, episode=episode)
             if failures:
                 rejection = f"分镜 {pending_entry} 局部修复不合格：{failures[0][1]}"
                 continue
             visual_by_id[pending_entry] = replacement
             visual = [visual_by_id[entry_id] for entry_id in targets.ids]
-            failures = self._authored_visual_failures(
-                visual, targets, registered, video_inputs=video_inputs, episode=episode
-            )
+            failures = self._authored_visual_failures(visual, targets, registered, episode=episode)
+            if failures:
+                pending_entry, rejection = failures[0]
+                continue
+            failures = await semantic_failures(visual)
             if failures:
                 pending_entry, rejection = failures[0]
                 continue
@@ -585,34 +528,23 @@ class ScriptGenerator:
         else:
             raise ValueError(f"AI 返回的分镜提示词不可用：{rejection}")
         authored = self._merge_visual_layer(targets, visual, episode)
-        script_data = self._authored_script(episode, targets, authored, video_inputs=video_inputs)
+        script_data = self._authored_script(episode, targets, authored)
         pm = ProjectManager.for_project_dir(self.project_path)
 
         def commit() -> Path:
-            manager = ShotGridManager(self.project_path)
-            frozen = video_inputs or {}
-            with manager.locked_records(grid.id for grid in frozen.values()) as current:
-                for grid in frozen.values():
-                    present = current[grid.id]
-                    if present is None or present.to_dict() != grid.to_dict():
-                        raise PromptAuthoringTargetError(translate("video_prompt_inputs_changed"))
-                    self._require_video_prompt_grid({}, present, require_scene=False)
-                if image_digests() != frozen_images:
-                    raise PromptAuthoringTargetError(translate("video_prompt_inputs_changed"))
+            def check_source(_project: dict[str, Any]) -> None:
+                if load_short_drama_source(pm, self.project_path.name, episode) != source:
+                    raise PromptAuthoringTargetError(translate("short_drama_source_conflict"))
 
-                def check_source(_project: dict[str, Any]) -> None:
-                    if load_short_drama_source(pm, self.project_path.name, episode) != source:
-                        raise PromptAuthoringTargetError(translate("short_drama_source_conflict"))
-
-                return pm.save_script(
-                    self.project_path.name,
-                    script_data,
-                    filename,
-                    validate=True,
-                    artifact_basis=self._artifact_basis,
-                    expected_fingerprint=formal_baseline,
-                    project_update=check_source,
-                )
+            return pm.save_script(
+                self.project_path.name,
+                script_data,
+                filename,
+                validate=True,
+                artifact_basis=self._artifact_basis,
+                expected_fingerprint=formal_baseline,
+                project_update=check_source,
+            )
 
         saved_path = await run_sync_transaction(commit)
         logger.info("剧本已保存至 %s", saved_path)
@@ -623,19 +555,35 @@ class ScriptGenerator:
         episode: int,
         targets: PromptAuthoringTargets,
         instructions: str | None,
-        *,
-        video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> str:
-        """分镜类条目（segments / scenes / shots）的视觉层 prompt：输入是正式剧本里这些条目的内容字段。"""
+        """分镜类条目的视觉层 prompt：输入是机械分镜产物里的结构字段。"""
         if targets.kind != "scenes":
             raise PromptAuthoringTargetError(translate("short_drama_factory_only"))
         prompt = self._build_drama_prompt_authoring_prompt(
             list(targets.entries),
             episode,
             instructions,
-            video_inputs=video_inputs,
+            previous_prompts=self._previous_prompt_map(targets),
         )
         return _with_field_scope(prompt, targets)
+
+    @staticmethod
+    def _previous_prompt_map(targets: PromptAuthoringTargets) -> dict[str, str]:
+        """每条待编写分镜的「上一条分镜末镜」：只取已编写、且紧邻的前一条。"""
+        script_scenes = targets.script.get("scenes")
+        if not isinstance(script_scenes, list):
+            return {}
+        previous_by_id: dict[str, str] = {}
+        previous = ""
+        for scene in script_scenes:
+            if not isinstance(scene, Mapping):
+                continue
+            scene_id = str(scene.get(targets.id_field) or "")
+            if scene_id and previous:
+                previous_by_id[scene_id] = previous
+            prompt = shot_scene_text(scene)
+            previous = prompt if prompt.strip() else ""
+        return previous_by_id
 
     def _build_visual_repair_prompt(
         self,
@@ -646,7 +594,6 @@ class ScriptGenerator:
         old_visual: Mapping[str, Any],
         rejection: str,
         instructions: str | None,
-        video_inputs: Mapping[str, ShotGrid] | None,
     ) -> str:
         """单 entry 局部修复 prompt：只渲染该条目内容 + 旧视觉层 + 失败原因。"""
         entry = next(item for item in targets.entries if str(item[targets.id_field]) == entry_id)
@@ -659,100 +606,17 @@ class ScriptGenerator:
         ]
         if "image_prompt" in fields:
             repair_lines.append(f"旧 image_prompt.scene：\n{shot_scene_text(old_visual)}")
-        if "video_prompt" in fields:
-            repair_lines.append(f"旧 video_prompt：\n{video_prompt_body_text(old_visual)}")
         repair_instructions = "\n".join(repair_lines)
         if instructions:
             repair_instructions = f"{instructions}\n\n{repair_instructions}"
-        repair_video_inputs = (
-            {entry_id: video_inputs[entry_id]} if video_inputs is not None and entry_id in video_inputs else None
-        )
         entry_for_prompt = dict(entry)
-        if "video_prompt" in fields:
-            # 视频局部修复的 K 帧上下文必须基于本轮已生成的 image_prompt；原条目可能还是 None。
-            current_image = old_visual.get("image_prompt")
-            if current_image is not None:
-                entry_for_prompt["image_prompt"] = current_image
         prompt = self._build_drama_prompt_authoring_prompt(
             [entry_for_prompt],
             episode,
             repair_instructions,
-            video_inputs=repair_video_inputs,
+            previous_prompts=self._previous_prompt_map(targets),
         )
         return _with_field_scope(prompt, targets)
-
-    def _video_prompt_inputs(self, targets: PromptAuthoringTargets, episode: int) -> Mapping[str, ShotGrid] | None:
-        """视频提示词编写才带的输入：本集已确认宫格，按分镜 id 索引（D-15）。
-
-        ``None`` 表示本次不是写视频提示词，调用方据此不渲染分镜提示词 / 关键帧块——
-        写 image_prompt 时模型看不到宫格，也就不会把逐格文本抄回去。
-        """
-
-        fields = {field for entry in targets.selection.entries for field in entry.fields}
-        if fields != {"video_prompt"}:
-            return None
-        source = self._video_prompt_source(targets.script, episode)
-        grids = select_shot_grids(
-            (
-                grid
-                for grid in ShotGridManager(self.project_path).list_all()
-                if grid.episode == episode
-                and grid.status == "confirmed"
-                and grid.script_file == formal_script_filename(self.project_path, self.project_json, episode)
-            ),
-            items=targets.entries,
-            id_field=targets.id_field,
-        )
-        selected: dict[str, ShotGrid] = {}
-        for item in targets.entries:
-            entry_id = str(item[targets.id_field])
-            if source is not None:
-                anchor = item.get("source_text")
-                if (
-                    not isinstance(anchor, str)
-                    or not anchor.strip()
-                    or not is_content_aligned_source_anchor(anchor, source.markdown)
-                ):
-                    raise PromptAuthoringTargetError(translate("video_prompt_source_unaligned"))
-            selected[entry_id] = self._require_video_prompt_grid(item, grids.get(entry_id))
-        return selected
-
-    def _require_video_prompt_grid(
-        self, item: Mapping[str, Any], grid: ShotGrid | None, *, require_scene: bool = True
-    ) -> ShotGrid:
-        if require_scene and not shot_scene_text(item).strip():
-            raise PromptAuthoringTargetError(translate("shot_grid_scene_missing"))
-        if grid is None or grid.status != "confirmed":
-            raise PromptAuthoringTargetError(translate("video_prompt_grid_unconfirmed"))
-        count = grid.rows * grid.cols
-        if (
-            count <= 0
-            or len(grid.cells) != count
-            or [cell.index for cell in grid.cells] != list(range(count))
-            or any(not cell.prompt.strip() or not cell.image_path for cell in grid.cells)
-        ):
-            raise PromptAuthoringTargetError(translate("shot_grid_cells_invalid", count=count))
-        for path in grid.cell_paths:
-            if not safe_join(self.project_path, path).is_file():
-                raise PromptAuthoringTargetError(translate("video_prompt_grid_unconfirmed"))
-        return grid
-
-    def _video_prompt_source(self, script: Mapping[str, Any], episode: int) -> ShortDramaSource | None:
-        pm = ProjectManager.for_project_dir(self.project_path)
-        source = load_short_drama_source(pm, self.project_path.name, episode)
-        factory = (
-            source is not None
-            or isinstance(script.get("short_drama_meta"), Mapping)
-            or (self.project_path / "source" / "short_drama").is_dir()
-        )
-        if not factory:
-            return None
-        if source is None or not source.markdown.strip():
-            raise PromptAuthoringTargetError(translate("short_drama_source_missing"))
-        meta = script.get("short_drama_meta")
-        if isinstance(meta, Mapping) and meta.get("source_revision") not in (None, source.revision):
-            raise PromptAuthoringTargetError(translate("short_drama_source_conflict"))
-        return source
 
     def _project_bucket(self, key: str) -> dict:
         bucket = self.project_json.get(key)
@@ -763,11 +627,7 @@ class ScriptGenerator:
         response_text: str,
         targets: PromptAuthoringTargets,
     ) -> list[dict]:
-        """按骨架种类严格校验视觉层响应，返回逐条目视觉层 dict（id + image_prompt + video_prompt）。
-
-        video_prompt 的正文/K 引用语义校验不在这里做：调用方要逐 entry 收集失败并做局部修复，
-        不能因为一个 entry 的正文错误直接让整批失败。
-        """
+        """按骨架种类严格校验视觉层响应，返回逐条目动态分镜提示词。"""
         text = strip_json_code_fences(response_text)
         try:
             data = json.loads(text)
@@ -792,8 +652,6 @@ class ScriptGenerator:
         id_field = targets.id_field
         visual_by_id: dict[str, dict] = {}
         for item in visual_items:
-            if not isinstance(item, dict):
-                raise ValueError("视觉层条目不是对象")
             entry_id = str(item.get(id_field, ""))
             if not entry_id:
                 raise ValueError(f"视觉层条目缺少 {id_field}")
@@ -814,7 +672,7 @@ class ScriptGenerator:
         fragments = self._fragment_scenes(episode)
         if not fragments:
             return None
-        scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        scenes = targets.script.get("scenes")
         if not isinstance(scenes, list) or not scenes or not isinstance(scenes[0], Mapping):
             return None
         if str(scenes[0].get(targets.id_field)) != entry_id:
@@ -832,20 +690,14 @@ class ScriptGenerator:
         targets: PromptAuthoringTargets,
         registered: set[str],
         *,
-        video_inputs: Mapping[str, ShotGrid] | None,
         episode: int | None = None,
-        prompt_limit: int | None = None,
     ) -> list[tuple[str, str]]:
-        """逐 entry 校验 image_prompt/video_prompt，返回 ``(entry_id, 可回喂原因)``。
-
-        image_prompt 走标准分镜提示词 lint；video_prompt 走 K 引用/包装字段/正文非空校验。
-        失败只记录该 entry，调用方据此只对它做局部修复，成功条目原样保留。
-        """
+        """逐 entry 校验动态分镜提示词，返回 ``(entry_id, 可回喂原因)``。"""
         original_by_id = {str(item[targets.id_field]): item for item in targets.entries}
         authored_by_id = {str(item[targets.id_field]): item for item in visual}
         characters = {str(name) for name in (self.project_json.get("characters") or {})}
         props = {str(name) for name in (self.project_json.get("props") or {})}
-        script_scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        script_scenes = targets.script.get("scenes")
         order: list[str] = []
         stored: dict[str, Mapping[str, Any]] = {}
         if isinstance(script_scenes, list):
@@ -872,6 +724,9 @@ class ScriptGenerator:
                 ):
                     failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 未通过标准分镜提示词校验：{problem}"))
                     continue
+                if problem := storyboard_motion_prompt_problem(scene_text, original.get("duration_seconds")):
+                    failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt 未通过动态分镜提示词校验：{problem}"))
+                    continue
                 if entry_id in order and (position := order.index(entry_id)) > 0:
                     previous_id = order[position - 1]
                     previous_item = authored_by_id.get(previous_id) or stored.get(previous_id)
@@ -894,50 +749,13 @@ class ScriptGenerator:
                 if episode is not None and (gap := self._fragment_gap(entry_id, scene_text, targets, episode)):
                     failures.append((entry_id, f"分镜 {entry_id} 的 image_prompt {gap}"))
                     continue
-            if "video_prompt" in fields:
-                grid = video_inputs.get(entry_id) if video_inputs is not None else None
-                if grid is None:
-                    failures.append((entry_id, translate("video_prompt_grid_unconfirmed")))
-                    continue
-                try:
-                    self._validate_video_prompt_body(item, grid)
-                except ValueError as exc:
-                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 未通过校验：{exc}"))
-                    continue
-                storyboard_prompt = shot_scene_text(original)
-                if storyboard_prompt.strip() and (
-                    problem := video_prompt_delta_problem(
-                        storyboard_prompt,
-                        video_prompt_text(item),
-                        reference_texts=tuple(cell.prompt for cell in grid.cells),
-                        registered_names=registered,
-                        character_names=_scene_names(original, "characters_in_scene"),
-                        prop_names=_scene_names(original, "props"),
-                    )
-                ):
-                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 未通过增量校验：{problem}"))
-                    continue
-                if problem := action_timeline_problem(video_prompt_text(item), original.get("duration_seconds")):
-                    failures.append((entry_id, f"分镜 {entry_id} 的 video_prompt 时间轴不合格：{problem}"))
-                    continue
-                if prompt_limit is not None:
-                    body = video_prompt_body_text(item)
-                    reserve = self._video_prompt_reserve(item, grid)
-                    if len(body) + reserve > prompt_limit:
-                        failures.append(
-                            (
-                                entry_id,
-                                f"分镜 {entry_id} 的 video_prompt 超过目标模型上限：正文 {len(body)} 字符 + "
-                                f"后缀预留 {reserve} > {prompt_limit}，请压缩正文后再输出",
-                            )
-                        )
         return failures
 
     def _lint_authored_visual_layer(
         self, visual: list[dict], targets: PromptAuthoringTargets, registered: set[str]
     ) -> None:
         """兼容入口：只做 image_prompt 逐 entry 校验，首个失败抛 ``ValueError``。"""
-        failures = self._authored_visual_failures(visual, targets, registered, video_inputs=None)
+        failures = self._authored_visual_failures(visual, targets, registered)
         if failures:
             raise ValueError(failures[0][1])
 
@@ -971,71 +789,11 @@ class ScriptGenerator:
             for entry in targets.entries
         ]
 
-    def _stamp_video_prompt_basis(
-        self,
-        authored_by_id: Mapping[str, dict],
-        targets: PromptAuthoringTargets,
-        video_inputs: Mapping[str, ShotGrid] | None,
-    ) -> None:
-        """视频提示词的写回守卫：越界 K 整条拒、有已确认宫格才记依据（D-17 / D-18）。
-
-        模型产出在后台任务里落盘，拿不到请求期的 422；错误在这里抛出会把该任务判失败，
-        不落半截文本。视频准入（``storyboard_video_prompt``）在计费前再拦一次同一条规则。
-        """
-
-        written = [entry_id for entry_id in targets.ids if "video_prompt" in targets.fields_of(entry_id)]
-        if not written:
-            return
-        for entry_id in written:
-            item = authored_by_id[entry_id]
-            grid = video_inputs.get(entry_id) if video_inputs is not None else None
-            if grid is None:
-                raise PromptAuthoringTargetError(translate("video_prompt_grid_unconfirmed"))
-            self._format_video_prompt_lines(item)
-            self._validate_video_prompt_body(item, grid)
-            assets = item.get("generated_assets")
-            if not isinstance(assets, dict):
-                assets = {}
-                item["generated_assets"] = assets
-            assets["video_prompt_basis"] = video_prompt_basis_for(grid, target=self._video_prompt_target())
-
-    @staticmethod
-    def _format_video_prompt_lines(item: dict[str, Any]) -> None:
-        """视频提示词写回前把时间段拆成一行一段：编辑器与视频输入都按行识别时间段。"""
-
-        value = item.get("video_prompt")
-        if isinstance(value, dict):
-            action = value.get("action")
-            if isinstance(action, str):
-                value["action"] = format_action_segments(action)
-        elif isinstance(value, str):
-            item["video_prompt"] = format_action_segments(value)
-
-    @staticmethod
-    def _validate_video_prompt_body(item: Mapping[str, Any], grid: ShotGrid) -> None:
-        body = video_prompt_body_text(item)
-        if _VIDEO_PROMPT_WRAPPER.search(body):
-            raise ValueError(translate("video_prompt_body_wrapped"))
-        problems = keyframe_reference_problems(body, len(grid.cells))
-        if problems:
-            raise ValueError(
-                translate(
-                    "shot_grid_keyframe_out_of_range",
-                    ids=grid.shot_id,
-                    refs="、".join(problems),
-                    count=len(grid.cells),
-                )
-            )
-        if not video_prompt_text(item):
-            raise ValueError(translate("video_prompt_action_empty"))
-
     def _authored_script(
         self,
         episode: int,
         targets: PromptAuthoringTargets,
         authored: list[dict],
-        *,
-        video_inputs: Mapping[str, ShotGrid] | None = None,
     ) -> dict[str, Any]:
         """把本次编写的条目按 id 放回正式剧本快照，返回待落盘的整份剧本。
 
@@ -1052,8 +810,6 @@ class ScriptGenerator:
         for entry_id, item in zip(targets.ids, finished, strict=True):
             item[targets.id_field] = entry_id
             replacements[entry_id] = item
-        # 视频提示词写回前：越界 K 直接拒，有已确认宫格才记依据（D-17 / D-18）。
-        self._stamp_video_prompt_basis(replacements, targets, video_inputs)
         script = dict(targets.script)
         script[targets.kind] = [
             replacements.get(str(item.get(targets.id_field)), item) if isinstance(item, dict) else item
@@ -1069,8 +825,8 @@ class ScriptGenerator:
     def _video_backend_ref(self) -> tuple[str, str]:
         """项目当前的视频模型 ``(provider_id, model_id)``；未配置时返回两个空串。
 
-        顺序与生成弹窗落盘的位置一致：参考生视频桶（``video_provider_r2v``，弹窗里选的模型
-        写这里）→ 图生视频桶 → 项目默认。漏掉 r2v 会让写作侧永远看不到用户在弹窗里选的模型。
+        顺序与视频生成弹窗落盘的位置一致：参考生视频桶（``video_provider_r2v``，提示词编写
+        弹窗里选的模型写这里）→ 图生视频桶 → 项目默认。
         """
 
         for key in ("video_provider_r2v", "video_provider_i2v", "video_backend"):
@@ -1079,18 +835,13 @@ class ScriptGenerator:
                 return provider, model
         return "", ""
 
-    def _video_prompt_target(self) -> dict[str, str] | None:
-        """写进 ``video_prompt_basis.target`` 的写作依据；未配置模型时为 None（通用口径）。"""
-
-        return video_prompt_target_for_project(self.project_json)
-
     def _video_model_brief(self) -> str | None:
         """写作侧 prompt 的「目标视频模型」块；未配置模型时返回 None（不注入）。"""
 
         provider_id, model_id = self._video_backend_ref()
         if not provider_id or not model_id:
             return None
-        spec = resolve_video_prompt_spec(provider_id, model_id)
+        spec = resolve_video_prompt_spec(provider_id, model_id, declared=self.video_prompt_spec)
         return render_video_model_brief(
             spec,
             provider_id=provider_id,
@@ -1100,50 +851,11 @@ class ScriptGenerator:
 
     @staticmethod
     def _video_supported_durations(provider_id: str, model_id: str) -> list[int]:
-        from lib.config.registry import PROVIDER_REGISTRY
-
         meta = PROVIDER_REGISTRY.get(provider_id)
         info = meta.models.get(model_id) if meta is not None else None
         if info is None:
             return []
         return list(info.supported_durations or [])
-
-    def _video_prompt_reserve(self, item: Mapping[str, Any], grid: ShotGrid | None) -> int:
-        """按条目估视频提示词后缀长度：编号行 + K 帧声明 + 资产链接 + 声音声明。"""
-
-        reserve = _VIDEO_PROMPT_RESERVE_FLOOR
-        if grid is not None:
-            reserve += 40 * max(1, len(grid.cells))
-        try:
-            reserve += len(storyboard_asset_links(self.project_json, item, self.project_path.name))
-        except (ValueError, KeyError, TypeError):
-            reserve += 200
-        utterances = item.get("utterances")
-        if isinstance(utterances, list):
-            speakers = {
-                str(entry.get("speaker") or "")
-                for entry in utterances
-                if isinstance(entry, Mapping) and entry.get("kind") == "dialogue"
-            }
-            reserve += 80 * len({speaker for speaker in speakers if speaker})
-        return reserve
-
-    async def _video_prompt_limit(self) -> int | None:
-        """目标视频模型的提示词字符上限；未声明或解析失败时 None（跳过预算校验）。"""
-
-        provider_id, model_id = self._video_backend_ref()
-        if not provider_id or not model_id:
-            return None
-        resolver = self.config_resolver or ConfigResolver()
-        try:
-            caps = await resolver.video_capabilities_for_model(
-                provider_id, model_id, self.project_json, generation_type="i2v"
-            )
-        except Exception:
-            logger.debug("视频能力解析失败，跳过提示词预算校验", exc_info=True)
-            return None
-        value = caps.get("max_prompt_chars")
-        return value if isinstance(value, int) and value > 0 else None
 
     def _build_drama_prompt_authoring_prompt(
         self,
@@ -1151,10 +863,10 @@ class ScriptGenerator:
         episode: int,
         instructions: str | None = None,
         *,
-        video_inputs: Mapping[str, ShotGrid] | None = None,
+        previous_prompts: Mapping[str, str] | None = None,
     ) -> str:
-        """构建 drama prompt_authoring（视觉层）prompt：把 script_plan 内容渲染为输入，仅求本次字段。"""
-        scenes_content = render_drama_content_for_prompt_authoring(content_scenes, video_inputs=video_inputs)
+        """构建 drama prompt_authoring（视觉层）prompt：把分镜产物渲染为输入，仅求本次字段。"""
+        scenes_content = render_drama_content_for_prompt_authoring(content_scenes, previous_prompts)
         # 碎片空间必须写在分镜内容之前：放在结尾的事实块里，模型会当作可选背景直接省掉。
         if fragments := self._fragment_scenes(episode):
             places = "、".join(scene_place_name(name) for name in fragments)
@@ -1171,8 +883,8 @@ class ScriptGenerator:
             # 输出语言与 script_plan（normalize）同取项目 source_language，避免非中文项目 script_plan 内容与 prompt_authoring 视觉割裂
             target_language=self.project_json.get("source_language") or "中文",
             instructions=instructions,
-            # 只有写视频提示词时才知道写给哪个模型；写分镜图时不注入，避免把视频模型约束带进画面层。
-            model_facts=self._video_model_brief() if video_inputs is not None else None,
+            # 分镜提示词同时是视频生成消费的唯一提示词：配了视频模型就按该模型的方言写。
+            model_facts=self._video_model_brief(),
         )
         context = factory_authoring_context(self.project_path, episode)
         self._artifact_basis = ArtifactBasisDescriptor.from_basis(
@@ -1200,11 +912,12 @@ class ScriptGenerator:
         列一行：它们不在本幕 ``scenes`` 里，不列出来模型就当作不存在，直接省掉。
         """
         wanted: dict[str, list[str]] = {"characters": [], "scenes": [], "props": []}
+        field_by_key = {"characters": "characters_in_scene", "scenes": "scenes", "props": "props"}
         for entry in content_scenes:
             if not isinstance(entry, Mapping):
                 continue
-            for key in wanted:
-                values = entry.get(key)
+            for key, field in field_by_key.items():
+                values = entry.get(field)
                 if not isinstance(values, list):
                     continue
                 for name in values:
@@ -1251,10 +964,9 @@ class ScriptGenerator:
         if targets is not None:
             self._require_assets_ready(episode, fields)
             self._require_previous_prompt(targets)
-            self._video_prompt_inputs(targets, episode)
             _require_overwrite_acknowledged(targets, baseline, overwrite_revision)
-        elif self._video_prompt_source({}, episode) is not None:
-            raise PromptAuthoringTargetError(translate("video_prompt_storyboard_missing"))
+        else:
+            raise PromptAuthoringTargetError(translate("prompt_authoring_storyboard_missing"))
 
     def _require_previous_prompt(self, targets: PromptAuthoringTargets) -> None:
         """写 image_prompt 时必须等上一条先有提示词：没有邻居可接就拒绝，不静默放行。
@@ -1262,7 +974,7 @@ class ScriptGenerator:
         批量重写内部按顺序产出，前一条在同批里已经有了；这里挡的是「跳过上一段、直接写下一段」
         ——那样首镜没有可承接的对象，接不上也查不出来。
         """
-        scenes = targets.script.get("scenes") if isinstance(targets.script, Mapping) else None
+        scenes = targets.script.get("scenes")
         if not isinstance(scenes, list):
             return
         order: list[str] = []
@@ -1312,12 +1024,10 @@ class ScriptGenerator:
             fields=fields,
         )
         if targets is None:
-            raise PromptAuthoringTargetError(translate("video_prompt_storyboard_missing"))
+            raise PromptAuthoringTargetError(translate("prompt_authoring_storyboard_missing"))
         if not targets.entries:
             return _NO_ENTRY_TO_AUTHOR_NOTE
-        return await self._build_visual_prompt(
-            episode, targets, instructions, video_inputs=self._video_prompt_inputs(targets, episode)
-        )
+        return await self._build_visual_prompt(episode, targets, instructions)
 
     def _resolve_aspect_ratio(self) -> str:
         """读取项目画面比例，缺省采用竖屏。"""

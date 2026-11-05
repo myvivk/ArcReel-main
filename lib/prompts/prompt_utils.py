@@ -178,9 +178,12 @@ def video_prompt_to_yaml(video_prompt: dict, *, negative_style: str = "avoid") -
     # 仅在有对话时添加 Dialogue 字段
     if dialogue:
         ordered["Dialogue"] = dialogue
-    return builtin_templates.render(
-        "storyboard/video", body=_dump_prompt_yaml(ordered).rstrip(), video_prompt_negative=negative_style
-    ) + "\n"
+    return (
+        builtin_templates.render(
+            "storyboard/video", body=_dump_prompt_yaml(ordered).rstrip(), video_prompt_negative=negative_style
+        )
+        + "\n"
+    )
 
 
 def _render_shot_sequence_prompt(prompt: dict[str, Any]) -> str:
@@ -224,9 +227,7 @@ def normalize_video_prompt(prompt: object, *, negative_style: str = "avoid") -> 
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
         body, _ = split_avoid_lines(prompt)
-        return builtin_templates.render(
-            "storyboard/video", body=body.rstrip(), video_prompt_negative=negative_style
-        )
+        return builtin_templates.render("storyboard/video", body=body.rstrip(), video_prompt_negative=negative_style)
     if not isinstance(prompt, dict):
         raise ValueError("prompt must be a string or object")
     if "shot_sequence" in prompt:
@@ -338,17 +339,27 @@ def _spec_body(
         return prompt.strip()
     action = str(prompt.get("action") or "").strip()
     camera = str(prompt.get("camera_motion") or "").strip()
+    raw_shot_cameras = prompt.get("shot_cameras")
+    shot_cameras: list[str | None] = (
+        [value if isinstance(value, str) and value else None for value in raw_shot_cameras]
+        if isinstance(raw_shot_cameras, list)
+        else []
+    )
 
     if spec.body.unit == "seconds":
-        body = action
-        if camera and spec.camera.mode == "bracket":
-            bracket = camera_bracket(camera)
-            body = "\n".join(f"{bracket} {line}" for line in body.splitlines() if line.strip())
-        elif camera and spec.camera.mode in {"inline", "natural"}:
+        lines = [line for line in action.splitlines() if line.strip()]
+        if spec.camera.mode == "bracket":
+            rendered: list[str] = []
+            for index, line in enumerate(lines):
+                motion = (shot_cameras[index] if index < len(shot_cameras) else None) or camera
+                bracket = camera_bracket(motion) if motion else ""
+                rendered.append(f"{bracket} {line}".strip() if bracket else line)
+            return "\n".join(rendered)
+        if camera and spec.camera.mode in {"inline", "natural"}:
             sentence = _camera_sentence(camera, language)
             if sentence:
-                body = f"{body} {sentence}".strip()
-        return body
+                return f"{action} {sentence}".strip()
+        return action
 
     segments = _action_segments(action)
     if not segments:
@@ -372,14 +383,17 @@ def _spec_body(
         blocks.append(block)
     body = " ".join(blocks) if spec.body.unit == "prose" else "\n".join(blocks)
 
-    if camera:
-        if spec.camera.mode == "bracket":
-            bracket = camera_bracket(camera)
-            body = "\n".join(f"{bracket} {line}" for line in body.splitlines())
-        elif spec.camera.mode in {"inline", "natural"}:
-            sentence = _camera_sentence(camera, language)
-            if sentence:
-                body = f"{body} {sentence}"
+    if spec.camera.mode == "bracket":
+        rendered = []
+        for index, line in enumerate(body.splitlines()):
+            motion = (shot_cameras[index] if index < len(shot_cameras) else None) or camera
+            bracket = camera_bracket(motion) if motion else ""
+            rendered.append(f"{bracket} {line}".strip() if bracket else line)
+        return "\n".join(rendered)
+    if camera and spec.camera.mode in {"inline", "natural"}:
+        sentence = _camera_sentence(camera, language)
+        if sentence:
+            body = f"{body} {sentence}"
     return body
 
 
@@ -392,9 +406,7 @@ def _spec_sound(prompt: dict[str, Any] | str, spec: VideoPromptSpec) -> str:
     return f"{spec.sound.label}{_label_connector(spec.sound.label)}{ambiance}"
 
 
-def _speaker_picture_prefix(
-    speaker: str, references: Sequence[VideoReferenceLabel] | None
-) -> str:
+def _speaker_picture_prefix(speaker: str, references: Sequence[VideoReferenceLabel] | None) -> str:
     """说话人若在同一请求的参考图里，台词前挂 ``<Picture N>``；否则只留名字。"""
 
     if not speaker or not references:
@@ -478,11 +490,12 @@ def _anchor_index(
     if item.shot is not None and 1 <= item.shot <= count:
         return item.shot
     if item.at is not None:
+        at = item.at
         for index, (start, end, _text) in enumerate(segments, start=1):
-            if start <= item.at < end:
+            if start <= at < end:
                 return index
         # 时间码落在段外：取最近段，不丢台词。
-        return min(range(1, count + 1), key=lambda i: abs(segments[i - 1][0] - item.at))
+        return min(range(1, count + 1), key=lambda i: abs(segments[i - 1][0] - at))
     if not item.speaker:
         return None
     mentions = [index for index, (_s, _e, text) in enumerate(segments, start=1) if item.speaker in text]
@@ -569,7 +582,9 @@ def _video_reference_declaration(references: Sequence[VideoReferenceLabel]) -> s
                 break
         else:
             groups.append((description, [position]))
-    parts = [f"{'、'.join(f'图{position}' for position in positions)}为{description}" for description, positions in groups]
+    parts = [
+        f"{'、'.join(f'图{position}' for position in positions)}为{description}" for description, positions in groups
+    ]
     if keyframes:
         positions = [position for position, _label in keyframes]
         labels = [label for _position, label in keyframes]
@@ -650,9 +665,7 @@ def _number_video_references(
     pictures: bool = False,
 ) -> str:
     if pictures:
-        numbered = _apply_reference_numbers(
-            text, references, marker=_picture_marker, keep_name=False
-        )
+        numbered = _apply_reference_numbers(text, references, marker=_picture_marker, keep_name=False)
         declaration = _picture_reference_declaration(references)
         if declaration and "subject_definitions:" not in numbered:
             numbered = f"{declaration}\n{numbered}"
@@ -695,9 +708,11 @@ def _prepare_video_prompt(
                 return build_drama_video_prompt(prompt, item.get("utterances"), characters=voice_characters)
             return build_drama_video_prompt_from_legacy_dialogue(prompt, characters=voice_characters)
         return prompt
-    if isinstance(prompt, str) and content_mode == "drama":
-        return _attach_drama_speech_text(prompt, item, characters=voice_characters)
-    return prompt
+    if isinstance(prompt, str):
+        if content_mode == "drama":
+            return _attach_drama_speech_text(prompt, item, characters=voice_characters)
+        return prompt
+    raise TypeError("video prompt must be a string or object")
 
 
 def _render_spec_prompt(
@@ -759,8 +774,7 @@ def _render_spec_prompt(
             instruction = " ".join(parts)
     if spec.reference.style == "pictures":
         audio = "\n".join(
-            f"{speaker}: use the voice timbre of <Audio {index}>."
-            for index, speaker in enumerate(audio_speakers, 1)
+            f"{speaker}: use the voice timbre of <Audio {index}>." for index, speaker in enumerate(audio_speakers, 1)
         )
     else:
         audio = "\n".join(
@@ -773,9 +787,7 @@ def _render_spec_prompt(
         if section and section not in rendered:
             rendered = f"{rendered.rstrip()}\n\n{section}"
     if references:
-        return _number_video_references(
-            rendered, references, pictures=spec.reference.style == "pictures"
-        )
+        return _number_video_references(rendered, references, pictures=spec.reference.style == "pictures")
     return _strip_video_mentions(rendered)
 
 
@@ -800,9 +812,7 @@ def _append_dialogue_only_audio_constraint(
     utterances = item.get("utterances")
     if not isinstance(utterances, list):
         return rendered
-    has_dialogue = any(
-        isinstance(entry, Mapping) and entry.get("kind") == "dialogue" for entry in utterances
-    )
+    has_dialogue = any(isinstance(entry, Mapping) and entry.get("kind") == "dialogue" for entry in utterances)
     if not has_dialogue or _DIALOGUE_ONLY_AUDIO_CONSTRAINT in rendered:
         return rendered
     return f"{rendered.rstrip()}\n\n{_DIALOGUE_ONLY_AUDIO_CONSTRAINT}"
@@ -824,8 +834,8 @@ def render_storyboard_video_prompt(
     """分镜生视频最终提示词文本的唯一出口。
 
     执行路径、批量准入、执行敏感摘要与预览接口共用本函数，四处产出逐字同构由此在结构上
-    成立，而非各写一份靠约定对齐。``prompt`` 取条目当前的 ``video_prompt``（结构形态或文本
-    形态），``item`` 供 drama 取分镜级 ``utterances``（``None`` 视同无 utterances 字段）。
+    成立，而非各写一份靠约定对齐。``prompt`` 取条目当前唯一动态分镜提示词 ``image_prompt``，
+    ``item`` 供 drama 取分镜级 ``utterances``（``None`` 视同无 utterances 字段）。
 
     文本形态下条目正文即模版的正文槽位；drama 的发声序列仍由脚本规划的
     ``utterances`` 决定——正文不承载台词，台词与声音风格由本函数按同一门控追加到正文之后。
@@ -883,9 +893,7 @@ def render_storyboard_video_prompt(
         if section and section not in rendered:
             rendered = f"{rendered.rstrip()}\n\n{section}"
     if references:
-        result = normalize_video_prompt(
-            _number_video_references(rendered, references), negative_style=negative_style
-        )
+        result = normalize_video_prompt(_number_video_references(rendered, references), negative_style=negative_style)
     else:
         # 视频模型没有「按名字绑参考图」的通道：参考图由 K 帧槽位直接下发。正文里的
         # ``@[名称]`` 去掉引用语法；前面已经写了同名裸名时不再重复补名。
@@ -962,21 +970,12 @@ def _reference_only_slot_declaration(
     else:
         parts.append("The supplied images are reference images in supplied order.")
     if slots.continues_previous:
-        if slots.start.kind == "video_last_frame":
-            if key_range:
-                parts.append(
-                    "The previous shot's ending frame is not supplied as a reference; "
-                    "continue the action from K0."
-                )
-            else:
-                parts.append("The previous shot's ending frame is not supplied as a reference.")
-        elif asset_count:
+        if key_range:
             parts.append(
-                f"The first keyframe reference (image {asset_count + 1}) is the ending frame "
-                "of the previous shot; continue from it."
+                "The previous shot's ending frame is not supplied as a reference; continue the action from K0."
             )
         else:
-            parts.append("The first reference image is the ending frame of the previous shot; continue from it.")
+            parts.append("The previous shot's ending frame is not supplied as a reference.")
     parts.append(
         "No separate opening or ending frame is supplied; preserve character, setting and action continuity "
         "across the references."

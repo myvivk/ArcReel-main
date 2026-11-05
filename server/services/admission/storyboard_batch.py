@@ -6,9 +6,9 @@
 - **参考素材**：:func:`plan_shot_grid_batch` 是 ``generate_shot_grids`` 与 Web 批量入口的同一份
   规划。规格统一 2×2，逐格镜头文本从 ``image_prompt.scene`` 现解析（ADR 0099 D-11），不弹提示词
   编辑弹窗；已确认的宫格不进批量（R7）。
-- **分镜视频**：:func:`load_storyboard_video_batch_plan` 选出本集没有可用视频的分镜，先把缺提示词、
-  缺分镜图与已在生成中的分镜列为跳过项，其余分镜走 :func:`admit_storyboard_video_request` 整批
-  准入：任一目标不满足时整批拒绝，一个任务也不建。
+- **分镜视频**：:func:`load_storyboard_video_batch_plan` 选出本集没有可用视频的分镜，先把缺动态分镜
+  提示词与已在生成中的分镜列为跳过项，其余分镜走 :func:`admit_storyboard_video_request` 整批准入：
+  任一目标不满足时整批拒绝，一个任务也不建。
 
 过期的分镜图与视频不进批量，由用户在分镜详情里逐条重生。规划只读：选目标、判准入、算预估费用
 都不建任务；提交由调用方经批次入口完成。
@@ -79,6 +79,7 @@ from lib.script.storyboard_sequence import (
     StoryboardImageUnavailable,
     build_storyboard_dependency_plan,
     get_storyboard_items,
+    storyboard_motion_prompt,
 )
 from server.services.admission.cost_estimation import ImageLane, quote_video_request_from_price
 from server.services.admission.reference_admission import reference_admission_problems
@@ -568,7 +569,7 @@ def plan_shot_grid_batch(
         )
         if problem is not None:
             reference_blocked.add(state.unit_id)
-        elif not (honor_configured and _grid_prompt_configured(grids.get(state.unit_id))):
+        else:
             scene_text = shot_scene_text(item)
             try:
                 parse_scene_shots(scene_text)
@@ -863,7 +864,9 @@ def _video_skip_reason(
 ) -> BatchSkipReason | None:
     if unit_id in generating:
         return BatchSkipReason.GENERATING
-    if not item.get("video_prompt"):
+    try:
+        storyboard_motion_prompt(item)
+    except ValueError:
         return BatchSkipReason.MISSING_PROMPT
     try:
         resolve_usable_storyboard_video_inputs(
@@ -891,13 +894,11 @@ async def load_storyboard_video_batch_plan(
     user_id: str,
     config_resolver: ConfigResolver | None = None,
     video_request_facts: VideoRequestFacts | VideoRequestFactsFailure | None = None,
-    frame_mode: str = "reference",
 ) -> StoryboardVideoBatchPlan:
     """读取这一集的现状，选出没有可用视频的分镜，列出跳过项并对其余分镜判整批准入。
 
-    ``video_request_facts`` 缺省时按项目当前配置求值；准入与报价读同一份。
-    ``frame_mode`` 决定这批请求是首尾帧还是参考图模式：参考图模式下资产图随请求下发，
-    计数与提示词编号都按实际发出的序列算。
+    ``video_request_facts`` 缺省时按项目当前配置求值；准入与报价读同一份。视频固定走参考图模式，
+    资产图与已确认 K 帧按实际发出的序列共同编号。
     """
 
     loaded = await asyncio.to_thread(load_episode_storyboard_script, projects, project_name, episode_id)
@@ -950,7 +951,6 @@ async def load_storyboard_video_batch_plan(
         skip_ids=None,
         voice_characters=await resolve_voice_context(loaded.project, content_mode),
         storyboard_items=clean,
-        frame_mode=frame_mode,
         max_reference_images=facts.max_reference_images if isinstance(facts, VideoRequestFacts) else None,
     )
     admission = await admit_storyboard_video_request(

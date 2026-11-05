@@ -49,6 +49,14 @@
     },
     "bindings": {
       "$ref": "#/$defs/bindings"
+    },
+    "instance_type": {
+      "description": "RunningHub 运行实例：default=24G、plus=48G、ultra=84G；留空由平台默认。",
+      "enum": [
+        "default",
+        "plus",
+        "ultra"
+      ]
     }
   },
   "$defs": {

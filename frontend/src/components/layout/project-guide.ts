@@ -43,7 +43,7 @@ export function projectNextGuide(t: TFunction, status: WorkflowStatus, episodes:
   const action = status.next_action;
   const allowed = new Set<WorkflowNextAction["type"]>([
     "collect_project_input", "create_episode", "prepare_episode_assets", "plan_short_drama_storyboards",
-    "author_prompts", "generate_asset_sheets", "generate_shot_grids", "author_video_prompts", "generate_videos", "create_edit_timeline",
+    "author_prompts", "generate_asset_sheets", "generate_shot_grids", "generate_videos", "create_edit_timeline",
     "patch_episode_script", "wait_for_task", "retry", "fix_input", "generate_dependency", "configure_provider", "repair_artifact_state", "retry_artifact_download",
   ]);
   if (!allowed.has(action.type)) return null;

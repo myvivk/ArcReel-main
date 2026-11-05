@@ -92,7 +92,6 @@ from lib.prompts.prompt_utils import VideoReferenceLabel, render_storyboard_vide
 from lib.script.factory_episode import require_factory_script
 from lib.script.grid.keyframe_parser import (
     keyframe_reference_problems,
-    parse_grid_prompt_cells,
     parse_scene_shots,
     scene_revision_of,
     shot_scene_text,
@@ -105,14 +104,19 @@ from lib.script.script_editor import resolve_items
 from lib.script.script_models import resolve_content_mode
 from lib.script.script_skeleton import SKELETON_ENTITY_TYPES, SKELETON_ITEM_LABEL_KEYS, resolve_script_kind
 from lib.script.storyboard_sequence import (
+    StoryboardVideoAssetImage,
     apply_storyboard_frame_mode,
     find_storyboard_item,
     get_storyboard_items,
+    require_confirmed_storyboard_grid,
     resolve_storyboard_video_asset_images,
     split_storyboard_video_asset_images,
+    storyboard_motion_prompt_item_problem,
 )
 from lib.script.storyboard_video_request import (
     resolve_storyboard_audio_inputs,
+    resolve_storyboard_video_prompt,
+    storyboard_asset_image_evidence,
     storyboard_asset_links,
     storyboard_frame_evidence,
     storyboard_video_asset_trim_warning,
@@ -957,15 +961,11 @@ async def execute_video_task(
         storyboard_items,
         storyboard_id_field,
     ) = await asyncio.to_thread(_load)
-    # Queue execution re-materializes mutable visual intent from the current script unit. Direct/internal callers
-    # without a task row retain the request-prompt fallback for compatibility with synchronous service tests.
-    current_prompt = item.get("video_prompt") if isinstance(item, dict) else None
-    prompt = current_prompt if task_id is not None else payload.get("prompt", current_prompt)
-    if prompt is None:
-        raise ValueError("current script unit is missing video_prompt")
-    requested_visual_prompt = copy.deepcopy(prompt)
-    # lane 归桶按项目生成模式求值，与提交入口（``generate_video``）同源：入口挡掉参考生视频后
-    # 到达这里的项目恒为 i2v，但桶不在两处各硬编码一次，避免生成模式口径分叉。
+    # 执行期始终从正式剧本重建可变视觉意图，任务快照和内部调用参数都不能覆盖。
+    if problem := storyboard_motion_prompt_item_problem(project, item):
+        raise ValueError(f"storyboard motion prompt is invalid: {problem}")
+    require_confirmed_storyboard_grid(item, resource_id)
+    # lane 归桶按项目生成模式与固定 reference 帧模式求值，与提交入口（``generate_video``）同源。
     execution_payload = without_video_execution_identity(payload) if task_id is not None else payload
     ctx = await resolve_generation_context(
         project_name,
@@ -973,9 +973,7 @@ async def execute_video_task(
         project=project,
         user_id=user_id,
         video=VideoLaneRequest(
-            generation_type=video_bucket_for_request(
-                project.get("generation_mode"), payload.get("frame_mode")
-            ),
+            generation_type=video_bucket_for_request(project.get("generation_mode"), "reference"),
             route="storyboard",
         ),
     )
@@ -995,6 +993,11 @@ async def execute_video_task(
     model_name = ctx.video.backend_model
     supported_durations = list(request_facts.allowed_durations)
     resolution = request_facts.resolution
+    # 按目标模型规范投影唯一动态分镜提示词：H3 等方言需要 [Shot N] / 时间码 / 逐镜运镜，
+    # 直接把「【镜头N｜景别】0-3秒」原文塞给它会让它退回通用格式。
+    prompt_spec = resolve_video_prompt_spec(registry_provider_id, model_name, declared=ctx.video.prompt_spec)
+    prompt = resolve_storyboard_video_prompt(item, prompt_spec)
+    requested_visual_prompt = copy.deepcopy(prompt)
 
     artifact_episode = script_input.episode
     formal_input_claims: list[ArtifactInputClaim] = [script_input.claim]
@@ -1010,10 +1013,10 @@ async def execute_video_task(
         resolver=currency_resolver,
         claims=formal_input_claims,
     )
-    frame_mode = payload.get("frame_mode")
-    slots = apply_storyboard_frame_mode(
-        slots, frame_mode if frame_mode in {"first_last", "reference"} else "reference"
-    )
+    frame_mode = payload.get("frame_mode", "reference")
+    if frame_mode != "reference":
+        raise ValueError("storyboard video only supports reference frame mode")
+    slots = apply_storyboard_frame_mode(slots, "reference")
     frozen_frames = await asyncio.to_thread(
         storyboard_frame_evidence,
         slots,
@@ -1039,13 +1042,11 @@ async def execute_video_task(
     # 数组顺序 = 编号顺序：资产图在前、K 帧在后；编号与实际发出的序列同源。
     frame_reference_images = list(reference_images)
     video_references: list[VideoReferenceLabel] = []
-    selected_assets: list[tuple[str, str, Path]] = []
-    dropped_assets: list[tuple[str, str, Path]] = []
+    selected_assets: list[StoryboardVideoAssetImage] = []
+    dropped_assets: list[StoryboardVideoAssetImage] = []
     reference_limit = 0
     if slots.reference_only:
-        asset_images = resolve_storyboard_video_asset_images(
-            project_path=project_path, project=project, item=item
-        )
+        asset_images = resolve_storyboard_video_asset_images(project_path=project_path, project=project, item=item)
         reference_limit = getattr(request_facts, "max_reference_images", 0) or 0
         selected_assets, dropped_assets = split_storyboard_video_asset_images(
             asset_images,
@@ -1054,9 +1055,7 @@ async def execute_video_task(
         )
         if selected_assets:
             reference_images = [path for _kind, _name, path in selected_assets] + frame_reference_images
-        video_references = [
-            VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets
-        ] + [
+        video_references = [VideoReferenceLabel(name, kind) for kind, name, _path in selected_assets] + [
             VideoReferenceLabel(f"K{frame.keyframe_index}", "keyframe")
             for _role, frame in slots.frames
             if frame.keyframe_index is not None
@@ -1085,14 +1084,12 @@ async def execute_video_task(
         slots=slots,
         asset_links=asset_links,
         audio_speakers=audio_inputs.speakers,
-        spec=resolve_video_prompt_spec(
-            registry_provider_id, model_name, declared=ctx.video.prompt_spec
-        ),
+        spec=prompt_spec,
         references=video_references or None,
         language=project.get("source_language") if isinstance(project.get("source_language"), str) else None,
     )
     if problems := keyframe_reference_problems(prompt_text, slots.cell_count):
-        raise ValueError(f"video_prompt references unavailable keyframes: {', '.join(problems)}")
+        raise ValueError(f"storyboard motion prompt references unavailable keyframes: {', '.join(problems)}")
     aspect_ratio = get_aspect_ratio(project, "videos")
     seed = payload.get("seed")
 
@@ -1188,9 +1185,7 @@ async def execute_video_task(
             slots=slots,
             asset_links=storyboard_asset_links(current_project, item, project_name),
             audio_speakers=current_audio.speakers,
-            spec=resolve_video_prompt_spec(
-                registry_provider_id, model_name, declared=ctx.video.prompt_spec
-            ),
+            spec=prompt_spec,
             references=video_references or None,
             language=current_project.get("source_language")
             if isinstance(current_project.get("source_language"), str)
@@ -1342,8 +1337,9 @@ async def execute_video_task(
                     storyboard_image=basis_storyboard_image,
                     end_frame_image=provider_end_image,
                     aspect_ratio=aspect_ratio,
-                    frame_evidence=frozen_frames,
+                    frame_evidence=[*storyboard_asset_image_evidence(selected_assets), *frozen_frames],
                     asset_links=asset_links,
+                    include_reference_assets=True,
                 )
             )
             artifact_video_basis = compose_video_artifact_basis(
@@ -1363,7 +1359,7 @@ async def execute_video_task(
                     video_basis=artifact_video_basis,
                     voice_style_speakers=artifact_speech.voice_style_speakers,
                     duration_tiers=artifact_duration_tiers,
-                    reference_image_limit=None,
+                    reference_image_limit=request_facts.max_reference_images,
                     parent_version=generator.versions.get_current_version("videos", resource_id),
                 )
                 checkpoint = StoryboardSubmissionCheckpoint.create(
@@ -1371,7 +1367,7 @@ async def execute_video_task(
                     project_name=project_name,
                     script_file=script_file,
                     unit_id=resource_id,
-                    generation_type="i2v",
+                    generation_type="r2v",
                     provider_id=ctx.video.provider_model.provider_id,
                     provider_model_id=ctx.video.provider_model.model_id,
                     backend_model_id=ctx.video.backend_model,
@@ -1648,22 +1644,6 @@ async def execute_prop_task(
     return await execute_asset_sheet_task("prop", project_name, resource_id, payload, user_id=user_id, task_id=task_id)
 
 
-def _shot_grid_scene_opening(image_prompt: object) -> str:
-    """分镜提示词 scene 的导语段，作为跨格基调进「风格与锚点」。
-
-    纯文本形态的 scene 没有镜头序列结构，取不到导语就留空——逐格文本同样来自 scene，
-    缺导语不影响出图。
-    """
-
-    scene = image_prompt.get("scene") if isinstance(image_prompt, Mapping) else image_prompt
-    if not isinstance(scene, str) or not scene.strip():
-        return ""
-    try:
-        return parse_scene_shots(scene).opening
-    except ValueError:
-        return ""
-
-
 async def execute_shot_grid_task(
     project_name: str,
     resource_id: str,
@@ -1672,13 +1652,7 @@ async def execute_shot_grid_task(
     user_id: str = DEFAULT_USER_ID,
     task_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute a per-shot reference-material (keyframe grid) generation task.
-
-    逐格镜头文本以 ``ShotGrid.prompt`` 为优先来源（单分镜弹窗填写，ADR 0099 D-2）；``prompt``
-    为空时回退到 ``image_prompt.scene`` 现解析（整集批量走这条，不预存 prompt）。出图前把解析
-    结果回填 ``cells`` 只作本次留证。已确认的宫格允许按同一规格重做——规格由 PUT / generate
-    的 409 锁死（R7）。
-    """
+    """从当前分镜提示词直接生成参考素材宫格，不使用历史逐格草稿。"""
 
     project_path = get_project_manager().get_project_path(project_name)
     manager = ShotGridManager(project_path)
@@ -1697,25 +1671,17 @@ async def execute_shot_grid_task(
         project = await asyncio.to_thread(get_project_manager().load_project, project_name)
         script = await asyncio.to_thread(get_project_manager().load_script, project_name, grid.script_file)
         await asyncio.to_thread(require_factory_script, project_path, project, script, grid.episode)
-        # 逐格文本：ShotGrid.prompt 优先（单分镜弹窗填写），否则现解析 scene（整集批量）。
-        frames = parse_grid_prompt_cells(grid.prompt) if grid.prompt else []
-        if grid.prompt.strip() and len(frames) != grid.rows * grid.cols:
-            raise ValueError(f"shot grid prompt requires exactly {grid.rows * grid.cols} cells")
-        if not frames:
-            items, id_field, _, _, _ = get_storyboard_items(script)
-            shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
-            if shot is None:
-                raise ValueError(f"shot not found in script: {grid.shot_id}")
-            try:
-                frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
-            except ValueError as exc:
-                raise ValueError(f"shot grid scene has no shot sequence: {grid.shot_id}") from exc
-        # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
-        grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
+        # 单镜与批量均从当前分镜提示词解析；历史 prompt 只留作旧记录兼容。
         items, id_field, _, _, _ = get_storyboard_items(script)
         shot = next((item for item in items if str(item.get(id_field, "")) == grid.shot_id), None)
         if shot is None:
             raise ValueError(f"shot not found in script: {grid.shot_id}")
+        try:
+            frames = list(parse_scene_shots(shot_scene_text(shot)).shots)
+        except ValueError as exc:
+            raise ValueError(f"shot grid scene has no shot sequence: {grid.shot_id}") from exc
+        # 留证按本次实际使用的文本回填：换过整图之后，旧的切格结果全部作废。
+        grid.cells = shot_grid_cells(frames, grid.rows, grid.cols)
         grid.scene_revision = scene_revision_of(shot_scene_text(shot))
         grid.updated_at = datetime.now(UTC).isoformat()
         manager.save(grid)
@@ -1758,7 +1724,7 @@ async def execute_shot_grid_task(
                 cells=frames,
                 style=generation_input.semantics.style,
                 style_description=generation_input.semantics.style_description,
-                scene_opening=_shot_grid_scene_opening(generation_input.semantics.image_prompt),
+                scene=shot_scene_text(shot),
                 references=frozen.references.visual_references,
             )
             await asyncio.to_thread(assert_current_artifact_input_claims_usable, project_path, frozen.claims)

@@ -21,7 +21,15 @@ _ID_RE = re.compile(r"shot_grid_[0-9a-f]{12}")
 def select_shot_grids(
     grids: Iterable[ShotGrid], *, items: Sequence[Any] = (), id_field: str = "scene_id"
 ) -> dict[str, ShotGrid]:
-    """Prefer the bound grid; otherwise choose confirmed, completed, then latest."""
+    """Prefer the bound grid; otherwise choose the most recently updated one.
+
+    重新生成会把上一版 confirmed 快照成一条历史记录（新 id、``status`` 仍为 confirmed），再把
+    当前记录重置为 draft 重新出图。历史快照的 ``updated_at`` 早于被重置的当前记录，所以按更新
+    时间取最新的一条，才拿到「刚生成、等确认」的那条；按状态优先会让快照永远压住当前记录，
+    界面上就只剩一条过期的「已确认」记录，确认按钮永远不出现。
+
+    同一时刻的并列按状态优先：confirmed 先于 completed。
+    """
     chosen: dict[str, ShotGrid] = {}
     bindings: dict[str, str] = {}
     for item in items:
@@ -38,9 +46,9 @@ def select_shot_grids(
         if bound is not None and grid.id != bound:
             continue
         current = chosen.get(grid.shot_id)
-        if current is None or (priority.get(grid.status, 0), grid.updated_at, grid.id) > (
-            priority.get(current.status, 0),
+        if current is None or (grid.updated_at, priority.get(grid.status, 0), grid.id) > (
             current.updated_at,
+            priority.get(current.status, 0),
             current.id,
         ):
             chosen[grid.shot_id] = grid

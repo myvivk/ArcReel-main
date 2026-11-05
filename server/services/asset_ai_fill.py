@@ -67,7 +67,7 @@ class AssetDerivativeFill(BaseModel):
 
 
 class AssetFillResponse(BaseModel):
-    """AI 补全的结构化回执。空白字段返回空串/空数组，调用方只应用到尚为空的字段。"""
+    """AI 资产字段补全回执；已有 description 不在此流程中改写。"""
 
     description: str = ""
     voice_style: str = ""
@@ -294,12 +294,14 @@ def _excerpt_block(excerpts: Sequence[Mapping[str, Any]]) -> str:
 
 
 def build_ai_fill_prompt(asset_type: str, name: str, context: Mapping[str, Any]) -> str:
-    """构造资产字段补全提示词：只补空白字段，给出剧本上下文与期望的 JSON 结构。"""
+    """构造资产描述补全/优化提示词，给出剧本上下文与期望的 JSON 结构。"""
     type_label = {"character": "角色", "scene": "场景", "prop": "道具", "product": "商品"}.get(asset_type, asset_type)
     existing = context.get("existing") or {}
     existing_parts: list[str] = []
     if existing.get("description"):
-        existing_parts.append(f"- description（已有，勿改）：{existing['description']}")
+        existing_parts.append(
+            f"- description（已有，仅在本次资产准备优化授权范围内改进，不得丢失原事实）：{existing['description']}"
+        )
     if asset_type == "character" and existing.get("voice_style"):
         existing_parts.append(f"- voice_style（已有，勿改）：{existing['voice_style']}")
     if existing.get(ALIASES_FIELD):
@@ -359,15 +361,16 @@ def build_ai_fill_prompt(asset_type: str, name: str, context: Mapping[str, Any])
     priority = "剧本（工厂源稿）> 故事规划 > 题材补全。"
 
     return (
-        "你是短视频创作平台的资产字段补全助手。下面给出一个项目资产的信息与剧本上下文，"
-        "请补全其中尚为空白的字段。\n\n"
+        "你是短视频创作平台的资产描述补全与优化助手。下面给出一个项目资产的信息与剧本上下文，"
+        "请补全空白字段，并在本次资产准备明确允许优化时改进过短或缺少辨识特征的 description。\n\n"
         f"资产类型：{type_label}\n资产名：{name}\n"
         f"项目标题：{context.get('title') or '（未知）'}\n"
         f"项目前提：{context.get('premise') or '（未知）'}\n\n"
         f"{evidence}"
-        f"已有字段（保留，不要修改或重复）：\n{existing_block}\n\n"
-        f"优先级：{priority}请补全以下空白字段（已有内容绝不覆盖）：\n"
+        f"已有字段（description 可在本次资产准备授权范围内优化；其他已有字段保留，不要重复）：\n{existing_block}\n\n"
+        f"优先级：{priority}请补全或优化 description；其他字段只补空白字段，不覆盖已有内容：\n"
         f"{scope}\n"
+        "description 必须具体完整：至少写清主体轮廓和多个可复现的辨识视觉锚点，注明关键细节的位置、颜色/材质/纹理及相互关系；逐项覆盖适用的类型要点。不要用泛化形容词代替外观事实，也不要靠重复同义词扩写。已有来源不足以支持关键特征时，description 只写有据内容，并在 aliases 之外不要发明身份、徽记、疤痕、品牌、道具或布局；通过 description 明确标注需要用户补充的缺失信息。\n"
         "只输出一个 JSON 对象，结构如下（不输出任何解释文字）：\n"
         '{"description": "", "voice_style": "", "aliases": [], "derivatives": [{"name": "", "description": ""}]}'
     )
@@ -376,7 +379,7 @@ def build_ai_fill_prompt(asset_type: str, name: str, context: Mapping[str, Any])
 async def generate_asset_fill(
     project_name: str, asset_type: str, name: str, context: Mapping[str, Any]
 ) -> AssetFillResponse:
-    """调文本模型补全该资产的空白字段；只回执结果，不写盘（写回交给调用方批量做）。"""
+    """调文本模型补全或优化资产描述；只回执结果，不写盘（写回交给调用方批量做）。"""
     prompt = build_ai_fill_prompt(asset_type, name, context)
     generator = await TextGenerator.create(
         TextTaskType.SCRIPT, project_name=project_name, purpose=CallPurpose.SCRIPT_GENERATION
@@ -389,7 +392,7 @@ async def generate_asset_fill(
 
 
 def apply_asset_fill(entry: dict[str, Any], asset_type: str, name: str, fill: AssetFillResponse) -> list[str]:
-    """把补全结果写进资产条目，**只填空字段、绝不覆盖**；返回本次填上的字段名。"""
+    """只填空 description 和其他空字段，不覆盖已有项目描述。"""
     spec = ASSET_SPECS.get(asset_type)
     supports_derivatives = bool(spec.supports_derivatives) if spec else False
     sheet_field = spec.sheet_field if spec else ""
@@ -421,7 +424,7 @@ def apply_asset_fill(entry: dict[str, Any], asset_type: str, name: str, fill: As
 def assets_without_description(
     project: Mapping[str, Any], names_by_type: Mapping[str, Sequence[str]]
 ) -> list[tuple[str, str]]:
-    """本集引用到、但描述为空的 ``(asset_type, 登记名)``；补全只针对这些条目。"""
+    """本集引用到、描述为空的资产；已有描述不参与自动改写。"""
     targets: list[tuple[str, str]] = []
     for asset_type, names in names_by_type.items():
         spec = ASSET_SPECS.get(asset_type)
@@ -446,7 +449,7 @@ async def fill_assets(
     *,
     episode: int | str | None = None,
 ) -> tuple[dict[tuple[str, str], AssetFillResponse], list[dict[str, str]]]:
-    """并发补全一批缺描述的资产，返回 ``(成功回执, 失败名单)``。
+    """并发补全/优化一批空或短描述的资产，返回 ``(成功回执, 失败名单)``。
 
     只调模型、不写盘：写回由调用方在一次项目锁里批量完成，避免 N 次落盘与互相覆盖。
     """

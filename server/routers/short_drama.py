@@ -31,9 +31,10 @@ class ShortDramaReimportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_revision: str = Field(min_length=1)
     confirm_artifacts: bool = False
-    planning_strength: int = Field(default=2, ge=1, le=3)
+    #: 已废弃：机械分镜没有规划强度；保留字段只为兼容旧客户端，服务端不读取。
+    planning_strength: int | None = Field(default=None, ge=1, le=3)
     force_regenerate: bool = False
-    #: 非空时只重生成这些分镜（scene_id），其余分镜原样保留；空/缺省 = 整体 AI 分镜。
+    #: 非空时按同一份源稿重切，并只把这些分镜的提示词清回待编写；空/缺省 = 整体机械分镜。
     regenerate_scene_ids: list[str] = Field(default_factory=list)
 
 
@@ -119,7 +120,6 @@ async def reimport_source(
             projects=services.projects,
             expected_source_revision=req.source_revision,
             confirm_artifacts=req.confirm_artifacts,
-            planning_strength=req.planning_strength,
             force_regenerate=req.force_regenerate,
             regenerate_scene_ids=req.regenerate_scene_ids,
         )

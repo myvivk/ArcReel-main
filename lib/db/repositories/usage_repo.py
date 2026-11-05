@@ -400,6 +400,50 @@ class UsageRepository(BaseRepository):
             await self.session.commit()
         return affected
 
+    async def settle_pending_calls_for_session(self, session_id: str) -> list[InterruptedCallSettlement]:
+        """把指定 Agent 会话遗留的 pending 文本调用翻为 cancelled，供会话中断收尾。"""
+        rows = (
+            (await self.session.execute(
+                select(ApiCall).where(
+                    ApiCall.session_id == session_id,
+                    ApiCall.status == CallStatus.PENDING,
+                    ApiCall.call_type == "text",
+                    ApiCall.purpose == CallPurpose.SCRIPT_GENERATION,
+                    ApiCall.task_id.is_(None),
+                )
+            ))
+            .scalars()
+            .all()
+        )
+        settled: list[InterruptedCallSettlement] = []
+        finished_at = utc_now()
+        for row in rows:
+            outcome = await self._settle(
+                row=row,
+                finished_at=finished_at,
+                settlement=SettlementInput(cost_amount=0.0),
+                auto_calc=False,
+                base_currency=row.currency or "USD",
+            )
+            result = await self.session.execute(
+                update(ApiCall)
+                .where(ApiCall.id == row.id, ApiCall.status == CallStatus.PENDING)
+                .values(
+                    status=CallStatus.CANCELLED,
+                    finished_at=finished_at,
+                    duration_ms=outcome.duration_ms,
+                    duration_seconds=outcome.effective_duration_seconds,
+                    cost_amount=0.0,
+                    currency=outcome.currency,
+                    generate_audio=outcome.effective_generate_audio,
+                )
+            )
+            if rowcount(result):
+                settled.append(InterruptedCallSettlement(row.id, row.project_name, CallStatus.CANCELLED))
+        if settled:
+            await self.session.commit()
+        return settled
+
     async def get_call_project_name(self, call_id: int) -> str:
         """取该调用所属项目名；行不存在时返回空串（调用方据此不发事件）。"""
         result = await self.session.execute(select(ApiCall.project_name).where(ApiCall.id == call_id))

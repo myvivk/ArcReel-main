@@ -19,7 +19,7 @@
 
 生成描述夹在登记与生成之间，是因为资产图按描述出图、缺描述会被 ``asset_description_required``
 准入挡下；标记行已带外观描述，但它是零散原始文本，需 AI 强化规范成资产图可用的
-``description``，不生成描述就是「登记了 N 个、出图 0 张」。生成描述只填空字段，已有描述一律不动。
+``description``，不生成描述就是「登记了 N 个、出图 0 张」。空描述或明显过短的描述会进入 AI 补全/优化；本次资产准备授权优化时，description 可在保留原有事实的前提下改写，其他人工字段不覆盖。
 """
 
 from __future__ import annotations
@@ -289,12 +289,11 @@ def register_episode_assets(project_name: str, episode: int) -> tuple[dict[str, 
 async def fill_episode_asset_descriptions(
     project_name: str, episode: int
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """给本集引用到、描述为空的资产生成描述，返回 ``(已生成, 生成失败)``。
+    """为本集引用到的空描述生成内容，返回 ``(已更新, 生成失败)``。
 
-    生成依据是「剧本（工厂源稿）> 故事规划 > 题材补全」（D-35）：工厂源稿标记行里已写的外观
-    是基础，本集剧本里该资产出场的场景与台词用于强化，故事规划补跨集背景，再按
-    ``shared/asset_description_rule`` 规范成资产图可用的 ``description``。只填尚为空的字段，
-    已有描述一律不动——绝不覆盖人工写好的内容。
+    生成依据是「人物圣经/正式设定 > 工厂源稿标记行 > 剧本动作与台词 > 故事规划」（D-35）：
+    按 ``shared/asset_description_rule`` 写成角色、场景、道具或商品的完整视觉描述。
+    只处理空 description；已有项目描述必须保留，不自动覆盖。
 
     N 个资产并发调模型、但只在一次项目锁里批量写回：逐条落盘会互相覆盖，也会把项目写 N 遍。
     """
@@ -342,12 +341,12 @@ async def fill_episode_asset_descriptions(
 async def generate_episode_assets(name: str, episode: int, user: CurrentUser, _t: Translator) -> dict[str, Any]:
     """一键：抽取本集剧本引用 → 补登记未登记资产 → 生成描述 → 按集提交资产图批量生成。
 
-    提交不等待结果，成员任务的终态由界面按任务跟踪；生成描述失败或仍缺描述的资产进不了这一批，
+    提交不等待结果，成员任务的终态由界面按任务跟踪；描述生成失败或优化后仍未达到门槛的资产进不了这一批，
     逐条回执在 ``members`` 的 ``problem_code`` 里（``asset_description_required`` 等），
     同时另给一份 ``without_description`` 供界面直接提示「描述没补上」。
 
-    **只出第 3 步已生成描述的资产**：缺描述会被 ``asset_description_required`` 准入挡下，
-    留在外面的项保持「缺描述」、不静默吞掉，用户补描述后可单独再生成资产图。
+    **只出第 3 步已有合格描述的资产**：缺描述或描述未达到质量门槛会被准入挡下，
+    留在外面的项写入 ``without_description``，不静默吞掉。
     """
 
     try:

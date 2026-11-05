@@ -49,7 +49,6 @@ interface TimelineCanvasProps extends EpisodeCanvasContext {
     segmentId: string,
     scriptFile?: string,
     seed?: number | null,
-    frameMode?: "first_last" | "reference",
   ) => void | Promise<void>;
   onGenerateNarration?: (segmentId: string, scriptFile?: string) => void;
   onGenerateEpisodeNarration?: (scriptFile?: string) => void;
@@ -205,8 +204,8 @@ export function TimelineCanvas(props: TimelineCanvasProps) {
     ? (segId: string) => onGenerateStoryboard(segId, scriptFile)
     : undefined;
   const handleGenVid = onGenerateVideo
-    ? (segId: string, _scriptFile?: string, seed?: number | null, frameMode?: "first_last" | "reference") =>
-        onGenerateVideo(segId, scriptFile, seed, frameMode)
+    ? (segId: string, _scriptFile?: string, seed?: number | null) =>
+        onGenerateVideo(segId, scriptFile, seed)
     : undefined;
   const handleGenNarration = onGenerateNarration
     ? (segId: string) => onGenerateNarration(segId, scriptFile)

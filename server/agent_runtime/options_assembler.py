@@ -257,6 +257,7 @@ class OptionsAssembler:
         stderr: Callable[[str], None] | None = None,
         session_id: str | None = None,
         tool_progress: ProgressReporter | None = None,
+        session_id_provider: Callable[[], str | None] | None = None,
     ) -> Any:
         """Build ClaudeAgentOptions for a session.
 
@@ -350,6 +351,7 @@ class OptionsAssembler:
             data_root=self.data_root,
             user_id=self._user_id_provider(),
             report_progress=tool_progress,
+            session_id_provider=session_id_provider,
         )
 
         return ClaudeAgentOptions(

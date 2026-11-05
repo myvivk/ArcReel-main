@@ -232,6 +232,16 @@ export interface SourceImportResult {
   warnings?: string[];
 }
 
+/** {@link API.validateSourceScript} 的响应：模型评估的原文准入结果。 */
+export interface SourceImportValidation {
+  ok: boolean;
+  summary: string;
+  issues: Array<{ code: string; problem: string; suggestion: string }>;
+  evidence: string[];
+  /** 可改编但需注意的提示（如原文可转口播的素材偏少）。 */
+  warnings?: string[];
+}
+
 /** {@link API.getSourceImportOriginal} 的响应：本集已保存的原文与同步状态。 */
 export interface SourceImportOriginal {
   text: string;

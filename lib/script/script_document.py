@@ -159,7 +159,7 @@ def build_materialized_script(
     for entry in plan_entries:
         content = plan_entry_content(plan_kind, entry)
         if plan_kind != "reference_video":
-            content = {**content, "image_prompt": None, "video_prompt": None}
+            content = {**content, "image_prompt": None}
         items.append(content)
     items_key = plan_variant(plan_kind).skeleton_kind
     script_data: dict[str, Any] = {"title": title or episode_title(project, episode), items_key: items}

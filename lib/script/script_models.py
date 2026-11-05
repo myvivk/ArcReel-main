@@ -129,7 +129,7 @@ class ImagePrompt(BaseModel):
 
     model_config = _STRICT_CONFIG
 
-    scene: str = Field(description="12-15 秒分镜段的画面提示词；动态承接由 video_prompt.action 承载")
+    scene: str = Field(description="同时驱动参考素材与视频生成的动态分镜提示词")
     composition: Composition = Field(description="构图信息")
 
 
@@ -141,7 +141,7 @@ def _require_non_blank_prompt(value: str) -> str:
 
 
 class _VideoPromptCore(BaseModel):
-    """video_prompt 的画面层公共字段（动作 / 运镜 / 环境音）；dialogue 由具体变体决定是否携带。"""
+    """历史 video_prompt 的读取兼容结构；新流程不再生成或消费该字段。"""
 
     model_config = _STRICT_CONFIG
 
@@ -214,11 +214,9 @@ class GeneratedAssets(BaseModel):
     video_generated_at: SkipJsonSchema[str | None] = Field(default=None, description="视频生成完成时间（ISO8601 UTC）")
     # 仅用于无损接收迁移前的历史记录；运行时不读取、比较或新增该键。
     source_signature: SkipJsonSchema[str | None] = Field(default=None, description="历史产物来源签名")
-    # 写视频提示词时所用宫格的指纹（D-18）：描述的是「脚本里这份文本按哪次宫格写的」，
-    # 不是宫格自己的属性。extra="forbid" 要求先声明再写回，否则「不更坏」会以
-    # extra_forbidden 拒整集写盘；这里不走 validate=False 的捷径。
+    # 历史视频提示词写作依据，只用于无损读取旧项目；新流程不写入或比较该键。
     video_prompt_basis: SkipJsonSchema[dict[str, object] | None] = Field(
-        default=None, description="写这条视频提示词时所用宫格的指纹"
+        default=None, description="历史视频提示词所用宫格的指纹"
     )
     # 逐镜参考素材宫格绑定（grid_id / layout / composite_path / cell_paths / confirmed_at）。
     # 由 ShotGrid 确认流程写入；extra="forbid" 要求先声明，否则任何剧本保存都会以
@@ -274,7 +272,10 @@ class NarrationSegment(BaseModel):
     scenes: list[str] = Field(default_factory=list, description="出场场景名称列表")
     props: list[str] = Field(default_factory=list, description="出场道具名称列表")
     image_prompt: ImagePrompt | PromptText | PendingPrompt = Field(default=None, description="分镜图生成提示词")
-    video_prompt: VideoPrompt | PromptText | PendingPrompt = Field(default=None, description="视频生成提示词")
+    # 历史字段只为无损读取旧项目保留；新流程以 image_prompt 作为唯一动态提示词。
+    video_prompt: VideoPrompt | PromptText | PendingPrompt = Field(
+        default=None, description="历史视频提示词（只读兼容）"
+    )
     # 以下字段对 LLM 隐藏（SkipJsonSchema）：note 是人工备注、generated_assets 是 post-LLM 运行时状态。
     # 仍保留在 Pydantic 模型里以便存储 / 校验，但不出现在 response_schema 中，避免 LLM 填污染数据。
     note: SkipJsonSchema[str | None] = Field(default=None, description="用户备注（不参与生成）")
@@ -599,8 +600,10 @@ class DramaScene(BaseModel):
     scenes: list[str] = Field(default_factory=list, description="出场场景名称列表")
     props: list[str] = Field(default_factory=list, description="出场道具名称列表")
     image_prompt: ImagePrompt | PromptText | PendingPrompt = Field(default=None, description="分镜图生成提示词")
-    # drama 的 video_prompt 只承载画面动作、运镜与环境音，口播由下方 utterances 承载。
-    video_prompt: DramaVideoPrompt | PromptText | PendingPrompt = Field(default=None, description="视频生成提示词")
+    # 历史字段只为无损读取旧项目保留；新流程以 image_prompt 作为唯一动态提示词。
+    video_prompt: DramaVideoPrompt | PromptText | PendingPrompt = Field(
+        default=None, description="历史视频提示词（只读兼容）"
+    )
     # utterances 统一承载分镜级角色台词与画外音；条目顺序即幕内发声顺序（见 ADR 0040）。
     utterances: list[Utterance] = Field(
         default_factory=list,
@@ -771,9 +774,9 @@ class AdShot(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fill_pending_prompts(cls, data: object) -> object:
-        """待编写分镜可以不带提示词字段：补成 null，其余分镜仍须两侧齐备。"""
+        """待编写分镜可以不带动态分镜提示词；历史 video_prompt 不再补写。"""
         if isinstance(data, dict) and data.get("pending_authoring") is True:
-            data = {"image_prompt": None, "video_prompt": None, **data}
+            data = {"image_prompt": None, **data}
         return data
 
     shot_id: str = Field(description="分镜 ID，格式 E{集}S{序号} 或 E{集}S{序号}_{子序号}")
@@ -786,10 +789,12 @@ class AdShot(BaseModel):
     scenes: list[str] = Field(default_factory=list, description="出场场景名称列表")
     props: list[str] = Field(default_factory=list, description="出场道具名称列表")
     products_in_shot: list[str] = Field(default_factory=list, description="出场商品名称列表，非空即商品分镜")
-    # 整份生成的 response_schema 仍要求两侧提示词；只有待编写分镜（手动新增）可以缺省为 null，
-    # 由提示词编写补出（见 _fill_pending_prompts 与结构校验）。
+    # 待编写分镜（手动新增）可以缺省为 null，由提示词编写补出。
     image_prompt: ImagePrompt | PromptText | PendingPrompt = Field(description="分镜图生成提示词")
-    video_prompt: VideoPrompt | PromptText | PendingPrompt = Field(description="视频生成提示词")
+    # 历史字段只为无损读取旧项目保留；不进入新建、编辑或生成链路。
+    video_prompt: VideoPrompt | PromptText | PendingPrompt = Field(
+        default=None, description="历史视频提示词（只读兼容）"
+    )
     # 见 NarrationSegment 同名字段说明。
     note: SkipJsonSchema[str | None] = Field(default=None, description="用户备注（不参与生成）")
     end_frame_image: SkipJsonSchema[str | None] = Field(default=None, description="尾帧快照路径（项目内相对路径）")

@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { useFactoryEpisodeSource } from "@/components/canvas/episode-page/useFactoryEpisodeSource";
 import {
   usePromptAuthoringStore,
-  type PromptAuthoringField,
   type PromptAuthoringScope,
 } from "@/stores/prompt-authoring-store";
 import { useActiveResourceIds } from "@/stores/tasks-store";
@@ -21,8 +20,6 @@ interface Props {
   /** 额外的布局类名（如与相邻按钮取同一最小宽度）。 */
   className?: string;
   defaultRewrite?: boolean;
-  defaultFields?: PromptAuthoringField[];
-  lockFields?: boolean;
   label?: string;
 }
 
@@ -36,17 +33,14 @@ export function PromptAuthoringButton({
   size = "sm",
   className,
   defaultRewrite,
-  defaultFields,
-  lockFields,
   label,
 }: Props) {
   const { t } = useTranslation("dashboard");
   const open = usePromptAuthoringStore((s) => s.open);
   const busy = useActiveResourceIds("text_episode_script", projectName).has(promptAuthoringResourceId(episode));
   // 分镜提示词入口前置资产完整性检查（D-10 第 0 步）：缺登记 / 缺描述时置灰并提示去资产页补齐。
-  const isImageAuthoring = defaultFields?.length === 1 && defaultFields[0] === "image_prompt";
-  const sourceState = useFactoryEpisodeSource(projectName, episode, isImageAuthoring);
-  const missingAssets = isImageAuthoring ? (sourceState.value?.assets_missing_description ?? []) : [];
+  const sourceState = useFactoryEpisodeSource(projectName, episode, true);
+  const missingAssets = sourceState.value?.assets_missing_description ?? [];
   const assetsBlocked = missingAssets.length > 0;
   const disabled = busy || assetsBlocked;
   const title = busy
@@ -65,7 +59,7 @@ export function PromptAuthoringButton({
       disabled={disabled}
       title={title}
       onClick={() => open({
-        projectName, episode, scope, currentEntryId, defaultRewrite, defaultFields, lockFields,
+        projectName, episode, scope, currentEntryId, defaultRewrite,
       })}
     >
       <PenLine aria-hidden data-icon="inline-start" />

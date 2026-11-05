@@ -85,7 +85,7 @@ _DIALOGUE_RE = re.compile(r"^(?P<speaker>.+?)(?:（(?P<stage>[^）]+)）)?[：:]
 #: 工厂模板的两行台词：说话人行只有「角色（神态）：」，台词在下一行引号里。
 _SPEAKER_ONLY_RE = re.compile(r"^(?P<speaker>.+?)(?:（(?P<stage>[^）]+)）)?[：:]\s*$")
 _QUOTED_LINE_RE = re.compile(r"^[\"“「]")
-_NARRATION_HINTS = ("旁白", "画外音", "解说", "narrator", "vo")
+_NARRATION_HINTS = ("旁白", "画外音", "画外", "内心独白", "心声", "解说", "os", "narrator", "vo")
 
 #: 剧情驱动的切分窗口（秒）：单幕时长落在 [下限, 上限] 内。
 #:
@@ -349,7 +349,7 @@ def fragment_scene_names(
         narrative = narrative.replace(name, " ")
     found: list[str] = []
     for name in registered_scenes:
-        if not isinstance(name, str) or not name.strip() or name in declared:
+        if not name.strip() or name in declared:
             continue
         place = scene_place_name(name)
         if place and place in narrative:
@@ -421,7 +421,11 @@ def _build_utterances(beats: list[_Beat]) -> list[dict[str, Any]]:
         if beat.kind != "dialogue":
             continue
         speaker = beat.speaker
-        if speaker is not None and any(hint in speaker for hint in _NARRATION_HINTS):
+        stage = (beat.stage or "").lower()
+        voiceover = (speaker is not None and any(hint in speaker for hint in _NARRATION_HINTS)) or any(
+            hint in stage for hint in _NARRATION_HINTS
+        )
+        if voiceover:
             utterances.append({"kind": "voiceover", "speaker": None, "text": beat.text})
         else:
             utterances.append({"kind": "dialogue", "speaker": speaker, "text": beat.text})
@@ -449,10 +453,12 @@ def _build_scene(
     block: _Block,
     sub_beats: list[_Beat],
     duration: int,
-    image_prompt: str,
+    image_prompt: str | None,
     characters: list[str] | None = None,
     props: list[str] | None = None,
     scene_assets: SceneAssets | None = None,
+    *,
+    pending_authoring: bool = False,
 ) -> dict[str, Any]:
     """一幕的剧本载荷。给了 ``scene_assets`` 就用按幕解析结果，否则回落到块声明。
 
@@ -473,19 +479,18 @@ def _build_scene(
         prop_names = sorted({name for name in (props if props is not None else block.props) if name in source_text})
     scene_description = _build_scene_description(sub_beats)
     return {
-        "scene_id": f"E{episode}S{scene_index + 1}",
+        "scene_id": f"E{episode}S{scene_index + 1:02d}",
         "duration_seconds": duration,
         "segment_break": False,
         "characters_in_scene": character_names,
         "scenes": locations,
         "props": prop_names,
         "image_prompt": image_prompt,
-        "video_prompt": None,
         "utterances": _build_utterances(sub_beats),
         "source_text": source_text,
         "scene_description": scene_description,
         "generated_assets": {},
-        "pending_authoring": True,
+        "pending_authoring": pending_authoring,
         "note": None,
     }
 
@@ -580,7 +585,7 @@ def resolve_scene_assets(
             entries.append(flat[value - 1])
         beats = [beat for _block, beat in entries]
         plan = plan_scenes[index] if plan_scenes is not None and index < len(plan_scenes) else {}
-        planned_scenes = plan.get("scenes") if isinstance(plan, Mapping) else None
+        planned_scenes = plan.get("scenes")
         scene_by_key = {asset_name_comparison_key(name): name for name in registered_scenes}
         planned: list[str] = []
         if isinstance(planned_scenes, Sequence) and not isinstance(planned_scenes, str):
@@ -614,7 +619,7 @@ def resolve_scene_assets(
 
         characters: set[str] = set()
         props: set[str] = set()
-        prompt_text = image_prompt if isinstance(image_prompt, str) else ""
+        prompt_text = image_prompt
         for beat in beats:
             visual_text = _beat_visual_text(beat)
             if beat.kind == "action":
@@ -713,6 +718,54 @@ def convert_planned_scenes(
             scene["scenes"] = list(dict.fromkeys(block.location for block, _beat in entries if block.location))
         scene["scene_description"] = scene_descriptions[index]
         scenes.append(scene)
+    if used != list(range(1, len(flat) + 1)):
+        raise ValueError("scene groups must cover every source beat exactly once")
+    return _episode_document(parsed, episode, scenes)
+
+
+def build_mechanical_scenes(
+    parsed: ParsedEpisode,
+    episode: int,
+    groups: Sequence[Sequence[int]],
+    durations: Sequence[int],
+    scene_assets: Sequence[SceneAssets],
+) -> dict[str, Any]:
+    """由机械切分的 beat 分组构建分镜结构，视觉层留空等待提示词编写。
+
+    内容字段仍从 Markdown 原稿派生（``source_text`` / ``utterances`` /
+    ``scene_description`` 与资产清单），只有 ``image_prompt`` 为 ``None`` 并置
+    ``pending_authoring``：分镜结构与分镜提示词是两个步骤（见
+    ``方案设计/10. 机械分镜与分镜提示词分步方案.md``）。
+    """
+
+    flat = [(block, beat) for block in parsed.blocks for beat in block.beats]
+    if not groups or len(groups) != len(durations) or len(groups) != len(scene_assets):
+        raise ValueError("scene groups, durations and assets must be non-empty and aligned")
+    used: list[int] = []
+    scenes: list[dict[str, Any]] = []
+    for index, (group, duration) in enumerate(zip(groups, durations, strict=True)):
+        ids = list(group)
+        if not ids or any(isinstance(value, bool) or value < 1 or value > len(flat) for value in ids):
+            raise ValueError(f"invalid beat ids in scene {index + 1}")
+        if ids != list(range(ids[0], ids[-1] + 1)):
+            raise ValueError(f"scene {index + 1} beat ids must be contiguous")
+        if used and ids[0] != used[-1] + 1:
+            raise ValueError("scene groups must cover beats in source order without gaps")
+        used.extend(ids)
+        entries = [flat[value - 1] for value in ids]
+        beats = [beat for _block, beat in entries]
+        scenes.append(
+            _build_scene(
+                episode,
+                index,
+                entries[0][0],
+                beats,
+                duration,
+                None,
+                scene_assets=scene_assets[index],
+                pending_authoring=True,
+            )
+        )
     if used != list(range(1, len(flat) + 1)):
         raise ValueError("scene groups must cover every source beat exactly once")
     return _episode_document(parsed, episode, scenes)

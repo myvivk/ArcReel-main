@@ -20,13 +20,12 @@ export interface ShortDramaSource {
   assets_missing_description?: Array<{ type: string; name: string; reason: string }>;
 }
 
-/** 从已保存的 Markdown 源稿重建正式脚本；整体 AI 分镜，或只重生成所选分镜。 */
+/** 从已保存的 Markdown 源稿机械重建分镜结构；整体机械分镜，或只重切所选分镜。 */
 export async function reimportShortDramaSource(
   projectName: string,
   episode: number,
   sourceRevision: string,
   confirmArtifacts: boolean,
-  planningStrength = 2,
   forceRegenerate = false,
   regenerateSceneIds?: string[],
   options: { signal?: AbortSignal } = {},
@@ -35,10 +34,19 @@ export async function reimportShortDramaSource(
   scenes: number;
   source_path: string;
   source_revision: string;
-  planning_strength: number;
-  planning_cached: boolean;
-  ai_authoring?: boolean;
+  mode?: string;
+  splitter_version?: number;
+  pending_authoring?: number;
+  reused?: boolean;
+  warnings?: Array<{ code: string; scene_id: string; detail: string; candidates: string[] }>;
+  declared_seconds?: number;
+  actual_seconds?: number;
+  duration_shortfall?: boolean;
   regenerated_scenes?: number;
+  /** 历史响应字段，只为旧调用方与测试桩兼容；服务端不再返回。 */
+  planning_strength?: number;
+  planning_cached?: boolean;
+  ai_authoring?: boolean;
   assets_without_description?: Array<{ type: string; name: string; reason: string }>;
 }> {
   const mark = useTasksStore.getState().beginOptimisticActive(
@@ -51,7 +59,6 @@ export async function reimportShortDramaSource(
       episode,
       sourceRevision,
       confirmArtifacts,
-      planningStrength,
       forceRegenerate,
       regenerateSceneIds,
       options,

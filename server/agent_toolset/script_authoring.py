@@ -35,9 +35,10 @@ def _text_generation_structured(value: Any) -> dict[str, Any]:
 GENERATE_EPISODE_SCRIPT = ToolDeclaration(
     name="generate_episode_script",
     description=(
-        "提示词编写：为工厂 AI 分镜派生的正式脚本补写视觉层。默认只补缺失的 image_prompt；"
-        'video_prompt 依赖已确认参考素材，必须以 fields=["video_prompt"] 单独请求。'
-        "同一次请求不能同时写两类提示词。rewrite=true 显式重写点名条目的 fields；"
+        "分镜提示词编写：为机械分镜产物的正式脚本补写唯一的 image_prompt。"
+        "输入是上一步落盘的分镜结构（分镜号、时长、出场资产、逐字口播、原文锚、视觉改编），"
+        "不重新分镜、不改台词与结构。参考素材与视频生成都直接消费该提示词，不再另写 video_prompt。"
+        "rewrite=true 显式重写点名条目的 image_prompt；"
         "覆盖已有提示词时返回 prompt_overwrite_required 与丢失清单，用户同意后将 revision 作为 overwrite_revision 重试。"
         "工厂正文、台词、备注、尾帧和已生成产物保留。"
         "dry_run=true 时直接返回 prompt，不提交生成任务。" + TEXT_OUTPUT_TRUNCATED_NOTE
@@ -72,37 +73,29 @@ INGEST_SHORT_DRAMA_ARTIFACTS = ToolDeclaration(
 
 
 def _storyboard_summary(value: Any) -> str | None:
-    """AI 分镜完成后的一句话返修摘要，让模型不必从长 JSON 里自己数轮次。"""
+    """机械分镜完成后的一句话摘要，让模型不必从长 JSON 里自己数。"""
     if not isinstance(value, dict):
         return None
-    rounds = value.get("planning_rounds")
     scenes = value.get("scenes")
-    if not isinstance(rounds, list) or not rounds or not isinstance(rounds[-1], dict):
+    pending = value.get("pending_authoring")
+    if not isinstance(scenes, int):
         return None
-    final = rounds[-1]
-    attempt = final.get("attempt")
-    max_attempts = final.get("max_attempts")
-    rejected = sum(1 for item in rounds if isinstance(item, dict) and item.get("outcome") == "rejected")
-    if not isinstance(attempt, int) or not isinstance(max_attempts, int):
-        return None
-    head = f"AI 分镜完成：{scenes} 个分镜" if isinstance(scenes, int) else "AI 分镜完成"
-    if rejected == 0:
-        return f"{head}，第 1/{max_attempts} 轮一次通过。"
-    return f"{head}，第 {attempt}/{max_attempts} 轮通过（前 {rejected} 轮被拒，原因见 planning_rounds）。"
+    head = f"机械分镜完成：{scenes} 个分镜"
+    if isinstance(pending, int) and pending:
+        return f"{head}，{pending} 个待编写分镜提示词；下一步请执行分镜提示词编写。"
+    return f"{head}，分镜提示词均已就绪。"
 
 
 PLAN_SHORT_DRAMA_STORYBOARDS = ToolDeclaration(
     name="plan_short_drama_storyboards",
     description=(
-        "AI 分镜 / 重新分镜：从已入库的工厂 Markdown 源稿生成视觉派生状态 scripts/episode_N.json。"
-        "新分镜省略 regenerate_scene_ids；部分重写传 regenerate_scene_ids；全量重写传 force_regenerate=true。"
+        "机械分镜 / 重新分镜：从已入库的工厂 Markdown 源稿确定性生成分镜结构 scripts/episode_N.json。"
+        "边界、时长、出场资产、逐字口播与原文锚由代码计算，不调用文本模型，也没有返修轮次。"
+        "image_prompt 留空并置待编写，随后必须用 generate_episode_script 作为下一步编写分镜提示词。"
+        "新分镜省略 regenerate_scene_ids；部分重切传 regenerate_scene_ids；全量重切传 force_regenerate=true。"
         "本集已有分镜图或视频时，必须先取得用户同意并传 confirm_artifacts=true，否则拒绝且不写入。"
-        "已有分镜会被覆盖结构与提示词；参考素材、视频提示词和视频会随之过期，媒体保留但需重做。"
-        "服务端执行结构、格式、源稿覆盖、各幕时长合计（±5%）校验与最多 5 轮（首轮 + 4 次返修）；"
-        "失败整批拒绝、不落盘、不机械回落。规划输入含本集事实卡（黄金钩子、情绪流变、"
-        "已登记的场景/人物/道具外形与来路），模型据此写画面，不得自创卡片外的事实。"
-        "结果 script.planning_rounds 记录每轮 attempt/outcome/reason/elapsed_ms；有 rejected 轮次时，"
-        "用一句向用户说明第几轮因何被拒、最终第几轮通过。Agent 不自行改写分镜。完成后刷新计划并结束本轮。"
+        "重切会覆盖结构与提示词；参考素材和视频会随之过期，媒体保留但需重做。"
+        "Agent 不自行改写分镜；完成后刷新计划并结束本轮。"
     ),
     request_model=PlanShortDramaStoryboardsRequest,
     migration=BLOCKED,

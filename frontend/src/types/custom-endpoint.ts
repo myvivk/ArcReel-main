@@ -218,6 +218,8 @@ export interface ComfyuiEndpointDefinition {
   auth?: EndpointAuth;
   /** RunningHub 等云端 workflow 服务的 workflowId；原生自建 ComfyUI 留空。 */
   workflow_id?: string;
+  /** RunningHub 运行实例：default=24G、plus=48G、ultra=84G；留空由平台默认。 */
+  instance_type?: "default" | "plus" | "ultra";
   workflow: Record<string, unknown>;
   bindings: ComfyuiBindings;
 }

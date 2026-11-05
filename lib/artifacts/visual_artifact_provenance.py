@@ -369,6 +369,7 @@ def build_storyboard_video_artifact_visual_basis(
     aspect_ratio: str,
     frame_evidence: Sequence[Mapping[str, object]] | None = None,
     asset_links: str = "",
+    include_reference_assets: bool = False,
 ) -> ArtifactBasis:
     """Describe the visual component of one storyboard-driven video.
 
@@ -405,9 +406,10 @@ def build_storyboard_video_artifact_visual_basis(
     }
     if frame_evidence is not None:
         inputs["asset_links"] = asset_links
+    kind_version = 3 if include_reference_assets else 2 if frame_evidence is not None else 1
     return ArtifactBasis.build(
         "artifact-visual/video-storyboard",
-        kind_version=2 if frame_evidence is not None else 1,
+        kind_version=kind_version,
         inputs=inputs,
     )
 
